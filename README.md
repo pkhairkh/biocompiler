@@ -126,7 +126,7 @@ cd proof/
 lake build
 ```
 
-This compiles all proof modules and verifies the soundness theorem. A successful build confirms that all proofs machine-check with no `sorry` and no axioms.
+This compiles all proof modules and verifies the soundness theorem. A successful build confirms that all proofs machine-check with 0 `sorry` and 0 axioms.
 
 ---
 

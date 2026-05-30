@@ -51,9 +51,9 @@
   │ ThreeValued.lean        │ FULLY      │ 12 theorems, 0 sorry, 0 axioms        │
   │ Sequence.lean           │ FULLY      │ Pattern matching with proved           │
   │                         │            │ completeness and soundness             │
-  │ NDFST.lean              │ NEARLY     │ ndfstRun_sound proved;                 │
-  │                         │ COMPLETE   │ ndfstRun_complete: 2 sorry (input      │
-  │                         │            │ decomposition proof engineering)        │
+  │ NDFST.lean              │ FULLY      │ ndfstRun_sound + ndfstRun_complete     │
+  │                         │            │ both proved; ConsumesInput replaces    │
+  │                         │            │ ValidPath for completeness             │
   │ Scanners.lean           │ FULLY      │ Concrete scanner implementations       │
   │                         │            │ with proved completeness               │
   │ TypeSystem.lean         │ FULLY      │ All 7 predicates proved, 0 sorry       │

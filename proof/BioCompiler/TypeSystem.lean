@@ -15,10 +15,8 @@
     PASS → scanner = false → contrapositive of completeness → no match exists.
   - NDFST predicate (SpliceCorrect): PASS → singleton output set → ctx matches.
 
-  SORRY STATUS: 1 remaining (ndfstRun_complete in NDFST.lean):
-  - NDFST completeness: requires foldl induction on input decomposition
-
-  All per-predicate soundness proofs are now sorry-free.
+  SORRY STATUS: 0 remaining. All proofs are sorry-free, including ndfstRun_complete
+  (proved via ConsumesInput in NDFST.lean).
 
   REFERENCE: DOC-03 (SDD) §3.5, DOC-10 (Deterministic Methods) §4
 -/
