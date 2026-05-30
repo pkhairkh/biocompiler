@@ -1,0 +1,37 @@
+# Lean4 build artifacts
+proof/.lake/
+proof/.lake/build/
+proof/build/
+proof/lake-manifest.json
+*.olean
+*.ilean
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary / generated
+*.tmp
+*.log
