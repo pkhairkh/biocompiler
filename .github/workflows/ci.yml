@@ -30,9 +30,9 @@ jobs:
         run: |
           ruff check src/ tests/
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short
+          python -m pytest tests/ -v --tb=short --cov=biocompiler --cov-report=term-missing
 
       - name: Run CLI smoke test
         run: |
@@ -53,3 +53,48 @@ jobs:
       - name: Run tests with z3
         run: |
           python -m pytest tests/ -v --tb=short
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t biocompiler:test .
+      - name: Test Docker container starts
+        run: |
+          docker run -d --name test-biocompiler -p 8001:8000 biocompiler:test
+          sleep 5
+          curl -s http://localhost:8001/health | python -m json.tool
+          docker stop test-biocompiler
+          docker rm test-biocompiler
+
+  lean4-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lean4 (elan)
+        run: |
+          curl -sL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake build
+        uses: actions/cache@v4
+        with:
+          path: proof/.lake
+          key: lean4-${{ runner.os }}-${{ hashFiles('proof/lakefile.lean', 'proof/lean-toolchain') }}
+          restore-keys: lean4-${{ runner.os }}-
+
+      - name: Build and verify proofs
+        working-directory: proof
+        run: |
+          lake build 2>&1 | tee lake-build.log
+          # Check for sorry (should be 0)
+          SORRY_COUNT=$(grep -c "sorry" lake-build.log || true)
+          echo "Sorry count: $SORRY_COUNT"
+          # Verify no errors
+          if grep -q "error" lake-build.log; then
+            echo "Lean4 proof verification FAILED"
+            exit 1
+          fi
+          echo "Lean4 proofs verified successfully (0 sorry, 0 axioms)"

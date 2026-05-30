@@ -1,0 +1,41 @@
+# BioCompiler — Docker Compose Configuration
+#
+# Usage:
+#   docker compose up -d           # Start the API server
+#   docker compose up --build      # Rebuild and start
+#   docker compose logs -f         # Follow logs
+#   docker compose down            # Stop and remove containers
+#
+# The API will be available at http://localhost:8000
+# API docs at http://localhost:8000/docs
+
+version: "3.9"
+
+services:
+  biocompiler-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biocompiler-api
+    ports:
+      - "${BIOCOMPILER_PORT:-8000}:8000"
+    environment:
+      - BIOCOMPILER_HOST=0.0.0.0
+      - BIOCOMPILER_PORT=8000
+      - BIOCOMPILER_API_KEY=${BIOCOMPILER_API_KEY:-}
+      - BIOCOMPILER_RATE_LIMIT=${BIOCOMPILER_RATE_LIMIT:-60}
+      - BIOCOMPILER_CORS_ORIGINS=${BIOCOMPILER_CORS_ORIGINS:-*}
+      - BIOCOMPILER_DB_PATH=/home/biocompiler/.biocompiler/organisms.db
+    volumes:
+      - biocompiler-data:/home/biocompiler/.biocompiler
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  biocompiler-data:
+    driver: local

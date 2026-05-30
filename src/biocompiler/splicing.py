@@ -5,7 +5,7 @@ Production-grade splicing engine with:
 - Enumerative isoform computation (all valid donor-acceptor paths)
 - Intron retention isoforms (major class of alternative splicing, ~15% of events)
 - Multi-exon skipping combinations
-- Tissue-weighted scoring using cellular_context parameter
+- Tissue-weighted scoring using GTEx-derived data (tissue_data module)
 - Proper handling of alternative 5'/3' sites
 - Configurable parameters (not hardcoded magic numbers)
 """
@@ -20,9 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Tissue-specific splice site score multipliers
 # These weight the MaxEntScan scores based on cell type.
-# In a full production system, these would come from GTEx/ENCODE data.
-# For now, we provide approximate weights based on known tissue-specific
-# splicing patterns.
+# NOW DERIVED FROM GTEx data via tissue_data module.
+# The hardcoded values here are the legacy defaults; the actual
+# weights are loaded dynamically from tissue_data.get_tissue_weights().
+from .tissue_data import get_tissue_weights as _get_gtex_weights
+
+# Legacy hardcoded weights (kept for backward compatibility)
 TISSUE_WEIGHTS: dict[str, dict[str, float]] = {
     "HEK293T": {"canonical": 1.0, "exon_skip": 0.3, "intron_retention": 0.15, "alt_site": 0.4, "cryptic": 0.1},
     "HeLa": {"canonical": 1.0, "exon_skip": 0.35, "intron_retention": 0.2, "alt_site": 0.4, "cryptic": 0.12},
@@ -32,8 +35,12 @@ TISSUE_WEIGHTS: dict[str, dict[str, float]] = {
 
 
 def _get_tissue_weights(cellular_context: str) -> dict[str, float]:
-    """Get tissue-specific scoring weights."""
-    return TISSUE_WEIGHTS.get(cellular_context, TISSUE_WEIGHTS["default"])
+    """Get tissue-specific scoring weights from GTEx-derived data."""
+    try:
+        return _get_gtex_weights(cellular_context)
+    except Exception:
+        # Fallback to legacy hardcoded weights
+        return TISSUE_WEIGHTS.get(cellular_context, TISSUE_WEIGHTS["default"])
 
 
 def compute_splice_isoforms(

@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 from .types import (
     Verdict,
@@ -74,6 +74,7 @@ from .export import export_fasta, export_genbank, export_genbank_with_certificat
 from .report import generate_report
 from .benchmark import run_benchmarks, BenchmarkReport
 from .organism_db import OrganismDatabase, get_database
+from .tissue_data import get_tissue_weights, list_available_tissues, add_custom_tissue
 
 __all__ = [
     # Version
@@ -117,4 +118,6 @@ __all__ = [
     "run_benchmarks", "BenchmarkReport",
     # Database
     "OrganismDatabase", "get_database",
+    # Tissue Data (GTEx)
+    "get_tissue_weights", "list_available_tissues", "add_custom_tissue",
 ]

@@ -154,9 +154,21 @@ def propertyHolds [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
       ∀ (pos : Nat),
         pos + cpgIslandWindowSize ≤ seq.length →
           let window := seq.drop pos |>.take cpgIslandWindowSize
+          -- No CpG island means: for every window, either GC < threshold
+          -- OR the observed/expected CpG ratio < threshold.
+          -- The full Obs/Exp ratio formalization requires counting CpG
+          -- dinucleotides and computing (count_CG * window_len) / (count_C * count_G),
+          -- which is definable but involved. We formalize the GC condition
+          -- as the primary criterion (which is the stronger condition:
+          -- if GC% < threshold, the region cannot be a CpG island regardless
+          -- of Obs/Exp ratio). The scanner_completeness assumption for
+          -- CpGIslandScanner ensures that if a true CpG island exists
+          -- (satisfying BOTH conditions), the scanner will detect it.
           ((window.count Nucleotide.G + window.count Nucleotide.C : Rat) / window.length < cpgIslandGCThreshold) ∨
-          True  -- No CpG island: either GC < threshold or Obs/Exp < threshold
-          -- The full formalization of Obs/Exp ratio is deferred to the scanner parameter
+          (∃ (cpgCount : Nat),
+            cpgCount = (List.zipWith (· == ·) window (window.drop 1)).count true ∧
+            (cpgCount : Rat) * window.length <
+              cpgIslandObsExpThreshold * (window.count Nucleotide.C) * (window.count Nucleotide.G))
 
 -- ==============================================================================
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -316,6 +328,13 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
 
   -- ═══════════════════════════════════════════════════════════════════════════
   -- Case 8: NoCpGIsland — PROVED via scanner completeness
+  --
+  -- PROOF STRATEGY: If the scanner returned false, then by contrapositive
+  -- of scanner_completeness, no window satisfies BOTH the GC threshold AND
+  -- the Obs/Exp threshold simultaneously. Therefore, for every window,
+  -- either GC < threshold OR Obs/Exp < threshold. We prove this by
+  -- contradiction: if there were a position where BOTH conditions hold,
+  -- the scanner would have returned true.
   -- ═══════════════════════════════════════════════════════════════════════════
   | NoCpGIsland =>
     unfold evaluate at h_pass
@@ -327,13 +346,21 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
       (bool_ne_true_iff_false _).mp h_not_true
     unfold propertyHolds
     intro pos h_pos
-    -- If the CpG island scanner returned false, then no CpG island exists.
-    -- By contrapositive of scanner_completeness: if a CpG island existed
-    -- at any position, the scanner would have returned true.
-    -- Since the scanner returned false, no position has a CpG island,
-    -- so for every position either GC < threshold or Obs/Exp < threshold.
-    -- The right disjunct (True) is trivially satisfied.
-    right
-    trivial
+    -- If both GC >= threshold AND Obs/Exp >= threshold at some position,
+    -- then by scanner_completeness, the scanner would return true (contradiction).
+    -- Therefore, at least one condition must fail, which means either
+    -- GC < threshold (left disjunct) or Obs/Exp < threshold (right disjunct).
+    by_contra h_both_fail
+    -- h_both_fail : ¬(GC < threshold ∨ Obs/Exp < threshold)
+    push_neg at h_both_fail
+    obtain ⟨h_gc_ge, h_obs_ge⟩ := h_both_fail
+    -- h_gc_ge : (G+C)/len ≥ threshold
+    -- h_obs_ge : ¬(∃ cpgCount, cpgCount = CG_dinucleotides ∧ ratio < threshold)
+    -- From h_obs_ge, we know Obs/Exp ≥ threshold, which combined with h_gc_ge
+    -- means this position satisfies both CpG island criteria.
+    -- By scanner_completeness (contrapositive), scanner must have returned true.
+    have h_scanner_true : CpGIslandScanner.hasCpGIsland seq = false → False :=
+      CpGIslandScanner.scanner_completeness seq pos h_pos h_gc_ge
+    exact h_scanner_true h_false
 
 end BioCompiler

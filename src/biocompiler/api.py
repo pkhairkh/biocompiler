@@ -14,17 +14,26 @@ Endpoints:
 - GET  /predicates  — List registered predicates
 - GET  /health      — Health check
 
+Security:
+- API key authentication (optional, set BIOCOMPILER_API_KEY env var)
+- Rate limiting (60 requests/minute by default, configurable)
+- CORS with configurable origins
+
 All endpoints accept and return JSON. Certificate data is embedded
 directly in responses for seamless pipeline integration.
 """
 
 import logging
+import os
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Security, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field, field_validator
 
 from .scanner import scan_sequence, gc_content, validate_dna_sequence
 from .translation import translate, compute_cai, find_orfs
@@ -43,6 +52,54 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# ─── API Key Authentication ─────────────────────────────────────────
+
+API_KEY_NAME = "X-API-Key"
+_api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# The API key is optional: if BIOCOMPILER_API_KEY is not set, auth is disabled.
+_CONFIGURED_API_KEY = os.environ.get("BIOCOMPILER_API_KEY", "")
+
+# ─── Rate Limiting ──────────────────────────────────────────────────
+
+RATE_LIMIT_RPM = int(os.environ.get("BIOCOMPILER_RATE_LIMIT", "60"))  # requests per minute
+_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(client_id: str) -> None:
+    """Enforce per-client rate limiting (sliding window)."""
+    now = time.monotonic()
+    window = _rate_limit_store[client_id]
+    # Remove timestamps older than 60 seconds
+    _rate_limit_store[client_id] = [t for t in window if now - t < 60.0]
+    window = _rate_limit_store[client_id]
+    if len(window) >= RATE_LIMIT_RPM:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: {RATE_LIMIT_RPM} requests/minute. "
+                   f"Retry after {60.0 - (now - window[0]):.0f} seconds.",
+        )
+    window.append(now)
+
+
+async def verify_api_key(api_key: str = Security(_api_key_header)) -> str:
+    """
+    Verify the API key if authentication is configured.
+
+    If BIOCOMPILER_API_KEY is not set, authentication is disabled (open access).
+    If it is set, the request must include a matching X-API-Key header.
+    """
+    if not _CONFIGURED_API_KEY:
+        return "anonymous"  # Auth disabled
+
+    if api_key is None or api_key != _CONFIGURED_API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key. Set X-API-Key header.",
+        )
+    return api_key
+
+
 # ─── Pydantic Models ──────────────────────────────────────────────
 
 class SequenceInput(BaseModel):
@@ -58,16 +115,18 @@ class SequenceInput(BaseModel):
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to check")
     cellular_context: str = Field("HEK293T", description="Cellular context for splicing")
 
-    @validator("sequence")
-    def validate_seq(cls, v):
+    @field_validator("sequence")
+    @classmethod
+    def validate_seq(cls, v: str) -> str:
         v = v.upper()
         invalid = set(v) - set("ACGTN")
         if invalid:
             raise ValueError(f"Invalid nucleotides: {invalid}")
         return v
 
-    @validator("organism")
-    def validate_organism(cls, v):
+    @field_validator("organism")
+    @classmethod
+    def validate_organism(cls, v: str) -> str:
         if v not in SUPPORTED_ORGANISMS:
             raise ValueError(f"Unsupported organism: {v}. Supported: {SUPPORTED_ORGANISMS}")
         return v
@@ -83,8 +142,9 @@ class ProteinInput(BaseModel):
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to avoid")
     cryptic_splice_threshold: float = Field(3.0, description="Cryptic splice site threshold")
 
-    @validator("protein")
-    def validate_protein(cls, v):
+    @field_validator("protein")
+    @classmethod
+    def validate_protein(cls, v: str) -> str:
         v = v.upper()
         valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
         invalid = set(v) - valid_aas
@@ -168,6 +228,8 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     timestamp: str
+    auth_enabled: bool = False
+    rate_limit_rpm: int = 60
 
 
 # ─── FastAPI Application ──────────────────────────────────────────
@@ -176,9 +238,12 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     from . import __version__
 
+    # CORS origins from environment (default: allow all for development)
+    cors_origins = os.environ.get("BIOCOMPILER_CORS_ORIGINS", "*").split(",")
+
     app = FastAPI(
         title="BioCompiler API",
-        description="Machine-verified gene design REST API",
+        description="Machine-verified gene design REST API with authentication and rate limiting",
         version=__version__,
         docs_url="/docs",
         redoc_url="/redoc",
@@ -187,21 +252,35 @@ def create_app() -> FastAPI:
     # CORS middleware for cross-origin access from web tools
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
+    # Rate limiting middleware
+    @app.middleware("http")
+    async def rate_limit_middleware(request: Request, call_next):
+        client_id = request.client.host if request.client else "unknown"
+        try:
+            _check_rate_limit(client_id)
+        except HTTPException as e:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
+        response = await call_next(request)
+        return response
+
     # ─── Endpoints ──────────────────────────────────────────────
 
     @app.get("/health", response_model=HealthResponse)
     async def health_check():
-        """Health check endpoint."""
+        """Health check endpoint (no auth required)."""
         return HealthResponse(
             status="healthy",
             version=__version__,
             timestamp=datetime.now(timezone.utc).isoformat(),
+            auth_enabled=bool(_CONFIGURED_API_KEY),
+            rate_limit_rpm=RATE_LIMIT_RPM,
         )
 
     @app.get("/organisms", response_model=OrganismResponse)
@@ -233,7 +312,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/check", response_model=TypeCheckResponse)
-    async def check_sequence(input_data: SequenceInput):
+    async def check_sequence(input_data: SequenceInput, client_id: str = Depends(verify_api_key)):
         """
         Type-check a DNA sequence against all registered predicates.
 
@@ -312,7 +391,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail=str(e))
 
     @app.post("/optimize", response_model=OptimizeResponse)
-    async def optimize(input_data: ProteinInput):
+    async def optimize(input_data: ProteinInput, client_id: str = Depends(verify_api_key)):
         """
         Optimize a DNA sequence for a target protein.
 
@@ -345,7 +424,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail=str(e))
 
     @app.post("/verify", response_model=VerifyResponse)
-    async def verify(input_data: CertificateInput):
+    async def verify(input_data: CertificateInput, client_id: str = Depends(verify_api_key)):
         """
         Independently verify a guarantee certificate.
 
@@ -359,7 +438,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Verification error: {e}")
 
     @app.post("/scan", response_model=ScanResponse)
-    async def scan(input_data: ScanInput):
+    async def scan(input_data: ScanInput, client_id: str = Depends(verify_api_key)):
         """
         Scan a DNA sequence for biological motifs.
 
@@ -397,7 +476,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.post("/export/fasta")
-    async def export_fasta_endpoint(input_data: ExportFastaInput):
+    async def export_fasta_endpoint(input_data: ExportFastaInput, client_id: str = Depends(verify_api_key)):
         """Export a sequence in FASTA format."""
         try:
             fasta = export_fasta(
@@ -411,7 +490,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.post("/export/genbank")
-    async def export_genbank_endpoint(input_data: ExportGenbankInput):
+    async def export_genbank_endpoint(input_data: ExportGenbankInput, client_id: str = Depends(verify_api_key)):
         """Export a sequence in GenBank format with optional certificate embedding."""
         try:
             cert = None

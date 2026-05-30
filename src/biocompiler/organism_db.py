@@ -4,7 +4,9 @@ BioCompiler Organism Database — SQLite + Kazusa API Integration
 Production-grade organism data management with:
 - Local SQLite database for fast offline codon usage lookups
 - Kazusa Codon Usage Database API integration for on-demand data retrieval
-- Automatic caching of API results in SQLite
+- Automatic caching of API results in SQLite with TTL
+- Retry logic with exponential backoff for network resilience
+- Robust HTML parser with multiple parsing strategies
 - Migration from hardcoded dicts to persistent storage
 - Backward-compatible interface with existing organisms module
 
@@ -13,12 +15,14 @@ The database stores:
 - Codon usage frequencies (per-organism, per-codon)
 - Codon adaptiveness values (computed from frequencies)
 - Preferred codons per amino acid
-- Cache timestamps for API-fetched data
+- Cache timestamps and TTL for API-fetched data
 """
 
 import json
 import logging
+import re
 import sqlite3
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -35,6 +39,14 @@ DEFAULT_DB_PATH = Path.home() / ".biocompiler" / "organisms.db"
 
 # Kazusa API endpoint for codon usage tables
 KAZUSA_API_URL = "https://www.kazusa.or.jp/codon/cgi-bin/spacialize.cgi"
+
+# Cache TTL for API-fetched data (7 days by default)
+CACHE_TTL_SECONDS = int(7 * 24 * 60 * 60)  # 1 week
+
+# Network retry configuration
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 2  # seconds
+REQUEST_TIMEOUT = 30  # seconds
 
 # Known Kazusa database IDs for common organisms
 KAZUSA_ORGANISM_IDS: dict[str, str] = {
@@ -343,7 +355,7 @@ class OrganismDatabase:
         self._compute_and_store_preferred(name)
         self._compute_and_store_adaptiveness(name)
 
-    def fetch_from_kazusa(self, organism: str) -> None:
+    def fetch_from_kazusa(self, organism: str, force: bool = False) -> None:
         """
         Fetch codon usage data from the Kazusa Codon Usage Database.
 
@@ -352,28 +364,59 @@ class OrganismDatabase:
         thousands of organisms. This method fetches the data via their
         web API, parses it, and stores it in the local SQLite database.
 
+        Features:
+        - Retry with exponential backoff (3 attempts)
+        - Cache validation with TTL (7 days)
+        - Multiple HTML parsing strategies for robustness
+        - Graceful fallback to uniform distribution on failure
+
         Args:
             organism: Organism name or NCBI taxonomy ID
+            force: Force re-fetch even if cache is fresh
 
         Raises:
             ValueError: if the organism cannot be found in Kazusa
-            urllib.error.URLError: if the API is unreachable
+            urllib.error.URLError: if the API is unreachable after retries
         """
-        tax_id = KAZUSA_ORGANISM_IDS.get(organism, organism)
+        # Check cache freshness (skip fetch if recently fetched)
+        if not force and self._is_cache_fresh(organism):
+            logger.debug("Using cached data for %s (cache is fresh)", organism)
+            return
 
+        tax_id = KAZUSA_ORGANISM_IDS.get(organism, organism)
         logger.info("Fetching codon usage for %s (tax_id=%s) from Kazusa API", organism, tax_id)
 
         url = f"{KAZUSA_API_URL}?species={tax_id}&aa=1&style=N"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "BioCompiler/2.2.0"})
-            with urllib.request.urlopen(req, timeout=30) as response:
-                html = response.read().decode("utf-8", errors="replace")
-        except urllib.error.URLError as e:
-            logger.error("Kazusa API unreachable: %s", e)
-            raise
 
-        # Parse the HTML response to extract codon usage data
-        codon_usage = self._parse_kazusa_html(html, organism)
+        # Retry with exponential backoff
+        html = None
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": f"BioCompiler/{__import__('biocompiler').__version__}"},
+                )
+                with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+                    html = response.read().decode("utf-8", errors="replace")
+                break  # Success
+            except urllib.error.URLError as e:
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    wait_time = RETRY_BACKOFF_BASE ** attempt
+                    logger.warning(
+                        "Kazusa API attempt %d/%d failed: %s. Retrying in %ds",
+                        attempt + 1, MAX_RETRIES, e, wait_time,
+                    )
+                    time.sleep(wait_time)
+                else:
+                    logger.error("Kazusa API unreachable after %d attempts: %s", MAX_RETRIES, e)
+
+        if html is None:
+            raise last_error or urllib.error.URLError("Kazusa API unreachable")
+
+        # Parse the HTML response using multiple strategies
+        codon_usage = self._parse_kazusa_html_robust(html, organism)
         if not codon_usage:
             raise ValueError(f"No codon usage data found for {organism} (tax_id={tax_id})")
 
@@ -527,57 +570,148 @@ class OrganismDatabase:
             conn.close()
 
     @staticmethod
-    def _parse_kazusa_html(html: str, organism: str) -> dict[str, tuple[str, float, float, int]]:
+    def _parse_kazusa_html_robust(html: str, organism: str) -> dict[str, tuple[str, float, float, int]]:
         """
-        Parse Kazusa codon usage HTML response into our internal format.
+        Parse Kazusa codon usage HTML response using multiple parsing strategies.
 
-        The Kazusa HTML contains a table with codon, amino acid, frequency,
-        and count per thousand. We extract and convert this data.
+        Strategy 1: Structured table parsing (most reliable when format is standard)
+        Strategy 2: Fragment-based extraction (original approach, improved)
+        Strategy 3: Regex-based extraction (fallback)
+
+        Falls back to uniform distribution only if ALL strategies fail to
+        extract a minimum of 60/64 codons.
         """
         codon_usage: dict[str, tuple[str, float, float, int]] = {}
-        codons = [c for cs in AA_TO_CODONS.values() for c in cs]
+        # Use all 64 codons from CODON_TABLE (includes stop codons)
+        codons = list(CODON_TABLE.keys())
 
-        # Kazusa format: rows like "GGG G 1.00 28frequency 0.36"
-        # We parse by finding codon patterns in the HTML
-        for codon in codons:
-            aa = CODON_TABLE.get(codon, "X")
-            if aa == "*":
-                aa = "STOP"
-
-            # Search for the codon in the HTML and extract nearby numbers
-            idx = html.find(codon)
-            if idx >= 0:
-                # Extract numbers after the codon
-                import re
-                # Look for frequency (decimal) and count (integer) near the codon
-                fragment = html[idx:idx + 100]
-                numbers = re.findall(r'[\d.]+', fragment)
-                freq = float(numbers[1]) if len(numbers) > 1 else 0.0
-                count = int(float(numbers[2])) if len(numbers) > 2 else 0
-                # Adaptiveness is computed later
+        # Strategy 1: Parse structured HTML table rows
+        # Kazusa format typically has rows like:
+        # <td>GGG</td><td>G</td><td>1.00</td><td>28</td><td>0.36</td>
+        row_pattern = re.compile(
+            r'<td[^>]*>([ACGT]{3})</td>\s*'
+            r'<td[^>]*>([A-Z*]+)</td>\s*'
+            r'<td[^>]*>([\d.]+)</td>\s*'
+            r'<td[^>]*>(\d+)</td>\s*'
+            r'<td[^>]*>([\d.]+)</td>',
+            re.IGNORECASE,
+        )
+        for match in row_pattern.finditer(html):
+            codon = match.group(1).upper()
+            aa = match.group(2)
+            freq = float(match.group(4)) / 1000.0 if int(match.group(4)) > 0 else float(match.group(3))
+            count = int(match.group(4))
+            if codon in CODON_TABLE:
+                if aa == "*":
+                    aa = "STOP"
                 codon_usage[codon] = (aa, freq, 0.0, count)
 
-        # If parsing failed, fall back to uniform distribution
+        # If Strategy 1 found most codons, use it
+        if len(codon_usage) >= 60:
+            logger.info("Kazusa parsing Strategy 1 (table rows) succeeded: %d/64 codons", len(codon_usage))
+        else:
+            codon_usage.clear()
+
+            # Strategy 2: Fragment-based extraction (improved)
+            for codon in codons:
+                aa = CODON_TABLE.get(codon, "X")
+                if aa == "*":
+                    aa = "STOP"
+
+                idx = html.find(codon)
+                if idx >= 0:
+                    fragment = html[idx:idx + 120]
+                    # Extract all numbers from the fragment
+                    numbers = re.findall(r'[\d.]+', fragment)
+                    if len(numbers) >= 3:
+                        try:
+                            # Typically: [codon_number, frequency, count, per_thousand]
+                            # Try to identify the per-thousand value (should be <= 1000)
+                            freq = 0.0
+                            count = 0
+                            for num_str in numbers[1:]:
+                                val = float(num_str)
+                                if val > 1000 and count == 0:
+                                    count = int(val)
+                                elif val <= 1000 and freq == 0.0:
+                                    freq = val / 1000.0 if val > 1.0 else val
+                            codon_usage[codon] = (aa, freq, 0.0, count)
+                        except (ValueError, IndexError):
+                            pass
+
+            if len(codon_usage) >= 60:
+                logger.info("Kazusa parsing Strategy 2 (fragment) succeeded: %d/64 codons", len(codon_usage))
+            else:
+                codon_usage.clear()
+
+                # Strategy 3: Regex-based codon-frequency pairs
+                # Look for patterns like "GGG G 0.28" or codon followed by numbers
+                for codon in codons:
+                    aa = CODON_TABLE.get(codon, "X")
+                    if aa == "*":
+                        aa = "STOP"
+                    # Find codon followed by optional amino acid and number
+                    pattern = re.compile(
+                        rf'{codon}\s+[A-Z*]?\s*([\d.]+)\s*(\d+)?',
+                        re.IGNORECASE,
+                    )
+                    match = pattern.search(html)
+                    if match:
+                        freq = float(match.group(1))
+                        count = int(match.group(2) or 0)
+                        freq = freq / 1000.0 if freq > 1.0 else freq
+                        codon_usage[codon] = (aa, freq, 0.0, count)
+
+                if len(codon_usage) >= 60:
+                    logger.info("Kazusa parsing Strategy 3 (regex) succeeded: %d/64 codons", len(codon_usage))
+
+        # Final fallback: uniform distribution for missing codons
         if len(codon_usage) < 64:
-            logger.warning("Incomplete Kazusa parsing for %s (%d/64 codons), using uniform fallback",
-                         organism, len(codon_usage))
+            missing = 64 - len(codon_usage)
+            logger.warning(
+                "Incomplete Kazusa parsing for %s (%d/64 codons, %d missing), "
+                "using uniform fallback for missing codons",
+                organism, len(codon_usage), missing,
+            )
             for codon in codons:
                 if codon not in codon_usage:
                     aa = CODON_TABLE.get(codon, "X")
                     if aa == "*":
                         aa = "STOP"
-                    codon_usage[codon] = (aa, 1.0 / len(AA_TO_CODONS.get(aa, [codon])), 0.0, 0)
+                    # For stop codons, use equal frequency among the 3 stop codons
+                    if aa == "STOP":
+                        codon_usage[codon] = (aa, 1.0 / 3.0, 0.0, 0)
+                    else:
+                        codon_usage[codon] = (aa, 1.0 / len(AA_TO_CODONS.get(aa, [codon])), 0.0, 0)
 
         return codon_usage
 
     @staticmethod
     def _extract_n_cds_from_html(html: str) -> int:
         """Extract the number of CDS sequences from Kazusa HTML."""
-        import re
         match = re.search(r'(\d+)\s+CDS', html)
         if match:
             return int(match.group(1))
         return 0
+
+    def _is_cache_fresh(self, organism: str) -> bool:
+        """Check if the cached data for an organism is still fresh (within TTL)."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT updated_at FROM organisms WHERE name = ? AND source = 'kazusa'",
+                (organism,),
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                updated = datetime.fromisoformat(row["updated_at"])
+                age = (datetime.now(timezone.utc) - updated).total_seconds()
+                return age < CACHE_TTL_SECONDS
+            except (ValueError, TypeError):
+                return False
+        finally:
+            conn.close()
 
 
 # ─── Module-level convenience functions ────────────────────────────
