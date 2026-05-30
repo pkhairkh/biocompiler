@@ -35,6 +35,7 @@ Batch Processing:
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -1066,6 +1067,34 @@ def create_app() -> FastAPI:
                 ))
 
         return BatchExportResponse(results=results)
+
+    @app.post("/validate-datasets")
+    async def validate_datasets(
+        client_id: str = Depends(verify_api_key),
+        datasets: str | None = None,
+        include_cross_organism: bool = True,
+        include_optimization_improvement: bool = True,
+    ):
+        """
+        Validate the optimizer against common biological datasets.
+
+        Tests the optimizer on well-known gene sequences from human, E. coli,
+        yeast, and synthetic benchmark proteins. Validates translation fidelity,
+        GC content, CAI bounds, protein length, and cross-organism consistency.
+
+        Returns a structured report with pass/fail status for each test.
+        """
+        from .dataset_validation import run_dataset_validation, format_dataset_report_json
+
+        ds_list = datasets.split(",") if datasets else None
+        report = await asyncio.to_thread(
+            run_dataset_validation,
+            datasets=ds_list,
+            include_cross_organism=include_cross_organism,
+            include_optimization_improvement=include_optimization_improvement,
+        )
+
+        return json.loads(format_dataset_report_json(report))
 
     return app
 

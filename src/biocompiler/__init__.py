@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "5.0.0"
+__version__ = "5.1.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -79,6 +79,7 @@ from .benchmark import run_benchmarks, BenchmarkReport
 from .organism_db import OrganismDatabase, get_database
 from .tissue_data import get_tissue_weights, list_available_tissues, add_custom_tissue
 from .dna_chisel_compat import compare_optimizers, run_comparative_benchmark
+from .dataset_validation import run_dataset_validation, DatasetValidationReport
 from .import_seq import import_fasta, import_genbank, import_sequence
 from .biopython_compat import to_seqrecord, from_seqrecord, optimize_to_seqrecord
 from .jupyter import display_sequence, display_optimization_result, display_type_check, plot_gc_content, plot_codon_usage
@@ -129,6 +130,8 @@ __all__ = [
     "get_tissue_weights", "list_available_tissues", "add_custom_tissue",
     # DNA Chisel Compatibility
     "compare_optimizers", "run_comparative_benchmark",
+    # Dataset Validation
+    "run_dataset_validation", "DatasetValidationReport",
     # Import
     "import_fasta", "import_genbank", "import_sequence",
     # BioPython Interop

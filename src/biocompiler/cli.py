@@ -741,6 +741,43 @@ def cmd_benchmark(args):
         print(output)
 
 
+def cmd_validate_datasets(args):
+    """Validate optimizer against common biological datasets."""
+    _setup_logging(args.verbose)
+
+    from .dataset_validation import (
+        run_dataset_validation, format_dataset_report_text,
+        ALL_DATASETS,
+    )
+
+    datasets = args.datasets.split(",") if args.datasets else None
+    include_cross = not args.skip_cross_organism
+    include_improvement = not args.skip_improvement
+
+    ds_names = datasets or list(ALL_DATASETS.keys())
+    print(_section_header("Dataset Validation"))
+    print(f"  Datasets: {', '.join(ds_names)}", file=sys.stderr)
+    print(f"  Total gene entries: {sum(len(ALL_DATASETS[d]) for d in ds_names)}", file=sys.stderr)
+
+    report = run_dataset_validation(
+        datasets=datasets,
+        include_cross_organism=include_cross,
+        include_optimization_improvement=include_improvement,
+    )
+
+    output = format_dataset_report_text(report)
+
+    if args.output:
+        Path(args.output).write_text(output)
+        print(_success_msg(f"Validation report saved to: {args.output}"))
+    else:
+        print(output)
+
+    if report.pass_rate < 0.85:
+        print(_error_msg(f"Validation pass rate {report.pass_rate:.1%} is below 85% threshold"), file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_serve(args):
     """Start the BioCompiler REST API server."""
     _setup_logging(args.verbose)
@@ -1148,6 +1185,28 @@ def main():
     p_bench.add_argument("--skip-optimization", action="store_true", help="Skip optimization benchmarks")
     p_bench.add_argument("--output", "-o", help="Output file path")
     p_bench.set_defaults(func=cmd_benchmark)
+
+    # validate-datasets
+    p_validate = subparsers.add_parser(
+        "validate-datasets",
+        help="Validate optimizer against common biological datasets (human, E. coli, yeast, synthetic)",
+    )
+    p_validate.add_argument(
+        "--datasets",
+        help="Comma-separated dataset names (default: all). Options: human, ecoli, yeast, synthetic",
+    )
+    p_validate.add_argument(
+        "--skip-cross-organism",
+        action="store_true",
+        help="Skip cross-organism consistency tests",
+    )
+    p_validate.add_argument(
+        "--skip-improvement",
+        action="store_true",
+        help="Skip optimization improvement tests",
+    )
+    p_validate.add_argument("--output", "-o", help="Output file path")
+    p_validate.set_defaults(func=cmd_validate_datasets)
 
     # serve
     p_serve = subparsers.add_parser("serve", help="Start REST API server")
