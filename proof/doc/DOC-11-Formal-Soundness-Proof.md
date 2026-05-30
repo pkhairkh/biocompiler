@@ -3,18 +3,18 @@
 | Field | Value |
 |---|---|
 | **Document ID** | DOC-11 |
-| **Version** | 2.0.0-draft |
-| **Status** | ROUGH DRAFT |
+| **Version** | 3.0.0 |
+| **Status** | COMPLETE — 0 sorry, 0 axioms |
 | **Date** | 2026-05-30 |
-| **Companion Code** | BioCompiler-FormalProof/ (Lean4 formalization) |
-| **Companion Implementation** | BioCompiler-PoC/ (Python proof of concept) |
-| **Supersedes** | DOC-11 v1.0.0 (replaced: had 6+ sorry, 12+ axioms, undefined functions) |
+| **Companion Code** | proof/ (Lean4 formalization) |
+| **Companion Implementation** | src/ (Python proof of concept) |
+| **Supersedes** | DOC-11 v2.0.0 (had 3 sorry), DOC-11 v1.0.0 (had 6+ sorry, 12+ axioms) |
 
 ---
 
 ## 1. Introduction
 
-This document provides the complete mathematical proof of the BioCompiler type system soundness theorem, serves as the human-readable companion to the Lean4 formalization in `BioCompiler-FormalProof/`, and documents the proof architecture, trusted computing base, and remaining proof obligations.
+This document provides the complete mathematical proof of the BioCompiler type system soundness theorem, serves as the human-readable companion to the Lean4 formalization in `proof/`, and documents the proof architecture, trusted computing base, and proof obligations.
 
 ### 1.1 Central Theorem
 
@@ -34,21 +34,34 @@ This document provides the complete mathematical proof of the BioCompiler type s
 
 > **Theorem (Certificate SLOT-Independence):** For all core predicates, the validity of a guarantee certificate is independent of SLOT values (FFI output).
 
-### 1.4 What Changed from v1.0
+### 1.4 Proof Status
 
-The previous version of this document accompanied a Lean4 formalization with:
+**All theorems are fully proved with 0 sorry and 0 axioms.** The five typeclass parameters (TCB-1 through TCB-5) are explicitly identified assumptions, not proof gaps.
+
+### 1.5 What Changed from v2.0
+
+The v2.0 version had:
+- **3 remaining `sorry`** (2 in SpliceCorrect for Lean4 proof engineering, 1 in compositional for UNCERTAIN propagation)
+
+The current version has:
+- **0 `sorry`** — all proof obligations closed
+- **SpliceCorrect** proof restructured using `string_eq_of_not_ne` (LawfulBEq) and direct list case-split
+- **Compositional soundness** proved via `foldl_uncertain_ne_pass` helper lemma
+- **NDFST completeness** proved via `ConsumesInput` inductive relation (replacing the sorry-ridden ValidPath-based proof)
+
+### 1.6 What Changed from v1.0
+
+The original version had:
 - **6+ `sorry` holes** in critical theorems
 - **12+ axioms** for scanner functions, NDFST construction, and splice site matching
 - **Undefined functions** (`computeOutputAlongPath`, `isValidPath`)
 - **NDFST run function bug** (didn't accumulate outputs)
-- **Trivial SLOT independence** proofs (just `rfl`)
 
 The current version has:
-- **3 remaining `sorry`** (2 in SpliceCorrect for trivial Lean4 proof engineering, 1 in compositional for UNCERTAIN propagation — all trivially true mathematical facts)
-- **5 parameterized assumptions** (explicitly identified as the trusted computing base)
-- **Concrete scanner implementations** with proved completeness and soundness
-- **Proper NDFST semantics** with path-based characterization and proved soundness
-- **Non-trivial SLOT independence** proof including the FFI-never-PASS theorem
+- **0 sorry, 0 axioms**, 5 explicit typeclass parameters
+- Concrete scanner implementations with proved completeness and soundness
+- Proper NDFST semantics with path-based characterization and proved soundness AND completeness
+- Non-trivial SLOT independence proof including the FFI-never-PASS theorem
 
 ---
 
@@ -82,16 +95,22 @@ The current version has:
 type_soundness (TypeSystem.lean)
 ├── dite_fail_imp (if PASS=cond then cond)         [CodonAdapted, GCInRange, InFrame]
 ├── bool_ne_true_iff_false (b≠true ↔ b=false)      [NoCrypticSplice, NoRestrictionSite, NoInstabilityMotif]
+├── string_eq_of_not_ne (LawfulBEq)                 [SpliceCorrect]
 ├── SpliceSiteScanner.scanner_completeness          [NoCrypticSplice — PARAMETER]
 ├── hasAnyRestrictionSite_complete                   [NoRestrictionSite — PROVED in Scanners.lean]
 ├── hasPattern_complete (= containsPattern_complete) [NoInstabilityMotif — PROVED in Sequence.lean]
-├── Bool.or_false_left/right                         [NoInstabilityMotif — PROVED in TypeSystem.lean]
-└── list_singleton_length                            [SpliceCorrect — lemma in TypeSystem.lean]
+└── Bool.or_false_left/right                         [NoInstabilityMotif — PROVED in TypeSystem.lean]
 
 compositional_soundness (Compositional.lean)
 ├── type_soundness                                   [per-predicate soundness]
 └── foldl_and_pass_all_pass                          [foldl reasoning]
+    ├── foldl_uncertain_ne_pass                       [UNCERTAIN never becomes PASS]
     └── Verdict.and properties                       [from ThreeValued.lean]
+
+ndfstRun_complete (NDFST.lean)
+├── ConsumesInput inductive relation                 [input-tracking path characterization]
+├── ndfstRun_append_singleton                        [foldl decomposition]
+└── ndfstStep_membership                             [flatMap/map membership]
 
 full_slot_independence (SLOTIndependence.lean)
 ├── all_predicates_are_core                          [by case analysis]
@@ -143,15 +162,20 @@ full_slot_independence (SLOTIndependence.lean)
 
 **Proof:** By case analysis on P. Each case is proved independently.
 
-### 5.1 Case: SpliceCorrect(C)
+### 5.1 Case: SpliceCorrect(C) — FULLY PROVED
 
 **Evaluation:** PASS iff `ctx.cellType = cellType` and `ndfstUniqueOutputSet` is a singleton `[_]`.
 
 **Property:** `ctx.cellType = cellType` and the output set has length 1.
 
-**Proof:** The PASS branch of the evaluation is taken only when (a) `ctx.cellType = cellType` (else branch of the inequality check) and (b) the output set matches `[_]` (singleton). A list matching `[_]` has exactly one element, hence length 1. Both conditions of `propertyHolds` follow directly.
+**Proof:**
+1. If `ctx.cellType ≠ cellType`, the then branch produces `UNCERTAIN ≠ PASS`. By contraposition, `PASS` implies `¬(ctx.cellType ≠ cellType)`.
+2. By `string_eq_of_not_ne` (LawfulBEq), `¬(s₁ ≠ s₂) → s₁ = s₂`. Therefore `ctx.cellType = cellType`.
+3. The else branch matches `ndfstUniqueOutputSet` against `[_]` → PASS and `_` → FAIL.
+4. Case-split on the list: empty list gives FAIL ≠ PASS, ≥2 elements gives FAIL ≠ PASS. Only a singleton matches `[_]` and has length 1.
+5. Both conditions of `propertyHolds` follow. QED.
 
-**Status:** Proved with 2 minor Lean4 proof engineering sorry (extracting equality from if-else branch, extracting length from match pattern). Both are trivially true mathematical facts.
+**Status:** FULLY PROVED in TypeSystem.lean (0 sorry).
 
 ### 5.2 Case: NoCrypticSplice — FULLY PROVED
 
@@ -244,7 +268,7 @@ full_slot_independence (SLOTIndependence.lean)
 
 ---
 
-## 6. Theorem 4: Compositional Soundness
+## 6. Theorem 4: Compositional Soundness — FULLY PROVED
 
 **Statement:** For all predicate lists, sequences, and contexts:
 
@@ -254,15 +278,16 @@ full_slot_independence (SLOTIndependence.lean)
 
 1. `evaluateAll` computes `PASS ⊓ evaluate(P₁) ⊓ ... ⊓ evaluate(Pₙ)` via `foldl`.
 2. If the result is PASS, then by `foldl_and_pass_all_pass`, every individual evaluation is PASS.
-   (Because FAIL ⊓ _ = FAIL ≠ PASS, and UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS.)
+   - **FAIL is sticky:** FAIL ⊓ _ = FAIL ≠ PASS, so no FAIL can appear.
+   - **UNCERTAIN never becomes PASS:** `foldl_uncertain_ne_pass` proves by induction that `foldl Verdict.and UNCERTAIN vs ≠ PASS` for any vs. This is because UNCERTAIN ⊓ PASS = UNCERTAIN, UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN, and UNCERTAIN ⊓ FAIL = FAIL — none of which equal PASS.
 3. By `type_soundness`, each `evaluate(Pᵢ) = PASS` implies `propertyHolds(Pᵢ)`.
 4. Therefore, all properties hold. QED.
 
-**Status:** Proved with 1 sorry for the UNCERTAIN propagation step in `foldl_and_pass_all_pass`. This is trivially true: once UNCERTAIN appears in the foldl accumulator, it can never become PASS (because UNCERTAIN ⊓ PASS = UNCERTAIN, UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN, UNCERTAIN ⊓ FAIL = FAIL). This can be proved by induction on the remaining list, but the Lean4 tactic proof requires careful handling of the foldl.
+**Status:** FULLY PROVED in Compositional.lean (0 sorry).
 
 ---
 
-## 7. Theorem 5: SLOT-Independence
+## 7. Theorem 5: SLOT-Independence — FULLY PROVED
 
 **Statement:** For all core predicates P, sequences s, contexts C, and SLOT values σ₁, σ₂:
 
@@ -290,7 +315,36 @@ In no branch is PASS produced. QED.
 
 ---
 
-## 8. Trusted Computing Base
+## 8. Theorem 6: NDFST Completeness — FULLY PROVED
+
+**Statement:** For every NDFST, input sequence, and input-consuming path:
+
+    ConsumesInput(ndfst, path, output, consumed) → consumed = input →
+      (path.getLast!, output) ∈ ndfstRun(ndfst, input)
+
+**Proof by induction on the ConsumesInput derivation:**
+
+### Base case
+- `ConsumesInput.base`: path = [initial], output = [], consumed = []
+- If consumed = input, then input = []
+- `ndfstRun ndfst [] = [(initial, [])]`
+- `(initial, []) ∈ [(initial, [])]` ✓
+
+### Step case
+- `ConsumesInput.step`: path = prev_path ++ [next_state], output = prev_acc ++ chunk, consumed = prev_consumed ++ [symbol]
+- If consumed = input, then input = prev_consumed ++ [symbol]
+- **By IH**: `(prev_path.getLast!, prev_acc) ∈ ndfstRun ndfst prev_consumed`
+- **By `ndfstRun_append_singleton`**: `ndfstRun ndfst (prev_consumed ++ [symbol]) = ndfstStep ndfst (ndfstRun ndfst prev_consumed) symbol`
+- **By `ndfstStep_membership`**: From `h_trans : (next_state, chunk) ∈ ndfst.transition prev_path.getLast! symbol` and the IH, we derive `(next_state, prev_acc ++ chunk) ∈ ndfstStep ndfst (ndfstRun ndfst prev_consumed) symbol`
+- Therefore: `(next_state, prev_acc ++ chunk) ∈ ndfstRun ndfst input` ✓
+
+**Key design choice:** The `ConsumesInput` relation tracks the consumed input symbols (`consumed ++ [symbol]`) rather than the remaining input (`remaining.tail?`). This makes the foldl decomposition straightforward: the consumed symbols directly identify the input, so `consumed = input` is all we need.
+
+**Status:** FULLY PROVED in NDFST.lean (0 sorry).
+
+---
+
+## 9. Trusted Computing Base
 
 The soundness proof relies on the following assumptions, which are NOT proved within Lean4. These are the **parameters** of the proof — the conditions that must hold for the type system to be sound. Each is clearly identified and independently verifiable.
 
@@ -313,46 +367,24 @@ This is the standard approach in formal methods: **prove the TYPE SYSTEM sound c
 
 ---
 
-## 9. Comparison with Previous Version
+## 10. Comparison with Previous Versions
 
-| Aspect | v1.0.0 | v2.0.0 |
-|---|---|---|
-| **Sorry count** | 6+ (in main theorems) | 3 (all trivially true) |
-| **Axiom count** | 12+ (scanners, NDFST, CIC) | 0 axioms; 5 typeclass parameters |
-| **Undefined functions** | 2 (`computeOutputAlongPath`, `isValidPath`) | 0 |
-| **Scanner implementations** | All axioms | Concrete (from Sequence.lean) |
-| **Pattern matching** | Not implemented | Implemented with proved completeness |
-| **NDFST run function** | Bug (doesn't accumulate output) | Fixed (proper accumulation) |
-| **NDFST path semantics** | Sorry | Proper inductive `ValidPath` |
-| **SpliceCorrect proof** | 2 sorry | 2 sorry (trivial proof engineering) |
-| **NoCrypticSplice proof** | 1 sorry | 0 sorry (FULLY PROVED) |
-| **NoRestrictionSite proof** | 1 sorry | 0 sorry (FULLY PROVED) |
-| **NoInstabilityMotif proof** | 0 sorry (used axiom) | 0 sorry (FULLY PROVED from first principles) |
-| **CodonAdapted proof** | Sketch | 0 sorry (FULLY PROVED) |
-| **GCInRange proof** | Sketch | 0 sorry (FULLY PROVED) |
-| **InFrame proof** | 2 sorry | 0 sorry (FULLY PROVED) |
-| **Compositional soundness** | 1 sorry | 1 sorry (UNCERTAIN propagation, trivial) |
-| **SLOT independence** | Trivial (rfl) | Non-trivial (FFI never PASS theorem) |
+| Aspect | v1.0.0 | v2.0.0 | v3.0.0 (current) |
+|---|---|---|---|
+| **Sorry count** | 6+ (in main theorems) | 3 (trivially true) | **0** |
+| **Axiom count** | 12+ (scanners, NDFST, CIC) | 0 axioms; 5 parameters | **0 axioms; 5 parameters** |
+| **Undefined functions** | 2 | 0 | **0** |
+| **Scanner implementations** | All axioms | Concrete | **Concrete + proved** |
+| **Pattern matching** | Not implemented | Implemented + proved | **Implemented + proved** |
+| **NDFST run function** | Bug | Fixed | **Fixed + proved complete** |
+| **NDFST completeness** | Sorry | 2 sorry | **0 sorry (ConsumesInput)** |
+| **SpliceCorrect proof** | 2 sorry | 2 sorry | **0 sorry** |
+| **Compositional soundness** | 1 sorry | 1 sorry | **0 sorry** |
+| **SLOT independence** | Trivial (rfl) | Non-trivial | **Non-trivial + proved** |
 
 ---
 
-## 10. Remaining Proof Obligations
-
-### 10.1 Lean4 Proof Engineering (3 sorry)
-
-1. **SpliceCorrect: `ctx.cellType = cellType`** — Need to extract `¬(ctx.cellType ≠ cellType)` from the split and convert to equality. Standard BEq/LawfulBEq reasoning.
-
-2. **SpliceCorrect: `length = 1` from match pattern `[_]`** — Need to connect the `match` on the output list to a proof that the matched list is a singleton. Standard match-scrutinee lemma.
-
-3. **Compositional: UNCERTAIN propagation** — Need to prove that `foldl Verdict.and UNCERTAIN vs ≠ PASS` for any vs. This follows because UNCERTAIN is absorbing for PASS: `UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS`, `UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN ≠ PASS`, `UNCERTAIN ⊓ FAIL = FAIL ≠ PASS`. Provable by induction on vs.
-
-All three are trivially true mathematical facts that require standard Lean4 tactic techniques (not new mathematical ideas).
-
-### 10.2 NDFST Completeness (1 sorry)
-
-The `ndfstRun_complete` theorem in NDFST.lean has 1 sorry. This theorem states that every valid path through the NDFST produces a result in the run output. The proof requires careful induction on the input sequence and the path simultaneously. The mathematical argument is straightforward; the Lean4 formalization requires auxiliary lemmas about `List.foldl` and `List.flatMap`.
-
-### 10.3 Future Work: Eliminating the TCB
+## 11. Future Work: Eliminating the TCB
 
 The five TCB items can be progressively eliminated by:
 1. Implementing the scanners in Lean4 (replacing the Python PoC)
@@ -363,7 +395,7 @@ This is significant work (comparable to the CompCert project's effort to verify 
 
 ---
 
-## 11. Connection to the SE Documents
+## 12. Connection to the SE Documents
 
 | SE Document | Section | Formal Proof Connection |
 |---|---|---|
@@ -372,7 +404,7 @@ This is significant work (comparable to the CompCert project's effort to verify 
 | DOC-01 (SRS) | INV-TYP-03 | `foldl_and_pass_implies_all_pass` theorem |
 | DOC-01 (SRS) | REQ-NFR-011 | `type_soundness` theorem (no false PASS) |
 | DOC-03 (SDD) | §3.1 (Scanner) | `containsPattern_complete`, `containsPattern_sound` |
-| DOC-03 (SDD) | §3.2 (Splicing Engine) | `NDFST` structure, `ndfstRun_sound` |
+| DOC-03 (SDD) | §3.2 (Splicing Engine) | `NDFST` structure, `ndfstRun_sound`, `ndfstRun_complete` |
 | DOC-03 (SDD) | §3.5.3 (Three-Valued Logic) | `Verdict.and`, `dite_fail_imp` |
 | DOC-03 (SDD) | §3.5.4 (Soundness Arguments) | `type_soundness` theorem |
 | DOC-04 (ICD) | §5 (COMP-05 Type System) | `evaluate`, `propertyHolds` |
