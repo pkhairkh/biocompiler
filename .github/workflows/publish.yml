@@ -1,0 +1,121 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write  # Required for trusted publisher (OIDC)
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Build the distribution artifacts
+  # ──────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Verify distribution artifacts
+        run: |
+          echo "=== Built artifacts ==="
+          ls -lh dist/
+          echo ""
+          echo "=== Checking wheel metadata ==="
+          python -c "
+          import zipfile, sys, os
+          wheels = [f for f in os.listdir('dist') if f.endswith('.whl')]
+          if not wheels:
+              print('ERROR: No wheel found in dist/')
+              sys.exit(1)
+          whl = wheels[0]
+          with zipfile.ZipFile(f'dist/{whl}') as z:
+              meta_files = [n for n in z.namelist() if 'METADATA' in n]
+              if meta_files:
+                  print(z.read(meta_files[0]).decode())
+              else:
+                  print('WARNING: No METADATA found in wheel')
+          "
+          echo ""
+          echo "=== Checking sdist ==="
+          python -c "
+          import os
+          sdists = [f for f in os.listdir('dist') if f.endswith('.tar.gz')]
+          if sdists:
+              print(f'Sdist found: {sdists[0]}')
+          else:
+              print('WARNING: No sdist found')
+          "
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # ──────────────────────────────────────────────
+  # Publish to PyPI using Trusted Publisher (OIDC)
+  # ──────────────────────────────────────────────
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/biocompiler/
+    permissions:
+      id-token: write  # OIDC for trusted publisher
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
+          skip-existing: true
+
+  # ──────────────────────────────────────────────
+  # Publish to TestPyPI (on pre-releases only)
+  # ──────────────────────────────────────────────
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event.release.prerelease
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/biocompiler/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          print-hash: true
+          skip-existing: true

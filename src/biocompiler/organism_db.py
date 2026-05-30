@@ -660,6 +660,7 @@ class OrganismDatabase:
         """
         Parse Kazusa codon usage HTML response using multiple parsing strategies.
 
+        Strategy 0: BeautifulSoup parsing (most robust, requires optional dependency)
         Strategy 1: Structured table parsing (most reliable when format is standard)
         Strategy 2: Fragment-based extraction (original approach, improved)
         Strategy 3: Regex-based extraction (fallback)
@@ -670,6 +671,110 @@ class OrganismDatabase:
         codon_usage: dict[str, tuple[str, float, float, int]] = {}
         # Use all 64 codons from CODON_TABLE (includes stop codons)
         codons = list(CODON_TABLE.keys())
+
+        # Strategy 0: BeautifulSoup (most robust, requires optional dependency)
+        try:
+            from bs4 import BeautifulSoup  # type: ignore[import-untyped]
+
+            soup = BeautifulSoup(html, 'html.parser')
+            # Find all table rows in the codon usage table
+            for tr in soup.find_all('tr'):
+                cells = tr.find_all('td')
+                if len(cells) < 4:
+                    continue
+                # Extract text content from each cell
+                cell_texts = [c.get_text(strip=True) for c in cells]
+                # Find a cell that looks like a codon (3-letter ACGT sequence)
+                codon_val = None
+                codon_idx = None
+                for i, txt in enumerate(cell_texts):
+                    if len(txt) == 3 and all(ch in 'ACGTacgt' for ch in txt):
+                        codon_val = txt.upper()
+                        codon_idx = i
+                        break
+                if codon_val is None or codon_val not in CODON_TABLE:
+                    continue
+                # After the codon cell, expect: amino acid, frequency, count, per_thousand
+                remaining = cell_texts[codon_idx + 1:]
+                if len(remaining) < 2:
+                    continue
+                # Identify the amino acid (1-letter or *)
+                aa = remaining[0]
+                if aa == '*':
+                    aa = 'STOP'
+                # Identify numeric fields: frequency (float), count (int), per_thousand (float)
+                # Use text representation to distinguish integer count from float metrics:
+                #   - Integer text (no decimal point) → likely count
+                #   - Float text with decimal point ≤ 1.0 → likely frequency
+                #   - Float text with decimal point > 1.0 → likely per-thousand
+                freq = 0.0
+                count = 0
+                per_thousand = 0.0
+                for txt in remaining[1:]:
+                    # Skip non-numeric cells (e.g., full AA name "Gly")
+                    if not txt or not txt[0].isdigit():
+                        continue
+                    try:
+                        val = float(txt)
+                    except ValueError:
+                        continue
+                    if '.' not in txt:
+                        # Integer text — treat as count
+                        if count == 0:
+                            count = int(val)
+                    elif val <= 1.0:
+                        if freq == 0.0:
+                            freq = val
+                    else:
+                        if per_thousand == 0.0:
+                            per_thousand = val
+                # Derive frequency from per_thousand if not found directly
+                if freq == 0.0 and per_thousand > 0.0:
+                    freq = per_thousand / 1000.0
+                # Derive frequency from count if neither freq nor per_thousand was found
+                if freq == 0.0 and count > 0:
+                    freq = count / 1000.0
+                # Validate amino acid against CODON_TABLE
+                expected_aa = CODON_TABLE.get(codon_val)
+                if expected_aa:
+                    expected_aa = 'STOP' if expected_aa == '*' else expected_aa
+                if expected_aa and aa != expected_aa:
+                    aa = expected_aa
+                codon_usage[codon_val] = (aa, freq, 0.0, count)
+
+            if len(codon_usage) >= 60:
+                logger.info(
+                    "Kazusa parsing Strategy 0 (BeautifulSoup) succeeded: %d/64 codons",
+                    len(codon_usage),
+                )
+            else:
+                codon_usage.clear()
+        except ImportError:
+            pass  # BS4 not installed, fall through to regex strategies
+        except Exception as exc:
+            logger.debug("BeautifulSoup parsing failed, falling back to regex: %s", exc)
+            codon_usage.clear()
+
+        # If Strategy 0 succeeded, skip regex strategies
+        if len(codon_usage) >= 60:
+            # Final fallback: uniform distribution for missing codons
+            if len(codon_usage) < 64:
+                missing = 64 - len(codon_usage)
+                logger.warning(
+                    "Incomplete Kazusa parsing for %s (%d/64 codons, %d missing), "
+                    "using uniform fallback for missing codons",
+                    organism, len(codon_usage), missing,
+                )
+                for codon in codons:
+                    if codon not in codon_usage:
+                        aa = CODON_TABLE.get(codon, "X")
+                        if aa == "*":
+                            aa = "STOP"
+                        if aa == "STOP":
+                            codon_usage[codon] = (aa, 1.0 / 3.0, 0.0, 0)
+                        else:
+                            codon_usage[codon] = (aa, 1.0 / len(AA_TO_CODONS.get(aa, [codon])), 0.0, 0)
+            return codon_usage
 
         # Strategy 1: Parse structured HTML table rows
         # Kazusa format typically has rows like:
@@ -808,6 +913,10 @@ class OrganismDatabase:
         - Contains codon-like patterns (3-letter nucleotide sequences)
         - Contains numeric data (frequencies/counts)
         - Does not contain error messages from the Kazusa server
+
+        When BeautifulSoup4 is available, uses it to extract clean text content
+        for error-message detection, avoiding false positives from HTML tags,
+        attributes, or embedded JavaScript/CSS.
         """
         if not html or len(html) < 100:
             logger.warning("Kazusa response too short for %s (%d bytes)", organism, len(html) if html else 0)
@@ -818,9 +927,22 @@ class OrganismDatabase:
             "not found", "no data", "error", "invalid species",
             "no entries", "does not exist",
         ]
-        html_lower = html.lower()
+
+        # Use BeautifulSoup for more robust text extraction when available
+        text_to_check: str
+        try:
+            from bs4 import BeautifulSoup  # type: ignore[import-untyped]
+            soup = BeautifulSoup(html, 'html.parser')
+            # Extract visible text only (strips tags, scripts, styles)
+            for script_or_style in soup(['script', 'style']):
+                script_or_style.decompose()
+            text_to_check = soup.get_text(separator=' ', strip=True).lower()
+        except ImportError:
+            # Fallback to raw HTML lowercased (original behavior)
+            text_to_check = html.lower()
+
         for indicator in error_indicators:
-            if indicator in html_lower:
+            if indicator in text_to_check:
                 logger.warning("Kazusa response contains error indicator '%s' for %s", indicator, organism)
                 return False
 

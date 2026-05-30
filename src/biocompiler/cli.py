@@ -165,30 +165,51 @@ def _setup_logging(verbose: bool):
 
 def _read_sequence_file(path: str) -> str:
     """
-    Read a DNA sequence from a file (FASTA or plain text).
+    Read a DNA sequence from a file (FASTA, GenBank, or plain text).
+
+    Uses import_sequence() for auto-detection of file format, supporting
+    FASTA, GenBank, and plain text formats. Previously only handled FASTA
+    by stripping header lines.
 
     Args:
         path: path to the input file
 
     Returns:
-        DNA sequence as a string (no FASTA header, no whitespace)
+        DNA sequence as a string (no header, no whitespace)
 
     Raises:
-        argparse.ArgumentTypeError: if file cannot be read
+        argparse.ArgumentTypeError: if file cannot be read or parsed
     """
     try:
-        text = Path(path).read_text()
-    except (OSError, IOError) as e:
-        raise argparse.ArgumentTypeError(f"Cannot read file '{path}': {e}")
+        from .import_seq import import_sequence
+        result = import_sequence(path)
+        sequence = result["sequence"]
+        if not sequence:
+            raise argparse.ArgumentTypeError(
+                f"No sequence found in file '{path}' (detected format: {result['format']})"
+            )
+        return sequence
+    except argparse.ArgumentTypeError:
+        raise
+    except Exception as e:
+        # Fallback: try the old simple parser for robustness
+        try:
+            text = Path(path).read_text()
+        except (OSError, IOError) as e2:
+            raise argparse.ArgumentTypeError(f"Cannot read file '{path}': {e2}")
 
-    # Handle FASTA format: skip header lines starting with '>'
-    lines = text.strip().splitlines()
-    if lines and lines[0].startswith(">"):
-        lines = lines[1:]
+        # Handle FASTA format: skip header lines starting with '>'
+        lines = text.strip().splitlines()
+        if lines and lines[0].startswith(">"):
+            lines = lines[1:]
 
-    # Remove whitespace and join
-    sequence = "".join(line.strip() for line in lines)
-    return sequence
+        # Remove whitespace and join
+        sequence = "".join(line.strip() for line in lines)
+        if not sequence:
+            raise argparse.ArgumentTypeError(
+                f"Cannot parse sequence from file '{path}': {e}"
+            )
+        return sequence
 
 
 def _read_protein_file(path: str) -> str:

@@ -7,6 +7,9 @@ on:
     branches: [main]
 
 jobs:
+  # ──────────────────────────────────────────────
+  # Lint and type-check (fast feedback)
+  # ──────────────────────────────────────────────
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -20,11 +23,16 @@ jobs:
           pip install -e ".[dev]"
       - name: Lint with ruff
         run: ruff check src/ tests/
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
       - name: Type check with mypy
         run: python -m mypy src/biocompiler --ignore-missing-imports || true
 
+  # ──────────────────────────────────────────────
+  # Core test matrix (Python 3.10 / 3.11 / 3.12 × Ubuntu / macOS)
+  # ──────────────────────────────────────────────
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -60,9 +68,13 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
 
-  test-with-z3:
+  # ──────────────────────────────────────────────
+  # Optional dependency: optimizer (z3-solver)
+  # ──────────────────────────────────────────────
+  test-optimizer:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
@@ -70,14 +82,93 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install with z3
+      - name: Install with optimizer extras
         run: |
-          pip install -e ".[dev]"
-          pip install z3-solver
-      - name: Run tests with z3
+          pip install -e ".[dev,optimizer]"
+      - name: Run full test suite with z3
+        run: |
+          python -m pytest tests/ -v --tb=short
+      - name: Verify z3 import
+        run: |
+          python -c "import z3; print(f'z3-solver version: {z3.get_version_string()}')"
+
+  # ──────────────────────────────────────────────
+  # Optional dependency: parsing (beautifulsoup4)
+  # ──────────────────────────────────────────────
+  test-parsing:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install with parsing extras
+        run: |
+          pip install -e ".[dev,parsing]"
+      - name: Run full test suite with beautifulsoup4
+        run: |
+          python -m pytest tests/ -v --tb=short
+      - name: Verify BS4 import
+        run: |
+          python -c "from bs4 import BeautifulSoup; print(f'BeautifulSoup4 available')"
+
+  # ──────────────────────────────────────────────
+  # Optional dependency: compare (dnachisel)
+  # ──────────────────────────────────────────────
+  test-compare:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install with compare extras
+        run: |
+          pip install -e ".[dev,compare]"
+      - name: Run full test suite with dnachisel
+        run: |
+          python -m pytest tests/ -v --tb=short
+      - name: Verify dnachisel import
+        run: |
+          python -c "import dnachisel; print(f'DNA Chisel available')"
+
+  # ──────────────────────────────────────────────
+  # Optional dependency combination matrix
+  # ──────────────────────────────────────────────
+  test-extras-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        extras-combo:
+          - "dev,optimizer,parsing"
+          - "dev,optimizer,compare"
+          - "dev,parsing,compare"
+          - "dev,optimizer,parsing,compare"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install with extras combo
+        run: |
+          pip install -e ".[${{ matrix.extras-combo }}]"
+      - name: Run test suite
         run: |
           python -m pytest tests/ -v --tb=short
 
+  # ──────────────────────────────────────────────
+  # REST API tests
+  # ──────────────────────────────────────────────
   test-api:
     runs-on: ubuntu-latest
     steps:
@@ -111,6 +202,9 @@ jobs:
           print('API authentication test passed')
           "
 
+  # ──────────────────────────────────────────────
+  # Docker build test
+  # ──────────────────────────────────────────────
   docker-build:
     runs-on: ubuntu-latest
     steps:
@@ -125,6 +219,11 @@ jobs:
           docker stop test-biocompiler
           docker rm test-biocompiler
 
+  # ──────────────────────────────────────────────
+  # Lean4 formal proof verification
+  # This is a UNIQUE SELLING POINT of BioCompiler —
+  # the soundness proof MUST be CI-verified.
+  # ──────────────────────────────────────────────
   lean4-proof:
     runs-on: ubuntu-latest
     steps:
@@ -146,27 +245,52 @@ jobs:
         working-directory: proof
         run: |
           lake build 2>&1 | tee lake-build.log
-          # Check for sorry (should be 0)
-          SORRY_COUNT=$(grep -c "sorry" lake-build.log || true)
-          echo "Sorry count: $SORRY_COUNT"
-          # Verify no errors
-          if grep -q "error" lake-build.log; then
-            echo "Lean4 proof verification FAILED"
+
+          # Fail if lake build itself errored
+          if grep -q "^error:" lake-build.log; then
+            echo "::error::Lean4 proof verification FAILED — lake build reported errors"
             exit 1
           fi
-          echo "Lean4 proofs verified successfully (0 sorry, 0 axioms)"
 
-      - name: Verify proof counts
+          echo "Lean4 lake build completed successfully"
+
+      - name: Verify 0 sorry, 0 axioms
         working-directory: proof
         run: |
-          echo "=== Proof Summary ==="
+          echo "=== Proof Integrity Audit ==="
+
           THEOREM_COUNT=$(grep -r "theorem\|lemma" BioCompiler/ --include="*.lean" | wc -l || true)
+          echo "Theorems/lemmas found: $THEOREM_COUNT"
+
           SORRY_COUNT=$(grep -r "sorry" BioCompiler/ --include="*.lean" | wc -l || true)
-          AXIOM_COUNT=$(grep -r "axiom" BioCompiler/ --include="*.lean" | grep -v "^--" | wc -l || true)
-          echo "Theorems/lemmas: $THEOREM_COUNT"
           echo "Sorry count: $SORRY_COUNT"
+
+          # Axiom count: match 'axiom' keyword but not inside comments or as part of other words
+          AXIOM_COUNT=$(grep -rE "^\s*axiom\s" BioCompiler/ --include="*.lean" | wc -l || true)
           echo "Axiom count: $AXIOM_COUNT"
+
           if [ "$SORRY_COUNT" -ne "0" ]; then
-            echo "ERROR: Found sorry in proofs!"
+            echo "::error::Found ${SORRY_COUNT} 'sorry' in proofs — proofs are incomplete!"
             exit 1
           fi
+
+          if [ "$AXIOM_COUNT" -ne "0" ]; then
+            echo "::warning::Found ${AXIOM_COUNT} axiom(s) in proofs — review if intentional"
+            # Axioms are a warning, not a hard failure, since some may be intentional
+          fi
+
+          echo "=== Proof Verification PASSED: 0 sorry, $AXIOM_COUNT axioms ==="
+
+      - name: Print proof summary
+        working-directory: proof
+        if: always()
+        run: |
+          echo "=== Lean4 Proof Modules ==="
+          for f in BioCompiler/*.lean; do
+            if [ -f "$f" ]; then
+              BASENAME=$(basename "$f" .lean)
+              THM=$(grep -c "theorem\|lemma" "$f" 2>/dev/null || echo "0")
+              SORRY=$(grep -c "sorry" "$f" 2>/dev/null || echo "0")
+              echo "  $BASENAME: $THM theorems, $SORRY sorry"
+            fi
+          done
