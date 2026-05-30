@@ -16,10 +16,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from .types import Certificate, TypeCheckResult, Verdict, SpliceIsoform
+from .types import Certificate, TypeCheckResult, Verdict, SpliceIsoform, combined_verdict
 from .scanner import gc_content
 from .translation import translate
 from .constants import CODON_TABLE, RESTRICTION_ENZYMES
+from . import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -204,12 +205,12 @@ def export_genbank(
     # ─── COMMENT ────────────────────────────────────────────────────
     comments = []
     comments.append("Designed and verified by BioCompiler — Machine-Verified Gene Design")
-    comments.append(f"Version: 2.2.0")
+    comments.append(f"Version: {__version__}")
     comments.append(f"GC content: {gc:.4f}")
     comments.append(f"Protein length: {len(protein)} aa" if protein else "")
 
     if type_results:
-        overall = combined_verdict_from_results(type_results)
+        overall = combined_verdict([r.verdict for r in type_results])
         comments.append(f"Type-check verdict: {overall.value}")
         for r in type_results:
             symbol = {"PASS": "+", "FAIL": "X", "UNCERTAIN": "?"}[r.verdict.value]
@@ -376,26 +377,11 @@ def _get_taxonomy(organism: str) -> str:
         "Homo_sapiens": "Eukaryota; Metazoa; Chordata; Craniata; Vertebrata; Mammalia; Eutheria; Euarchontoglires; Primates; Haplorrhini; Catarrhini; Hominidae; Homo.",
         "Mus_musculus": "Eukaryota; Metazoa; Chordata; Craniata; Vertebrata; Mammalia; Eutheria; Euarchontoglires; Rodentia; Sciurognathi; Muroidea; Muridae; Murinae; Mus.",
         "Escherichia_coli": "Bacteria; Proteobacteria; Gammaproteobacteria; Enterobacterales; Enterobacteriaceae; Escherichia.",
+        "E_coli": "Bacteria; Proteobacteria; Gammaproteobacteria; Enterobacterales; Enterobacteriaceae; Escherichia.",
         "CHO_K1": "Eukaryota; Metazoa; Chordata; Craniata; Vertebrata; Mammalia; Eutheria; Euarchontoglires; Rodentia; Cricetidae; Cricetulus.",
         "Saccharomyces_cerevisiae": "Eukaryota; Fungi; Dikarya; Ascomycota; Saccharomycotina; Saccharomycetes; Saccharomycetales; Saccharomycetaceae; Saccharomyces.",
     }
     return taxonomies.get(organism, "Eukaryota; Metazoa; Unclassified.")
-
-
-def combined_verdict_from_results(results: list[TypeCheckResult]) -> Verdict:
-    """Compute combined verdict from a list of TypeCheckResults."""
-    if not results:
-        return Verdict.UNCERTAIN
-    verdicts = [r.verdict for r in results]
-    result = verdicts[0]
-    for v in verdicts[1:]:
-        if result == Verdict.FAIL or v == Verdict.FAIL:
-            result = Verdict.FAIL
-        elif result == Verdict.UNCERTAIN or v == Verdict.UNCERTAIN:
-            result = Verdict.UNCERTAIN
-        else:
-            result = Verdict.PASS
-    return result
 
 
 def _reconstruct_type_results(certificate: Certificate) -> list[TypeCheckResult]:

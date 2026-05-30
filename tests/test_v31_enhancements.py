@@ -90,14 +90,12 @@ class TestTissueData:
         assert "HEK293T" in data["weights"]
 
     def test_gtex_weights_differ_from_hardcoded(self):
-        """Verify GTEx weights are slightly different from legacy hardcoded values."""
-        from biocompiler.tissue_data import get_tissue_weights
-        from biocompiler.splicing import TISSUE_WEIGHTS
+        """Verify GTEx weights are derived from the tissue_data module (single source of truth)."""
+        from biocompiler.tissue_data import get_tissue_weights, GTEX_TISSUE_WEIGHTS
         gtex = get_tissue_weights("HEK293T")
-        legacy = TISSUE_WEIGHTS["HEK293T"]
-        # GTEx weights should be GTEx-derived, not identical to hardcoded
-        # (they may happen to match, but the module should work regardless)
-        assert gtex["canonical"] == legacy["canonical"]  # always 1.0
+        source = GTEX_TISSUE_WEIGHTS["HEK293T"]
+        # GTEx weights should match the single source of truth
+        assert gtex["canonical"] == source["canonical"]  # always 1.0
         # Both should be in a reasonable range
         assert 0.05 < gtex["cryptic"] < 0.2
 

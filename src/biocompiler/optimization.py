@@ -11,7 +11,6 @@ Production-grade optimizer with:
 
 import logging
 import math
-from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass, field
 
 from .constants import (
@@ -34,13 +33,13 @@ class OptimizationResult:
     protein: str
     cai: float
     gc_content: float
-    satisfied_predicates: List[str]
-    failed_predicates: List[str]
-    unsat_core: Optional[List[str]] = None
+    satisfied_predicates: list[str]
+    failed_predicates: list[str]
+    unsat_core: list[str] | None = None
     fallback_used: bool = False
 
 
-def protein_to_aa_list(protein: str) -> List[str]:
+def protein_to_aa_list(protein: str) -> list[str]:
     """Convert protein string to list of amino acid codes. Raises InvalidProteinError for bad input."""
     protein = protein.upper().strip()
     valid_aas = set(AA_TO_CODONS.keys())
@@ -55,9 +54,9 @@ def _greedy_optimize(
     organism: str = "Homo_sapiens",
     gc_lo: float = 0.30,
     gc_hi: float = 0.70,
-    restriction_sites: Optional[List[str]] = None,
+    restriction_sites: list[str] | None = None,
     cryptic_splice_threshold: float = 3.0,
-) -> Tuple[str, List[str]]:
+) -> tuple[str, list[str]]:
     """
     Greedy codon optimization: choose highest-CAI codon, then fix violations.
 
@@ -69,9 +68,9 @@ def _greedy_optimize(
         raise UnsupportedOrganismError(organism, SUPPORTED_ORGANISMS)
     aas = protein_to_aa_list(protein)
     restriction_sites = restriction_sites or list(RESTRICTION_ENZYMES.values())
-    warnings: List[str] = []
+    warnings: list[str] = []
 
-    sorted_codons: Dict[str, List[str]] = {}
+    sorted_codons: dict[str, list[str]] = {}
     for aa in set(aas):
         codons = AA_TO_CODONS[aa]
         codons_sorted = sorted(codons, key=lambda c: usage.get(c, 0.0), reverse=True)
@@ -224,7 +223,7 @@ def optimize_sequence(
     organism: str = "Homo_sapiens",
     gc_lo: float = 0.30,
     gc_hi: float = 0.70,
-    restriction_sites: Optional[List[str]] = None,
+    restriction_sites: list[str] | None = None,
     cai_threshold: float = 0.2,
     max_amino_acids_for_z3: int = 80,
     z3_timeout_ms: int = 30000,
@@ -247,7 +246,7 @@ def optimize_sequence(
 
     restriction_sites = restriction_sites or list(RESTRICTION_ENZYMES.values())
     fallback_used = False
-    all_warnings: List[str] = []
+    all_warnings: list[str] = []
 
     if n_aa > max_amino_acids_for_z3:
         sequence, warnings = _greedy_optimize(
@@ -352,9 +351,9 @@ def optimize_sequence(
 
 def _check_predicates(
     sequence: str, gc_lo: float, gc_hi: float,
-    restriction_sites: List[str], cai_threshold: float, organism: str,
+    restriction_sites: list[str], cai_threshold: float, organism: str,
     cryptic_splice_threshold: float = 3.0,
-) -> Tuple[List[str], List[str]]:
+) -> tuple[list[str], list[str]]:
     """Check all type predicates against the optimized sequence."""
     satisfied, failed = [], []
 

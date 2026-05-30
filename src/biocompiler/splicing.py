@@ -20,18 +20,8 @@ logger = logging.getLogger(__name__)
 
 # Tissue-specific splice site score multipliers
 # These weight the MaxEntScan scores based on cell type.
-# NOW DERIVED FROM GTEx data via tissue_data module.
-# The hardcoded values here are the legacy defaults; the actual
-# weights are loaded dynamically from tissue_data.get_tissue_weights().
+# DERIVED FROM GTEx data via tissue_data module.
 from .tissue_data import get_tissue_weights as _get_gtex_weights
-
-# Legacy hardcoded weights (kept for backward compatibility)
-TISSUE_WEIGHTS: dict[str, dict[str, float]] = {
-    "HEK293T": {"canonical": 1.0, "exon_skip": 0.3, "intron_retention": 0.15, "alt_site": 0.4, "cryptic": 0.1},
-    "HeLa": {"canonical": 1.0, "exon_skip": 0.35, "intron_retention": 0.2, "alt_site": 0.4, "cryptic": 0.12},
-    "HepG2": {"canonical": 1.0, "exon_skip": 0.25, "intron_retention": 0.18, "alt_site": 0.35, "cryptic": 0.08},
-    "default": {"canonical": 1.0, "exon_skip": 0.3, "intron_retention": 0.15, "alt_site": 0.4, "cryptic": 0.1},
-}
 
 
 def _get_tissue_weights(cellular_context: str) -> dict[str, float]:
@@ -39,8 +29,9 @@ def _get_tissue_weights(cellular_context: str) -> dict[str, float]:
     try:
         return _get_gtex_weights(cellular_context)
     except Exception:
-        # Fallback to legacy hardcoded weights
-        return TISSUE_WEIGHTS.get(cellular_context, TISSUE_WEIGHTS["default"])
+        # Fallback to default weights from tissue_data module
+        from .tissue_data import GTEX_TISSUE_WEIGHTS
+        return GTEX_TISSUE_WEIGHTS.get(cellular_context, GTEX_TISSUE_WEIGHTS["default"])
 
 
 def compute_splice_isoforms(
@@ -87,7 +78,14 @@ def compute_splice_isoforms(
         List of SpliceIsoform objects, sorted by score (canonical first).
     """
     seq = pre_mrna.upper()
-    tokens = scan_sequence(seq, use_maxentscan=True)
+    # Use permissive thresholds for scanning — we want ALL potential sites
+    # for isoform enumeration. Scoring/filtering happens at the isoform level.
+    tokens = scan_sequence(
+        seq,
+        use_maxentscan=True,
+        donor_threshold=0.0,
+        acceptor_threshold=0.0,
+    )
 
     donors = sorted(
         [t for t in tokens if t.element_type == "splice_donor"],

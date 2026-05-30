@@ -41,3 +41,11 @@ certificates/*.json
 
 # pytest
 .pytest_cache/
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# SQLite databases
+*.db

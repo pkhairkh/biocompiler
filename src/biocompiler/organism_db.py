@@ -70,6 +70,7 @@ KAZUSA_ORGANISM_IDS: dict[str, str] = {
     "Homo_sapiens": "9606",        # NCBI TaxID
     "Mus_musculus": "10090",
     "Escherichia_coli": "511145",  # K-12 MG1655
+    "E_coli": "511145",            # Alias for Escherichia_coli
     "Saccharomyces_cerevisiae": "4932",
     "CHO_K1": "10129",            # Cricetulus griseus
     "Drosophila_melanogaster": "7227",
@@ -119,6 +120,18 @@ class OrganismDatabase:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    def _connection(self):
+        """Context manager for database connections — auto-commits and closes."""
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _ensure_schema(self):
         """Create database tables if they don't exist, with schema versioning."""
@@ -457,7 +470,7 @@ class OrganismDatabase:
             try:
                 req = urllib.request.Request(
                     url,
-                    headers={"User-Agent": f"BioCompiler/{__import__('biocompiler').__version__}"},
+                    headers={"User-Agent": "BioCompiler/4.0.0"},
                 )
                 with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
                     html = response.read().decode("utf-8", errors="replace")
@@ -926,7 +939,7 @@ class OrganismDatabase:
         try:
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": f"BioCompiler/{__import__('biocompiler').__version__}"},
+                headers={"User-Agent": "BioCompiler/4.0.0"},
             )
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
                 html = response.read().decode("utf-8", errors="replace")

@@ -38,8 +38,9 @@ KOZAK_POSITION_WEIGHTS: dict[int, dict[str, float]] = {
 }
 
 # Minimum MaxEntScan score for a splice site to be considered functional
-SPLICE_DONOR_MIN_SCORE = 0.0
-SPLICE_ACCEPTOR_MIN_SCORE = 0.0
+# Based on Yeo & Burge (2004): scores >3.0 are likely functional splice sites
+SPLICE_DONOR_MIN_SCORE = 3.0
+SPLICE_ACCEPTOR_MIN_SCORE = 3.0
 
 
 def _iupac_match(seq: str, pattern: str) -> bool:

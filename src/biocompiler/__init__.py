@@ -9,7 +9,10 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "3.2.0"
+__version__ = "4.0.0"
+
+import logging
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 from .types import (
     Verdict,

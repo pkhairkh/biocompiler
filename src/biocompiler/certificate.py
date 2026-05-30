@@ -18,7 +18,11 @@ from .exceptions import CertificateGenerationError, CertificateVerificationError
 
 logger = logging.getLogger(__name__)
 
-VERSION = "2.2.0"
+try:
+    from . import __version__ as _PKG_VERSION
+    VERSION = _PKG_VERSION
+except ImportError:
+    VERSION = "4.0.0"
 
 # Required keys in a certificate dict for verification
 _CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}

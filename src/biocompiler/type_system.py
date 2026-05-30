@@ -34,16 +34,18 @@ class PredicateRegistry:
     - name: unique identifier
     - evaluator: callable that returns TypeCheckResult
     - verifier: callable that re-evaluates from certificate data
+    - param_keys: list of parameter keys needed to invoke the evaluator
     """
 
     def __init__(self):
         self._predicates: dict[str, dict] = {}
 
-    def register(self, name: str, evaluator, verifier=None):
-        """Register a predicate with its evaluator and optional verifier."""
+    def register(self, name: str, evaluator, verifier=None, param_keys: list[str] | None = None):
+        """Register a predicate with its evaluator, optional verifier, and parameter keys."""
         self._predicates[name] = {
             "evaluator": evaluator,
             "verifier": verifier or evaluator,
+            "param_keys": param_keys or [],
         }
 
     def evaluate(self, name: str, **kwargs) -> TypeCheckResult:
@@ -404,14 +406,22 @@ def evaluate_no_cpg_island(seq: str, window_size: int = 200, threshold: float = 
 # Register all built-in predicates
 # ==============================================================================
 
-registry.register("NoCrypticSplice", evaluate_no_cryptic_splice)
-registry.register("SpliceCorrect", evaluate_splice_correct)
-registry.register("GCInRange", evaluate_gc_in_range)
-registry.register("CodonAdapted", evaluate_codon_adapted)
-registry.register("NoRestrictionSite", evaluate_no_restriction_site)
-registry.register("InFrame", evaluate_in_frame)
-registry.register("NoInstabilityMotif", evaluate_no_instability_motif)
-registry.register("NoCpGIsland", evaluate_no_cpg_island)
+registry.register("NoCrypticSplice", evaluate_no_cryptic_splice,
+                  param_keys=["seq", "known_exon_boundaries", "cryptic_threshold"])
+registry.register("SpliceCorrect", evaluate_splice_correct,
+                  param_keys=["seq", "known_exon_boundaries", "cellular_context"])
+registry.register("GCInRange", evaluate_gc_in_range,
+                  param_keys=["seq", "gc_lo", "gc_hi"])
+registry.register("CodonAdapted", evaluate_codon_adapted,
+                  param_keys=["seq", "organism", "threshold"])
+registry.register("NoRestrictionSite", evaluate_no_restriction_site,
+                  param_keys=["seq", "enzyme_set"])
+registry.register("InFrame", evaluate_in_frame,
+                  param_keys=["seq", "exon_boundaries"])
+registry.register("NoInstabilityMotif", evaluate_no_instability_motif,
+                  param_keys=["seq"])
+registry.register("NoCpGIsland", evaluate_no_cpg_island,
+                  param_keys=["seq"])
 
 
 def evaluate_all_predicates(

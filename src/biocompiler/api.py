@@ -47,7 +47,7 @@ from .constants import RESTRICTION_ENZYMES
 from .organisms import SUPPORTED_ORGANISMS, CODON_USAGE_TABLES
 from .exceptions import (
     BioCompilerError, InvalidSequenceError, CertificateGenerationError,
-    UnsupportedOrganismError, InvalidProteinError,
+    CertificateVerificationError, UnsupportedOrganismError, InvalidProteinError,
 )
 
 logger = logging.getLogger(__name__)
@@ -445,8 +445,11 @@ def create_app() -> FastAPI:
         try:
             status, failures = verify_certificate(input_data.certificate)
             return VerifyResponse(status=status, failure_reasons=failures)
-        except Exception as e:
+        except (CertificateVerificationError, ValueError, KeyError) as e:
             raise HTTPException(status_code=400, detail=f"Verification error: {e}")
+        except Exception as e:
+            logger.exception("Unexpected error during certificate verification")
+            raise HTTPException(status_code=500, detail="Internal verification error")
 
     @app.post("/scan", response_model=ScanResponse)
     async def scan(input_data: ScanInput, client_id: str = Depends(verify_api_key)):
