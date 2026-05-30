@@ -22,6 +22,7 @@ import argparse
 import json
 import sys
 import logging
+import time
 from pathlib import Path
 from . import __version__
 from .scanner import scan_sequence, gc_content, validate_dna_sequence
@@ -34,6 +35,120 @@ from .constants import RESTRICTION_ENZYMES
 from .exceptions import BioCompilerError, CertificateGenerationError, InvalidSequenceError
 
 logger = logging.getLogger("biocompiler")
+
+# ==============================================================================
+# ANSI Color Support
+# ==============================================================================
+
+# ANSI escape codes
+_ANSI_RESET = "\033[0m"
+_ANSI_BOLD = "\033[1m"
+_ANSI_RED = "\033[31m"
+_ANSI_GREEN = "\033[32m"
+_ANSI_YELLOW = "\033[33m"
+_ANSI_CYAN = "\033[36m"
+_ANSI_BOLD_RED = "\033[1;31m"
+_ANSI_BOLD_GREEN = "\033[1;32m"
+_ANSI_BOLD_CYAN = "\033[1;36m"
+
+
+def _use_color():
+    """Check whether ANSI color codes should be emitted."""
+    return sys.stdout.isatty()
+
+
+def colorize(text: str, *codes: str) -> str:
+    """Wrap *text* in ANSI escape codes if stdout is a TTY."""
+    if not _use_color():
+        return text
+    return "".join(codes) + text + _ANSI_RESET
+
+
+def _verdict_symbol(verdict_value: str) -> str:
+    """Return a colored verdict symbol."""
+    if verdict_value == "PASS":
+        return colorize("PASS", _ANSI_BOLD_GREEN)
+    elif verdict_value == "FAIL":
+        return colorize("FAIL", _ANSI_BOLD_RED)
+    else:  # UNCERTAIN
+        return colorize("UNCERTAIN", _ANSI_YELLOW)
+
+
+def _section_header(text: str) -> str:
+    """Return a colored section header."""
+    return colorize(text, _ANSI_BOLD_CYAN)
+
+
+def _error_msg(text: str) -> str:
+    """Return a colored error message."""
+    return colorize(text, _ANSI_RED)
+
+
+def _success_msg(text: str) -> str:
+    """Return a colored success message."""
+    return colorize(text, _ANSI_GREEN)
+
+
+# ==============================================================================
+# Progress Indicators (written to stderr)
+# ==============================================================================
+
+class _ProgressPhase:
+    """Context manager that prints a progress label to stderr and clears it on exit."""
+
+    def __init__(self, label: str, verbose: bool = False):
+        self.label = label
+        self.verbose = verbose
+        self._start: float = 0.0
+
+    def __enter__(self):
+        self._start = time.perf_counter()
+        print(f"{self.label}", end="", file=sys.stderr, flush=True)
+        return self
+
+    def __exit__(self, *exc):
+        elapsed = time.perf_counter() - self._start
+        if self.verbose:
+            print(f" done ({elapsed:.3f}s)", file=sys.stderr, flush=True)
+        else:
+            print(f" done", file=sys.stderr, flush=True)
+        return False
+
+
+def _progress_dot_loop(stop_event, interval: float = 1.0):
+    """Print dots to stderr at *interval* seconds until *stop_event* is set."""
+    import threading
+    def _dots():
+        while not stop_event.is_set():
+            stop_event.wait(interval)
+            if not stop_event.is_set():
+                print(".", end="", file=sys.stderr, flush=True)
+    t = threading.Thread(target=_dots, daemon=True)
+    t.start()
+    return t
+
+
+# ==============================================================================
+# Summary Box
+# ==============================================================================
+
+def _summary_box(label: str, value: str) -> str:
+    """Build a Unicode box around a key–value summary line.
+
+    Example::
+
+        ┌─────────────────────────────┐
+        │ Overall Verdict: PASS       │
+        └─────────────────────────────┘
+    """
+    content = f" {label}: {value} "
+    width = max(len(content), 31)  # minimum visual width
+    # Pad content to fill the box
+    content = content.ljust(width)
+    top = "┌" + "─" * width + "┐"
+    mid = "│" + content + "│"
+    bot = "└" + "─" * width + "┘"
+    return f"{top}\n{mid}\n{bot}"
 
 # Maximum sequence length to prevent denial-of-service
 MAX_SEQUENCE_LENGTH = 10_000_000  # 10 Mbp
@@ -178,6 +293,7 @@ def _get_sequence(args, field_name: str = "sequence") -> str:
 def cmd_check(args):
     """Run type checking on a DNA sequence."""
     _setup_logging(args.verbose)
+    verbose = args.verbose
 
     # Get sequence from file or argument
     if args.input_file:
@@ -185,7 +301,7 @@ def cmd_check(args):
     elif args.sequence:
         seq = args.sequence.upper()
     else:
-        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        print(_error_msg("ERROR: Must provide --sequence or --input-file"), file=sys.stderr)
         sys.exit(1)
 
     _validate_sequence_length(seq, args.max_length)
@@ -194,57 +310,82 @@ def cmd_check(args):
     try:
         seq = validate_dna_sequence(seq)
     except InvalidSequenceError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(_error_msg(f"ERROR: {e}"), file=sys.stderr)
         sys.exit(1)
 
     # Parse and validate exon boundaries
     exon_boundaries = _parse_exons(args.exons, len(seq))
 
-    print(f"Sequence length: {len(seq)} nt")
-    print(f"GC content: {gc_content(seq):.1%}")
-    print(f"Exon boundaries: {exon_boundaries}")
+    print(_section_header("Sequence Info"))
+    print(f"  Sequence length: {len(seq)} nt")
+    print(f"  GC content: {gc_content(seq):.1%}")
+    print(f"  Exon boundaries: {exon_boundaries}")
     print()
 
     # Validate enzyme names
     enzymes = _validate_enzyme_names(args.enzymes) if args.enzymes else None
 
-    # Scan
-    tokens = scan_sequence(seq, enzymes)
-    print(f"Scanner found {len(tokens)} tokens")
+    # Scan phase
+    with _ProgressPhase("Scanning", verbose=verbose):
+        t0 = time.perf_counter()
+        tokens = scan_sequence(seq, enzymes)
+        scan_time = time.perf_counter() - t0
+
+    print(_section_header("Scan Results"))
+    print(f"  Scanner found {len(tokens)} tokens")
     donor_count = sum(1 for t in tokens if t.element_type == "splice_donor")
     acceptor_count = sum(1 for t in tokens if t.element_type == "splice_acceptor")
     print(f"  Donor sites: {donor_count}")
     print(f"  Acceptor sites: {acceptor_count}")
+    if verbose:
+        print(f"  [timing] scan: {scan_time:.3f}s")
     print()
 
-    # Translate
-    if exon_boundaries:
-        coding_seq = "".join(seq[start:end] for start, end in exon_boundaries)
-    else:
-        coding_seq = seq
-    protein = translate(coding_seq)
-    print(f"Protein: {protein[:50]}{'...' if len(protein) > 50 else ''} ({len(protein)} aa)")
+    # Translate phase
+    with _ProgressPhase("Type-checking", verbose=verbose):
+        t0 = time.perf_counter()
+        if exon_boundaries:
+            coding_seq = "".join(seq[start:end] for start, end in exon_boundaries)
+        else:
+            coding_seq = seq
+        protein = translate(coding_seq)
+        translate_time = time.perf_counter() - t0
+
+    print(_section_header("Translation"))
+    print(f"  Protein: {protein[:50]}{'...' if len(protein) > 50 else ''} ({len(protein)} aa)")
+    if verbose:
+        print(f"  [timing] translate: {translate_time:.3f}s")
     print()
 
-    # Type check
-    results = evaluate_all_predicates(
-        seq=seq,
-        known_exon_boundaries=exon_boundaries or [(0, len(seq))],
-        organism=args.organism,
-        gc_lo=args.gc_lo,
-        gc_hi=args.gc_hi,
-        cai_threshold=args.cai_threshold,
-    )
+    # Type check phase
+    with _ProgressPhase("Evaluating predicates", verbose=verbose):
+        t0 = time.perf_counter()
+        results = evaluate_all_predicates(
+            seq=seq,
+            known_exon_boundaries=exon_boundaries or [(0, len(seq))],
+            organism=args.organism,
+            gc_lo=args.gc_lo,
+            gc_hi=args.gc_hi,
+            cai_threshold=args.cai_threshold,
+        )
+        eval_time = time.perf_counter() - t0
 
+    print(_section_header("Type-Check Results"))
     for r in results:
-        symbol = {"PASS": "PASS", "FAIL": "FAIL", "UNCERTAIN": "UNCERTAIN"}[r.verdict.value]
+        symbol = _verdict_symbol(r.verdict.value)
         print(f"  [{symbol}] {r.predicate}")
         if r.violation:
             print(f"         {r.violation}")
+    if verbose:
+        print(f"  [timing] predicates: {eval_time:.3f}s")
     print()
 
     overall = combined_verdict([r.verdict for r in results])
-    print(f"Overall verdict: {overall.value}")
+
+    # Summary box
+    verdict_display = _verdict_symbol(overall.value)
+    box = _summary_box("Overall Verdict", verdict_display)
+    print(box)
 
     if overall == Verdict.PASS and args.output:
         try:
@@ -263,14 +404,15 @@ def cmd_check(args):
             )
             with open(args.output, "w") as f:
                 json.dump(cert.to_dict(), f, indent=2)
-            print(f"Certificate saved to: {args.output}")
+            print(_success_msg(f"Certificate saved to: {args.output}"))
         except CertificateGenerationError as e:
-            print(f"Certificate generation failed: {e}")
+            print(_error_msg(f"Certificate generation failed: {e}"))
 
 
 def cmd_optimize(args):
     """Optimize a DNA sequence for a target protein."""
     _setup_logging(args.verbose)
+    verbose = args.verbose
 
     # Get protein from file or argument
     if args.protein_file:
@@ -278,31 +420,53 @@ def cmd_optimize(args):
     elif args.protein:
         protein = args.protein.upper()
     else:
-        print("ERROR: Must provide --protein or --protein-file", file=sys.stderr)
+        print(_error_msg("ERROR: Must provide --protein or --protein-file"), file=sys.stderr)
         sys.exit(1)
 
     # Validate enzyme names if provided
     enzymes = _validate_enzyme_names(args.enzymes) if args.enzymes else None
 
-    print(f"Optimizing for protein ({len(protein)} aa), organism={args.organism}")
+    print(_section_header("Optimization"))
+    print(f"  Optimizing for protein ({len(protein)} aa), organism={args.organism}")
 
-    result = optimize_sequence(
-        target_protein=protein,
-        organism=args.organism,
-        gc_lo=args.gc_lo,
-        gc_hi=args.gc_hi,
-        cai_threshold=args.cai_threshold,
-        restriction_sites=enzymes,
-        cryptic_splice_threshold=args.cryptic_splice_threshold,
-    )
+    # Progress dots while optimizing
+    import threading
+    stop = threading.Event()
+    dot_thread = _progress_dot_loop(stop, interval=1.0)
+    t0 = time.perf_counter()
 
-    print(f"Sequence: {result.sequence[:60]}{'...' if len(result.sequence) > 60 else ''}")
-    print(f"Length: {len(result.sequence)} bp")
-    print(f"CAI: {result.cai:.4f}")
-    print(f"GC: {result.gc_content:.1%}")
-    print(f"Satisfied predicates: {result.satisfied_predicates}")
-    print(f"Failed predicates: {result.failed_predicates}")
-    print(f"Fallback solver used: {result.fallback_used}")
+    try:
+        result = optimize_sequence(
+            target_protein=protein,
+            organism=args.organism,
+            gc_lo=args.gc_lo,
+            gc_hi=args.gc_hi,
+            cai_threshold=args.cai_threshold,
+            restriction_sites=enzymes,
+            cryptic_splice_threshold=args.cryptic_splice_threshold,
+        )
+    finally:
+        stop.set()
+        dot_thread.join(timeout=2)
+
+    opt_time = time.perf_counter() - t0
+    print("", file=sys.stderr)  # newline after dots
+
+    print(f"  Sequence: {result.sequence[:60]}{'...' if len(result.sequence) > 60 else ''}")
+    print(f"  Length: {len(result.sequence)} bp")
+    print(f"  CAI: {result.cai:.4f}")
+    print(f"  GC: {result.gc_content:.1%}")
+    print(f"  Satisfied predicates: {result.satisfied_predicates}")
+    print(f"  Failed predicates: {result.failed_predicates}")
+    print(f"  Fallback solver used: {result.fallback_used}")
+    if verbose:
+        print(f"  [timing] optimization: {opt_time:.3f}s")
+    print()
+
+    if result.failed_predicates == 0:
+        print(_success_msg("Optimization completed — all predicates satisfied."))
+    else:
+        print(_error_msg(f"Optimization completed with {result.failed_predicates} failed predicate(s)."))
 
     if args.output:
         with open(args.output, "w") as f:
@@ -314,7 +478,7 @@ def cmd_optimize(args):
                 "satisfied": result.satisfied_predicates,
                 "failed": result.failed_predicates,
             }, f, indent=2)
-        print(f"Result saved to: {args.output}")
+        print(_success_msg(f"Result saved to: {args.output}"))
 
 
 def cmd_verify(args):
@@ -324,12 +488,15 @@ def cmd_verify(args):
         cert_dict = json.load(f)
 
     status, failures = verify_certificate(cert_dict)
-    print(f"Verification status: {status}")
+    if status == "VERIFIED":
+        print(_success_msg(f"Verification status: {status}"))
+    else:
+        print(_error_msg(f"Verification status: {status}"))
     if failures:
         for f in failures:
-            print(f"  FAILURE: {f}")
+            print(f"  {_error_msg('FAILURE:')} {f}")
     else:
-        print("  All checks passed.")
+        print(_success_msg("  All checks passed."))
 
 
 def cmd_scan(args):
@@ -342,31 +509,33 @@ def cmd_scan(args):
     elif args.sequence:
         seq = args.sequence.upper()
     else:
-        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        print(_error_msg("ERROR: Must provide --sequence or --input-file"), file=sys.stderr)
         sys.exit(1)
 
     # Validate DNA
     try:
         seq = validate_dna_sequence(seq)
     except InvalidSequenceError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(_error_msg(f"ERROR: {e}"), file=sys.stderr)
         sys.exit(1)
 
     enzymes = _validate_enzyme_names(args.enzymes) if args.enzymes else None
-    tokens = scan_sequence(seq, enzymes)
+    with _ProgressPhase("Scanning", verbose=args.verbose):
+        tokens = scan_sequence(seq, enzymes)
 
-    print(f"Sequence length: {len(seq)} nt")
-    print(f"Tokens found: {len(tokens)}")
+    print(_section_header("Scan Results"))
+    print(f"  Sequence length: {len(seq)} nt")
+    print(f"  Tokens found: {len(tokens)}")
     for t in tokens:
         frame_str = f" frame={t.frame}" if t.frame is not None else ""
         strand_str = f" strand={t.strand}" if t.strand != "+" else ""
-        print(f"  {t.element_type} @ {t.position}: {t.match_sequence} (score={t.score:.1f}){frame_str}{strand_str}")
+        print(f"    {t.element_type} @ {t.position}: {t.match_sequence} (score={t.score:.1f}){frame_str}{strand_str}")
 
     if args.find_orfs:
         orfs = find_orfs(seq)
-        print(f"\nORFs found: {len(orfs)}")
+        print(f"\n  ORFs found: {len(orfs)}")
         for orf in orfs:
-            print(f"  {orf['strand']} strand, frame {orf['frame']}: "
+            print(f"    {orf['strand']} strand, frame {orf['frame']}: "
                   f"{orf['start']}-{orf['end']} ({orf['length']} aa)")
 
 
@@ -389,13 +558,13 @@ def cmd_export(args):
     elif args.sequence:
         seq = args.sequence.upper()
     else:
-        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        print(_error_msg("ERROR: Must provide --sequence or --input-file"), file=sys.stderr)
         sys.exit(1)
 
     try:
         seq = validate_dna_sequence(seq)
     except InvalidSequenceError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(_error_msg(f"ERROR: {e}"), file=sys.stderr)
         sys.exit(1)
 
     exon_boundaries = _parse_exons(args.exons, len(seq)) if args.exons else None
@@ -419,12 +588,12 @@ def cmd_export(args):
             gene_name=args.gene,
         )
     else:
-        print(f"ERROR: Unknown format '{args.format}'. Use 'fasta' or 'genbank'.", file=sys.stderr)
+        print(_error_msg(f"ERROR: Unknown format '{args.format}'. Use 'fasta' or 'genbank'."), file=sys.stderr)
         sys.exit(1)
 
     if args.output:
         Path(args.output).write_text(output)
-        print(f"Exported to: {args.output}")
+        print(_success_msg(f"Exported to: {args.output}"))
     else:
         print(output)
 
@@ -432,19 +601,20 @@ def cmd_export(args):
 def cmd_report(args):
     """Generate an interactive HTML report."""
     _setup_logging(args.verbose)
+    verbose = args.verbose
 
     if args.input_file:
         seq = _read_sequence_file(args.input_file).upper()
     elif args.sequence:
         seq = args.sequence.upper()
     else:
-        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        print(_error_msg("ERROR: Must provide --sequence or --input-file"), file=sys.stderr)
         sys.exit(1)
 
     try:
         seq = validate_dna_sequence(seq)
     except InvalidSequenceError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(_error_msg(f"ERROR: {e}"), file=sys.stderr)
         sys.exit(1)
 
     exon_boundaries = _parse_exons(args.exons, len(seq)) or [(0, len(seq))]
@@ -452,35 +622,90 @@ def cmd_report(args):
     from .report import generate_report
     from .type_system import evaluate_all_predicates
 
-    results = evaluate_all_predicates(
-        seq=seq,
-        known_exon_boundaries=exon_boundaries,
-        organism=args.organism,
-    )
+    with _ProgressPhase("Generating report", verbose=verbose):
+        t0 = time.perf_counter()
+        results = evaluate_all_predicates(
+            seq=seq,
+            known_exon_boundaries=exon_boundaries,
+            organism=args.organism,
+        )
 
-    html_report = generate_report(
-        sequence=seq,
-        type_results=results,
-        organism=args.organism,
-        gene_name=args.gene,
-        exon_boundaries=exon_boundaries if len(exon_boundaries) > 1 else None,
-    )
+        html_report = generate_report(
+            sequence=seq,
+            type_results=results,
+            organism=args.organism,
+            gene_name=args.gene,
+            exon_boundaries=exon_boundaries if len(exon_boundaries) > 1 else None,
+        )
+        report_time = time.perf_counter() - t0
 
     output_path = args.output or "biocompiler_report.html"
     Path(output_path).write_text(html_report)
-    print(f"Report generated: {output_path}")
+    print(_success_msg(f"Report generated: {output_path}"))
+    if verbose:
+        print(f"  [timing] report generation: {report_time:.3f}s")
 
 
 def cmd_benchmark(args):
     """Run benchmarks against known gene sets."""
     _setup_logging(args.verbose)
+    verbose = args.verbose
 
-    from .benchmark import run_benchmarks, format_benchmark_report_text, format_benchmark_report_json
+    from .benchmark import run_benchmarks, format_benchmark_report_text, format_benchmark_report_json, REFERENCE_GENES
 
     gene_names = args.genes.split(",") if args.genes else None
-    report = run_benchmarks(
-        gene_names=gene_names,
-        include_optimization=not args.skip_optimization,
+    all_genes = gene_names or list(REFERENCE_GENES.keys())
+    total = len(all_genes)
+
+    print(_section_header("Benchmark"))
+    print(f"  Running {total} gene(s): {', '.join(all_genes)}", file=sys.stderr)
+
+    # Run benchmarks with per-gene progress
+    from .benchmark import _bench_translation, _bench_gc_content, _bench_cai
+    from .benchmark import _bench_splice_isoforms, _bench_type_predicates
+    from .benchmark import _bench_certificate_roundtrip, _bench_optimization
+    from .benchmark import _compute_summary, BenchmarkReport
+    from . import __version__ as pkg_version
+    from datetime import datetime, timezone
+
+    results = []
+    include_optimization = not args.skip_optimization
+
+    for idx, gene_name in enumerate(all_genes, start=1):
+        print(f"  [{idx}/{total}] {gene_name}...", end="", file=sys.stderr, flush=True)
+        gene_data = REFERENCE_GENES.get(gene_name)
+        if not gene_data:
+            print(" skipped (unknown)", file=sys.stderr)
+            continue
+
+        seq = gene_data["pre_mrna"].replace(" ", "")
+        exons = gene_data["exon_boundaries"]
+        organism = gene_data["organism"]
+
+        results.append(_bench_translation(gene_name, seq, exons, gene_data))
+        results.append(_bench_gc_content(gene_name, seq, gene_data))
+        results.append(_bench_cai(gene_name, seq, exons, gene_data))
+        if len(exons) > 1:
+            results.append(_bench_splice_isoforms(gene_name, seq, exons, gene_data))
+        results.append(_bench_type_predicates(gene_name, seq, exons, organism))
+        results.append(_bench_certificate_roundtrip(gene_name, seq, exons, organism))
+        if include_optimization:
+            results.append(_bench_optimization(gene_name, seq, exons, organism))
+
+        print(" done", file=sys.stderr)
+
+    total_tests = len(results)
+    passed = sum(1 for r in results if r.passed)
+    failed = total_tests - passed
+
+    report = BenchmarkReport(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        version=pkg_version,
+        total_tests=total_tests,
+        passed=passed,
+        failed=failed,
+        results=results,
+        summary=_compute_summary(results),
     )
 
     if args.format == "json":
@@ -490,7 +715,7 @@ def cmd_benchmark(args):
 
     if args.output:
         Path(args.output).write_text(output)
-        print(f"Benchmark report saved to: {args.output}")
+        print(_success_msg(f"Benchmark report saved to: {args.output}"))
     else:
         print(output)
 
@@ -502,8 +727,8 @@ def cmd_serve(args):
     from .api import app
     import uvicorn
 
-    print(f"Starting BioCompiler API server on {args.host}:{args.port}")
-    print(f"API docs: http://{args.host}:{args.port}/docs")
+    print(_section_header(f"Starting BioCompiler API server on {args.host}:{args.port}"))
+    print(f"  API docs: http://{args.host}:{args.port}/docs")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info" if not args.verbose else "debug")
 
 
@@ -513,12 +738,313 @@ def cmd_migrate(args):
 
     from .organism_db import OrganismDatabase
 
-    db = OrganismDatabase()
-    count = db.migrate_builtin_data()
-    print(f"Migrated {count} organisms to database at {db.db_path}")
+    with _ProgressPhase("Migrating", verbose=args.verbose):
+        db = OrganismDatabase()
+        count = db.migrate_builtin_data()
+
+    print(_success_msg(f"Migrated {count} organisms to database at {db.db_path}"))
     organisms = db.list_organisms()
     for org in organisms:
         print(f"  {org['name']} (source={org['source']}, codons=64)")
+
+
+def cmd_completion(args):
+    """Output shell completion script for bash or zsh."""
+    shell = args.shell
+    from .organisms import SUPPORTED_ORGANISMS
+    organisms = " ".join(SUPPORTED_ORGANISMS)
+    formats = "fasta genbank"
+    enzymes_list = " ".join(sorted(RESTRICTION_ENZYMES.keys()))
+
+    if shell == "bash":
+        script = f'''# bash completion for biocompiler
+_biocompiler_complete()
+{{
+    local cur prev words cword
+    _init_completion || return
+
+    local subcommands="check optimize verify scan export report benchmark serve migrate completion"
+
+    # If completing the first-level subcommand
+    if [[ $cword -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
+        return
+    fi
+
+    local subcommand="${{words[1]}}"
+
+    case $subcommand in
+        check)
+            case $prev in
+                --organism)
+                    COMPREPLY=($(compgen -W "{organisms}" -- "$cur"))
+                    ;;
+                --enzymes)
+                    COMPREPLY=($(compgen -W "{enzymes_list}" -- "$cur"))
+                    ;;
+                --input-file|-f|--output|-o)
+                    _filedir
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--sequence --input-file -f --exons --gene --organism --gc-lo --gc-hi --cai-threshold --enzymes --output -o --max-length" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        optimize)
+            case $prev in
+                --organism)
+                    COMPREPLY=($(compgen -W "{organisms}" -- "$cur"))
+                    ;;
+                --protein-file)
+                    _filedir
+                    ;;
+                --output|-o)
+                    _filedir
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--protein --protein-file --organism --gc-lo --gc-hi --cai-threshold --enzymes --cryptic-splice-threshold --output -o" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        verify)
+            case $prev in
+                --certificate)
+                    _filedir
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--certificate" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        scan)
+            case $prev in
+                --enzymes)
+                    COMPREPLY=($(compgen -W "{enzymes_list}" -- "$cur"))
+                    ;;
+                --input-file|-f)
+                    _filedir
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--sequence --input-file -f --enzymes --find-orfs --max-length" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        export)
+            case $prev in
+                --format)
+                    COMPREPLY=($(compgen -W "{formats}" -- "$cur"))
+                    ;;
+                --organism)
+                    COMPREPLY=($(compgen -W "{organisms}" -- "$cur"))
+                    ;;
+                --input-file|-f|--output|-o)
+                    _filedir
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--sequence --input-file -f --format --identifier --locus --description --gene --organism --exons --output -o --max-length" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        report)
+            case $prev in
+                --organism)
+                    COMPREPLY=($(compgen -W "{organisms}" -- "$cur"))
+                    ;;
+                --input-file|-f|--output|-o)
+                    _filedir
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--sequence --input-file -f --exons --gene --organism --output -o --max-length" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        benchmark)
+            case $prev in
+                --format)
+                    COMPREPLY=($(compgen -W "text json" -- "$cur"))
+                    ;;
+                --output|-o)
+                    _filedir
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--genes --format --skip-optimization --output -o" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        serve)
+            COMPREPLY=($(compgen -W "--host --port" -- "$cur"))
+            ;;
+        completion)
+            COMPREPLY=($(compgen -W "--shell" -- "$cur"))
+            ;;
+    esac
+}}
+complete -F _biocompiler_complete biocompiler
+'''
+    elif shell == "zsh":
+        script = f'''#compdef biocompiler
+_biocomplier_organisms=({" ".join(f"{o}:\"{o}\"" for o in SUPPORTED_ORGANISMS)})
+_biocompiler_formats=(fasta:"FASTA format" genbank:"GenBank format")
+_biocompiler_enzymes=({" ".join(f"{e}:\"{e}\"" for e in sorted(RESTRICTION_ENZYMES.keys()))})
+
+_biocompiler_subcommands()
+{{
+    local -a commands
+    commands=(
+        'check:Type-check a DNA sequence'
+        'optimize:Optimize DNA sequence for a protein'
+        'verify:Verify a certificate'
+        'scan:Scan a sequence for biological motifs'
+        'export:Export sequence in FASTA or GenBank format'
+        'report:Generate interactive HTML report'
+        'benchmark:Run benchmarks against known gene sets'
+        'serve:Start REST API server'
+        'migrate:Migrate organism data to SQLite'
+        'completion:Output shell completion script'
+    )
+    _describe 'command' commands
+}}
+
+_biocompiler_check()
+{{
+    _arguments \\
+        '--sequence[DNA sequence]' \\
+        '--input-file[Input file]:file:_files' \\
+        '-f[Input file]:file:_files' \\
+        '--exons[Exon boundaries]' \\
+        '--gene[Gene name]' \\
+        '--organism[Target organism]:organism:($_biocomplier_organisms)' \\
+        '--gc-lo[Min GC content]:float' \\
+        '--gc-hi[Max GC content]:float' \\
+        '--cai-threshold[Min CAI]:float' \\
+        '--enzymes[Restriction enzymes]:enzyme:_values "enzymes" $_biocompiler_enzymes' \\
+        '--output[Output certificate]:file:_files' \\
+        '-o[Output certificate]:file:_files' \\
+        '--max-length[Max sequence length]:int'
+}}
+
+_biocompiler_optimize()
+{{
+    _arguments \\
+        '--protein[Target protein sequence]' \\
+        '--protein-file[Input protein file]:file:_files' \\
+        '--organism[Target organism]:organism:($_biocomplier_organisms)' \\
+        '--gc-lo[Min GC content]:float' \\
+        '--gc-hi[Max GC content]:float' \\
+        '--cai-threshold[Min CAI]:float' \\
+        '--enzymes[Restriction enzymes]:enzyme:_values "enzymes" $_biocompiler_enzymes' \\
+        '--cryptic-splice-threshold[Cryptic splice threshold]:float' \\
+        '--output[Output file]:file:_files' \\
+        '-o[Output file]:file:_files'
+}}
+
+_biocompiler_verify()
+{{
+    _arguments \\
+        '--certificate[Certificate JSON file]:file:_files'
+}}
+
+_biocompiler_scan()
+{{
+    _arguments \\
+        '--sequence[DNA sequence]' \\
+        '--input-file[Input file]:file:_files' \\
+        '-f[Input file]:file:_files' \\
+        '--enzymes[Restriction enzymes]:enzyme:_values "enzymes" $_biocompiler_enzymes' \\
+        '--find-orfs[Find open reading frames]' \\
+        '--max-length[Max sequence length]:int'
+}}
+
+_biocompiler_export()
+{{
+    _arguments \\
+        '--sequence[DNA sequence]' \\
+        '--input-file[Input file]:file:_files' \\
+        '-f[Input file]:file:_files' \\
+        '--format[Export format]:format:($_biocompiler_formats)' \\
+        '--identifier[Sequence identifier]' \\
+        '--locus[LOCUS name]' \\
+        '--description[Description]' \\
+        '--gene[Gene name]' \\
+        '--organism[Source organism]:organism:($_biocomplier_organisms)' \\
+        '--exons[Exon boundaries]' \\
+        '--output[Output file]:file:_files' \\
+        '-o[Output file]:file:_files' \\
+        '--max-length[Max sequence length]:int'
+}}
+
+_biocompiler_report()
+{{
+    _arguments \\
+        '--sequence[DNA sequence]' \\
+        '--input-file[Input file]:file:_files' \\
+        '-f[Input file]:file:_files' \\
+        '--exons[Exon boundaries]' \\
+        '--gene[Gene name]' \\
+        '--organism[Target organism]:organism:($_biocomplier_organisms)' \\
+        '--output[Output HTML file]:file:_files' \\
+        '-o[Output HTML file]:file:_files' \\
+        '--max-length[Max sequence length]:int'
+}}
+
+_biocompiler_benchmark()
+{{
+    _arguments \\
+        '--genes[Gene names to benchmark]' \\
+        '--format[Output format]:format:(text json)' \\
+        '--skip-optimization[Skip optimization benchmarks]' \\
+        '--output[Output file]:file:_files' \\
+        '-o[Output file]:file:_files'
+}}
+
+_biocompiler_serve()
+{{
+    _arguments \\
+        '--host[Host to bind]' \\
+        '--port[Port to bind]:int'
+}}
+
+_biocompiler_completion()
+{{
+    _arguments \\
+        '--shell[Target shell]:shell:(bash zsh)'
+}}
+
+_biocompiler_migrate()
+{{
+    # No arguments
+}}
+
+_biocompiler()
+{{
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \\
+        '1: :_biocompiler_subcommands' \\
+        '*::arg:->args'
+
+    case $words[1] in
+        check)      _biocompiler_check ;;
+        optimize)   _biocompiler_optimize ;;
+        verify)     _biocompiler_verify ;;
+        scan)       _biocompiler_scan ;;
+        export)     _biocompiler_export ;;
+        report)     _biocompiler_report ;;
+        benchmark)  _biocompiler_benchmark ;;
+        serve)      _biocompiler_serve ;;
+        migrate)    _biocompiler_migrate ;;
+        completion) _biocompiler_completion ;;
+    esac
+}}
+
+_biocompiler "$@"
+'''
+    else:
+        print(f"ERROR: Unsupported shell '{shell}'. Choose 'bash' or 'zsh'.", file=sys.stderr)
+        sys.exit(1)
+
+    print(script)
 
 
 def main():
@@ -612,6 +1138,12 @@ def main():
     p_migrate = subparsers.add_parser("migrate", help="Migrate organism data to SQLite")
     p_migrate.set_defaults(func=cmd_migrate)
 
+    # completion
+    p_completion = subparsers.add_parser("completion", help="Output shell completion script")
+    p_completion.add_argument("--shell", choices=["bash", "zsh"], default="bash",
+                              help="Target shell (default: bash)")
+    p_completion.set_defaults(func=cmd_completion)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -620,14 +1152,14 @@ def main():
     try:
         args.func(args)
     except BioCompilerError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(_error_msg(f"ERROR: {e}"), file=sys.stderr)
         sys.exit(1)
     except argparse.ArgumentTypeError as e:
         print(f"ARGUMENT ERROR: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         logger.exception("Unexpected error")
-        print(f"UNEXPECTED ERROR: {e}", file=sys.stderr)
+        print(_error_msg(f"UNEXPECTED ERROR: {e}"), file=sys.stderr)
         sys.exit(2)
 
 

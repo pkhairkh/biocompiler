@@ -140,6 +140,28 @@ def _compute_codon_usage(seq: str) -> dict[str, dict[str, float]]:
     return aa_freqs
 
 
+def _element_type_description(element_type: str) -> str:
+    """Return a human-readable description for a token element type."""
+    descriptions = {
+        "start_codon": "Start codon — initiates translation (ATG)",
+        "stop_codon": "Stop codon — terminates translation (TAA, TAG, TGA)",
+        "splice_donor": "Splice donor site — 5' end of intron (GT consensus)",
+        "splice_acceptor": "Splice acceptor site — 3' end of intron (AG consensus)",
+        "kozak": "Kozak consensus sequence — enhances translation initiation",
+        "cpg_island": "CpG island — region of high C-G dinucleotide frequency, often regulatory",
+        "u_rich_region": "U-rich region — potential mRNA instability element",
+        "tata_box": "TATA box — core promoter element for transcription initiation",
+        "poly_a_signal": "Polyadenylation signal — directs 3' end processing of mRNA",
+        "restriction_site": "Restriction enzyme recognition site",
+        "repeat": "Repetitive sequence element",
+        "promoter": "Promoter region — binds RNA polymerase for transcription",
+        "enhancer": "Enhancer element — regulatory DNA that increases transcription",
+        "silencer": "Silencer element — regulatory DNA that decreases transcription",
+        "insulator": "Insulator element — blocks interaction between regulatory regions",
+    }
+    return descriptions.get(element_type, f"Biological element of type: {element_type}")
+
+
 def _build_html(
     seq: str, gc: float, cai: float, protein: str,
     organism: str, gene_name: Optional[str],
@@ -184,9 +206,18 @@ def _build_html(
         symbol = {"PASS": "&#10003;", "FAIL": "&#10007;", "UNCERTAIN": "?"}[r.verdict.value]
         violation_html = f'<div class="violation">{html.escape(r.violation or "")}</div>' if r.violation else ""
         gap_html = f'<div class="knowledge-gap">Gap: {html.escape(r.knowledge_gap or "")}</div>' if r.knowledge_gap else ""
+        # Build derivation tooltip text
+        derivation_parts = []
+        derivation_parts.append(f"Predicate: {r.predicate}")
+        derivation_parts.append(f"Verdict: {r.verdict.value}")
+        if r.violation:
+            derivation_parts.append(f"Violation: {r.violation}")
+        if r.knowledge_gap:
+            derivation_parts.append(f"Knowledge gap: {r.knowledge_gap}")
+        tooltip_text = html.escape(" | ".join(derivation_parts))
         predicate_rows += f"""
-            <tr class="{css_class}">
-                <td class="verdict-cell"><span class="badge {css_class}">{symbol}</span></td>
+            <tr class="{css_class}" data-verdict="{css_class}">
+                <td class="verdict-cell"><span class="badge {css_class}" data-tooltip="{tooltip_text}">{symbol}</span></td>
                 <td>{html.escape(r.predicate)}</td>
                 <td>{violation_html}{gap_html}</td>
             </tr>"""
@@ -195,9 +226,9 @@ def _build_html(
     token_rows = ""
     for t in tokens[:50]:  # Limit display
         token_rows += f"""
-            <tr>
+            <tr data-element-type="{html.escape(t.element_type.lower())}" data-match-sequence="{html.escape(t.match_sequence.lower())}">
                 <td>{t.position}</td>
-                <td>{html.escape(t.element_type)}</td>
+                <td class="token-type-cell" data-tooltip="{html.escape(_element_type_description(t.element_type))}">{html.escape(t.element_type)}</td>
                 <td class="mono">{html.escape(t.match_sequence)}</td>
                 <td>{t.score:.2f}</td>
                 <td>{t.frame if t.frame is not None else "-"}</td>
@@ -434,9 +465,232 @@ tr.uncertain {{ background: #fffbeb; }}
     padding-top: 1rem;
     border-top: 1px solid var(--border);
 }}
+/* === Interactive Feature Styles === */
+/* Tooltip */
+.tooltip {{
+    position: fixed;
+    background: #1e293b;
+    color: #f8fafc;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    max-width: 350px;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}}
+.tooltip.visible {{ opacity: 1; }}
+.tooltip::after {{
+    content: '';
+    position: absolute;
+    bottom: -5px;
+    left: 50%;
+    transform: translateX(-50%);
+    border-width: 5px 5px 0;
+    border-style: solid;
+    border-color: #1e293b transparent transparent;
+}}
+/* Stat card hover */
+.stat-card[data-tooltip] {{
+    cursor: help;
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+}}
+.stat-card[data-tooltip]:hover {{
+    box-shadow: 0 2px 8px rgba(37,99,235,0.15);
+    transform: translateY(-1px);
+}}
+/* Verdict badge tooltip */
+.badge[data-tooltip] {{ cursor: help; }}
+/* Token type cell tooltip */
+.token-type-cell[data-tooltip] {{
+    cursor: help;
+    border-bottom: 1px dashed var(--text-secondary);
+}}
+/* Filter buttons */
+.filter-bar {{
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}}
+.filter-btn {{
+    padding: 0.35rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}}
+.filter-btn:hover {{
+    border-color: var(--accent);
+    color: var(--accent);
+}}
+.filter-btn.active {{
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}}
+.filter-btn[data-filter="pass"].active {{ background: var(--pass); border-color: var(--pass); }}
+.filter-btn[data-filter="fail"].active {{ background: var(--fail); border-color: var(--fail); }}
+.filter-btn[data-filter="uncertain"].active {{ background: var(--uncertain); border-color: var(--uncertain); }}
+/* Search input */
+.search-bar {{
+    margin-bottom: 1rem;
+}}
+.search-input {{
+    width: 100%;
+    max-width: 400px;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.15s ease;
+}}
+.search-input:focus {{
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+}}
+.search-input::placeholder {{
+    color: var(--text-secondary);
+}}
+/* Copy button */
+.copy-btn {{
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    margin-left: 0.75rem;
+    vertical-align: middle;
+    transition: all 0.15s ease;
+}}
+.copy-btn:hover {{
+    border-color: var(--accent);
+    color: var(--accent);
+}}
+.copy-btn.copied {{
+    background: var(--pass);
+    color: white;
+    border-color: var(--pass);
+}}
+/* Collapsible sections */
+.section h2 {{
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 2rem;
+}}
+.section h2::after {{
+    content: '−';
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 1.5rem;
+    font-weight: 300;
+    color: var(--text-secondary);
+    transition: transform 0.2s ease;
+}}
+.section h2.collapsed::after {{
+    content: '+';
+}}
+.section-content {{
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    max-height: 5000px;
+}}
+.section-content.collapsed {{
+    max-height: 0;
+}}
+/* Dark mode toggle */
+.toggle-btn {{
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.3);
+    color: white;
+    font-size: 1.25rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    line-height: 1;
+}}
+.toggle-btn:hover {{
+    background: rgba(255,255,255,0.25);
+}}
+/* Dark mode variables */
+body.dark-mode {{
+    --bg: #1e293b;
+    --surface: #0f172a;
+    --border: #334155;
+    --text: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --accent: #60a5fa;
+}}
+body.dark-mode .header {{
+    background: linear-gradient(135deg, #0f172a, #1e293b);
+}}
+body.dark-mode tr.pass {{ background: #052e16; }}
+body.dark-mode tr.fail {{ background: #450a0a; }}
+body.dark-mode tr.uncertain {{ background: #451a03; }}
+body.dark-mode .badge.pass {{ background: #052e16; color: #4ade80; }}
+body.dark-mode .badge.fail {{ background: #450a0a; color: #f87171; }}
+body.dark-mode .badge.uncertain {{ background: #451a03; color: #fbbf24; }}
+body.dark-mode .violation {{ color: #f87171; }}
+body.dark-mode .knowledge-gap {{ color: #fbbf24; }}
+body.dark-mode .filter-btn {{
+    background: #334155;
+    border-color: #475569;
+    color: #e2e8f0;
+}}
+body.dark-mode .filter-btn:hover {{
+    border-color: var(--accent);
+    color: var(--accent);
+}}
+body.dark-mode .search-input {{
+    background: #334155;
+    border-color: #475569;
+    color: #f1f5f9;
+}}
+body.dark-mode .copy-btn {{
+    background: #334155;
+    border-color: #475569;
+    color: #94a3b8;
+}}
+body.dark-mode .copy-btn:hover {{
+    border-color: var(--accent);
+    color: var(--accent);
+}}
+body.dark-mode .sequence-display {{
+    background: #0f172a;
+}}
+body.dark-mode .stat-card {{
+    background: #0f172a;
+    border-color: #334155;
+}}
+body.dark-mode .tooltip {{
+    background: #f8fafc;
+    color: #1e293b;
+}}
+body.dark-mode .tooltip::after {{
+    border-color: #f8fafc transparent transparent;
+}}
 @media print {{
     body {{ padding: 0; }}
     .section {{ break-inside: avoid; }}
+    .filter-bar, .search-bar, .copy-btn, .toggle-btn {{ display: none; }}
+    .section-content {{ max-height: none !important; }}
+    .section h2 {{ cursor: default; }}
 }}
 </style>
 </head>
@@ -451,34 +705,37 @@ tr.uncertain {{ background: #fffbeb; }}
             {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
         </div>
     </div>
-    <div class="verdict-badge {overall_class}">{overall_verdict}</div>
+    <div style="display:flex;align-items:center;gap:1rem;">
+        <button id="dark-mode-toggle" class="toggle-btn" title="Toggle dark mode">&#9790;</button>
+        <div class="verdict-badge {overall_class}">{overall_verdict}</div>
+    </div>
 </div>
 
 <!-- Summary Statistics -->
 <section class="section">
     <h2>Sequence Summary</h2>
     <div class="stats-grid">
-        <div class="stat-card">
+        <div class="stat-card" data-tooltip="Total number of nucleotide base pairs in the sequence">
             <div class="stat-value">{len(seq):,}</div>
             <div class="stat-label">Length (bp)</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-tooltip="GC Content = (G+C)/total, measured over the full sequence">
             <div class="stat-value">{gc:.1%}</div>
             <div class="stat-label">GC Content</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-tooltip="Codon Adaptation Index — geometric mean of relative codon usage, compared to {html.escape(organism)} reference">
             <div class="stat-value">{cai:.4f}</div>
             <div class="stat-label">CAI</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-tooltip="Number of amino acids in the translated protein product">
             <div class="stat-value">{len(protein)}</div>
             <div class="stat-label">Protein (aa)</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-tooltip="Number of exon regions in the gene structure">
             <div class="stat-value">{len(exon_boundaries)}</div>
             <div class="stat-label">Exons</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-tooltip="Number of biological elements detected by the sequence scanner">
             <div class="stat-value">{len(tokens)}</div>
             <div class="stat-label">Tokens</div>
         </div>
@@ -490,7 +747,13 @@ tr.uncertain {{ background: #fffbeb; }}
 <!-- Predicate Results -->
 <section class="section">
     <h2>Type-Check Results</h2>
-    <table>
+    <div class="filter-bar">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="pass">&#10003; PASS</button>
+        <button class="filter-btn" data-filter="fail">&#10007; FAIL</button>
+        <button class="filter-btn" data-filter="uncertain">? UNCERTAIN</button>
+    </div>
+    <table id="predicate-table">
         <thead>
             <tr>
                 <th>Verdict</th>
@@ -544,7 +807,10 @@ tr.uncertain {{ background: #fffbeb; }}
 <!-- Scan Tokens -->
 <section class="section">
     <h2>Scan Tokens ({len(tokens)})</h2>
-    <table>
+    <div class="search-bar">
+        <input type="text" id="token-search" placeholder="Search tokens by type or sequence..." class="search-input" />
+    </div>
+    <table id="token-table">
         <thead>
             <tr><th>Position</th><th>Type</th><th>Match</th><th>Score</th><th>Frame</th><th>Strand</th></tr>
         </thead>
@@ -558,8 +824,9 @@ tr.uncertain {{ background: #fffbeb; }}
 
 <!-- Sequence -->
 <section class="section">
-    <h2>Sequence</h2>
-    <div class="sequence-display">{_format_sequence_html(seq, exon_boundaries)}</div>
+    <h2>Sequence <button id="copy-seq-btn" class="copy-btn" title="Copy sequence to clipboard">Copy to Clipboard</button></h2>
+    <div class="sequence-display" id="sequence-display">{_format_sequence_html(seq, exon_boundaries)}</div>
+    <textarea id="raw-sequence" style="position:absolute;left:-9999px;">{html.escape(seq)}</textarea>
 </section>
 
 <!-- Protein -->
@@ -571,6 +838,189 @@ tr.uncertain {{ background: #fffbeb; }}
 <div class="footer">
     Generated by BioCompiler v2.2.0 &mdash; Machine-Verified Gene Design
 </div>
+
+<script>
+(function() {{
+    'use strict';
+
+    // === Tooltip System ===
+    var tooltipEl = document.createElement('div');
+    tooltipEl.className = 'tooltip';
+    document.body.appendChild(tooltipEl);
+
+    function showTooltip(e) {{
+        var target = e.currentTarget;
+        var text = target.getAttribute('data-tooltip');
+        if (!text) return;
+        tooltipEl.textContent = text;
+        tooltipEl.classList.add('visible');
+        positionTooltip(e);
+    }}
+
+    function positionTooltip(e) {{
+        var rect = tooltipEl.getBoundingClientRect();
+        var x = e.clientX - rect.width / 2;
+        var y = e.clientY - rect.height - 12;
+        if (x < 8) x = 8;
+        if (x + rect.width > window.innerWidth - 8) x = window.innerWidth - rect.width - 8;
+        if (y < 8) y = e.clientY + 18;
+        tooltipEl.style.left = x + 'px';
+        tooltipEl.style.top = y + 'px';
+    }}
+
+    function hideTooltip() {{
+        tooltipEl.classList.remove('visible');
+    }}
+
+    // Attach tooltip events to all elements with data-tooltip
+    var tooltipTargets = document.querySelectorAll('[data-tooltip]');
+    for (var i = 0; i < tooltipTargets.length; i++) {{
+        tooltipTargets[i].addEventListener('mouseenter', showTooltip);
+        tooltipTargets[i].addEventListener('mousemove', positionTooltip);
+        tooltipTargets[i].addEventListener('mouseleave', hideTooltip);
+    }}
+
+    // === Collapsible Sections ===
+    var sections = document.querySelectorAll('.section');
+    for (var i = 0; i < sections.length; i++) {{
+        var section = sections[i];
+        var h2 = section.querySelector('h2');
+        if (!h2) continue;
+
+        // Wrap all content after h2 in a section-content div
+        var wrapper = document.createElement('div');
+        wrapper.className = 'section-content';
+        var sibling = h2.nextSibling;
+        while (sibling) {{
+            var next = sibling.nextSibling;
+            wrapper.appendChild(sibling);
+            sibling = next;
+        }}
+        section.appendChild(wrapper);
+
+        // Click handler
+        (function(header, content) {{
+            header.addEventListener('click', function(e) {{
+                // Don't collapse if clicking the copy button
+                if (e.target.id === 'copy-seq-btn' || e.target.closest('.copy-btn')) return;
+                header.classList.toggle('collapsed');
+                content.classList.toggle('collapsed');
+            }});
+        }})(h2, wrapper);
+    }}
+
+    // === Predicate Filter Buttons ===
+    var filterBtns = document.querySelectorAll('.filter-btn');
+    var predicateTable = document.getElementById('predicate-table');
+    if (predicateTable) {{
+        for (var i = 0; i < filterBtns.length; i++) {{
+            (function(btn) {{
+                btn.addEventListener('click', function() {{
+                    // Update active state
+                    for (var j = 0; j < filterBtns.length; j++) {{
+                        filterBtns[j].classList.remove('active');
+                    }}
+                    btn.classList.add('active');
+
+                    // Filter rows
+                    var filter = btn.getAttribute('data-filter');
+                    var tbody = predicateTable.querySelector('tbody');
+                    var rows = tbody.querySelectorAll('tr');
+                    for (var k = 0; k < rows.length; k++) {{
+                        var row = rows[k];
+                        var verdict = row.getAttribute('data-verdict');
+                        if (filter === 'all' || verdict === filter) {{
+                            row.style.display = '';
+                        }} else {{
+                            row.style.display = 'none';
+                        }}
+                    }}
+                }});
+            }})(filterBtns[i]);
+        }}
+    }}
+
+    // === Token Search/Filter ===
+    var tokenSearch = document.getElementById('token-search');
+    var tokenTable = document.getElementById('token-table');
+    if (tokenSearch && tokenTable) {{
+        tokenSearch.addEventListener('input', function() {{
+            var query = this.value.toLowerCase().trim();
+            var tbody = tokenTable.querySelector('tbody');
+            var rows = tbody.querySelectorAll('tr');
+            for (var k = 0; k < rows.length; k++) {{
+                var row = rows[k];
+                var elemType = (row.getAttribute('data-element-type') || '').toLowerCase();
+                var matchSeq = (row.getAttribute('data-match-sequence') || '').toLowerCase();
+                if (!query || elemType.indexOf(query) !== -1 || matchSeq.indexOf(query) !== -1) {{
+                    row.style.display = '';
+                }} else {{
+                    row.style.display = 'none';
+                }}
+            }}
+        }});
+    }}
+
+    // === Copy Sequence Button ===
+    var copyBtn = document.getElementById('copy-seq-btn');
+    var rawSeq = document.getElementById('raw-sequence');
+    if (copyBtn && rawSeq) {{
+        copyBtn.addEventListener('click', function() {{
+            var text = rawSeq.value;
+            if (navigator.clipboard && navigator.clipboard.writeText) {{
+                navigator.clipboard.writeText(text).then(function() {{
+                    showCopied(copyBtn);
+                }});
+            }} else {{
+                rawSeq.style.position = 'fixed';
+                rawSeq.style.left = '0';
+                rawSeq.style.top = '0';
+                rawSeq.style.opacity = '0';
+                rawSeq.select();
+                rawSeq.setSelectionRange(0, text.length);
+                try {{
+                    document.execCommand('copy');
+                    showCopied(copyBtn);
+                }} catch(err) {{}}
+                rawSeq.style.position = 'absolute';
+                rawSeq.style.left = '-9999px';
+                rawSeq.style.opacity = '';
+            }}
+        }});
+    }}
+
+    function showCopied(btn) {{
+        var orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() {{
+            btn.textContent = orig;
+            btn.classList.remove('copied');
+        }}, 2000);
+    }}
+
+    // === Dark Mode Toggle ===
+    var darkToggle = document.getElementById('dark-mode-toggle');
+    if (darkToggle) {{
+        // Check for saved preference
+        var saved = localStorage.getItem('biocompiler-dark-mode');
+        if (saved === 'true') {{
+            document.body.classList.add('dark-mode');
+            darkToggle.innerHTML = '&#9788;';
+        }}
+
+        darkToggle.addEventListener('click', function() {{
+            document.body.classList.toggle('dark-mode');
+            var isDark = document.body.classList.contains('dark-mode');
+            darkToggle.innerHTML = isDark ? '&#9788;' : '&#9790;';
+            try {{
+                localStorage.setItem('biocompiler-dark-mode', isDark);
+            }} catch(e) {{}}
+        }});
+    }}
+
+}})();
+</script>
 
 </body>
 </html>"""

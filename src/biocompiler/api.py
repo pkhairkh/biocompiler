@@ -58,7 +58,17 @@ API_KEY_NAME = "X-API-Key"
 _api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 # The API key is optional: if BIOCOMPILER_API_KEY is not set, auth is disabled.
-_CONFIGURED_API_KEY = os.environ.get("BIOCOMPILER_API_KEY", "")
+# Supports multiple keys via comma-separated BIOCOMPILER_API_KEYS env var,
+# or single key via BIOCOMPILER_API_KEY for backward compatibility.
+_CONFIGURED_API_KEYS: set[str] = set()
+
+_single_key = os.environ.get("BIOCOMPILER_API_KEY", "")
+_multi_keys = os.environ.get("BIOCOMPILER_API_KEYS", "")
+
+if _multi_keys:
+    _CONFIGURED_API_KEYS = {k.strip() for k in _multi_keys.split(",") if k.strip()}
+elif _single_key:
+    _CONFIGURED_API_KEYS = {_single_key}
 
 # ─── Rate Limiting ──────────────────────────────────────────────────
 
@@ -86,13 +96,14 @@ async def verify_api_key(api_key: str = Security(_api_key_header)) -> str:
     """
     Verify the API key if authentication is configured.
 
-    If BIOCOMPILER_API_KEY is not set, authentication is disabled (open access).
-    If it is set, the request must include a matching X-API-Key header.
+    If BIOCOMPILER_API_KEY / BIOCOMPILER_API_KEYS is not set, auth is disabled.
+    If set, the request must include a matching X-API-Key header.
+    Supports multiple API keys for key rotation scenarios.
     """
-    if not _CONFIGURED_API_KEY:
+    if not _CONFIGURED_API_KEYS:
         return "anonymous"  # Auth disabled
 
-    if api_key is None or api_key != _CONFIGURED_API_KEY:
+    if api_key is None or api_key not in _CONFIGURED_API_KEYS:
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key. Set X-API-Key header.",
@@ -279,7 +290,7 @@ def create_app() -> FastAPI:
             status="healthy",
             version=__version__,
             timestamp=datetime.now(timezone.utc).isoformat(),
-            auth_enabled=bool(_CONFIGURED_API_KEY),
+            auth_enabled=bool(_CONFIGURED_API_KEYS),
             rate_limit_rpm=RATE_LIMIT_RPM,
         )
 

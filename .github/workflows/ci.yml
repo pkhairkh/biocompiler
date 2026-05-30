@@ -7,11 +7,29 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint with ruff
+        run: ruff check src/ tests/
+      - name: Type check with mypy
+        run: python -m mypy src/biocompiler --ignore-missing-imports || true
+
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -26,26 +44,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Lint with ruff
-        run: |
-          ruff check src/ tests/
-
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short --cov=biocompiler --cov-report=term-missing
+          python -m pytest tests/ -v --tb=short --cov=biocompiler --cov-report=term-missing --cov-report=xml
 
       - name: Run CLI smoke test
         run: |
           biocompiler --version
           biocompiler scan --sequence ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAACGTGGATGAAGTTGGTGGTGAGGCCCTGGGCAG
 
+      - name: Upload coverage
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
   test-with-z3:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install with z3
         run: |
           pip install -e ".[dev]"
@@ -53,6 +77,39 @@ jobs:
       - name: Run tests with z3
         run: |
           python -m pytest tests/ -v --tb=short
+
+  test-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e ".[dev,api]"
+      - name: Run API-specific tests
+        run: |
+          python -m pytest tests/test_production_features.py::TestRESTAPI -v --tb=short
+      - name: Test API with authentication
+        env:
+          BIOCOMPILER_API_KEY: "test-key-ci-12345"
+        run: |
+          python -c "
+          from fastapi.testclient import TestClient
+          from biocompiler.api import app
+          client = TestClient(app)
+          # Health should work without auth
+          r = client.get('/health')
+          assert r.status_code == 200
+          # Authenticated endpoints should require key
+          r = client.post('/check', json={'sequence': 'ATGGTG'})
+          assert r.status_code == 401
+          # With correct key should work
+          r = client.post('/check', json={'sequence': 'ATGGTG'}, headers={'X-API-Key': 'test-key-ci-12345'})
+          # Accept both 200 and 422 (validation error for short sequence is fine)
+          assert r.status_code in (200, 422)
+          print('API authentication test passed')
+          "
 
   docker-build:
     runs-on: ubuntu-latest
@@ -98,3 +155,18 @@ jobs:
             exit 1
           fi
           echo "Lean4 proofs verified successfully (0 sorry, 0 axioms)"
+
+      - name: Verify proof counts
+        working-directory: proof
+        run: |
+          echo "=== Proof Summary ==="
+          THEOREM_COUNT=$(grep -r "theorem\|lemma" BioCompiler/ --include="*.lean" | wc -l || true)
+          SORRY_COUNT=$(grep -r "sorry" BioCompiler/ --include="*.lean" | wc -l || true)
+          AXIOM_COUNT=$(grep -r "axiom" BioCompiler/ --include="*.lean" | grep -v "^--" | wc -l || true)
+          echo "Theorems/lemmas: $THEOREM_COUNT"
+          echo "Sorry count: $SORRY_COUNT"
+          echo "Axiom count: $AXIOM_COUNT"
+          if [ "$SORRY_COUNT" -ne "0" ]; then
+            echo "ERROR: Found sorry in proofs!"
+            exit 1
+          fi

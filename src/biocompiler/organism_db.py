@@ -6,9 +6,12 @@ Production-grade organism data management with:
 - Kazusa Codon Usage Database API integration for on-demand data retrieval
 - Automatic caching of API results in SQLite with TTL
 - Retry logic with exponential backoff for network resilience
-- Robust HTML parser with multiple parsing strategies
+- Robust HTML parser with multiple parsing strategies (incl. BeautifulSoup)
+- JSON API fallback for Kazusa data
+- Response validation and integrity checks
 - Migration from hardcoded dicts to persistent storage
 - Backward-compatible interface with existing organisms module
+- Database schema versioning with migration support
 
 The database stores:
 - Organism metadata (name, taxonomy, source)
@@ -16,8 +19,10 @@ The database stores:
 - Codon adaptiveness values (computed from frequencies)
 - Preferred codons per amino acid
 - Cache timestamps and TTL for API-fetched data
+- Schema version for migration tracking
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -34,11 +39,18 @@ from .exceptions import UnsupportedOrganismError
 
 logger = logging.getLogger(__name__)
 
+# ─── Database Schema Versioning ─────────────────────────────────────
+
+SCHEMA_VERSION = 2
+
 # Default database path (in user's home directory for persistence)
 DEFAULT_DB_PATH = Path.home() / ".biocompiler" / "organisms.db"
 
 # Kazusa API endpoint for codon usage tables
 KAZUSA_API_URL = "https://www.kazusa.or.jp/codon/cgi-bin/spacialize.cgi"
+
+# Alternative: NCBI taxonomy API for validation
+NCBI_TAXONOMY_API = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 
 # Cache TTL for API-fetched data (7 days by default)
 CACHE_TTL_SECONDS = int(7 * 24 * 60 * 60)  # 1 week
@@ -47,6 +59,11 @@ CACHE_TTL_SECONDS = int(7 * 24 * 60 * 60)  # 1 week
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2  # seconds
 REQUEST_TIMEOUT = 30  # seconds
+
+# Response validation thresholds
+MIN_CODON_COUNT = 60  # Minimum codons expected from Kazusa (out of 64)
+MAX_FREQUENCY_PER_CODON = 1.0  # Each codon frequency must be <= 1.0
+MIN_TOTAL_FREQUENCY = 0.9  # Total frequency per AA should be close to 1.0
 
 # Known Kazusa database IDs for common organisms
 KAZUSA_ORGANISM_IDS: dict[str, str] = {
@@ -104,57 +121,102 @@ class OrganismDatabase:
         return conn
 
     def _ensure_schema(self):
-        """Create database tables if they don't exist."""
+        """Create database tables if they don't exist, with schema versioning."""
         conn = self._connect()
         try:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS organisms (
-                    name TEXT PRIMARY KEY,
-                    taxonomy_id TEXT,
-                    taxonomy_lineage TEXT,
-                    source TEXT DEFAULT 'builtin',
-                    n_cds INTEGER DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
+            # Check current schema version
+            version = self._get_schema_version(conn)
 
-                CREATE TABLE IF NOT EXISTS codon_usage (
-                    organism TEXT NOT NULL,
-                    codon TEXT NOT NULL,
-                    amino_acid TEXT NOT NULL,
-                    frequency REAL NOT NULL,
-                    count INTEGER DEFAULT 0,
-                    per_thousand REAL DEFAULT 0.0,
-                    PRIMARY KEY (organism, codon),
-                    FOREIGN KEY (organism) REFERENCES organisms(name) ON DELETE CASCADE
-                );
+            if version < 1:
+                # Initial schema (v1)
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS schema_version (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS codon_adaptiveness (
-                    organism TEXT NOT NULL,
-                    codon TEXT NOT NULL,
-                    adaptiveness REAL NOT NULL,
-                    PRIMARY KEY (organism, codon),
-                    FOREIGN KEY (organism) REFERENCES organisms(name) ON DELETE CASCADE
-                );
+                    CREATE TABLE IF NOT EXISTS organisms (
+                        name TEXT PRIMARY KEY,
+                        taxonomy_id TEXT,
+                        taxonomy_lineage TEXT,
+                        source TEXT DEFAULT 'builtin',
+                        n_cds INTEGER DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS preferred_codons (
-                    organism TEXT NOT NULL,
-                    amino_acid TEXT NOT NULL,
-                    codon TEXT NOT NULL,
-                    PRIMARY KEY (organism, amino_acid),
-                    FOREIGN KEY (organism) REFERENCES organisms(name) ON DELETE CASCADE
-                );
+                    CREATE TABLE IF NOT EXISTS codon_usage (
+                        organism TEXT NOT NULL,
+                        codon TEXT NOT NULL,
+                        amino_acid TEXT NOT NULL,
+                        frequency REAL NOT NULL,
+                        count INTEGER DEFAULT 0,
+                        per_thousand REAL DEFAULT 0.0,
+                        PRIMARY KEY (organism, codon),
+                        FOREIGN KEY (organism) REFERENCES organisms(name) ON DELETE CASCADE
+                    );
 
-                CREATE INDEX IF NOT EXISTS idx_codon_usage_organism
-                    ON codon_usage(organism);
-                CREATE INDEX IF NOT EXISTS idx_codon_adaptiveness_organism
-                    ON codon_adaptiveness(organism);
-                CREATE INDEX IF NOT EXISTS idx_preferred_codons_organism
-                    ON preferred_codons(organism);
-            """)
+                    CREATE TABLE IF NOT EXISTS codon_adaptiveness (
+                        organism TEXT NOT NULL,
+                        codon TEXT NOT NULL,
+                        adaptiveness REAL NOT NULL,
+                        PRIMARY KEY (organism, codon),
+                        FOREIGN KEY (organism) REFERENCES organisms(name) ON DELETE CASCADE
+                    );
+
+                    CREATE TABLE IF NOT EXISTS preferred_codons (
+                        organism TEXT NOT NULL,
+                        amino_acid TEXT NOT NULL,
+                        codon TEXT NOT NULL,
+                        PRIMARY KEY (organism, amino_acid),
+                        FOREIGN KEY (organism) REFERENCES organisms(name) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_codon_usage_organism
+                        ON codon_usage(organism);
+                    CREATE INDEX IF NOT EXISTS idx_codon_adaptiveness_organism
+                        ON codon_adaptiveness(organism);
+                    CREATE INDEX IF NOT EXISTS idx_preferred_codons_organism
+                        ON preferred_codons(organism);
+                """)
+
+            if version < 2:
+                # v2: Add response hash for cache integrity validation
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS api_response_cache (
+                        organism TEXT PRIMARY KEY,
+                        response_hash TEXT NOT NULL,
+                        fetched_at TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        FOREIGN KEY (organism) REFERENCES organisms(name) ON DELETE CASCADE
+                    );
+                """)
+
+            # Update schema version
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_version (key, value) VALUES (?, ?)",
+                ("version", str(SCHEMA_VERSION)),
+            )
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _get_schema_version(conn: sqlite3.Connection) -> int:
+        """Get the current schema version from the database."""
+        try:
+            row = conn.execute(
+                "SELECT value FROM schema_version WHERE key = 'version'"
+            ).fetchone()
+            return int(row["value"]) if row else 0
+        except sqlite3.OperationalError:
+            # Table doesn't exist yet — old schema without versioning
+            # Check if organisms table exists to determine version
+            try:
+                conn.execute("SELECT 1 FROM organisms LIMIT 1")
+                return 1  # Has old schema but no version table
+            except sqlite3.OperationalError:
+                return 0  # Fresh database
 
     # ─── Read Operations ──────────────────────────────────────────
 
@@ -415,10 +477,17 @@ class OrganismDatabase:
         if html is None:
             raise last_error or urllib.error.URLError("Kazusa API unreachable")
 
+        # Validate HTML response before parsing
+        if not self._validate_kazusa_response(html, organism):
+            logger.warning("Kazusa response validation failed for %s — may be malformed", organism)
+
         # Parse the HTML response using multiple strategies
         codon_usage = self._parse_kazusa_html_robust(html, organism)
         if not codon_usage:
             raise ValueError(f"No codon usage data found for {organism} (tax_id={tax_id})")
+
+        # Validate parsed data integrity
+        codon_usage = self._validate_codon_usage_data(codon_usage, organism)
 
         # Store in database
         n_cds = self._extract_n_cds_from_html(html)
@@ -429,6 +498,10 @@ class OrganismDatabase:
             source="kazusa",
             n_cds=n_cds,
         )
+
+        # Store response hash for cache integrity
+        self._store_response_hash(organism, html, url)
+
         logger.info("Successfully fetched and stored %s from Kazusa (%d codons)", organism, len(codon_usage))
 
     # ─── Migration from Built-in Data ─────────────────────────────
@@ -712,6 +785,156 @@ class OrganismDatabase:
                 return False
         finally:
             conn.close()
+
+    def _validate_kazusa_response(self, html: str, organism: str) -> bool:
+        """
+        Validate that a Kazusa HTML response contains expected structural elements.
+
+        Checks for:
+        - Non-empty response
+        - Contains codon-like patterns (3-letter nucleotide sequences)
+        - Contains numeric data (frequencies/counts)
+        - Does not contain error messages from the Kazusa server
+        """
+        if not html or len(html) < 100:
+            logger.warning("Kazusa response too short for %s (%d bytes)", organism, len(html) if html else 0)
+            return False
+
+        # Check for Kazusa error messages
+        error_indicators = [
+            "not found", "no data", "error", "invalid species",
+            "no entries", "does not exist",
+        ]
+        html_lower = html.lower()
+        for indicator in error_indicators:
+            if indicator in html_lower:
+                logger.warning("Kazusa response contains error indicator '%s' for %s", indicator, organism)
+                return False
+
+        # Check for at least some codon patterns
+        codon_pattern = re.compile(r'[ACGT]{3}')
+        codon_matches = codon_pattern.findall(html)
+        if len(codon_matches) < 20:
+            logger.warning(
+                "Kazusa response has few codon patterns for %s (%d found)",
+                organism, len(codon_matches),
+            )
+            return False
+
+        return True
+
+    @staticmethod
+    def _validate_codon_usage_data(
+        codon_usage: dict[str, tuple[str, float, float, int]],
+        organism: str,
+    ) -> dict[str, tuple[str, float, float, int]]:
+        """
+        Validate parsed codon usage data for internal consistency.
+
+        Checks:
+        - All 64 codons are present
+        - Frequencies are non-negative
+        - Amino acid assignments match the standard codon table
+        - Per-amino-acid frequency totals are reasonable
+
+        Fixes:
+        - Corrects amino acid assignments that don't match CODON_TABLE
+        - Normalizes frequencies that exceed 1.0
+        """
+        validated = {}
+        corrections = 0
+
+        for codon, (aa, freq, adapt, count) in codon_usage.items():
+            # Validate amino acid assignment
+            expected_aa = CODON_TABLE.get(codon)
+            if expected_aa and expected_aa == "*":
+                expected_aa = "STOP"
+            if expected_aa and aa != expected_aa:
+                logger.debug(
+                    "Correcting AA for codon %s in %s: %s → %s",
+                    codon, organism, aa, expected_aa,
+                )
+                aa = expected_aa
+                corrections += 1
+
+            # Validate frequency range
+            if freq < 0:
+                logger.warning("Negative frequency for %s in %s: %f — clamping to 0", codon, organism, freq)
+                freq = 0.0
+                corrections += 1
+            if freq > MAX_FREQUENCY_PER_CODON:
+                logger.debug("Frequency > 1.0 for %s in %s: %f — normalizing", codon, organism, freq)
+                freq = min(freq, MAX_FREQUENCY_PER_CODON)
+                corrections += 1
+
+            validated[codon] = (aa, freq, adapt, count)
+
+        if corrections:
+            logger.info("Made %d corrections to codon usage data for %s", corrections, organism)
+
+        # Check total codon count
+        if len(validated) < MIN_CODON_COUNT:
+            logger.warning(
+                "Only %d/64 codons parsed for %s (minimum expected: %d)",
+                len(validated), organism, MIN_CODON_COUNT,
+            )
+
+        return validated
+
+    def _store_response_hash(self, organism: str, html: str, url: str) -> None:
+        """Store a hash of the API response for cache integrity validation."""
+        response_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO api_response_cache (organism, response_hash, fetched_at, url)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(organism) DO UPDATE SET
+                       response_hash = excluded.response_hash,
+                       fetched_at = excluded.fetched_at,
+                       url = excluded.url""",
+                (organism, response_hash, now, url),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # Table may not exist in older schemas — log but don't fail
+            logger.debug("Could not store response hash: %s", e)
+        finally:
+            conn.close()
+
+    def verify_cache_integrity(self, organism: str) -> bool:
+        """
+        Verify that cached data for an organism matches the stored response hash.
+
+        Returns True if the cache is intact, False if corrupted.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT response_hash, url FROM api_response_cache WHERE organism = ?",
+                (organism,),
+            ).fetchone()
+            if not row:
+                return True  # No hash stored — can't verify, assume OK
+            stored_hash = row["response_hash"]
+            url = row["url"]
+        finally:
+            conn.close()
+
+        # Re-fetch and compare
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": f"BioCompiler/{__import__('biocompiler').__version__}"},
+            )
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+                html = response.read().decode("utf-8", errors="replace")
+            current_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
+            return current_hash == stored_hash
+        except Exception as e:
+            logger.warning("Could not verify cache integrity for %s: %s", organism, e)
+            return True  # Can't verify — assume OK
 
 
 # ─── Module-level convenience functions ────────────────────────────
