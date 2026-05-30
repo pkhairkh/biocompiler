@@ -1,8 +1,12 @@
 """
 BioCompiler CSP Sequence Optimizer — z3 + Greedy Fallback
 
-Generates DNA sequences that pass all type predicates using z3 constraint
-solver with greedy fallback for long sequences.
+Production-grade optimizer with:
+- Thread-safe z3 usage (local solver timeout, not global set_param)
+- Convergence checking for greedy optimizer loops
+- Geometric mean CAI objective for z3 (sum-of-logs, not sum)
+- Configurable cryptic splice threshold
+- Clear failure reporting
 """
 
 import logging
@@ -18,6 +22,7 @@ from .organisms import CODON_USAGE_TABLES, SUPPORTED_ORGANISMS, CODON_ADAPTIVENE
 from .exceptions import UnsupportedOrganismError, InvalidProteinError, OptimizationError
 from .translation import compute_cai
 from .scanner import gc_content
+from .maxentscan import max_donor_score, max_acceptor_score
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +56,20 @@ def _greedy_optimize(
     gc_lo: float = 0.30,
     gc_hi: float = 0.70,
     restriction_sites: Optional[List[str]] = None,
-) -> str:
-    """Greedy codon optimization: choose highest-CAI codon, then fix violations."""
+    cryptic_splice_threshold: float = 3.0,
+) -> Tuple[str, List[str]]:
+    """
+    Greedy codon optimization: choose highest-CAI codon, then fix violations.
+
+    Returns:
+        Tuple of (optimized_sequence, list_of_warnings)
+    """
     usage = CODON_ADAPTIVENESS_TABLES.get(organism)
     if usage is None:
         raise UnsupportedOrganismError(organism, SUPPORTED_ORGANISMS)
     aas = protein_to_aa_list(protein)
     restriction_sites = restriction_sites or list(RESTRICTION_ENZYMES.values())
+    warnings: List[str] = []
 
     sorted_codons: Dict[str, List[str]] = {}
     for aa in set(aas):
@@ -72,7 +84,7 @@ def _greedy_optimize(
     for site in restriction_sites:
         site_upper = site.upper()
         site_rc = reverse_complement(site_upper)
-        for _ in range(100):
+        for iteration in range(100):
             pos = sequence.find(site_upper)
             pos_rc = sequence.find(site_rc)
             if pos == -1 and pos_rc == -1:
@@ -82,19 +94,27 @@ def _greedy_optimize(
             if codon_idx < len(aas):
                 aa = aas[codon_idx]
                 current = sequence[codon_idx*3: codon_idx*3+3]
+                fixed = False
                 for alt in sorted_codons[aa]:
                     if alt != current:
                         test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
                         if site_upper not in test and site_rc not in test:
                             sequence = test
+                            fixed = True
                             break
+                if not fixed:
+                    warnings.append(f"Cannot remove {site} at iteration {iteration}")
+                    break
+        else:
+            warnings.append(f"Restriction site {site}: max iterations reached, may still be present")
 
     # Phase 3: Fix ATTTA
-    for _ in range(100):
+    for iteration in range(100):
         pos = sequence.find("ATTTA")
         if pos == -1:
             break
         codon_idx = pos // 3
+        fixed = False
         for ci in range(max(0, codon_idx-1), min(len(aas), codon_idx+2)):
             aa = aas[ci]
             current = sequence[ci*3:ci*3+3]
@@ -103,13 +123,18 @@ def _greedy_optimize(
                     test = sequence[:ci*3] + alt + sequence[ci*3+3:]
                     if "ATTTA" not in test:
                         sequence = test
+                        fixed = True
                         break
-            else:
-                continue
+            if fixed:
+                break
+        if not fixed:
+            warnings.append(f"ATTTA motif: cannot remove at iteration {iteration}")
             break
+    else:
+        warnings.append("ATTTA motif: max iterations reached, may still be present")
 
     # Phase 4: Fix 6+ consecutive T
-    for _ in range(100):
+    for iteration in range(100):
         max_run, max_pos = 0, -1
         i = 0
         while i < len(sequence):
@@ -128,36 +153,70 @@ def _greedy_optimize(
         if codon_idx < len(aas):
             aa = aas[codon_idx]
             current = sequence[codon_idx*3:codon_idx*3+3]
+            fixed = False
             for alt in sorted_codons[aa]:
                 if alt != current:
                     test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
                     if not any(test[i:i+6] == "TTTTTT" for i in range(len(test)-5)):
                         sequence = test
+                        fixed = True
                         break
+            if not fixed:
+                warnings.append(f"Consecutive T run: cannot fix at iteration {iteration}")
+                break
+    else:
+        warnings.append("Consecutive T: max iterations reached, may still have 6+ T runs")
 
-    # Phase 5: Adjust GC
-    for _ in range(200):
-        gc = gc_content(sequence)
-        if gc_lo <= gc <= gc_hi:
+    # Phase 5: Adjust GC — use running count instead of recomputing each iteration
+    gc_val = gc_content(sequence)
+    target_gc = (gc_lo + gc_hi) / 2.0
+    gc_count = sum(1 for b in sequence if b in "GC")
+    n_bases = len(sequence)
+    for iteration in range(200):
+        if gc_lo <= gc_val <= gc_hi:
             break
+        best_alt = None
+        best_diff = abs(gc_val - target_gc)
+        best_gc_delta = 0
         for ci in range(len(aas)):
             aa = aas[ci]
             current = sequence[ci*3:ci*3+3]
             current_gc = sum(1 for b in current if b in "GC")
-            best_alt, best_diff = None, abs(gc - (gc_lo + gc_hi) / 2)
             for alt in sorted_codons[aa]:
                 if alt == current:
                     continue
                 alt_gc = sum(1 for b in alt if b in "GC")
-                new_total = sum(1 for b in sequence if b in "GC") - current_gc + alt_gc
-                new_frac = new_total / len(sequence)
-                diff = abs(new_frac - (gc_lo + gc_hi) / 2)
+                new_gc_count = gc_count - current_gc + alt_gc
+                new_frac = new_gc_count / n_bases
+                diff = abs(new_frac - target_gc)
                 if diff < best_diff:
-                    best_diff, best_alt = diff, alt
+                    best_diff = diff
+                    best_alt = alt
+                    best_gc_delta = alt_gc - current_gc
             if best_alt:
+                # Apply immediately and update running count
+                old_codon = sequence[ci*3:ci*3+3]
                 sequence = sequence[:ci*3] + best_alt + sequence[ci*3+3:]
+                gc_count += best_gc_delta
+                gc_val = gc_count / n_bases
+                best_alt = None  # Reset for next outer iteration
+                break
+    else:
+        warnings.append(f"GC adjustment: max iterations reached, current GC={gc_val:.3f}")
 
-    return sequence
+    # Phase 6: Check cryptic splice sites
+    max_d = max_donor_score(sequence)
+    max_a = max_acceptor_score(sequence)
+    if max_d >= cryptic_splice_threshold or max_a >= cryptic_splice_threshold:
+        warnings.append(
+            f"Cryptic splice sites remain: max_donor={max_d:.2f}, max_acceptor={max_a:.2f} "
+            f"(threshold={cryptic_splice_threshold})"
+        )
+
+    for w in warnings:
+        logger.warning(w)
+
+    return sequence, warnings
 
 
 def optimize_sequence(
@@ -169,10 +228,14 @@ def optimize_sequence(
     cai_threshold: float = 0.2,
     max_amino_acids_for_z3: int = 80,
     z3_timeout_ms: int = 30000,
+    cryptic_splice_threshold: float = 3.0,
 ) -> OptimizationResult:
     """
     Find or generate a DNA sequence encoding the target protein that satisfies
     all type predicates, using z3 constraint solver with greedy fallback.
+
+    The z3 solver uses a LOCAL solver timeout (not global set_param) for thread safety,
+    and optimizes sum-of-logs (geometric mean proxy) for CAI.
     """
     aas = protein_to_aa_list(target_protein)
     n_aa = len(aas)
@@ -184,20 +247,28 @@ def optimize_sequence(
 
     restriction_sites = restriction_sites or list(RESTRICTION_ENZYMES.values())
     fallback_used = False
+    all_warnings: List[str] = []
 
     if n_aa > max_amino_acids_for_z3:
-        sequence = _greedy_optimize(target_protein, organism, gc_lo, gc_hi, restriction_sites)
+        sequence, warnings = _greedy_optimize(
+            target_protein, organism, gc_lo, gc_hi, restriction_sites, cryptic_splice_threshold
+        )
         fallback_used = True
+        all_warnings.extend(warnings)
     else:
         try:
-            from z3 import Int, Optimize, If, And, Or, Not, Implies, Sum, sat, set_param
+            from z3 import Int, Optimize, If, And, Or, Not, Implies, Sum, sat, Real, ToReal
         except ImportError:
             logger.warning("z3-solver not installed, falling back to greedy optimizer")
-            sequence = _greedy_optimize(target_protein, organism, gc_lo, gc_hi, restriction_sites)
+            sequence, warnings = _greedy_optimize(
+                target_protein, organism, gc_lo, gc_hi, restriction_sites, cryptic_splice_threshold
+            )
             fallback_used = True
+            all_warnings.extend(warnings)
         else:
+            # Use LOCAL solver timeout for thread safety — NOT global set_param
             opt = Optimize()
-            set_param("timeout", z3_timeout_ms)
+            opt.set("timeout", z3_timeout_ms)
             n_bases = n_aa * 3
             nuc = [Int(f"n_{i}") for i in range(n_bases)]
 
@@ -205,25 +276,31 @@ def optimize_sequence(
                 opt.add(nuc[i] >= 0, nuc[i] <= 3)
 
             usage = CODON_ADAPTIVENESS_TABLES[organism]
-            cai_contributions = []
+            # Use sum-of-logs for CAI geometric mean proxy
+            log_cai_contributions = []
             for aa_idx, aa in enumerate(aas):
                 base_idx = aa_idx * 3
                 n0, n1, n2 = nuc[base_idx], nuc[base_idx+1], nuc[base_idx+2]
                 valid_codons = AA_TO_CODONS[aa]
                 codon_constraints = []
-                cai_chain = None
+                log_cai_chain = None
                 sorted_z3 = sorted(valid_codons, key=lambda c: usage.get(c, 0.0), reverse=True)
                 for codon in sorted_z3:
                     c0, c1, c2 = (BASE_REV[codon[0]], BASE_REV[codon[1]], BASE_REV[codon[2]])
                     match = And(n0 == c0, n1 == c1, n2 == c2)
                     codon_constraints.append(match)
                     w = usage.get(codon, 0.01)
-                    cai_chain = w if cai_chain is None else If(match, w, cai_chain)
+                    # Use log(w) scaled by 1000 to avoid floating point in z3
+                    # z3 works better with integers, so we approximate
+                    log_w_int = int(math.log(max(w, 1e-10)) * 1000)
+                    log_cai_chain = log_w_int if log_cai_chain is None else If(match, log_w_int, log_cai_chain)
                 opt.add(Or(*codon_constraints))
-                if cai_chain is not None:
-                    cai_contributions.append(cai_chain)
+                if log_cai_chain is not None:
+                    log_cai_contributions.append(log_cai_chain)
 
-            opt.maximize(Sum(cai_contributions))
+            # Maximize sum of log(CAI) ≈ maximize geometric mean CAI
+            if log_cai_contributions:
+                opt.maximize(Sum(log_cai_contributions))
 
             # GCInRange
             gc_count = Sum([If(Or(nuc[i] == 1, nuc[i] == 2), 1, 0) for i in range(n_bases)])
@@ -249,12 +326,22 @@ def optimize_sequence(
                 model = opt.model()
                 sequence = "".join(BASE_MAP[model.eval(nuc[i], model_completion=True).as_long()] for i in range(n_bases))
             else:
-                sequence = _greedy_optimize(target_protein, organism, gc_lo, gc_hi, restriction_sites)
+                logger.info("z3 returned %s, falling back to greedy optimizer", result)
+                sequence, warnings = _greedy_optimize(
+                    target_protein, organism, gc_lo, gc_hi, restriction_sites, cryptic_splice_threshold
+                )
                 fallback_used = True
+                all_warnings.extend(warnings)
 
     cai = compute_cai(sequence, organism)
     gc = gc_content(sequence)
-    satisfied, failed = _check_predicates(sequence, gc_lo, gc_hi, restriction_sites, cai_threshold, organism)
+    satisfied, failed = _check_predicates(
+        sequence, gc_lo, gc_hi, restriction_sites, cai_threshold, organism,
+        cryptic_splice_threshold,
+    )
+
+    if all_warnings:
+        logger.info("Optimization warnings: %s", "; ".join(all_warnings))
 
     return OptimizationResult(
         sequence=sequence, protein=target_protein, cai=cai,
@@ -266,9 +353,9 @@ def optimize_sequence(
 def _check_predicates(
     sequence: str, gc_lo: float, gc_hi: float,
     restriction_sites: List[str], cai_threshold: float, organism: str,
+    cryptic_splice_threshold: float = 3.0,
 ) -> Tuple[List[str], List[str]]:
     """Check all type predicates against the optimized sequence."""
-    from .maxentscan import max_donor_score, max_acceptor_score
     satisfied, failed = [], []
 
     satisfied.append("InFrame")
@@ -296,8 +383,8 @@ def _check_predicates(
 
     max_d = max_donor_score(sequence)
     max_a = max_acceptor_score(sequence)
-    (satisfied if max_d < 3.0 and max_a < 3.0 else failed).append(
-        "NoCrypticSplice" if max_d < 3.0 and max_a < 3.0
+    (satisfied if max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold else failed).append(
+        "NoCrypticSplice" if max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold
         else f"NoCrypticSplice(donor={max_d:.2f},acceptor={max_a:.2f})"
     )
 

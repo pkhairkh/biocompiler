@@ -1,10 +1,12 @@
 """
 BioCompiler Type System — Predicate Evaluation with Registry Pattern
 
-FIXES from toy model:
+Production-grade type system with:
 - Registry pattern for predicates (extensible, no string-prefix hacks)
+- NoCrypticSplice uses MaxEntScan scoring (not raw GT/AG counting)
+- SpliceCorrect fixes UNCERTAIN logic
 - Each predicate is a self-contained callable with metadata
-- Easy to add new predicates without modifying verification code
+- Evaluate all registered predicates via registry (not hardcoded list)
 - Proper error handling
 """
 
@@ -14,6 +16,7 @@ from .scanner import scan_sequence, gc_content, validate_dna_sequence
 from .splicing import compute_splice_isoforms
 from .translation import compute_cai
 from .constants import INSTABILITY_MOTIF, RESTRICTION_ENZYMES, reverse_complement
+from .maxentscan import max_donor_score, max_acceptor_score, scan_splice_sites
 from .exceptions import UnknownPredicateError
 
 logger = logging.getLogger(__name__)
@@ -71,50 +74,79 @@ registry = PredicateRegistry()
 # Predicate Implementations
 # ==============================================================================
 
-def evaluate_no_cryptic_splice(seq: str, known_exon_boundaries: list[tuple[int, int]], **kwargs) -> TypeCheckResult:
+def evaluate_no_cryptic_splice(
+    seq: str,
+    known_exon_boundaries: list[tuple[int, int]],
+    cryptic_threshold: float = 3.0,
+    **kwargs,
+) -> TypeCheckResult:
     """
-    NoCrypticSplice: No donor/acceptor pair within known exons that could form a cryptic intron.
+    NoCrypticSplice: No donor/acceptor pair within known exons that could form
+    a cryptic intron, as determined by MaxEntScan scoring.
+
+    This uses the MaxEntScan model to score every GT/AG dinucleotide in exonic
+    regions. Only pairs where BOTH the donor AND acceptor score above the
+    threshold are flagged as potential cryptic splice sites. This dramatically
+    reduces false positives compared to the naive approach of flagging every
+    GT/AG pair.
+
+    Args:
+        seq: full pre-mRNA sequence
+        known_exon_boundaries: list of (start, end) tuples for known exons
+        cryptic_threshold: MaxEntScan score threshold above which a splice site
+                          is considered functional (default 3.0)
     """
     derivation = []
+
     for exon_start, exon_end in known_exon_boundaries:
         exon_seq = seq[exon_start:exon_end]
-        tokens = scan_sequence(exon_seq)
-        donors = [t for t in tokens if t.element_type == "splice_donor"]
-        acceptors = [t for t in tokens if t.element_type == "splice_acceptor"]
 
-        for d in donors:
+        # Use MaxEntScan to find scored splice sites within this exon
+        splice_sites = scan_splice_sites(exon_seq, cryptic_threshold, cryptic_threshold)
+
+        donors = [(pos, score) for pos, stype, score in splice_sites if stype == "donor"]
+        acceptors = [(pos, score) for pos, stype, score in splice_sites if stype == "acceptor"]
+
+        for pos, score in donors:
             derivation.append({
-                "step": "scan_donor_in_exon",
-                "position": exon_start + d.position,
-                "sequence": d.match_sequence,
-                "score": d.score,
+                "step": "maxentscan_donor_in_exon",
+                "position": exon_start + pos,
+                "score": score,
+                "threshold": cryptic_threshold,
             })
-        for a in acceptors:
+        for pos, score in acceptors:
             derivation.append({
-                "step": "scan_acceptor_in_exon",
-                "position": exon_start + a.position,
-                "sequence": a.match_sequence,
-                "score": a.score,
+                "step": "maxentscan_acceptor_in_exon",
+                "position": exon_start + pos,
+                "score": score,
+                "threshold": cryptic_threshold,
             })
 
-        # Check for donor-acceptor pairs forming potential cryptic intron
-        for d in donors:
-            for a in acceptors:
-                if a.position > d.position + 30:
+        # Check for donor-acceptor pairs that could form cryptic introns
+        # Only pairs where gap > MIN_INTRON_LENGTH are biologically plausible
+        for d_pos, d_score in donors:
+            for a_pos, a_score in acceptors:
+                if a_pos > d_pos + 30:  # Minimum intron length
+                    # Both sites score above threshold → potential cryptic intron
                     return TypeCheckResult(
                         predicate="NoCrypticSplice",
                         verdict=Verdict.FAIL,
                         derivation=derivation,
                         violation=(
                             f"Cryptic splice site pair in exon [{exon_start},{exon_end}): "
-                            f"donor at {exon_start + d.position}, acceptor at {exon_start + a.position}"
+                            f"donor at {exon_start + d_pos} (score={d_score:.2f}), "
+                            f"acceptor at {exon_start + a_pos} (score={a_score:.2f})"
                         ),
                     )
 
     return TypeCheckResult(
         predicate="NoCrypticSplice",
         verdict=Verdict.PASS,
-        derivation=derivation + [{"step": "no_cryptic_pairs_found", "evidence": "exhaustive_scan"}],
+        derivation=derivation + [{
+            "step": "no_cryptic_pairs_found",
+            "evidence": "maxentscan_scored_exhaustive_scan",
+            "threshold": cryptic_threshold,
+        }],
     )
 
 
@@ -134,11 +166,17 @@ def evaluate_splice_correct(
         {"step": "target_isoform", "exon_boundaries": known_exon_boundaries},
     ]
 
-    if len(non_target) == 0 and len(isoforms) == 1:
+    if len(non_target) == 0:
+        # All isoforms have the same sequence as the target → PASS
+        # This covers both: only one isoform (singleton), and multiple isoforms
+        # that all produce the same sequence
         return TypeCheckResult(
             predicate=f"SpliceCorrect({cellular_context})",
             verdict=Verdict.PASS,
-            derivation=derivation + [{"step": "singleton_isoform_set"}],
+            derivation=derivation + [{
+                "step": "all_isoforms_match_target",
+                "total_isoforms": len(isoforms),
+            }],
         )
     elif non_target:
         alt_desc = [
@@ -152,6 +190,8 @@ def evaluate_splice_correct(
             violation=f"Found {len(non_target)} alternative isoforms: {'; '.join(alt_desc)}",
         )
     else:
+        # This branch should be unreachable given the logic above,
+        # but kept as a safety net
         return TypeCheckResult(
             predicate=f"SpliceCorrect({cellular_context})",
             verdict=Verdict.UNCERTAIN,
@@ -190,9 +230,16 @@ def evaluate_no_restriction_site(seq: str, enzyme_set: list[str] | None = None, 
     found_sites: list[dict] = []
 
     for enz_name in enzyme_set:
-        if enz_name not in RESTRICTION_ENZYMES:
+        # Support both name-based and sequence-based enzyme specification
+        if enz_name in RESTRICTION_ENZYMES:
+            site = RESTRICTION_ENZYMES[enz_name]
+        elif all(b in "ACGT" for b in enz_name.upper()):
+            # Treat as a raw recognition sequence
+            site = enz_name.upper()
+        else:
+            logger.warning("Unknown enzyme '%s' and not a valid DNA sequence — skipping", enz_name)
             continue
-        site = RESTRICTION_ENZYMES[enz_name]
+
         site_rc = reverse_complement(site)
 
         # Forward strand
@@ -290,6 +337,68 @@ def evaluate_no_instability_motif(seq: str, **kwargs) -> TypeCheckResult:
     )
 
 
+def evaluate_no_cpg_island(seq: str, window_size: int = 200, threshold: float = 0.6, min_obs_exp: float = 0.65, **kwargs) -> TypeCheckResult:
+    """
+    NoCpGIsland: No CpG islands in the coding sequence that could trigger
+    epigenetic silencing.
+
+    A CpG island is defined as a region of at least `window_size` bp with:
+    - GC content >= threshold (default 0.6)
+    - Observed/Expected CpG ratio >= min_obs_exp (default 0.65)
+
+    CpG islands in coding sequences can trigger DNA methylation and
+    epigenetic silencing, which is undesirable for expression constructs.
+    """
+    seq = seq.upper()
+    cpg_islands = []
+
+    for start in range(len(seq) - window_size + 1):
+        window = seq[start:start + window_size]
+        gc = gc_content(window)
+
+        if gc >= threshold:
+            # Compute observed/expected CpG ratio
+            cpg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
+            c_count = window.count('C')
+            g_count = window.count('G')
+            expected = (c_count * g_count) / max(len(window), 1)
+            obs_exp = cpg_count / max(expected, 1e-10)
+
+            if obs_exp >= min_obs_exp:
+                cpg_islands.append({
+                    "start": start,
+                    "end": start + window_size,
+                    "gc_content": round(gc, 4),
+                    "cpg_obs_exp": round(obs_exp, 4),
+                })
+
+    # Merge overlapping islands
+    merged = []
+    for island in cpg_islands:
+        if merged and island["start"] <= merged[-1]["end"]:
+            merged[-1]["end"] = max(merged[-1]["end"], island["end"])
+        else:
+            merged.append(dict(island))
+
+    if merged:
+        return TypeCheckResult(
+            predicate="NoCpGIsland",
+            verdict=Verdict.FAIL,
+            violation=f"Found {len(merged)} CpG island(s): {merged[:5]}",
+        )
+    return TypeCheckResult(
+        predicate="NoCpGIsland",
+        verdict=Verdict.PASS,
+        derivation=[{
+            "step": "cpg_island_scan",
+            "window_size": window_size,
+            "gc_threshold": threshold,
+            "obs_exp_threshold": min_obs_exp,
+            "islands_found": 0,
+        }],
+    )
+
+
 # ==============================================================================
 # Register all built-in predicates
 # ==============================================================================
@@ -301,6 +410,7 @@ registry.register("CodonAdapted", evaluate_codon_adapted)
 registry.register("NoRestrictionSite", evaluate_no_restriction_site)
 registry.register("InFrame", evaluate_in_frame)
 registry.register("NoInstabilityMotif", evaluate_no_instability_motif)
+registry.register("NoCpGIsland", evaluate_no_cpg_island)
 
 
 def evaluate_all_predicates(
@@ -312,22 +422,46 @@ def evaluate_all_predicates(
     gc_hi: float = 0.70,
     cai_threshold: float = 0.5,
     enzymes: list[str] | None = None,
+    cryptic_splice_threshold: float = 3.0,
 ) -> list[TypeCheckResult]:
     """
     Evaluate all registered type predicates against a sequence.
+
+    Uses the registry to discover predicates, so new predicates are
+    automatically included when registered.
 
     Returns results in a canonical order.
     """
     enzymes = enzymes or list(RESTRICTION_ENZYMES.keys())
     target_isoform = "".join(seq[start:end] for start, end in known_exon_boundaries)
 
-    results = [
-        evaluate_no_cryptic_splice(seq, known_exon_boundaries),
-        evaluate_splice_correct(seq, known_exon_boundaries, cellular_context),
-        evaluate_gc_in_range(target_isoform, gc_lo, gc_hi),
-        evaluate_codon_adapted(target_isoform, organism, cai_threshold),
-        evaluate_no_restriction_site(target_isoform, enzymes),
-        evaluate_in_frame(target_isoform, [(0, len(target_isoform))]),
-        evaluate_no_instability_motif(target_isoform),
-    ]
+    # Evaluate each predicate via the registry — ensures all registered predicates are included
+    predicate_args = {
+        "NoCrypticSplice": {"seq": seq, "known_exon_boundaries": known_exon_boundaries, "cryptic_threshold": cryptic_splice_threshold},
+        "SpliceCorrect": {"seq": seq, "known_exon_boundaries": known_exon_boundaries, "cellular_context": cellular_context},
+        "GCInRange": {"seq": target_isoform, "gc_lo": gc_lo, "gc_hi": gc_hi},
+        "CodonAdapted": {"seq": target_isoform, "organism": organism, "threshold": cai_threshold},
+        "NoRestrictionSite": {"seq": target_isoform, "enzyme_set": enzymes},
+        "InFrame": {"seq": target_isoform, "exon_boundaries": [(0, len(target_isoform))]},
+        "NoInstabilityMotif": {"seq": target_isoform},
+        "NoCpGIsland": {"seq": target_isoform},
+    }
+
+    results = []
+    for name in registry.names():
+        if name in predicate_args:
+            try:
+                result = registry.evaluate(name, **predicate_args[name])
+                results.append(result)
+            except Exception as e:
+                logger.error("Error evaluating predicate %s: %s", name, e)
+                results.append(TypeCheckResult(
+                    predicate=name,
+                    verdict=Verdict.UNCERTAIN,
+                    derivation=[],
+                    knowledge_gap=f"Evaluation error: {e}",
+                ))
+        else:
+            logger.debug("Predicate %s registered but no arguments configured for evaluate_all_predicates", name)
+
     return results

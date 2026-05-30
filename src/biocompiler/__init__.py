@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 from .types import (
     Verdict,
@@ -31,6 +31,8 @@ from .exceptions import (
     OptimizationError,
     UnsupportedOrganismError,
     InvalidProteinError,
+    FileFormatError,
+    SplicingError,
 )
 from .scanner import (
     validate_dna_sequence,
@@ -51,6 +53,7 @@ from .type_system import (
     evaluate_no_restriction_site,
     evaluate_in_frame,
     evaluate_no_instability_motif,
+    evaluate_no_cpg_island,
     evaluate_all_predicates,
     registry as predicate_registry,
 )
@@ -66,6 +69,7 @@ from .maxentscan import (
     max_acceptor_score,
 )
 from .optimization import optimize_sequence
+from .grammar_loader import load_grammar, grammar_to_predicate_params
 
 __all__ = [
     # Version
@@ -79,6 +83,7 @@ __all__ = [
     "CertificateGenerationError", "CertificateVerificationError",
     "UnknownPredicateError", "OptimizationError",
     "UnsupportedOrganismError", "InvalidProteinError",
+    "FileFormatError", "SplicingError",
     # Scanner
     "validate_dna_sequence", "gc_content", "scan_sequence",
     # Translation
@@ -89,8 +94,8 @@ __all__ = [
     "evaluate_no_cryptic_splice", "evaluate_splice_correct",
     "evaluate_gc_in_range", "evaluate_codon_adapted",
     "evaluate_no_restriction_site", "evaluate_in_frame",
-    "evaluate_no_instability_motif", "evaluate_all_predicates",
-    "predicate_registry",
+    "evaluate_no_instability_motif", "evaluate_no_cpg_island",
+    "evaluate_all_predicates", "predicate_registry",
     # Certificate
     "generate_certificate", "verify_certificate",
     # MaxEntScan
@@ -98,4 +103,6 @@ __all__ = [
     "max_donor_score", "max_acceptor_score",
     # Optimization
     "optimize_sequence",
+    # Grammar
+    "load_grammar", "grammar_to_predicate_params",
 ]

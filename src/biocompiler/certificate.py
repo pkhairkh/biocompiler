@@ -1,11 +1,12 @@
 """
 BioCompiler Certificate Engine — Generation & Verification
 
-FIXES from toy model:
-- CertificateError instead of raw assert
+Production-grade certificate system with:
 - Registry-based verification (no string-prefix dispatch)
-- Verification parameters embedded IN the certificate
+- All verification parameters embedded IN the certificate
 - Hash integrity check for sequence + parameters
+- Input validation for certificate structure
+- CertificateError instead of raw assert
 """
 
 import hashlib
@@ -17,7 +18,11 @@ from .exceptions import CertificateGenerationError, CertificateVerificationError
 
 logger = logging.getLogger(__name__)
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+
+# Required keys in a certificate dict for verification
+_CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}
+_PROVENANCE_REQUIRED_KEYS = {"tool", "version", "timestamp", "input_hash"}
 
 
 def generate_certificate(
@@ -35,6 +40,8 @@ def generate_certificate(
         sequence: the DNA sequence being certified
         type_results: list of TypeCheckResult objects
         input_params: dict of parameters used (gene, organism, exon_boundaries, etc.)
+            MUST include all parameters needed for independent re-verification:
+            - exon_boundaries, gc_lo, gc_hi, cai_threshold, organism, cell_type, enzymes
 
     Returns:
         Certificate object
@@ -46,9 +53,23 @@ def generate_certificate(
     if failures:
         raise CertificateGenerationError(failures)
 
+    # Compute hash once
+    seq_hash = hashlib.sha256(sequence.encode()).hexdigest()
+
+    # Ensure all verification parameters are embedded
+    complete_params = dict(input_params)
+    complete_params.setdefault("organism", "Homo_sapiens")
+    complete_params.setdefault("cell_type", "HEK293T")
+    complete_params.setdefault("gc_lo", 0.30)
+    complete_params.setdefault("gc_hi", 0.70)
+    complete_params.setdefault("cai_threshold", 0.5)
+    complete_params.setdefault("enzymes", ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"])
+    complete_params.setdefault("cryptic_splice_threshold", 3.0)
+    complete_params.setdefault("exon_boundaries", [(0, len(sequence))])
+
     cert = Certificate(
         version=VERSION,
-        design_id=hashlib.sha256(sequence.encode()).hexdigest(),
+        design_id=seq_hash,
         sequence=sequence,
         types=[
             {
@@ -62,12 +83,77 @@ def generate_certificate(
             "tool": "BioCompiler",
             "version": VERSION,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "parameters": input_params,
-            "input_hash": hashlib.sha256(sequence.encode()).hexdigest(),
+            "parameters": complete_params,
+            "input_hash": seq_hash,
         },
     )
     logger.info("Certificate generated: design_id=%s...", cert.design_id[:16])
     return cert
+
+
+def _validate_cert_structure(cert_dict: dict) -> list[str]:
+    """Validate that a certificate dict has all required fields. Returns list of issues."""
+    issues: list[str] = []
+    missing_keys = _CERT_REQUIRED_KEYS - set(cert_dict.keys())
+    if missing_keys:
+        issues.append(f"Missing certificate keys: {missing_keys}")
+
+    prov = cert_dict.get("provenance", {})
+    missing_prov = _PROVENANCE_REQUIRED_KEYS - set(prov.keys())
+    if missing_prov:
+        issues.append(f"Missing provenance keys: {missing_prov}")
+
+    types_list = cert_dict.get("types", [])
+    for i, t in enumerate(types_list):
+        if "predicate" not in t or "verdict" not in t:
+            issues.append(f"Type entry {i} missing 'predicate' or 'verdict' key")
+
+    return issues
+
+
+# Mapping from predicate name pattern to registry name and required kwargs
+_PREDICATE_KWARGS_MAP = {
+    "NoCrypticSplice": lambda params: {
+        "known_exon_boundaries": params.get("exon_boundaries", []),
+    },
+    "SpliceCorrect": lambda params: {
+        "known_exon_boundaries": params.get("exon_boundaries", []),
+        "cellular_context": params.get("cell_type", "HEK293T"),
+    },
+    "GCInRange": lambda params: {
+        "gc_lo": params.get("gc_lo", 0.30),
+        "gc_hi": params.get("gc_hi", 0.70),
+    },
+    "CodonAdapted": lambda params: {
+        "organism": params.get("organism", "Homo_sapiens"),
+        "threshold": params.get("cai_threshold", 0.5),
+    },
+    "NoRestrictionSite": lambda params: {
+        "enzyme_set": params.get("enzymes", []),
+    },
+    "InFrame": lambda params: {
+        "exon_boundaries": params.get("exon_boundaries", [(0, 0)]),
+    },
+    "NoInstabilityMotif": lambda params: {},
+    "NoCpGIsland": lambda params: {},
+}
+
+
+def _resolve_predicate_name(cert_predicate_name: str) -> str | None:
+    """
+    Resolve a possibly parameterized predicate name from a certificate
+    (e.g., 'GCInRange(0.30, 0.70)') to its registry base name (e.g., 'GCInRange').
+
+    Returns None if no matching registry predicate is found.
+    """
+    # First try exact match
+    if cert_predicate_name in registry:
+        return cert_predicate_name
+    # Try prefix match for parameterized predicates
+    for base_name in registry.names():
+        if cert_predicate_name.startswith(base_name):
+            return base_name
+    return None
 
 
 def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
@@ -76,6 +162,8 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
 
     This function does NOT trust the certificate. It re-evaluates every
     predicate from scratch using only the sequence and parameters in the certificate.
+
+    Uses the predicate registry for dispatch — no if/elif chains.
 
     Args:
         cert_dict: certificate as a plain dict
@@ -86,21 +174,20 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
     """
     failures: list[str] = []
 
+    # Step 0: Validate certificate structure
+    structural_issues = _validate_cert_structure(cert_dict)
+    if structural_issues:
+        # Return early if structure is invalid — can't safely proceed
+        return "REJECTED", structural_issues
+
     seq = cert_dict["sequence"].upper()
     prov = cert_dict.get("provenance", {})
     params = prov.get("parameters", {})
 
-    # Extract verification parameters from certificate
-    known_exon_boundaries = kwargs.get(
-        "known_exon_boundaries",
-        params.get("exon_boundaries", [(0, len(seq))])
-    )
-    cellular_context = kwargs.get("cellular_context", params.get("cell_type", "HEK293T"))
-    gc_lo = params.get("gc_lo", 0.30)
-    gc_hi = params.get("gc_hi", 0.70)
-    cai_threshold = params.get("cai_threshold", 0.5)
-    organism = params.get("organism", "Homo_sapiens")
-    enzymes = params.get("enzymes", ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"])
+    # Merge certificate params with kwargs (kwargs take precedence for explicit overrides)
+    effective_params = dict(params)
+    for key, val in kwargs.items():
+        effective_params[key] = val
 
     # Check 1: design_id matches SHA-256 of sequence
     computed_hash = hashlib.sha256(seq.encode()).hexdigest()
@@ -116,24 +203,18 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
         claimed_verdict = type_entry["verdict"]
 
         try:
-            # Dispatch based on predicate name through the registry
-            if predicate_name == "NoCrypticSplice":
-                result = registry.verify("NoCrypticSplice", seq=seq, known_exon_boundaries=known_exon_boundaries)
-            elif predicate_name.startswith("SpliceCorrect"):
-                result = registry.verify("SpliceCorrect", seq=seq, known_exon_boundaries=known_exon_boundaries, cellular_context=cellular_context)
-            elif predicate_name.startswith("GCInRange"):
-                result = registry.verify("GCInRange", seq=seq, gc_lo=gc_lo, gc_hi=gc_hi)
-            elif predicate_name.startswith("CodonAdapted"):
-                result = registry.verify("CodonAdapted", seq=seq, organism=organism, threshold=cai_threshold)
-            elif predicate_name.startswith("NoRestrictionSite"):
-                result = registry.verify("NoRestrictionSite", seq=seq, enzyme_set=enzymes)
-            elif predicate_name == "InFrame":
-                result = registry.verify("InFrame", seq=seq, exon_boundaries=known_exon_boundaries)
-            elif predicate_name == "NoInstabilityMotif":
-                result = registry.verify("NoInstabilityMotif", seq=seq)
-            else:
+            # Resolve predicate name to registry name
+            registry_name = _resolve_predicate_name(predicate_name)
+            if registry_name is None:
                 failures.append(f"Unknown predicate: {predicate_name}")
                 continue
+
+            # Build kwargs for the registry verify call
+            kwarg_builder = _PREDICATE_KWARGS_MAP.get(registry_name, lambda p: {})
+            verify_kwargs = kwarg_builder(effective_params)
+            verify_kwargs["seq"] = seq
+
+            result = registry.verify(registry_name, **verify_kwargs)
 
             if result.verdict.value != claimed_verdict:
                 failures.append(
@@ -144,8 +225,7 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
             failures.append(f"Predicate {predicate_name}: re-evaluation error: {e}")
 
     # Check 3: Provenance completeness
-    prov = cert_dict.get("provenance", {})
-    for required_field in ("tool", "version", "timestamp", "input_hash"):
+    for required_field in _PROVENANCE_REQUIRED_KEYS:
         if required_field not in prov:
             failures.append(f"Missing provenance field: {required_field}")
 

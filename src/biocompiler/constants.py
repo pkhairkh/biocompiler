@@ -3,6 +3,12 @@ BioCompiler Constants
 
 Single canonical source for all biological constants.
 No more duplication across poc/data/mvp modules.
+
+Extended with:
+- More restriction enzymes from REBASE
+- IUPAC ambiguity code support
+- Safer reverse_complement with validation
+- Organism-specific min intron lengths
 """
 
 # ==============================================================================
@@ -43,17 +49,32 @@ for _codon, _aa in CODON_TABLE.items():
 
 DONOR_CONSENSUS = "GT"
 ACCEPTOR_CONSENSUS = "AG"
-KOZAK_CONSENSUS = "GCCACC"
+KOZAK_CONSENSUS = "GCCACC"  # Exact match fallback; scanner uses PWM scoring
 INSTABILITY_MOTIF = "ATTTA"
-MIN_INTRON_LENGTH = 30  # Minimum intron length in nt
+
+# Minimum intron lengths by organism (nt)
+# Source: Nucleic Acids Research, various publications
+MIN_INTRON_LENGTHS: dict[str, int] = {
+    "Homo_sapiens": 30,
+    "Mus_musculus": 30,
+    "Drosophila_melanogaster": 30,
+    "Saccharomyces_cerevisiae": 50,
+    "Caenorhabditis_elegans": 30,
+    "default": 30,
+}
+
+MIN_INTRON_LENGTH = MIN_INTRON_LENGTHS["default"]  # Backward compat
+
 POLYPYRIMIDINE_WINDOW = 40  # Upstream window for acceptor scoring
 POLYPYRIMIDINE_THRESHOLD = 0.5
 
 # ==============================================================================
 # 3. Restriction Enzyme Sites
+# Extended from REBASE database
 # ==============================================================================
 
 RESTRICTION_ENZYMES: dict[str, str] = {
+    # Common cloning enzymes
     "EcoRI": "GAATTC",
     "BamHI": "GGATCC",
     "XhoI": "CTCGAG",
@@ -64,6 +85,27 @@ RESTRICTION_ENZYMES: dict[str, str] = {
     "PstI": "CTGCAG",
     "SphI": "GCATGC",
     "NdeI": "CATATG",
+    # Additional common enzymes
+    "NcoI": "CCATGG",
+    "NheI": "GCTAGC",
+    "KpnI": "GGTACC",
+    "SmaI": "CCCGGG",
+    "SacI": "GAGCTC",
+    "SpeI": "ACTAGT",
+    "ApaI": "GGGCCC",
+    "ClaI": "ATCGAT",
+    "EcoRV": "GATATC",
+    "BglII": "AGATCT",
+    "MluI": "ACGCGT",
+    "AscI": "GGCGCGCC",
+    "FseI": "GGCCGGCC",
+    "PacI": "TTAATTAA",
+    "SfiI": "GGCCNNNNNGGCC",
+    "SbfI": "CCTGCAGG",
+    "BsiWI": "CGTACG",
+    "BsrGI": "TGTACA",
+    "AgeI": "ACCGGT",
+    "MfeI": "CAATTG",
 }
 
 # ==============================================================================
@@ -73,11 +115,44 @@ RESTRICTION_ENZYMES: dict[str, str] = {
 BASE_MAP = {0: "A", 1: "C", 2: "G", 3: "T"}
 BASE_REV = {"A": 0, "C": 1, "G": 2, "T": 3}
 
-COMPLEMENT = {"A": "T", "T": "A", "G": "C", "C": "G",
-              "a": "t", "t": "a", "g": "c", "c": "g",
-              "N": "N", "n": "n"}
+# IUPAC ambiguity codes
+COMPLEMENT: dict[str, str] = {
+    "A": "T", "T": "A", "G": "C", "C": "G",
+    "a": "t", "t": "a", "g": "c", "c": "g",
+    # IUPAC ambiguity codes
+    "R": "Y", "Y": "R",  # purine/pyrimidine
+    "S": "S", "W": "W",  # strong/weak
+    "K": "M", "M": "K",  # keto/amino
+    "B": "V", "V": "B",  # not-A/not-T
+    "D": "H", "H": "D",  # not-C/not-G
+    "N": "N",             # any base
+    # lowercase
+    "r": "y", "y": "r",
+    "s": "s", "w": "w",
+    "k": "m", "m": "k",
+    "b": "v", "v": "b",
+    "d": "h", "h": "d",
+    "n": "n",
+}
+
+# IUPAC base to set of concrete bases
+IUPAC_EXPAND: dict[str, str] = {
+    "A": "A", "C": "C", "G": "G", "T": "T",
+    "R": "AG", "Y": "CT", "S": "GC", "W": "AT",
+    "K": "GT", "M": "AC", "B": "CGT", "D": "AGT",
+    "H": "ACT", "V": "ACG", "N": "ACGT",
+}
 
 
 def reverse_complement(seq: str) -> str:
-    """Return the reverse complement of a DNA sequence."""
-    return "".join(COMPLEMENT[base] for base in reversed(seq))
+    """Return the reverse complement of a DNA sequence.
+
+    Supports IUPAC ambiguity codes. Raises ValueError for unknown characters.
+    """
+    try:
+        return "".join(COMPLEMENT[base] for base in reversed(seq))
+    except KeyError as e:
+        raise ValueError(
+            f"Unknown base '{e.args[0]}' in sequence. "
+            f"Supported: A, C, G, T, N, and IUPAC ambiguity codes (R, Y, S, W, K, M, B, D, H, V)."
+        ) from None

@@ -36,12 +36,23 @@ def translate(sequence: str, to_stop: bool = True) -> str:
     sequence = validate_dna_sequence(sequence)
     if not sequence:
         return ""
+
+    # Warn about partial codons
+    if len(sequence) % 3 != 0:
+        logger.warning(
+            "Sequence length %d is not a multiple of 3; last %d base(s) will be ignored",
+            len(sequence), len(sequence) % 3,
+        )
+
     protein: list[str] = []
     for i in range(0, len(sequence) - 2, 3):
         codon = sequence[i:i+3]
         if len(codon) < 3:
             break  # Partial codon at end
-        aa = CODON_TABLE.get(codon, "X")
+        aa = CODON_TABLE.get(codon)
+        if aa is None:
+            logger.warning("Unknown codon '%s' at position %d — mapping to 'X'", codon, i)
+            aa = "X"
         if aa == "*" and to_stop:
             break
         protein.append(aa)

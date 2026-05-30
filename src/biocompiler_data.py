@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """
-BioCompiler Biological Data Module
-===================================
+BioCompiler Biological Data Module (DEPRECATED)
+================================================
+
+.. deprecated:: 2.1.0
+   This module is deprecated. Use the unified ``biocompiler`` package instead.
+   - Codon data: ``biocompiler.organisms``
+   - Translation: ``biocompiler.translation``
+   - Scanning: ``biocompiler.scanner``
+   - Splicing: ``biocompiler.splicing``
+   - Type checking: ``biocompiler.type_system``
+   - Certificates: ``biocompiler.certificate``
+
+This module is retained for backward compatibility and reference data only.
+The biological reference data (HBB, EGFP gene sequences, splice site consensus
+positions) is still valid and useful, but all utility functions have been
+superseded by the unified package.
+
 Curated biological data for the BioCompiler project.
 
 Sources:

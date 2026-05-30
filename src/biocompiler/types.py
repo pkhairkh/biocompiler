@@ -3,6 +3,10 @@ BioCompiler Core Types
 
 Single canonical definition of all data structures.
 No duplication — every other module imports from here.
+
+Extended with:
+- Frozen Token and SpliceIsoform for immutability guarantees
+- Certificate validation in from_dict/to_dict
 """
 
 from dataclasses import dataclass, field
@@ -61,9 +65,9 @@ class PositionRange:
         return self.start <= position < self.end
 
 
-@dataclass
+@dataclass(frozen=True)
 class Token:
-    """An annotated region in a nucleotide sequence."""
+    """An annotated region in a nucleotide sequence. Frozen for immutability."""
     position: int
     element_type: str
     match_sequence: str
@@ -99,6 +103,9 @@ class TypeCheckResult:
         return self.verdict == Verdict.PASS
 
 
+_CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}
+
+
 @dataclass
 class Certificate:
     """A machine-checkable guarantee certificate."""
@@ -120,7 +127,12 @@ class Certificate:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Certificate":
-        """Deserialize from a plain dict."""
+        """Deserialize from a plain dict with validation."""
+        missing = _CERT_REQUIRED_KEYS - set(data.keys())
+        if missing:
+            raise ValueError(
+                f"Cannot deserialize Certificate: missing keys {missing}"
+            )
         return cls(
             version=data["version"],
             design_id=data["design_id"],

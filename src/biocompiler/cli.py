@@ -1,10 +1,20 @@
 """
 BioCompiler CLI — Command-Line Interface
 
+Production-grade CLI with:
+- File input support (FASTA, plain text) for sequences and proteins
+- Sequence length validation
+- Enzyme name validation
+- Exon boundary validation
+- All verification parameters embedded in certificates
+
 Usage:
+    biocompiler check --input-file gene.fasta --exons 0,92 273,495 1346,1608
     biocompiler check --sequence ATGGTGCATCTG... --exons 0,92 273,495 1346,1608
+    biocompiler optimize --protein-file protein.fasta --organism Homo_sapiens
     biocompiler optimize --protein MVHLTPEEK... --organism Homo_sapiens
     biocompiler verify --certificate certificate.json
+    biocompiler scan --input-file gene.fasta
     biocompiler scan --sequence ATGGTGCATCTG...
 """
 
@@ -12,16 +22,21 @@ import argparse
 import json
 import sys
 import logging
+from pathlib import Path
 from . import __version__
-from .scanner import scan_sequence, gc_content
+from .scanner import scan_sequence, gc_content, validate_dna_sequence
 from .translation import translate, compute_cai, find_orfs
 from .type_system import evaluate_all_predicates
 from .certificate import generate_certificate, verify_certificate
 from .optimization import optimize_sequence
 from .types import Verdict, combined_verdict
-from .exceptions import BioCompilerError, CertificateGenerationError
+from .constants import RESTRICTION_ENZYMES
+from .exceptions import BioCompilerError, CertificateGenerationError, InvalidSequenceError
 
 logger = logging.getLogger("biocompiler")
+
+# Maximum sequence length to prevent denial-of-service
+MAX_SEQUENCE_LENGTH = 10_000_000  # 10 Mbp
 
 
 def _setup_logging(verbose: bool):
@@ -33,19 +48,168 @@ def _setup_logging(verbose: bool):
     )
 
 
+def _read_sequence_file(path: str) -> str:
+    """
+    Read a DNA sequence from a file (FASTA or plain text).
+
+    Args:
+        path: path to the input file
+
+    Returns:
+        DNA sequence as a string (no FASTA header, no whitespace)
+
+    Raises:
+        argparse.ArgumentTypeError: if file cannot be read
+    """
+    try:
+        text = Path(path).read_text()
+    except (OSError, IOError) as e:
+        raise argparse.ArgumentTypeError(f"Cannot read file '{path}': {e}")
+
+    # Handle FASTA format: skip header lines starting with '>'
+    lines = text.strip().splitlines()
+    if lines and lines[0].startswith(">"):
+        lines = lines[1:]
+
+    # Remove whitespace and join
+    sequence = "".join(line.strip() for line in lines)
+    return sequence
+
+
+def _read_protein_file(path: str) -> str:
+    """
+    Read a protein sequence from a file (FASTA or plain text).
+
+    Args:
+        path: path to the input file
+
+    Returns:
+        Protein sequence as a string (single-letter codes, no whitespace)
+    """
+    try:
+        text = Path(path).read_text()
+    except (OSError, IOError) as e:
+        raise argparse.ArgumentTypeError(f"Cannot read file '{path}': {e}")
+
+    lines = text.strip().splitlines()
+    if lines and lines[0].startswith(">"):
+        lines = lines[1:]
+
+    protein = "".join(line.strip() for line in lines)
+    return protein.upper()
+
+
+def _validate_sequence_length(seq: str, max_len: int = MAX_SEQUENCE_LENGTH) -> str:
+    """Validate that a sequence is not excessively long."""
+    if len(seq) > max_len:
+        raise argparse.ArgumentTypeError(
+            f"Sequence length {len(seq)} exceeds maximum {max_len}. "
+            f"Use --max-length to override if needed."
+        )
+    return seq
+
+
+def _validate_enzyme_names(enzymes_str: str) -> list[str]:
+    """Validate that enzyme names are recognized. Warn about unknown ones."""
+    names = [e.strip() for e in enzymes_str.split(",")]
+    valid = []
+    for name in names:
+        if name in RESTRICTION_ENZYMES:
+            valid.append(name)
+        else:
+            logger.warning("Unknown enzyme '%s' — skipping. Known: %s",
+                           name, list(RESTRICTION_ENZYMES.keys()))
+    return valid
+
+
+def _parse_exons(exons_str: str | None, seq_len: int = 0) -> list[tuple[int, int]]:
+    """
+    Parse exon boundaries from comma-separated 'start,end start,end ...' format.
+
+    Validates that boundaries are within sequence length and start < end.
+    """
+    if not exons_str:
+        return []
+    boundaries = []
+    for pair in exons_str.split():
+        parts = pair.split(",")
+        if len(parts) != 2:
+            raise argparse.ArgumentTypeError(
+                f"Invalid exon boundary format '{pair}'. Expected 'start,end'."
+            )
+        try:
+            start, end = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"Invalid exon boundary values '{pair}'. Must be integers."
+            )
+        if start < 0:
+            raise argparse.ArgumentTypeError(
+                f"Exon start must be non-negative, got {start}."
+            )
+        if end <= start:
+            raise argparse.ArgumentTypeError(
+                f"Exon end must be greater than start, got start={start}, end={end}."
+            )
+        if seq_len > 0 and end > seq_len:
+            raise argparse.ArgumentTypeError(
+                f"Exon end {end} exceeds sequence length {seq_len}."
+            )
+        boundaries.append((start, end))
+    return boundaries
+
+
+def _get_sequence(args, field_name: str = "sequence") -> str:
+    """Get sequence from --sequence or --input-file argument."""
+    seq = getattr(args, field_name, None)
+    if seq is None and hasattr(args, "input_file") and args.input_file:
+        seq = _read_sequence_file(args.input_file)
+    elif seq is None and hasattr(args, field_name + "_file"):
+        file_attr = getattr(args, field_name + "_file", None)
+        if file_attr:
+            seq = _read_sequence_file(file_attr)
+    if not seq:
+        raise argparse.ArgumentTypeError(
+            f"Must provide --{field_name.replace('_', '-')} or --input-file"
+        )
+    return seq.upper()
+
+
 def cmd_check(args):
     """Run type checking on a DNA sequence."""
     _setup_logging(args.verbose)
-    seq = args.sequence.upper()
-    exon_boundaries = _parse_exons(args.exons)
+
+    # Get sequence from file or argument
+    if args.input_file:
+        seq = _read_sequence_file(args.input_file).upper()
+    elif args.sequence:
+        seq = args.sequence.upper()
+    else:
+        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        sys.exit(1)
+
+    _validate_sequence_length(seq, args.max_length)
+
+    # Validate DNA
+    try:
+        seq = validate_dna_sequence(seq)
+    except InvalidSequenceError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse and validate exon boundaries
+    exon_boundaries = _parse_exons(args.exons, len(seq))
 
     print(f"Sequence length: {len(seq)} nt")
     print(f"GC content: {gc_content(seq):.1%}")
     print(f"Exon boundaries: {exon_boundaries}")
     print()
 
+    # Validate enzyme names
+    enzymes = _validate_enzyme_names(args.enzymes) if args.enzymes else None
+
     # Scan
-    tokens = scan_sequence(seq, args.enzymes.split(",") if args.enzymes else None)
+    tokens = scan_sequence(seq, enzymes)
     print(f"Scanner found {len(tokens)} tokens")
     donor_count = sum(1 for t in tokens if t.element_type == "splice_donor")
     acceptor_count = sum(1 for t in tokens if t.element_type == "splice_acceptor")
@@ -89,10 +253,12 @@ def cmd_check(args):
                 {
                     "gene": args.gene or "unknown",
                     "organism": args.organism,
-                    "exon_boundaries": exon_boundaries,
+                    "exon_boundaries": exon_boundaries or [(0, len(seq))],
                     "gc_lo": args.gc_lo,
                     "gc_hi": args.gc_hi,
                     "cai_threshold": args.cai_threshold,
+                    "enzymes": enzymes or list(RESTRICTION_ENZYMES.keys()),
+                    "cell_type": "HEK293T",
                 },
             )
             with open(args.output, "w") as f:
@@ -105,10 +271,20 @@ def cmd_check(args):
 def cmd_optimize(args):
     """Optimize a DNA sequence for a target protein."""
     _setup_logging(args.verbose)
-    print(f"Optimizing for protein ({len(args.protein)} aa), organism={args.organism}")
+
+    # Get protein from file or argument
+    if args.protein_file:
+        protein = _read_protein_file(args.protein_file)
+    elif args.protein:
+        protein = args.protein.upper()
+    else:
+        print("ERROR: Must provide --protein or --protein-file", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Optimizing for protein ({len(protein)} aa), organism={args.organism}")
 
     result = optimize_sequence(
-        target_protein=args.protein,
+        target_protein=protein,
         organism=args.organism,
         gc_lo=args.gc_lo,
         gc_hi=args.gc_hi,
@@ -153,8 +329,25 @@ def cmd_verify(args):
 def cmd_scan(args):
     """Scan a sequence for motifs."""
     _setup_logging(args.verbose)
-    seq = args.sequence.upper()
-    tokens = scan_sequence(seq, args.enzymes.split(",") if args.enzymes else None)
+
+    # Get sequence from file or argument
+    if args.input_file:
+        seq = _read_sequence_file(args.input_file).upper()
+    elif args.sequence:
+        seq = args.sequence.upper()
+    else:
+        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate DNA
+    try:
+        seq = validate_dna_sequence(seq)
+    except InvalidSequenceError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    enzymes = _validate_enzyme_names(args.enzymes) if args.enzymes else None
+    tokens = scan_sequence(seq, enzymes)
 
     print(f"Sequence length: {len(seq)} nt")
     print(f"Tokens found: {len(tokens)}")
@@ -171,16 +364,13 @@ def cmd_scan(args):
                   f"{orf['start']}-{orf['end']} ({orf['length']} aa)")
 
 
-def _parse_exons(exons_str: str | None) -> list[tuple[int, int]]:
-    """Parse exon boundaries from comma-separated 'start,end start,end ...' format."""
-    if not exons_str:
-        return []
-    boundaries = []
-    for pair in exons_str.split():
-        parts = pair.split(",")
-        if len(parts) == 2:
-            boundaries.append((int(parts[0]), int(parts[1])))
-    return boundaries
+def _add_sequence_args(parser):
+    """Add common sequence input arguments to a subparser."""
+    seq_group = parser.add_mutually_exclusive_group()
+    seq_group.add_argument("--sequence", help="DNA sequence (use --input-file for long sequences)")
+    seq_group.add_argument("--input-file", "-f", help="Input file (FASTA or plain text)")
+    parser.add_argument("--max-length", type=int, default=MAX_SEQUENCE_LENGTH,
+                        help="Maximum sequence length in bp (default: 10M)")
 
 
 def main():
@@ -195,7 +385,7 @@ def main():
 
     # check
     p_check = subparsers.add_parser("check", help="Type-check a DNA sequence")
-    p_check.add_argument("--sequence", required=True, help="DNA sequence")
+    _add_sequence_args(p_check)
     p_check.add_argument("--exons", help="Exon boundaries as 'start,end start,end ...'")
     p_check.add_argument("--gene", help="Gene name")
     p_check.add_argument("--organism", default="Homo_sapiens", help="Target organism")
@@ -208,7 +398,9 @@ def main():
 
     # optimize
     p_opt = subparsers.add_parser("optimize", help="Optimize DNA sequence for a protein")
-    p_opt.add_argument("--protein", required=True, help="Target protein sequence")
+    prot_group = p_opt.add_mutually_exclusive_group(required=True)
+    prot_group.add_argument("--protein", help="Target protein sequence")
+    prot_group.add_argument("--protein-file", help="Input file with protein sequence (FASTA or plain text)")
     p_opt.add_argument("--organism", default="Homo_sapiens", help="Target organism")
     p_opt.add_argument("--gc-lo", type=float, default=0.30)
     p_opt.add_argument("--gc-hi", type=float, default=0.70)
@@ -222,7 +414,7 @@ def main():
 
     # scan
     p_scan = subparsers.add_parser("scan", help="Scan a sequence for biological motifs")
-    p_scan.add_argument("--sequence", required=True, help="DNA sequence")
+    _add_sequence_args(p_scan)
     p_scan.add_argument("--enzymes", help="Comma-separated restriction enzymes")
     p_scan.add_argument("--find-orfs", action="store_true", help="Find open reading frames")
     p_scan.set_defaults(func=cmd_scan)
@@ -236,6 +428,9 @@ def main():
         args.func(args)
     except BioCompilerError as e:
         print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except argparse.ArgumentTypeError as e:
+        print(f"ARGUMENT ERROR: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         logger.exception("Unexpected error")

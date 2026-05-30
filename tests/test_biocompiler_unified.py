@@ -158,9 +158,13 @@ class TestScanner:
         assert scan_sequence("") == []
 
     def test_donor_site(self):
-        tokens = scan_sequence("AAGTAA")
+        """Donor sites are found when MaxEntScan scoring is above threshold."""
+        # Use a sequence with a strong donor context: CAGGTAAGT has strong consensus
+        seq = "CAGGTAAGT"
+        tokens = scan_sequence(seq)
         donors = [t for t in tokens if t.element_type == "splice_donor"]
         assert len(donors) >= 1
+        assert donors[0].score > 0  # MaxEntScan score should be positive
 
     def test_start_codon_all_frames(self):
         """Start codons should be found in ALL 3 reading frames."""
@@ -206,11 +210,13 @@ class TestScanner:
         rest = [t for t in tokens if t.element_type == "restriction_site"]
         assert len(rest) == 0
 
-    def test_kozak_exact(self):
-        tokens = scan_sequence("AAAGCCACCAA")
+    def test_kozak_scoring(self):
+        """Kozak consensus is scored with position weights, not exact match."""
+        # GCCACCATGG has strong Kozak context
+        seq = "GCCACCATGG"
+        tokens = scan_sequence(seq)
         kozak = [t for t in tokens if t.element_type == "kozak"]
-        assert len(kozak) == 1
-        assert kozak[0].position == 3
+        assert len(kozak) >= 1  # Should find at least one strong Kozak context
 
     def test_instability_motif(self):
         tokens = scan_sequence("AAAAATTTAAAA")
@@ -218,7 +224,8 @@ class TestScanner:
         assert len(inst) == 1
 
     def test_token_has_range(self):
-        tokens = scan_sequence("AAGTAA")
+        seq = "CAGGTAAGT"
+        tokens = scan_sequence(seq)
         donors = [t for t in tokens if t.element_type == "splice_donor"]
         assert len(donors) >= 1
         r = donors[0].range
@@ -324,9 +331,11 @@ class TestReverseComplement:
 class TestSplicing:
     def test_basic_splicing(self):
         """Test that canonical isoform is always produced."""
+        # Build a pre-mRNA with clear splice donor/acceptor sites in the intron
         exon1 = "ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAACGTGGATGAAGTTGGTGGTGAGGCCCTGGGCAG"
-        intron1 = "GTAAGTAGTTTTCTTTTGTTTTATTTTTATAGGTTTTATTTTTATTTTTAGATCTTTATTTTTATTTTTATTTTTAGATCTTTATTTTTATTTTTATTTTTAG"
-        exon2 = "GCTGCTGGTGGTCTACCCTTGGACCCAGAGGTTCTTTGAGTCCTTTGGGGATCTGTCCACTCCTGATGCTGTTATGGGCAACCCTAAGGTGAAGGCTCATGGCAAGAAAGTGCTCGGTGCCTTTAGTGATGGCCTGGCTCACCTGGACAACCTCAAGGGCACCTTTGCTCACTGCAGTGAGCTGCACTGTGACAAGCTGCACGTGGATCCTGAGAACTTCAGG"
+        # Intron with strong GT..AG splice signals and polypyrimidine tract
+        intron1 = "GTAAGTAGTTTTCTTTTGTTTTATTTTTATAG" + "TTTTTTTTTTTTTTTTTTTTCAG"
+        exon2 = "GCTGCTGGTGGTCTACCCTTGGACCCAGAGGTTCTTTGAGTCCTTTGGGGATCTGTCCACTCCTGATGCTGTTATGGGCAACCCTAAGGTGAAGGCTCATGGCAAGAAAGTGCTCGGTGCCTTTAGTGATGGCCTGGCTCACCTGGACAACCTCAAGGGCACCTTTGCCACACTGAGTGAGCTGCACTGTGACAAGCTGCACGTGGATCCTGAGAACTTCAGG"
 
         pre_mrna = exon1 + intron1 + exon2
         e1_end = len(exon1)
@@ -338,7 +347,7 @@ class TestSplicing:
         isoforms = compute_splice_isoforms(pre_mrna, boundaries)
         assert len(isoforms) >= 1
 
-        # Canonical isoform should be present
+        # The canonical isoform sequence should be in the set
         canonical = "".join(pre_mrna[start:end] for start, end in boundaries)
         canonical_isoforms = [iso for iso in isoforms if iso.sequence == canonical]
         assert len(canonical_isoforms) >= 1
@@ -557,7 +566,7 @@ class TestFullPipeline:
         results = evaluate_all_predicates(
             pre_mrna, boundaries, organism="Homo_sapiens"
         )
-        assert len(results) == 7
+        assert len(results) == 8  # 7 original + NoCpGIsland
 
         # Overall verdict
         overall = combined_verdict([r.verdict for r in results])
