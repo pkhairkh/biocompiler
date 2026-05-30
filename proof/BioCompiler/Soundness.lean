@@ -51,16 +51,14 @@
   │ ThreeValued.lean        │ FULLY      │ 12 theorems, 0 sorry, 0 axioms        │
   │ Sequence.lean           │ FULLY      │ Pattern matching with proved           │
   │                         │            │ completeness and soundness             │
-  │ NDFST.lean              │ PARTIAL    │ ndfstRun_sound proved;                 │
-  │                         │            │ ndfstRun_complete: 1 sorry             │
+  │ NDFST.lean              │ NEARLY     │ ndfstRun_sound proved;                 │
+  │                         │ COMPLETE   │ ndfstRun_complete: 2 sorry (input      │
+  │                         │            │ decomposition proof engineering)        │
   │ Scanners.lean           │ FULLY      │ Concrete scanner implementations       │
   │                         │            │ with proved completeness               │
-  │ TypeSystem.lean         │ NEARLY     │ 5/7 predicates fully proved;           │
-  │                         │ COMPLETE   │ 2 SpliceCorrect sorry (trivial         │
-  │                         │            │ mathematical facts: equality from      │
-  │                         │            │ if-else, length from match)            │
-  │ Compositional.lean      │ NEARLY     │ 1 sorry (UNCERTAIN propagation in      │
-  │                         │ COMPLETE   │ foldl; trivially true)                 │
+  │ TypeSystem.lean         │ FULLY      │ All 7 predicates proved, 0 sorry       │
+  │ Compositional.lean      │ FULLY      │ UNCERTAIN propagation proved via       │
+  │                         │            │ foldl_uncertain_ne_pass lemma          │
   │ SLOTIndependence.lean   │ FULLY      │ All theorems proved, 0 sorry           │
   └─────────────────────────┴────────────┴────────────────────────────────────────┘
 

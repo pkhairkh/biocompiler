@@ -25,6 +25,35 @@ namespace BioCompiler
 open Verdict Sequence
 
 -- ==============================================================================
+-- Key Lemma: UNCERTAIN Propagation
+-- ==============================================================================
+
+/-- THEOREM: foldl starting from UNCERTAIN never reaches PASS.
+    This is because UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS,
+    UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN ≠ PASS, and
+    UNCERTAIN ⊓ FAIL = FAIL ≠ PASS.
+    Proved by induction on the list. -/
+theorem foldl_uncertain_ne_pass (vs : List Verdict) :
+    vs.foldl Verdict.and UNCERTAIN ≠ PASS := by
+  intro h
+  induction vs with
+  | nil => simp [List.foldl_nil] at h; cases h
+  | cons hd tl ih =>
+    simp [List.foldl_cons] at h
+    cases hd with
+    | PASS =>
+      -- UNCERTAIN ⊓ PASS = UNCERTAIN
+      simp [Verdict.and] at h
+      exact ih h
+    | FAIL =>
+      -- UNCERTAIN ⊓ FAIL = FAIL
+      simp [Verdict.and] at h; cases h
+    | UNCERTAIN =>
+      -- UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN
+      simp [Verdict.and] at h
+      exact ih h
+
+-- ==============================================================================
 -- Composed Evaluation
 -- ==============================================================================
 
@@ -81,16 +110,8 @@ theorem foldl_and_pass_all_pass (vs : List Verdict) :
       simp [h_hd, Verdict.and] at h
       -- PASS ⊓ UNCERTAIN = UNCERTAIN
       -- Then foldl Verdict.and UNCERTAIN tl = PASS
-      -- But UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS, so the foldl
-      -- can never return PASS once UNCERTAIN appears.
-      -- We prove this by showing UNCERTAIN is "absorbing" in the
-      -- same way FAIL is, but for PASS results.
-      sorry  -- Lean4 proof engineering: need to show that
-             -- foldl Verdict.and UNCERTAIN tl ≠ PASS
-             -- This follows because UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS
-             -- and UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN ≠ PASS
-             -- and UNCERTAIN ⊓ FAIL = FAIL ≠ PASS.
-             -- So any foldl starting with UNCERTAIN never reaches PASS.
+      -- But foldl starting from UNCERTAIN never reaches PASS
+      exact absurd h (foldl_uncertain_ne_pass tl)
 
 -- ==============================================================================
 -- Compositional Soundness Theorem

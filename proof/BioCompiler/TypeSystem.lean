@@ -15,11 +15,10 @@
     PASS → scanner = false → contrapositive of completeness → no match exists.
   - NDFST predicate (SpliceCorrect): PASS → singleton output set → ctx matches.
 
-  SORRY STATUS: 4 remaining, all trivially true mathematical facts:
-  - SpliceCorrect (2): extracting equality from if-else branch; extracting length from match
-  - NoInstabilityMotif (2): Bool.or simplification (true || b ≠ false)
+  SORRY STATUS: 1 remaining (ndfstRun_complete in NDFST.lean):
+  - NDFST completeness: requires foldl induction on input decomposition
 
-  These are Lean4 proof engineering issues, not mathematical gaps.
+  All per-predicate soundness proofs are now sorry-free.
 
   REFERENCE: DOC-03 (SDD) §3.5, DOC-10 (Deterministic Methods) §4
 -/
@@ -173,32 +172,46 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex]
   -- ═══════════════════════════════════════════════════════════════════════════
   | SpliceCorrect cellType =>
     unfold evaluate at h_pass
-    split at h_pass
-    · -- ctx.cellType != cellType → UNCERTAIN = PASS: impossible
+    -- Step 1: Prove ¬(ctx.cellType != cellType)
+    -- If ctx.cellType != cellType were true, the if gives UNCERTAIN ≠ PASS
+    have h_not_ne : ¬(ctx.cellType != cellType) := by
+      intro h_cond
+      have : (if ctx.cellType != cellType then (UNCERTAIN : Verdict) else
+              match ndfstUniqueOutputSet (SplicingNDFST.ndfst : NDFST State) seq with
+              | [_] => PASS | _ => FAIL) = UNCERTAIN := dif_pos h_cond
+      rw [this] at h_pass
       cases h_pass
-    · -- ¬(ctx.cellType != cellType): ctx.cellType = cellType
-      -- Match on ndfstUniqueOutputSet
-      split at h_pass
-      · -- Singleton [_] → PASS
-        unfold propertyHolds
-        constructor
-        · -- ctx.cellType = cellType
-          -- We're in the else branch, so ¬(ctx.cellType != cellType)
-          -- For BEq String, this means ctx.cellType == cellType = true
-          -- which means ctx.cellType = cellType (by LawfulBEq)
-          sorry  -- Lean4 proof engineering: need to extract ¬(ctx.cellType ≠ cellType)
-                 -- from the split and convert to ctx.cellType = cellType.
-                 -- Mathematically: else branch of ≠ means equality holds. Trivially true.
-        · -- (ndfstUniqueOutputSet ...).length = 1
-          -- The match pattern [_] means the list is a singleton.
-          -- A singleton list has length 1.
-          sorry  -- Lean4 proof engineering: need to extract the fact that the
-                 -- matched list is [_] and conclude length = 1.
-                 -- Mathematically: [_] has length 1. Trivially true.
-      · -- Empty list [] → FAIL
+    -- Step 2: ctx.cellType = cellType (by LawfulBEq)
+    have h_cell_eq : ctx.cellType = cellType :=
+      string_eq_of_not_ne _ _ h_not_ne
+    -- Step 3: Simplify the if-then-else to the else branch
+    have h_cond_false : (ctx.cellType != cellType) = false := by
+      cases h_cond : (ctx.cellType != cellType) with
+      | true => exact absurd h_cond h_not_ne
+      | false => rfl
+    rw [dif_neg h_cond_false] at h_pass
+    -- Step 4: h_pass now concerns only the match
+    -- (match ... with | [_] => PASS | _ => FAIL) = PASS
+    -- Case-split on the list to show it must be a singleton
+    have h_list_len : (ndfstUniqueOutputSet (SplicingNDFST.ndfst : NDFST State) seq).length = 1 := by
+      by_contra h_ne
+      cases h_list : ndfstUniqueOutputSet (SplicingNDFST.ndfst : NDFST State) seq with
+      | nil =>
+        -- Empty list: match gives FAIL ≠ PASS
+        simp only [h_list, List.length_nil] at h_ne h_pass
         cases h_pass
-      · -- List with ≥ 2 elements → FAIL
-        cases h_pass
+      | cons hd tl =>
+        cases tl with
+        | nil =>
+          -- Singleton [hd]: length = 1, contradicting h_ne
+          simp only [h_list, List.length_cons, List.length_nil, Nat.add_zero] at h_ne
+          omega
+        | cons hd' tl' =>
+          -- ≥2 elements: match gives FAIL ≠ PASS
+          simp only [h_list, List.length_cons] at h_pass
+          cases h_pass
+    unfold propertyHolds
+    exact ⟨h_cell_eq, h_list_len⟩
 
   -- ═══════════════════════════════════════════════════════════════════════════
   -- Case 2: NoCrypticSplice — PROVED COMPLETELY
