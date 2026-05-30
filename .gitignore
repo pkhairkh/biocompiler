@@ -35,3 +35,9 @@ Thumbs.db
 # Temporary / generated
 *.tmp
 *.log
+
+# Generated certificates (output, not source)
+certificates/*.json
+
+# pytest
+.pytest_cache/

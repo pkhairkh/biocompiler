@@ -1,11 +1,41 @@
 [project]
 name = "biocompiler"
-version = "1.0.0"
-description = "A compiler framework for human protein synthesis using intermediate representations"
+version = "2.0.0"
+description = "A compiler framework for machine-verified gene design with deterministic type checking and certificates"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+readme = "README.md"
+keywords = ["bioinformatics", "gene-design", "synthetic-biology", "compiler", "type-system"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Software Development :: Compilers",
+]
 dependencies = []
 
 [project.optional-dependencies]
-mvp = ["z3-solver>=4.12.0"]
-dev = ["pytest>=7.0"]
+optimizer = ["z3-solver>=4.12.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.scripts]
+biocompiler = "biocompiler.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
