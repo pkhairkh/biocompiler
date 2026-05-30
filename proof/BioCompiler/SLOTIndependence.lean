@@ -74,7 +74,7 @@ structure IRRecord where
 /-- A type predicate is "core" if its evaluation depends only on the
     nucleotide sequence and grammar rules, NOT on SLOT values (FFI output).
 
-    DESIGN CHOICE: ALL seven BioCompiler predicates are core predicates.
+    DESIGN CHOICE: ALL eight BioCompiler predicates are core predicates.
     FFI output enriches the IR but is not required for type-checking.
     This is the key architectural invariant (INV-TYP-02). -/
 def isCorePredicate : TypePredicate → Bool
@@ -85,6 +85,7 @@ def isCorePredicate : TypePredicate → Bool
   | TypePredicate.NoRestrictionSite _ => true
   | TypePredicate.InFrame _ _ => true
   | TypePredicate.NoInstabilityMotif => true
+  | TypePredicate.NoCpGIsland => true
 
 /-- THEOREM: ALL current type predicates are core predicates.
     This is the architectural invariant that makes BioCompiler guarantees
@@ -105,7 +106,7 @@ theorem all_predicates_are_core (P : TypePredicate) :
     The meaningful content is that the SEMANTIC PROPERTIES (propertyHolds)
     are also SLOT-independent, because they are properties of the SEQUENCE,
     not of predictions about the sequence. -/
-theorem evaluate_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex]
+theorem evaluate_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (slots₁ slots₂ : SLOTValues) :
@@ -122,7 +123,7 @@ theorem evaluate_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex]
     - NoRestrictionSite depends on pattern matching (no FFI)
     - InFrame depends on reading frame checks (no FFI)
     - NoInstabilityMotif depends on pattern matching (no FFI) -/
-theorem property_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex]
+theorem property_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (slots₁ slots₂ : SLOTValues) :
@@ -136,7 +137,7 @@ theorem property_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex]
     the external tools that filled SLOT fields are later found to have bugs,
     produce different output on re-runs, or are replaced with different tools.
     The certificate's guarantees are about the SEQUENCE, not the predictions. -/
-theorem certificate_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex]
+theorem certificate_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (slots₁ slots₂ : SLOTValues) :
@@ -205,7 +206,7 @@ theorem ffi_never_pass (P : FFIDependentPredicate) (slots : SLOTValues) :
     Together, these mean: a BioCompiler guarantee certificate makes claims
     that are (a) deterministic, (b) independently verifiable, and (c)
     unaffected by the behavior of external tools. -/
-theorem full_slot_independence [SpliceSiteScanner] [CodonAdaptationIndex]
+theorem full_slot_independence [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
     -- All predicates are core

@@ -379,6 +379,148 @@ def _add_sequence_args(parser):
                         help="Maximum sequence length in bp (default: 10M)")
 
 
+def cmd_export(args):
+    """Export a sequence in FASTA or GenBank format."""
+    _setup_logging(args.verbose)
+
+    # Get sequence
+    if args.input_file:
+        seq = _read_sequence_file(args.input_file).upper()
+    elif args.sequence:
+        seq = args.sequence.upper()
+    else:
+        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        seq = validate_dna_sequence(seq)
+    except InvalidSequenceError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    exon_boundaries = _parse_exons(args.exons, len(seq)) if args.exons else None
+
+    if args.format == "fasta":
+        from .export import export_fasta
+        output = export_fasta(
+            sequence=seq,
+            identifier=args.identifier or "BioCompiler_design",
+            description=args.description or "",
+            organism=args.organism,
+        )
+    elif args.format == "genbank":
+        from .export import export_genbank
+        output = export_genbank(
+            sequence=seq,
+            locus_name=args.locus or "BIOCOMPILER",
+            definition=args.description or "BioCompiler designed sequence",
+            organism=args.organism,
+            exon_boundaries=exon_boundaries,
+            gene_name=args.gene,
+        )
+    else:
+        print(f"ERROR: Unknown format '{args.format}'. Use 'fasta' or 'genbank'.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.output:
+        Path(args.output).write_text(output)
+        print(f"Exported to: {args.output}")
+    else:
+        print(output)
+
+
+def cmd_report(args):
+    """Generate an interactive HTML report."""
+    _setup_logging(args.verbose)
+
+    if args.input_file:
+        seq = _read_sequence_file(args.input_file).upper()
+    elif args.sequence:
+        seq = args.sequence.upper()
+    else:
+        print("ERROR: Must provide --sequence or --input-file", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        seq = validate_dna_sequence(seq)
+    except InvalidSequenceError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    exon_boundaries = _parse_exons(args.exons, len(seq)) or [(0, len(seq))]
+
+    from .report import generate_report
+    from .type_system import evaluate_all_predicates
+
+    results = evaluate_all_predicates(
+        seq=seq,
+        known_exon_boundaries=exon_boundaries,
+        organism=args.organism,
+    )
+
+    html_report = generate_report(
+        sequence=seq,
+        type_results=results,
+        organism=args.organism,
+        gene_name=args.gene,
+        exon_boundaries=exon_boundaries if len(exon_boundaries) > 1 else None,
+    )
+
+    output_path = args.output or "biocompiler_report.html"
+    Path(output_path).write_text(html_report)
+    print(f"Report generated: {output_path}")
+
+
+def cmd_benchmark(args):
+    """Run benchmarks against known gene sets."""
+    _setup_logging(args.verbose)
+
+    from .benchmark import run_benchmarks, format_benchmark_report_text, format_benchmark_report_json
+
+    gene_names = args.genes.split(",") if args.genes else None
+    report = run_benchmarks(
+        gene_names=gene_names,
+        include_optimization=not args.skip_optimization,
+    )
+
+    if args.format == "json":
+        output = format_benchmark_report_json(report)
+    else:
+        output = format_benchmark_report_text(report)
+
+    if args.output:
+        Path(args.output).write_text(output)
+        print(f"Benchmark report saved to: {args.output}")
+    else:
+        print(output)
+
+
+def cmd_serve(args):
+    """Start the BioCompiler REST API server."""
+    _setup_logging(args.verbose)
+
+    from .api import app
+    import uvicorn
+
+    print(f"Starting BioCompiler API server on {args.host}:{args.port}")
+    print(f"API docs: http://{args.host}:{args.port}/docs")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info" if not args.verbose else "debug")
+
+
+def cmd_migrate(args):
+    """Migrate built-in organism data to SQLite database."""
+    _setup_logging(args.verbose)
+
+    from .organism_db import OrganismDatabase
+
+    db = OrganismDatabase()
+    count = db.migrate_builtin_data()
+    print(f"Migrated {count} organisms to database at {db.db_path}")
+    organisms = db.list_organisms()
+    for org in organisms:
+        print(f"  {org['name']} (source={org['source']}, codons=64)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="biocompiler",
@@ -428,6 +570,47 @@ def main():
     p_scan.add_argument("--enzymes", help="Comma-separated restriction enzymes")
     p_scan.add_argument("--find-orfs", action="store_true", help="Find open reading frames")
     p_scan.set_defaults(func=cmd_scan)
+
+    # export
+    p_export = subparsers.add_parser("export", help="Export sequence in FASTA or GenBank format")
+    _add_sequence_args(p_export)
+    p_export.add_argument("--format", choices=["fasta", "genbank"], default="fasta",
+                          help="Export format (default: fasta)")
+    p_export.add_argument("--identifier", help="Sequence identifier (FASTA)")
+    p_export.add_argument("--locus", help="LOCUS name (GenBank, max 16 chars)")
+    p_export.add_argument("--description", help="Description line")
+    p_export.add_argument("--gene", help="Gene name")
+    p_export.add_argument("--organism", default="Homo_sapiens", help="Source organism")
+    p_export.add_argument("--exons", help="Exon boundaries as 'start,end start,end ...'")
+    p_export.add_argument("--output", "-o", help="Output file path")
+    p_export.set_defaults(func=cmd_export)
+
+    # report
+    p_report = subparsers.add_parser("report", help="Generate interactive HTML report")
+    _add_sequence_args(p_report)
+    p_report.add_argument("--exons", help="Exon boundaries as 'start,end start,end ...'")
+    p_report.add_argument("--gene", help="Gene name")
+    p_report.add_argument("--organism", default="Homo_sapiens", help="Target organism")
+    p_report.add_argument("--output", "-o", help="Output HTML file path")
+    p_report.set_defaults(func=cmd_report)
+
+    # benchmark
+    p_bench = subparsers.add_parser("benchmark", help="Run benchmarks against known gene sets")
+    p_bench.add_argument("--genes", help="Comma-separated gene names to benchmark (default: all)")
+    p_bench.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    p_bench.add_argument("--skip-optimization", action="store_true", help="Skip optimization benchmarks")
+    p_bench.add_argument("--output", "-o", help="Output file path")
+    p_bench.set_defaults(func=cmd_benchmark)
+
+    # serve
+    p_serve = subparsers.add_parser("serve", help="Start REST API server")
+    p_serve.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+    p_serve.add_argument("--port", type=int, default=8000, help="Port to bind (default: 8000)")
+    p_serve.set_defaults(func=cmd_serve)
+
+    # migrate
+    p_migrate = subparsers.add_parser("migrate", help="Migrate organism data to SQLite")
+    p_migrate.set_defaults(func=cmd_migrate)
 
     args = parser.parse_args()
     if not args.command:

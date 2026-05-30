@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "2.2.0"
+__version__ = "3.0.0"
 
 from .types import (
     Verdict,
@@ -70,6 +70,10 @@ from .maxentscan import (
 )
 from .optimization import optimize_sequence
 from .grammar_loader import load_grammar, grammar_to_predicate_params
+from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta
+from .report import generate_report
+from .benchmark import run_benchmarks, BenchmarkReport
+from .organism_db import OrganismDatabase, get_database
 
 __all__ = [
     # Version
@@ -105,4 +109,12 @@ __all__ = [
     "optimize_sequence",
     # Grammar
     "load_grammar", "grammar_to_predicate_params",
+    # Export
+    "export_fasta", "export_genbank", "export_genbank_with_certificate", "export_multi_fasta",
+    # Report
+    "generate_report",
+    # Benchmark
+    "run_benchmarks", "BenchmarkReport",
+    # Database
+    "OrganismDatabase", "get_database",
 ]

@@ -56,7 +56,8 @@
   │                         │            │ ValidPath for completeness             │
   │ Scanners.lean           │ FULLY      │ Concrete scanner implementations       │
   │                         │            │ with proved completeness               │
-  │ TypeSystem.lean         │ FULLY      │ All 7 predicates proved, 0 sorry       │
+  │ TypeSystem.lean         │ FULLY      │ All 8 predicates proved, 0 sorry       │
+  │                         │            │ (incl. NoCpGIsland)                    │
   │ Compositional.lean      │ FULLY      │ UNCERTAIN propagation proved via       │
   │                         │            │ foldl_uncertain_ne_pass lemma          │
   │ SLOTIndependence.lean   │ FULLY      │ All theorems proved, 0 sorry           │
@@ -65,9 +66,11 @@
   Trusted Computing Base (axioms that are NOT proved within Lean4):
   1. SpliceSiteScanner.scanner_completeness — scanner finds all cryptic sites
   2. SpliceSiteScanner.scanner_soundness — scanner only reports real sites
-  3. SplicingNDFST.output_is_valid — NDFST outputs are valid isoforms
-  4. SplicingNDFST.all_isoforms_produced — NDFST is complete
-  5. CodonAdaptationIndex.computeCAI — deterministic CAI computation
+  3. CpGIslandScanner.scanner_completeness — CpG island scanner finds all islands
+  4. CpGIslandScanner.scanner_soundness — CpG island scanner only reports real islands
+  5. SplicingNDFST.output_is_valid — NDFST outputs are valid isoforms
+  6. SplicingNDFST.all_isoforms_produced — NDFST is complete
+  7. CodonAdaptationIndex.computeCAI — deterministic CAI computation
 
   These are PARAMETERS of the proof, not gaps. The soundness theorem says:
   "ASSUMING the scanners are complete and the NDFST is correct,

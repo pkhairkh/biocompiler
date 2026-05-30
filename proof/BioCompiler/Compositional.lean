@@ -66,7 +66,7 @@ theorem foldl_uncertain_ne_pass (vs : List Verdict) :
     If any vᵢ = FAIL, the entire result is FAIL (sticky).
     If any vᵢ = UNCERTAIN and none is FAIL, the result is UNCERTAIN.
     If all vᵢ = PASS, the result is PASS. -/
-def evaluateAll [SpliceSiteScanner] [CodonAdaptationIndex]
+def evaluateAll [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
     Verdict :=
@@ -126,7 +126,7 @@ theorem foldl_and_pass_all_pass (vs : List Verdict) :
 
     Corollary: A guarantee certificate (which requires overall PASS) can only
     be issued when all claimed properties actually hold. -/
-theorem compositional_soundness [SpliceSiteScanner] [CodonAdaptationIndex]
+theorem compositional_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
     evaluateAll predicates seq ctx = PASS →
@@ -149,7 +149,7 @@ theorem compositional_soundness [SpliceSiteScanner] [CodonAdaptationIndex]
 -- ==============================================================================
 
 /-- A guarantee certificate is valid only if all predicates evaluate to PASS. -/
-def certificateValid [SpliceSiteScanner] [CodonAdaptationIndex]
+def certificateValid [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) : Bool :=
   evaluateAll predicates seq ctx = PASS
@@ -157,7 +157,7 @@ def certificateValid [SpliceSiteScanner] [CodonAdaptationIndex]
 /-- THEOREM (Certificate Soundness): A valid certificate guarantees that
     all claimed properties hold. This is the property that makes BioCompiler
     certificates trustworthy for regulatory submissions. -/
-theorem certificate_soundness [SpliceSiteScanner] [CodonAdaptationIndex]
+theorem certificate_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
     {State : Type} [DecidableEq State] [SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
     certificateValid predicates seq ctx = true →
