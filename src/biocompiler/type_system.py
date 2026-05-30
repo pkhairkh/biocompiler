@@ -15,7 +15,7 @@ from .types import Verdict, TypeCheckResult, Token
 from .scanner import scan_sequence, gc_content, validate_dna_sequence
 from .splicing import compute_splice_isoforms
 from .translation import compute_cai
-from .constants import INSTABILITY_MOTIF, RESTRICTION_ENZYMES, reverse_complement
+from .constants import INSTABILITY_MOTIF, RESTRICTION_ENZYMES, IUPAC_EXPAND, reverse_complement
 from .maxentscan import max_donor_score, max_acceptor_score, scan_splice_sites
 from .exceptions import UnknownPredicateError
 
@@ -178,7 +178,8 @@ def evaluate_splice_correct(
                 "total_isoforms": len(isoforms),
             }],
         )
-    elif non_target:
+    else:
+        # There are alternative isoforms with different sequences → FAIL
         alt_desc = [
             f"boundaries={iso.exon_boundaries} via {iso.parse_path}"
             for iso in non_target[:5]
@@ -188,15 +189,6 @@ def evaluate_splice_correct(
             verdict=Verdict.FAIL,
             derivation=derivation,
             violation=f"Found {len(non_target)} alternative isoforms: {'; '.join(alt_desc)}",
-        )
-    else:
-        # This branch should be unreachable given the logic above,
-        # but kept as a safety net
-        return TypeCheckResult(
-            predicate=f"SpliceCorrect({cellular_context})",
-            verdict=Verdict.UNCERTAIN,
-            derivation=derivation,
-            knowledge_gap="Multiple isoforms but cannot determine which will occur in vivo",
         )
 
 
@@ -240,18 +232,27 @@ def evaluate_no_restriction_site(seq: str, enzyme_set: list[str] | None = None, 
             logger.warning("Unknown enzyme '%s' and not a valid DNA sequence — skipping", enz_name)
             continue
 
-        site_rc = reverse_complement(site)
+        has_iupac = any(b not in "ACGT" for b in site.upper())
 
-        # Forward strand
+        # Forward strand with IUPAC-aware matching
         for i in range(len(seq) - len(site) + 1):
-            if seq[i:i+len(site)] == site:
-                found_sites.append({"enzyme": enz_name, "position": i, "site": site, "strand": "+"})
+            window = seq[i:i+len(site)]
+            if has_iupac:
+                match = all(window[j] in IUPAC_EXPAND.get(site[j].upper(), site[j].upper())
+                            for j in range(len(site)) if j < len(window))
+                if match:
+                    found_sites.append({"enzyme": enz_name, "position": i, "site": window, "strand": "+"})
+            else:
+                if window == site:
+                    found_sites.append({"enzyme": enz_name, "position": i, "site": site, "strand": "+"})
 
-        # Reverse complement strand (skip palindromes)
-        if site_rc != site:
-            for i in range(len(seq) - len(site_rc) + 1):
-                if seq[i:i+len(site_rc)] == site_rc:
-                    found_sites.append({"enzyme": enz_name, "position": i, "site": site_rc, "strand": "-"})
+        # Reverse complement strand (only for non-IUPAC sites)
+        if not has_iupac:
+            site_rc = reverse_complement(site)
+            if site_rc != site:
+                for i in range(len(seq) - len(site_rc) + 1):
+                    if seq[i:i+len(site_rc)] == site_rc:
+                        found_sites.append({"enzyme": enz_name, "position": i, "site": site_rc, "strand": "-"})
 
     if found_sites:
         return TypeCheckResult(

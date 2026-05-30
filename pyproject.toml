@@ -1,6 +1,6 @@
 [project]
 name = "biocompiler"
-version = "2.1.0"
+version = "2.2.0"
 description = "A compiler framework for machine-verified gene design with deterministic type checking and certificates"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 optimizer = ["z3-solver>=4.12.0"]
-dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1.0", "mypy>=1.0"]
 
 [project.scripts]
 biocompiler = "biocompiler.cli:main"
@@ -34,6 +34,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+biocompiler = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -50,3 +53,7 @@ warn_unused_configs = true
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # line length handled by formatter

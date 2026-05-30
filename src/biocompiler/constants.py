@@ -100,7 +100,10 @@ RESTRICTION_ENZYMES: dict[str, str] = {
     "AscI": "GGCGCGCC",
     "FseI": "GGCCGGCC",
     "PacI": "TTAATTAA",
-    "SfiI": "GGCCNNNNNGGCC",
+    # Note: SfiI (GGCCNNNNNGGCC) uses IUPAC N wildcards and requires
+    # regex-based matching. Use IUPAC_EXPAND for proper handling.
+    # Simple string matching will NOT find SfiI sites correctly.
+    "SfiI": "GGCCNNNNNGGCC",  # Requires wildcard matching
     "SbfI": "CCTGCAGG",
     "BsiWI": "CGTACG",
     "BsrGI": "TGTACA",

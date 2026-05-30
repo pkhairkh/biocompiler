@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 from .types import (
     Verdict,

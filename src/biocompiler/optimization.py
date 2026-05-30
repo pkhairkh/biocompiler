@@ -360,8 +360,9 @@ def _check_predicates(
 
     satisfied.append("InFrame")
     gc = gc_content(sequence)
-    (satisfied if gc_lo <= gc <= gc_hi else failed).append(
-        "GCInRange" if gc_lo <= gc <= gc_hi else f"GCInRange(gc={gc:.3f})"
+    gc_ok = gc_lo <= gc <= gc_hi
+    (satisfied if gc_ok else failed).append(
+        "GCInRange" if gc_ok else f"GCInRange(gc={gc:.3f})"
     )
 
     has_restriction = any(
@@ -372,19 +373,20 @@ def _check_predicates(
 
     has_atta = "ATTTA" in sequence
     has_t6 = any(sequence[i:i+6] == "TTTTTT" for i in range(len(sequence)-5))
-    (satisfied if not (has_atta or has_t6) else failed).append(
-        "NoInstabilityMotif" if not (has_atta or has_t6) else "NoInstabilityMotif"
-    )
+    inst_ok = not (has_atta or has_t6)
+    (satisfied if inst_ok else failed).append("NoInstabilityMotif")
 
     cai = compute_cai(sequence, organism)
-    (satisfied if cai >= cai_threshold else failed).append(
-        "CodonAdapted" if cai >= cai_threshold else f"CodonAdapted(cai={cai:.4f})"
+    cai_ok = cai >= cai_threshold
+    (satisfied if cai_ok else failed).append(
+        "CodonAdapted" if cai_ok else f"CodonAdapted(cai={cai:.4f})"
     )
 
     max_d = max_donor_score(sequence)
     max_a = max_acceptor_score(sequence)
-    (satisfied if max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold else failed).append(
-        "NoCrypticSplice" if max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold
+    cryptic_ok = max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold
+    (satisfied if cryptic_ok else failed).append(
+        "NoCrypticSplice" if cryptic_ok
         else f"NoCrypticSplice(donor={max_d:.2f},acceptor={max_a:.2f})"
     )
 

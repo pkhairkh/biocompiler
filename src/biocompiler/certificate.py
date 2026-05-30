@@ -18,7 +18,7 @@ from .exceptions import CertificateGenerationError, CertificateVerificationError
 
 logger = logging.getLogger(__name__)
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 # Required keys in a certificate dict for verification
 _CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}

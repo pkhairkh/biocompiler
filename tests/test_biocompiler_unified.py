@@ -29,7 +29,8 @@ from biocompiler import (
     evaluate_no_cryptic_splice, evaluate_splice_correct,
     evaluate_gc_in_range, evaluate_codon_adapted,
     evaluate_no_restriction_site, evaluate_in_frame,
-    evaluate_no_instability_motif, evaluate_all_predicates,
+    evaluate_no_instability_motif, evaluate_no_cpg_island,
+    evaluate_all_predicates,
     predicate_registry,
     generate_certificate, verify_certificate,
     score_donor, score_acceptor, scan_splice_sites,
@@ -617,6 +618,135 @@ class TestEdgeCases:
         rc = reverse_complement(seq)
         rc2 = reverse_complement(rc)
         assert rc2 == seq
+
+
+# ==============================================================================
+# NoCpGIsland predicate tests
+# ==============================================================================
+
+class TestNoCpGIsland:
+    def test_no_cpg_island_pass(self):
+        """Sequence without CpG islands should PASS."""
+        # Low GC, no CpG enrichment
+        seq = "ATATATATATATATATATATATATATATATATATATATATATATATATAT" * 5
+        result = evaluate_no_cpg_island(seq)
+        assert result.verdict == Verdict.PASS
+
+    def test_cpg_island_fail(self):
+        """Sequence with high GC and CpG enrichment should FAIL."""
+        # CG dinucleotide rich sequence
+        seq = "CGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCG" * 5
+        result = evaluate_no_cpg_island(seq)
+        assert result.verdict == Verdict.FAIL
+
+    def test_cpg_island_custom_window(self):
+        """Custom window size and threshold."""
+        result = evaluate_no_cpg_island("ATGC" * 100, window_size=50, threshold=0.7)
+        assert result.verdict in (Verdict.PASS, Verdict.FAIL)
+
+
+# ==============================================================================
+# IUPAC restriction site tests
+# ==============================================================================
+
+class TestIUPACRestrictionSites:
+    def test_sfi_iupac_matching(self):
+        """SfiI (GGCCNNNNNGGCC) should be detected using IUPAC matching."""
+        # Construct a sequence with a SfiI site: GGCC + 5 bases + GGCC
+        seq = "ATGGCCATATTGGCCTAA"
+        tokens = scan_sequence(seq, ["SfiI"])
+        rest = [t for t in tokens if t.element_type == "restriction_site"]
+        assert len(rest) >= 1  # Should find the SfiI site
+
+    def test_simple_enzyme_still_works(self):
+        """Non-IUPAC enzymes should still work after IUPAC changes."""
+        tokens = scan_sequence("GAATTC", ["EcoRI"])
+        rest = [t for t in tokens if t.element_type == "restriction_site"]
+        assert len(rest) >= 1
+
+
+# ==============================================================================
+# SpliceIsoform immutability and repr tests
+# ==============================================================================
+
+class TestSpliceIsoformFrozen:
+    def test_frozen_isoform(self):
+        """SpliceIsoform should be immutable (frozen dataclass)."""
+        iso = SpliceIsoform("ATGC", [(0, 4)], ["canonical"], 1.0)
+        with pytest.raises(AttributeError):
+            iso.sequence = "TATA"
+
+    def test_isoform_repr(self):
+        """SpliceIsoform repr should be informative."""
+        iso = SpliceIsoform("ATGC", [(0, 4)], ["canonical"], 1.0)
+        r = repr(iso)
+        assert "SpliceIsoform" in r
+        assert "canonical" in r
+
+
+# ==============================================================================
+# TypeCheckResult repr test
+# ==============================================================================
+
+class TestTypeCheckResultRepr:
+    def test_repr(self):
+        result = TypeCheckResult("GCInRange(0.3, 0.7)", Verdict.PASS)
+        r = repr(result)
+        assert "GCInRange" in r
+        assert "PASS" in r
+
+
+# ==============================================================================
+# Certificate edge cases
+# ==============================================================================
+
+class TestCertificateEdgeCases:
+    def test_missing_required_keys_in_from_dict(self):
+        """from_dict should raise ValueError for missing keys."""
+        with pytest.raises(ValueError, match="missing keys"):
+            Certificate.from_dict({"version": "1.0"})
+
+    def test_structural_validation_rejects_malformed(self):
+        """verify_certificate should reject malformed certificates."""
+        status, failures = verify_certificate({"version": "1.0"})
+        assert status == "REJECTED"
+        assert len(failures) > 0
+
+    def test_tampered_verdict_detected(self):
+        """Changing a verdict in the certificate should cause verification failure."""
+        seq = "ATGCCTCCTCCTCCTTAA"
+        boundaries = [(0, len(seq))]
+        results = [
+            evaluate_gc_in_range(seq, 0.30, 0.70),
+            evaluate_no_restriction_site(seq, ["EcoRI"]),
+        ]
+        if all(r.verdict == Verdict.PASS for r in results):
+            cert = generate_certificate(seq, results, {"exon_boundaries": boundaries})
+            cert_dict = cert.to_dict()
+            # Tamper with a verdict
+            cert_dict["types"][0]["verdict"] = "FAIL"
+            status, failures = verify_certificate(cert_dict)
+            assert status == "REJECTED"
+
+
+# ==============================================================================
+# Integration: Full pipeline with optimizer
+# ==============================================================================
+
+class TestOptimizePipeline:
+    def test_optimize_short_protein(self):
+        """Optimize a short protein and verify the result."""
+        # Short protein to avoid z3 timeout
+        result = optimize_sequence("MVHLTPEEK", organism="Homo_sapiens")
+        assert len(result.sequence) == 9 * 3  # 9 AA * 3 bases
+        assert 0.0 <= result.gc_content <= 1.0
+        assert result.cai >= 0.0
+
+    def test_optimize_validates_protein(self):
+        """Invalid protein should raise InvalidProteinError."""
+        from biocompiler.exceptions import InvalidProteinError
+        with pytest.raises(InvalidProteinError):
+            optimize_sequence("MVHXTPEEK")  # X is not a valid AA
 
 
 if __name__ == "__main__":

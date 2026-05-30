@@ -13,6 +13,7 @@ import logging
 from .constants import (
     DONOR_CONSENSUS, ACCEPTOR_CONSENSUS, INSTABILITY_MOTIF,
     RESTRICTION_ENZYMES, POLYPYRIMIDINE_WINDOW,
+    IUPAC_EXPAND,
     reverse_complement,
 )
 from .types import Token
@@ -39,6 +40,29 @@ KOZAK_POSITION_WEIGHTS: dict[int, dict[str, float]] = {
 # Minimum MaxEntScan score for a splice site to be considered functional
 SPLICE_DONOR_MIN_SCORE = 0.0
 SPLICE_ACCEPTOR_MIN_SCORE = 0.0
+
+
+def _iupac_match(seq: str, pattern: str) -> bool:
+    """
+    Check if a DNA sequence matches an IUPAC pattern.
+    
+    Supports ambiguity codes: R=AG, Y=CT, S=GC, W=AT, K=GT, M=AC,
+    B=CGT, D=AGT, H=ACT, V=ACG, N=ACGT.
+    
+    Args:
+        seq: concrete DNA sequence (only ACGT)
+        pattern: IUPAC pattern (may contain ambiguity codes)
+    
+    Returns:
+        True if seq matches pattern
+    """
+    if len(seq) != len(pattern):
+        return False
+    for s_base, p_base in zip(seq, pattern):
+        allowed = IUPAC_EXPAND.get(p_base.upper(), p_base.upper())
+        if s_base not in allowed:
+            return False
+    return True
 
 
 def validate_dna_sequence(seq: str) -> str:
@@ -180,21 +204,28 @@ def scan_sequence(
         if seq[i:i+5] == INSTABILITY_MOTIF:
             tokens.append(Token(i, "instability_motif", seq[i:i+5], 1.0))
 
-    # --- Restriction enzyme sites (BOTH strands) ---
+    # --- Restriction enzyme sites (BOTH strands, IUPAC-aware) ---
     if restriction_enzymes:
         for enz_name in restriction_enzymes:
             if enz_name in RESTRICTION_ENZYMES:
                 site = RESTRICTION_ENZYMES[enz_name]
-                site_rc = reverse_complement(site)
+                has_iupac = any(b not in "ACGT" for b in site.upper())
                 # Forward strand
                 for i in range(len(seq) - len(site) + 1):
-                    if seq[i:i+len(site)] == site:
-                        tokens.append(Token(i, "restriction_site", site, 1.0, strand="+"))
-                # Reverse complement strand
-                if site_rc != site:  # Avoid double-counting palindromes
-                    for i in range(len(seq) - len(site_rc) + 1):
-                        if seq[i:i+len(site_rc)] == site_rc:
-                            tokens.append(Token(i, "restriction_site", site_rc, 1.0, strand="-"))
+                    window = seq[i:i+len(site)]
+                    if has_iupac:
+                        if _iupac_match(window, site):
+                            tokens.append(Token(i, "restriction_site", window, 1.0, strand="+"))
+                    else:
+                        if window == site:
+                            tokens.append(Token(i, "restriction_site", site, 1.0, strand="+"))
+                # Reverse complement strand (only for non-IUPAC sites; IUPAC RC is complex)
+                if not has_iupac:
+                    site_rc = reverse_complement(site)
+                    if site_rc != site:  # Avoid double-counting palindromes
+                        for i in range(len(seq) - len(site_rc) + 1):
+                            if seq[i:i+len(site_rc)] == site_rc:
+                                tokens.append(Token(i, "restriction_site", site_rc, 1.0, strand="-"))
 
     tokens.sort(key=lambda t: (t.position, t.element_type))
     logger.debug("Scanned %d nt sequence, found %d tokens", len(seq), len(tokens))

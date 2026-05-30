@@ -80,13 +80,20 @@ class Token:
         return PositionRange(self.position, self.position + len(self.match_sequence))
 
 
-@dataclass
+@dataclass(frozen=True)
 class SpliceIsoform:
-    """A possible splice isoform computed by the NDFST."""
+    """A possible splice isoform computed by the NDFST. Frozen for immutability."""
     sequence: str
     exon_boundaries: list[tuple[int, int]]
     parse_path: list[str]
     score: float = 0.0  # Path probability score
+
+    def __repr__(self) -> str:
+        return (
+            f"SpliceIsoform(len={len(self.sequence)}, "
+            f"exons={len(self.exon_boundaries)}, "
+            f"path={self.parse_path}, score={self.score:.2f})"
+        )
 
 
 @dataclass
@@ -101,6 +108,9 @@ class TypeCheckResult:
     @property
     def passed(self) -> bool:
         return self.verdict == Verdict.PASS
+
+    def __repr__(self) -> str:
+        return f"TypeCheckResult({self.predicate}={self.verdict.value})"
 
 
 _CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}

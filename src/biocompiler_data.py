@@ -495,7 +495,7 @@ for aa, codons in _AMINO_ACID_CODONS.items():
 
 
 # ========================================================================
-# 5. UTILITY FUNCTIONS
+# 5. UTILITY FUNCTIONS (delegated to unified package)
 # ========================================================================
 
 def get_exon_sequence(premrna_seq, exon_start, exon_end):
@@ -514,62 +514,36 @@ def splice_premrna(premrna_seq, exons):
     return mrna
 
 def reverse_complement(seq):
-    """Return the reverse complement of a DNA sequence."""
+    """Return the reverse complement of a DNA sequence.
+    
+    .. deprecated:: 2.2.0
+       Use ``biocompiler.constants.reverse_complement`` instead.
+       This version only supports ACGT/N; the unified version supports
+       all IUPAC ambiguity codes.
+    """
     complement = {"A": "T", "T": "A", "G": "C", "C": "G",
                   "a": "t", "t": "a", "g": "c", "c": "g",
                   "N": "N", "n": "n"}
     return "".join(complement[base] for base in reversed(seq))
 
 def translate_dna(seq, to_stop=True):
-    """Translate a DNA sequence to protein."""
-    codon_table = {
-        "TTT":"F","TTC":"F","TTA":"L","TTG":"L",
-        "CTT":"L","CTC":"L","CTA":"L","CTG":"L",
-        "ATT":"I","ATC":"I","ATA":"I","ATG":"M",
-        "GTT":"V","GTC":"V","GTA":"V","GTG":"V",
-        "TCT":"S","TCC":"S","TCA":"S","TCG":"S",
-        "CCT":"P","CCC":"P","CCA":"P","CCG":"P",
-        "ACT":"T","ACC":"T","ACA":"T","ACG":"T",
-        "GCT":"A","GCC":"A","GCA":"A","GCG":"A",
-        "TAT":"Y","TAC":"Y","TAA":"*","TAG":"*",
-        "CAT":"H","CAC":"H","CAA":"Q","CAG":"Q",
-        "AAT":"N","AAC":"N","AAA":"K","AAG":"K",
-        "GAT":"D","GAC":"D","GAA":"E","GAG":"E",
-        "TGT":"C","TGC":"C","TGA":"*","TGG":"W",
-        "CGT":"R","CGC":"R","CGA":"R","CGG":"R",
-        "AGT":"S","AGC":"S","AGA":"R","AGG":"R",
-        "GGT":"G","GGC":"G","GGA":"G","GGG":"G",
-    }
-    protein = ""
-    for i in range(0, len(seq)-2, 3):
-        codon = seq[i:i+3].upper()
-        aa = codon_table.get(codon, "X")
-        if to_stop and aa == "*":
-            break
-        protein += aa
-    return protein
+    """Translate a DNA sequence to protein.
+    
+    .. deprecated:: 2.2.0
+       Use ``biocompiler.translation.translate`` instead.
+    """
+    from biocompiler.translation import translate as _translate
+    return _translate(seq, to_stop=to_stop)
 
 def calculate_cai(protein_seq, codon_usage_table=None):
     """
     Calculate Codon Adaptation Index (CAI) for a coding sequence.
-    Uses the Sharp & Li (1987) method.
+    
+    .. deprecated:: 2.2.0
+       Use ``biocompiler.translation.compute_cai`` instead.
     """
-    import math
-    if codon_usage_table is None:
-        codon_usage_table = CODON_ADAPTIVENESS
-
-    log_scores = []
-    for i in range(0, len(protein_seq)-2, 3):
-        codon = protein_seq[i:i+3].upper()
-        w = codon_usage_table.get(codon, 0.5)  # Default for unknown codons
-        if w > 0:
-            log_scores.append(math.log(w))
-
-    if not log_scores:
-        return 0.0
-
-    cai = math.exp(sum(log_scores) / len(log_scores))
-    return cai
+    from biocompiler.translation import compute_cai as _compute_cai
+    return _compute_cai(protein_seq, "Homo_sapiens")
 
 def find_splice_donor_sites(seq, threshold=0.8):
     """Find potential 5' splice donor sites (GT dinucleotide) in a sequence."""

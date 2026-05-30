@@ -281,6 +281,9 @@ def cmd_optimize(args):
         print("ERROR: Must provide --protein or --protein-file", file=sys.stderr)
         sys.exit(1)
 
+    # Validate enzyme names if provided
+    enzymes = _validate_enzyme_names(args.enzymes) if args.enzymes else None
+
     print(f"Optimizing for protein ({len(protein)} aa), organism={args.organism}")
 
     result = optimize_sequence(
@@ -288,6 +291,9 @@ def cmd_optimize(args):
         organism=args.organism,
         gc_lo=args.gc_lo,
         gc_hi=args.gc_hi,
+        cai_threshold=args.cai_threshold,
+        restriction_sites=enzymes,
+        cryptic_splice_threshold=args.cryptic_splice_threshold,
     )
 
     print(f"Sequence: {result.sequence[:60]}{'...' if len(result.sequence) > 60 else ''}")
@@ -404,6 +410,10 @@ def main():
     p_opt.add_argument("--organism", default="Homo_sapiens", help="Target organism")
     p_opt.add_argument("--gc-lo", type=float, default=0.30)
     p_opt.add_argument("--gc-hi", type=float, default=0.70)
+    p_opt.add_argument("--cai-threshold", type=float, default=0.2, help="Minimum CAI threshold")
+    p_opt.add_argument("--enzymes", help="Comma-separated restriction enzymes to avoid")
+    p_opt.add_argument("--cryptic-splice-threshold", type=float, default=3.0,
+                        help="MaxEntScan threshold for cryptic splice sites")
     p_opt.add_argument("--output", "-o", help="Output result file path")
     p_opt.set_defaults(func=cmd_optimize)
 
