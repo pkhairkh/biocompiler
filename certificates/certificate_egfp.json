@@ -1,0 +1,50 @@
+{
+  "sequence_hash": "1cbd21dd6ca0f536dd2613503fbe2d9f49b988ed579ff230a907c43d33c166a7",
+  "protein": "MVSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLTYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK",
+  "organism": "human",
+  "sequence_length": 717,
+  "gc_content": 0.6165,
+  "cai": 0.9861,
+  "max_donor_score": 4.6866,
+  "max_acceptor_score": 2.1094,
+  "predicate_results": [
+    {
+      "predicate": "SequenceIntegrity",
+      "verdict": "PASS",
+      "message": "Sequence integrity verified"
+    },
+    {
+      "predicate": "InFrame",
+      "verdict": "PASS",
+      "message": "No stop codons in frame, correct translation"
+    },
+    {
+      "predicate": "NoCrypticSplice",
+      "verdict": "UNCERTAIN",
+      "message": "Found 14 donor site(s) above threshold"
+    },
+    {
+      "predicate": "GCInRange",
+      "verdict": "PASS",
+      "message": "GC content 61.7% within [30%, 70%]"
+    },
+    {
+      "predicate": "CodonAdapted",
+      "verdict": "PASS",
+      "message": "CAI=0.9861 >= 0.2"
+    },
+    {
+      "predicate": "NoRestrictionSite",
+      "verdict": "PASS",
+      "message": "No restriction enzyme sites found"
+    },
+    {
+      "predicate": "NoInstabilityMotif",
+      "verdict": "PASS",
+      "message": "No instability motifs found"
+    }
+  ],
+  "overall_verdict": "UNCERTAIN",
+  "timestamp": 1780151124.4818168,
+  "pipeline_version": "biocompiler-mvp-0.1.0"
+}

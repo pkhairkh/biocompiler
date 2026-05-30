@@ -1,0 +1,50 @@
+{
+  "sequence_hash": "6fa7f9d87a9d7824c95cbc604415ad7094d301dc80195db6c63780b7e138560a",
+  "protein": "FVNQHLCGSHLVEALYLVCGERGFFYTPKTGIVEQCCTSICSLYQLENYCN",
+  "organism": "human",
+  "sequence_length": 153,
+  "gc_content": 0.5752,
+  "cai": 0.6576,
+  "max_donor_score": 2.6097,
+  "max_acceptor_score": 2.5692,
+  "predicate_results": [
+    {
+      "predicate": "SequenceIntegrity",
+      "verdict": "PASS",
+      "message": "Sequence integrity verified"
+    },
+    {
+      "predicate": "InFrame",
+      "verdict": "PASS",
+      "message": "No stop codons in frame, correct translation"
+    },
+    {
+      "predicate": "NoCrypticSplice",
+      "verdict": "PASS",
+      "message": "No cryptic splice sites detected"
+    },
+    {
+      "predicate": "GCInRange",
+      "verdict": "PASS",
+      "message": "GC content 57.5% within [30%, 70%]"
+    },
+    {
+      "predicate": "CodonAdapted",
+      "verdict": "PASS",
+      "message": "CAI=0.6576 >= 0.2"
+    },
+    {
+      "predicate": "NoRestrictionSite",
+      "verdict": "PASS",
+      "message": "No restriction enzyme sites found"
+    },
+    {
+      "predicate": "NoInstabilityMotif",
+      "verdict": "PASS",
+      "message": "No instability motifs found"
+    }
+  ],
+  "overall_verdict": "PASS",
+  "timestamp": 1780151124.2821448,
+  "pipeline_version": "biocompiler-mvp-0.1.0"
+}
