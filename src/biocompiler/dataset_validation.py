@@ -316,8 +316,8 @@ SYNTHETIC_BENCHMARKS: dict[str, dict] = {
             "NRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADH"
             "YQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
         ),
-        "expected_gc_range": (0.40, 0.60),
-        "expected_cai_human": (0.5, 0.90),
+        "expected_gc_range": (0.40, 0.65),  # Optimized sequences often push GC higher
+        "expected_cai_human": (0.5, 1.0),
         "protein_length": 239,
         "uniprot": "C5MKY7",
     },

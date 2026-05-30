@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from .constants import (
     CODON_TABLE, AA_TO_CODONS, BASE_MAP, BASE_REV,
-    RESTRICTION_ENZYMES, reverse_complement,
+    RESTRICTION_ENZYMES, reverse_complement, IUPAC_EXPAND,
 )
 from .organisms import CODON_USAGE_TABLES, SUPPORTED_ORGANISMS, CODON_ADAPTIVENESS_TABLES
 from .exceptions import UnsupportedOrganismError, InvalidProteinError, OptimizationError
@@ -79,33 +79,64 @@ def _greedy_optimize(
     # Phase 1: Best codon per position
     sequence = "".join(sorted_codons[aa][0] for aa in aas)
 
-    # Phase 2: Fix restriction sites
+    # Phase 2: Fix restriction sites (supports IUPAC ambiguity codes)
     for site in restriction_sites:
         site_upper = site.upper()
-        site_rc = reverse_complement(site_upper)
-        for iteration in range(100):
-            pos = sequence.find(site_upper)
-            pos_rc = sequence.find(site_rc)
-            if pos == -1 and pos_rc == -1:
-                break
-            target_pos = pos if pos != -1 else pos_rc
-            codon_idx = target_pos // 3
-            if codon_idx < len(aas):
-                aa = aas[codon_idx]
-                current = sequence[codon_idx*3: codon_idx*3+3]
-                fixed = False
-                for alt in sorted_codons[aa]:
-                    if alt != current:
-                        test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
-                        if site_upper not in test and site_rc not in test:
-                            sequence = test
-                            fixed = True
+        has_iupac = any(b not in "ACGT" for b in site_upper)
+
+        if has_iupac:
+            # Expand IUPAC site into concrete variants
+            concrete_variants = _expand_iupac_site(site_upper)
+            for variant in concrete_variants:
+                variant_rc = reverse_complement(variant)
+                for iteration in range(100):
+                    pos = sequence.find(variant)
+                    pos_rc = sequence.find(variant_rc)
+                    if pos == -1 and pos_rc == -1:
+                        break
+                    target_pos = pos if pos != -1 else pos_rc
+                    codon_idx = target_pos // 3
+                    if codon_idx < len(aas):
+                        aa = aas[codon_idx]
+                        current = sequence[codon_idx*3: codon_idx*3+3]
+                        fixed = False
+                        for alt in sorted_codons[aa]:
+                            if alt != current:
+                                test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
+                                if variant not in test and variant_rc not in test:
+                                    sequence = test
+                                    fixed = True
+                                    break
+                        if not fixed:
+                            warnings.append(f"Cannot remove {site} variant {variant} at iteration {iteration}")
                             break
-                if not fixed:
-                    warnings.append(f"Cannot remove {site} at iteration {iteration}")
-                    break
+                else:
+                    warnings.append(f"Restriction site {site} variant {variant}: max iterations reached")
         else:
-            warnings.append(f"Restriction site {site}: max iterations reached, may still be present")
+            site_rc = reverse_complement(site_upper)
+            for iteration in range(100):
+                pos = sequence.find(site_upper)
+                pos_rc = sequence.find(site_rc)
+                if pos == -1 and pos_rc == -1:
+                    break
+                target_pos = pos if pos != -1 else pos_rc
+                codon_idx = target_pos // 3
+                if codon_idx < len(aas):
+                    aa = aas[codon_idx]
+                    current = sequence[codon_idx*3: codon_idx*3+3]
+                    fixed = False
+                    for alt in sorted_codons[aa]:
+                        if alt != current:
+                            test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
+                            if site_upper not in test and site_rc not in test:
+                                sequence = test
+                                fixed = True
+                                break
+                    if not fixed:
+                        warnings.append(f"Cannot remove {site} at iteration {iteration}")
+                        break
+            else:
+                warnings.append(f"Restriction site {site}: max iterations reached, may still be present")
 
     # Phase 3: Fix ATTTA
     for iteration in range(100):
@@ -306,8 +337,15 @@ def optimize_sequence(
             opt.add(gc_count >= int(gc_lo * n_bases), gc_count <= int(gc_hi * n_bases))
 
             # NoRestrictionSite
+            # Filter out IUPAC sites (e.g., SfiI GGCCNNNNNGGCC) — z3 cannot handle
+            # ambiguity codes directly. Expanding them is too expensive for z3
+            # (SfiI alone = 1024 variants × positions). Instead, only add constraints
+            # for concrete (ACGT-only) sites here. IUPAC sites are checked
+            # post-optimization by _check_predicates and the greedy fallback.
             for site in restriction_sites:
                 site_upper = site.upper()
+                if any(b not in "ACGT" for b in site_upper):
+                    continue  # Skip IUPAC sites in z3 — checked post-optimization
                 indices = [BASE_REV[b] for b in site_upper]
                 for start in range(n_bases - len(site_upper) + 1):
                     opt.add(Not(And(*[nuc[start+j] == indices[j] for j in range(len(site_upper))])))
@@ -349,6 +387,36 @@ def optimize_sequence(
     )
 
 
+def _expand_iupac_site(pattern: str) -> list[str]:
+    """Expand an IUPAC restriction site pattern into all concrete ACGT sequences.
+
+    E.g., GGCCNNNNNGGCC expands into 4^5 = 1024 concrete sequences.
+    For very large expansions, we cap at 4096 to avoid combinatorial explosion.
+    """
+    if not any(b not in "ACGT" for b in pattern):
+        return [pattern]
+
+    # Count IUPAC positions to estimate expansion size
+    total_combos = 1
+    for b in pattern:
+        if b not in "ACGT":
+            total_combos *= len(IUPAC_EXPAND.get(b, "A"))
+
+    if total_combos > 4096:
+        # Too many variants — skip and warn (post-optimization check will catch it)
+        logger.warning(
+            "IUPAC site %s expands to %d variants (>4096), skipping in z3",
+            pattern, total_combos,
+        )
+        return []
+
+    results = [""]
+    for b in pattern:
+        bases = IUPAC_EXPAND.get(b, b)
+        results = [r + x for r in results for x in bases]
+    return results
+
+
 def _check_predicates(
     sequence: str, gc_lo: float, gc_hi: float,
     restriction_sites: list[str], cai_threshold: float, organism: str,
@@ -364,10 +432,30 @@ def _check_predicates(
         "GCInRange" if gc_ok else f"GCInRange(gc={gc:.3f})"
     )
 
-    has_restriction = any(
-        site.upper() in sequence or reverse_complement(site.upper()) in sequence
-        for site in restriction_sites
-    )
+    has_restriction = False
+    for site in restriction_sites:
+        site_upper = site.upper()
+        if any(b not in "ACGT" for b in site_upper):
+            # IUPAC site: check by expanding into concrete variants
+            from .scanner import _iupac_match
+            for i in range(len(sequence) - len(site_upper) + 1):
+                window = sequence[i:i+len(site_upper)]
+                if _iupac_match(window, site_upper):
+                    has_restriction = True
+                    break
+            if not has_restriction:
+                # Also check reverse complement of IUPAC site
+                site_rc = reverse_complement(site_upper)
+                for i in range(len(sequence) - len(site_rc) + 1):
+                    window = sequence[i:i+len(site_rc)]
+                    if _iupac_match(window, site_rc):
+                        has_restriction = True
+                        break
+        else:
+            if site_upper in sequence or reverse_complement(site_upper) in sequence:
+                has_restriction = True
+        if has_restriction:
+            break
     (satisfied if not has_restriction else failed).append("NoRestrictionSite")
 
     has_atta = "ATTTA" in sequence
