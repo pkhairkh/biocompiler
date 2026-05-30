@@ -15,7 +15,9 @@ Reference: DOC-03 (SDD), Lean4 formalization (BioCompiler/Soundness.lean)
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+import math
+import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
@@ -43,7 +45,11 @@ def three_valued_and(a: Verdict, b: Verdict) -> Verdict:
 
 @dataclass(frozen=True)
 class PositionRange:
-    """Half-open interval [start, end) on a sequence."""
+    """Half-open interval [start, end) on a sequence.
+
+    Reserved for future use: will be integrated into the Token class to
+    support range-based annotations (e.g., exon spans, domain boundaries).
+    """
     start: int
     end: int
 
@@ -153,6 +159,16 @@ CODON_USAGE = {
 }
 
 
+def validate_dna_sequence(seq: str) -> str:
+    """Validate and normalize a DNA sequence. Raises ValueError for invalid sequences."""
+    seq = seq.upper()
+    valid = set("ACGTN")  # Allow N for unknown bases
+    invalid = set(seq) - valid
+    if invalid:
+        raise ValueError(f"Invalid DNA bases found: {invalid}")
+    return seq
+
+
 def scan_sequence(seq: str, restriction_enzymes: list[str] | None = None) -> list[Token]:
     """
     Scan a nucleotide sequence for biological motifs.
@@ -161,7 +177,9 @@ def scan_sequence(seq: str, restriction_enzymes: list[str] | None = None) -> lis
     for all motif types simultaneously (INV-SCAN-03).
     Returns an ordered list of tokens.
     """
-    seq = seq.upper()
+    seq = validate_dna_sequence(seq)
+    if not seq:
+        return []
     tokens: list[Token] = []
 
     # Scan for splice donor sites (GT)
@@ -189,10 +207,10 @@ def scan_sequence(seq: str, restriction_enzymes: list[str] | None = None) -> lis
         if seq[i:i+3] in ("TAA", "TAG", "TGA"):
             tokens.append(Token(i, "stop_codon", seq[i:i+3], 1.0))
 
-    # Scan for Kozak consensus
-    for i in range(len(seq) - 9):
-        if seq[i:i+9].count("GCCACC") > 0:
-            tokens.append(Token(i, "kozak", seq[i:i+9], 1.0))
+    # Scan for Kozak consensus (GCCACC at any position)
+    for i in range(len(seq) - len(KOZAK_CONSENSUS) + 1):
+        if seq[i:i+len(KOZAK_CONSENSUS)] == KOZAK_CONSENSUS:
+            tokens.append(Token(i, "kozak", KOZAK_CONSENSUS, 1.0))
 
     # Scan for AUUUA instability motifs
     for i in range(len(seq) - 4):
@@ -310,6 +328,9 @@ def translate(sequence: str) -> str:
     This is a deterministic FST: codon → amino acid mapping.
     Handles selenocysteine (UGA recoding) as UNCERTAIN (requires SECIS context).
     """
+    sequence = validate_dna_sequence(sequence)
+    if not sequence:
+        return ""
     protein: list[str] = []
     for i in range(0, len(sequence) - 2, 3):
         codon = sequence[i:i+3]
@@ -327,6 +348,9 @@ def compute_cai(sequence: str, organism: str = "Homo_sapiens") -> float:
     CAI = geometric mean of relative adaptiveness values of codons used.
     This is a DETERMINISTIC computation: same sequence → same CAI.
     """
+    sequence = validate_dna_sequence(sequence)
+    if not sequence:
+        return 0.0
     if organism not in ("Homo_sapiens",):
         return 0.0
 
@@ -348,16 +372,13 @@ def compute_cai(sequence: str, organism: str = "Homo_sapiens") -> float:
     if not ratios:
         return 0.0
 
-    # Geometric mean
-    log_sum = sum(r**0.01 for r in ratios)  # Avoid log(0)
-    if log_sum == 0:
-        return 0.0
-
-    import math
-    product = 1.0
+    # Geometric mean via log-based computation
+    log_sum = 0.0
     for r in ratios:
-        product *= max(r, 1e-10)
-    cai = product ** (1.0 / len(ratios))
+        if r <= 0:
+            r = 1e-10  # Small epsilon for zero ratios
+        log_sum += math.log(r)
+    cai = math.exp(log_sum / len(ratios))
     return round(cai, 4)
 
 
@@ -369,6 +390,7 @@ def gc_content(seq: str) -> float:
     """Compute GC content as a fraction [0.0, 1.0]. Deterministic."""
     if not seq:
         return 0.0
+    seq = seq.upper()
     gc = seq.count('G') + seq.count('C')
     return round(gc / len(seq), 4)
 
@@ -606,10 +628,19 @@ def evaluate_no_instability_motif(seq: str) -> TypeCheckResult:
         if seq[i:i+5] == INSTABILITY_MOTIF:
             motifs_found.append({"position": i, "motif": seq[i:i+5]})
 
-    # U-rich regions (≥6 consecutive T in DNA)
-    for i in range(len(seq) - 5):
-        if seq[i:i+6].count('T') >= 6:
-            motifs_found.append({"position": i, "motif": seq[i:i+6], "type": "U_rich"})
+    # U-rich regions (6+ consecutive T in DNA, corresponding to U-rich mRNA)
+    i = 0
+    while i < len(seq):
+        if seq[i] == 'T':
+            j = i
+            while j < len(seq) and seq[j] == 'T':
+                j += 1
+            run_len = j - i
+            if run_len >= 6:
+                motifs_found.append({"position": i, "motif": seq[i:j], "type": "U_rich", "length": run_len})
+            i = j
+        else:
+            i += 1
 
     if motifs_found:
         return TypeCheckResult(
@@ -662,6 +693,7 @@ def generate_certificate(
             "version": "1.0.0-poc",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "parameters": input_params,
+            "verification_parameters": input_params,
             "input_hash": hashlib.sha256(sequence.encode()).hexdigest(),
         },
     )
@@ -685,6 +717,15 @@ def verify_certificate(cert_dict: dict, known_exon_boundaries: list[tuple[int, i
     failures: list[str] = []
     seq = cert_dict["sequence"].upper()
 
+    # Get verification parameters from certificate provenance
+    prov = cert_dict.get("provenance", {})
+    params = prov.get("parameters", {})
+    verify_exon_boundaries = params.get("exon_boundaries", known_exon_boundaries)
+    gc_lo = params.get("gc_lo", 0.30)
+    gc_hi = params.get("gc_hi", 0.70)
+    cai_threshold = params.get("cai_threshold", 0.5)
+    enzymes = params.get("enzymes", ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"])
+
     # Check 1: design_id matches SHA-256 of sequence
     computed_hash = hashlib.sha256(seq.encode()).hexdigest()
     if computed_hash != cert_dict["design_id"]:
@@ -698,18 +739,17 @@ def verify_certificate(cert_dict: dict, known_exon_boundaries: list[tuple[int, i
 
         # Re-evaluate based on predicate type
         if predicate == "NoCrypticSplice":
-            result = evaluate_no_cryptic_splice(seq, known_exon_boundaries)
+            result = evaluate_no_cryptic_splice(seq, verify_exon_boundaries)
         elif predicate.startswith("SpliceCorrect"):
-            result = evaluate_splice_correct(seq, known_exon_boundaries, cellular_context)
+            result = evaluate_splice_correct(seq, verify_exon_boundaries, cellular_context)
         elif predicate.startswith("GCInRange"):
-            # Parse parameters from predicate name
-            result = evaluate_gc_in_range(seq, 0.30, 0.70)
+            result = evaluate_gc_in_range(seq, gc_lo, gc_hi)
         elif predicate.startswith("CodonAdapted"):
-            result = evaluate_codon_adapted(seq, "Homo_sapiens", 0.5)
+            result = evaluate_codon_adapted(seq, "Homo_sapiens", cai_threshold)
         elif predicate.startswith("NoRestrictionSite"):
-            result = evaluate_no_restriction_site(seq, ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"])
+            result = evaluate_no_restriction_site(seq, enzymes)
         elif predicate == "InFrame":
-            result = evaluate_in_frame(seq, known_exon_boundaries)
+            result = evaluate_in_frame(seq, verify_exon_boundaries)
         elif predicate == "NoInstabilityMotif":
             result = evaluate_no_instability_motif(seq)
         else:
@@ -935,7 +975,6 @@ def run_raw_gene_demo():
             "types": cert.types,
             "provenance": cert.provenance,
         }
-        cert_json = json.dumps(cert_dict, indent=2)
         print(f"  Certificate generated successfully!")
         print(f"  design_id: {cert.design_id[:32]}...")
         print(f"  Sequence length: {len(cert.sequence)} nt")
@@ -960,7 +999,9 @@ def run_raw_gene_demo():
         print()
 
         # ── Save certificate ──────────────────────────────────────────────────
-        cert_path = "/home/z/my-project/download/BioCompiler-PoC/HBB_certificate.json"
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "certificates")
+        os.makedirs(cert_dir, exist_ok=True)
+        cert_path = os.path.join(cert_dir, "HBB_certificate.json")
         with open(cert_path, "w") as f:
             json.dump(cert_dict, f, indent=2)
         print(f"  Certificate saved to: {cert_path}")
@@ -1163,7 +1204,9 @@ def run_designed_gene_demo():
         print()
 
         # Save certificate
-        cert_path = "/home/z/my-project/download/BioCompiler-PoC/GFP_certificate.json"
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "certificates")
+        os.makedirs(cert_dir, exist_ok=True)
+        cert_path = os.path.join(cert_dir, "GFP_certificate.json")
         with open(cert_path, "w") as f:
             json.dump(cert_dict, f, indent=2)
         print(f"  Certificate saved to: {cert_path}")

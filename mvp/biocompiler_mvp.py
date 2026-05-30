@@ -540,7 +540,10 @@ def run_pipeline(
     print(f"  Pipeline version: {certificate.pipeline_version}")
 
     if save_certificate:
-        cert_filename = f"/home/z/my-project/download/biocompiler-mvp/certificate_{protein_name.lower().replace(' ', '_')}.json"
+        import os
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "certificates")
+        os.makedirs(cert_dir, exist_ok=True)
+        cert_filename = os.path.join(cert_dir, f"certificate_{protein_name.lower().replace(' ', '_')}.json")
         with open(cert_filename, "w") as f:
             f.write(certificate.to_json())
         print(f"  Certificate saved: {cert_filename}")
