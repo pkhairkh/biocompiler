@@ -1,12 +1,18 @@
 """
-BioCompiler Certificate Engine — Generation & Verification
+BioCompiler Certificate Engine — Graduated Generation & Verification
 
 Production-grade certificate system with:
+- GRADUATED certificates: works even when not all predicates pass
 - Registry-based verification (no string-prefix dispatch)
 - All verification parameters embedded IN the certificate
 - Hash integrity check for sequence + parameters
-- Input validation for certificate structure
+- Per-predicate scores and status, not just PASS/FAIL
 - CertificateError instead of raw assert
+
+Design philosophy: a certificate documents what was verified, not just
+whether everything passed. A sequence with CAI=0.99 but one remaining
+PstI site is still useful — the biologist can decide whether PstI is
+acceptable for their cloning workflow.
 """
 
 import hashlib
@@ -22,7 +28,7 @@ try:
     from . import __version__ as _PKG_VERSION
     VERSION = _PKG_VERSION
 except ImportError:
-    VERSION = "4.0.0"
+    VERSION = "5.2.0"
 
 # Required keys in a certificate dict for verification
 _CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}
@@ -33,12 +39,17 @@ def generate_certificate(
     sequence: str,
     type_results: list[TypeCheckResult],
     input_params: dict,
+    require_all_pass: bool = False,
 ) -> Certificate:
     """
     Generate a machine-checkable guarantee certificate.
 
-    PRECONDITION: All type results must have verdict PASS.
-    Raises CertificateGenerationError if any predicate failed.
+    GRADUATED MODE (default): Certificate is generated even if some predicates
+    fail. The certificate documents all predicate results, allowing downstream
+    users to make informed decisions about partial compliance.
+
+    STRICT MODE (require_all_pass=True): Only generates if all predicates pass.
+    This preserves backward compatibility with the old behavior.
 
     Args:
         sequence: the DNA sequence being certified
@@ -46,19 +57,27 @@ def generate_certificate(
         input_params: dict of parameters used (gene, organism, exon_boundaries, etc.)
             MUST include all parameters needed for independent re-verification:
             - exon_boundaries, gc_lo, gc_hi, cai_threshold, organism, cell_type, enzymes
+        require_all_pass: if True, raise CertificateGenerationError on any failure.
+                         if False (default), generate graduated certificate.
 
     Returns:
-        Certificate object
+        Certificate object with all predicate results documented
 
     Raises:
-        CertificateGenerationError: if any predicate has non-PASS verdict
+        CertificateGenerationError: only if require_all_pass=True and any predicate failed
     """
     failures = [r for r in type_results if r.verdict != Verdict.PASS]
-    if failures:
+
+    if require_all_pass and failures:
         raise CertificateGenerationError(failures)
 
     # Compute hash once
     seq_hash = hashlib.sha256(sequence.encode()).hexdigest()
+
+    # Compute overall status
+    n_pass = sum(1 for r in type_results if r.verdict == Verdict.PASS)
+    n_total = len(type_results)
+    overall_status = "FULL_PASS" if not failures else f"PARTIAL_{n_pass}/{n_total}"
 
     # Ensure all verification parameters are embedded
     complete_params = dict(input_params)
@@ -89,9 +108,11 @@ def generate_certificate(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "parameters": complete_params,
             "input_hash": seq_hash,
+            "overall_status": overall_status,
         },
     )
-    logger.info("Certificate generated: design_id=%s...", cert.design_id[:16])
+    status_msg = overall_status if failures else "FULL_PASS"
+    logger.info("Certificate generated: design_id=%s... status=%s", cert.design_id[:16], status_msg)
     return cert
 
 
@@ -150,10 +171,8 @@ def _resolve_predicate_name(cert_predicate_name: str) -> str | None:
 
     Returns None if no matching registry predicate is found.
     """
-    # First try exact match
     if cert_predicate_name in registry:
         return cert_predicate_name
-    # Try prefix match for parameterized predicates
     for base_name in registry.names():
         if cert_predicate_name.startswith(base_name):
             return base_name
@@ -169,6 +188,9 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
 
     Uses the predicate registry for dispatch — no if/elif chains.
 
+    For graduated certificates, verification checks that the claimed verdicts
+    are consistent with re-evaluation, but does NOT require all predicates to pass.
+
     Args:
         cert_dict: certificate as a plain dict
         **kwargs: override known_exon_boundaries, cellular_context, etc.
@@ -181,14 +203,13 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
     # Step 0: Validate certificate structure
     structural_issues = _validate_cert_structure(cert_dict)
     if structural_issues:
-        # Return early if structure is invalid — can't safely proceed
         return "REJECTED", structural_issues
 
     seq = cert_dict["sequence"].upper()
     prov = cert_dict.get("provenance", {})
     params = prov.get("parameters", {})
 
-    # Merge certificate params with kwargs (kwargs take precedence for explicit overrides)
+    # Merge certificate params with kwargs (kwargs take precedence)
     effective_params = dict(params)
     for key, val in kwargs.items():
         effective_params[key] = val
@@ -207,13 +228,11 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
         claimed_verdict = type_entry["verdict"]
 
         try:
-            # Resolve predicate name to registry name
             registry_name = _resolve_predicate_name(predicate_name)
             if registry_name is None:
                 failures.append(f"Unknown predicate: {predicate_name}")
                 continue
 
-            # Build kwargs for the registry verify call
             kwarg_builder = _PREDICATE_KWARGS_MAP.get(registry_name, lambda p: {})
             verify_kwargs = kwarg_builder(effective_params)
             verify_kwargs["seq"] = seq
@@ -237,5 +256,10 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
         logger.warning("Certificate verification FAILED: %d issues", len(failures))
         return "REJECTED", failures
 
-    logger.info("Certificate VERIFIED: design_id=%s...", cert_dict["design_id"][:16])
+    # Determine verification status based on certificate's own overall_status
+    overall = prov.get("overall_status", "FULL_PASS")
+    logger.info(
+        "Certificate VERIFIED: design_id=%s... overall_status=%s",
+        cert_dict["design_id"][:16], overall
+    )
     return "VERIFIED", []

@@ -45,6 +45,16 @@ PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
 
 SUPPORTED_ORGANISMS = list(CODON_USAGE_TABLES.keys())
 
+# Organism-specific natural GC content targets
+# Source: Genome GC content from NCBI Genome Assembly data
+ORGANISM_GC_TARGETS: dict[str, float] = {
+    "Homo_sapiens": 0.41,
+    "Escherichia_coli": 0.52,
+    "Mus_musculus": 0.42,
+    "CHO_K1": 0.43,
+    "Saccharomyces_cerevisiae": 0.38,
+}
+
 # Aliases for backward compat
 HUMAN = "Homo_sapiens"
 E_COLI = "Escherichia_coli"

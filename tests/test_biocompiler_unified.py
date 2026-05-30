@@ -463,11 +463,19 @@ class TestCertificate:
             status, failures = verify_certificate(cert_dict)
             assert status == "VERIFIED", f"Verification failed: {failures}"
 
-    def test_generate_fails_with_failing_predicates(self):
-        """Certificate generation should raise CertificateGenerationError when predicates fail."""
+    def test_generate_graduated_with_failing_predicates(self):
+        """Graduated certificate generation succeeds even with failing predicates."""
+        results = [evaluate_gc_in_range("ATATAT", 0.3, 0.7)]  # 0% GC = FAIL
+        # Default mode: graduated, should NOT raise
+        cert = generate_certificate("ATATAT", results, {})
+        assert cert is not None
+        assert cert.provenance.get("overall_status", "").startswith("PARTIAL")
+
+    def test_generate_strict_fails_with_failing_predicates(self):
+        """Strict certificate generation raises CertificateGenerationError when predicates fail."""
         results = [evaluate_gc_in_range("ATATAT", 0.3, 0.7)]  # 0% GC = FAIL
         with pytest.raises(CertificateGenerationError):
-            generate_certificate("ATATAT", results, {})
+            generate_certificate("ATATAT", results, {}, require_all_pass=True)
 
     def test_certificate_hash_integrity(self):
         """Tampering with the sequence should cause verification to fail."""
