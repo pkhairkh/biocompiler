@@ -1,0 +1,127 @@
+# BioCompiler Splicing Grammar: Human β-Globin (HBB) in HEK293T
+# Reference: NCBI NG_000007.3, NM_000518.5
+# ADR-0007: Declarative YAML grammar configuration
+
+gene:
+  name: "HBB"
+  full_name: "Hemoglobin subunit beta"
+  organism: "Homo_sapiens"
+  chromosome: "11"
+  refseq_gene: "NG_000007.3"
+  refseq_mrna: "NM_000518.5"
+  refseq_protein: "NP_000509.1"
+
+pre_mrna:
+  length_bp: 1608
+  sequence_source: "biocompiler_data.HBB_PREMRNA"
+
+exons:
+  - id: "exon1"
+    start: 1       # 1-based in pre-mRNA
+    end: 142
+    length: 142
+    description: "5'UTR (50 bp) + CDS part 1 (92 bp)"
+    cds_start: 51  # ATG start codon position
+
+  - id: "exon2"
+    start: 273
+    end: 495
+    length: 223
+    description: "Internal exon, entirely CDS"
+
+  - id: "exon3"
+    start: 1346
+    end: 1608
+    length: 263
+    description: "CDS part 3 (129 bp) + 3'UTR (134 bp)"
+    cds_end: 1474  # TAA stop codon ends at 1474
+
+introns:
+  - id: "IVS1"
+    start: 143
+    end: 272
+    length: 130
+    donor_site:
+      position: 143
+      consensus: "GT"
+      context_9mer: "CAG|GTTGGTAT"  # | = exon-intron boundary
+    acceptor_site:
+      position: 272
+      consensus: "AG"
+      context: "TTAG|GCTGCTGG"
+    branch_point:
+      search_region: [180, 250]  # ~18-35 nt upstream of AG
+
+  - id: "IVS2"
+    start: 496
+    end: 1345
+    length: 850
+    donor_site:
+      position: 496
+      consensus: "GT"
+      context_9mer: "CAG|GTGAGTCT"
+    acceptor_site:
+      position: 1345
+      consensus: "AG"
+      context: "TCAG|CTCCTGGG"
+    branch_point:
+      search_region: [1200, 1310]  # ~18-35 nt upstream of AG
+
+# NDFST construction rules for this gene
+ndfst:
+  cell_type: "HEK293T"
+  splice_consensus:
+    donor: "GT"       # Invariant dinucleotide at 5' splice site
+    acceptor: "AG"    # Invariant dinucleotide at 3' splice site
+  # Known cryptic splice sites (from HBB mutations database)
+  # These are positions where mutations can create new splice sites
+  known_cryptic_sites:
+    - position: 130
+      type: "donor"
+      mutation: "IVS1-1G>A"
+      notes: "Creates cryptic donor in exon 1"
+    - position: 315
+      type: "donor"
+      mutation: "IVS1+5G>C"
+      notes: "Weakens canonical donor, may activate cryptic"
+  # Alternative splicing events known for HBB
+  alternative_splicing:
+    - type: "exon_skipping"
+      skipped_exon: "exon2"
+      notes: "Rare; produces non-functional protein"
+      frequency: "<1% in normal cells"
+
+# Type checking parameters for this gene
+type_system:
+  predicates:
+    - name: "SpliceCorrect"
+      cell_type: "HEK293T"
+      expected_isoforms: 1  # Only canonical isoform expected
+
+    - name: "NoCrypticSplice"
+      cryptic_threshold: 3.0  # MaxEntScan score threshold
+
+    - name: "CodonAdapted"
+      organism: "Homo_sapiens"
+      threshold: 0.70  # CAI threshold
+
+    - name: "GCInRange"
+      lo: 0.40
+      hi: 0.60  # Human coding genes typical range
+
+    - name: "NoRestrictionSite"
+      enzyme_sites:
+        - "EcoRI"    # GAATTC
+        - "BamHI"    # GGATCC
+        - "XhoI"     # CTCGAG
+        - "HindIII"  # AAGCTT
+        - "NotI"     # GCGGCCGC
+
+    - name: "InFrame"
+      reading_frame: 0
+      exon_boundaries: [142, 365, 628]  # In mRNA coordinates
+
+    - name: "NoInstabilityMotif"
+      check_attta: true
+      check_u_rich: true
+      u_rich_min_length: 6
