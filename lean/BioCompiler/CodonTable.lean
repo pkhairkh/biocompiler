@@ -175,30 +175,106 @@ theorem synonymous_trans {c1 c2 c3 : Codon} :
     Synonymous c1 c2 → Synonymous c2 c3 → Synonymous c1 c3 :=
   fun h1 h2 => Eq.trans h1 h2
 
-/-- For any non-stop amino acid, there exists a codon without GT -/
+/-- For any non-stop amino acid except Valine, there exists a codon without GT.
+    Valine (V) is the sole exception: all its codons are GTx, which contain GT. -/
 theorem exists_gt_free_codon (aa : AminoAcid) (h : aa ≠ AminoAcid.Stop) :
     ∃ c : Codon, translateCodon c = aa ∧ ¬ codonHasGT c := by
-  sorry
+  cases aa with
+  | F => exact ⟨⟨Base.T, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | L => exact ⟨⟨Base.T, Base.T, Base.A⟩, rfl, by native_decide⟩
+  | I => exact ⟨⟨Base.A, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | M => exact ⟨⟨Base.A, Base.T, Base.G⟩, rfl, by native_decide⟩
+  | V => sorry  -- All V codons (GTx) contain GT; this is the sole exception
+  | S => exact ⟨⟨Base.T, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | P => exact ⟨⟨Base.C, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | T => exact ⟨⟨Base.A, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | A => exact ⟨⟨Base.G, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | Y => exact ⟨⟨Base.T, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | H => exact ⟨⟨Base.C, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | Q => exact ⟨⟨Base.C, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | N => exact ⟨⟨Base.A, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | K => exact ⟨⟨Base.A, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | D => exact ⟨⟨Base.G, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | E => exact ⟨⟨Base.G, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | C => exact ⟨⟨Base.T, Base.G, Base.C⟩, rfl, by native_decide⟩
+  | W => exact ⟨⟨Base.T, Base.G, Base.G⟩, rfl, by native_decide⟩
+  | R => exact ⟨⟨Base.A, Base.G, Base.A⟩, rfl, by native_decide⟩
+  | G => exact ⟨⟨Base.G, Base.G, Base.A⟩, rfl, by native_decide⟩
+  | Stop => contradiction
 
 /-- For any non-stop amino acid, there exists a codon without CG -/
 theorem exists_cg_free_codon (aa : AminoAcid) (h : aa ≠ AminoAcid.Stop) :
     ∃ c : Codon, translateCodon c = aa ∧ ¬ codonHasCG c := by
-  sorry
+  cases aa with
+  | F => exact ⟨⟨Base.T, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | L => exact ⟨⟨Base.T, Base.T, Base.A⟩, rfl, by native_decide⟩
+  | I => exact ⟨⟨Base.A, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | M => exact ⟨⟨Base.A, Base.T, Base.G⟩, rfl, by native_decide⟩
+  | V => exact ⟨⟨Base.G, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | S => exact ⟨⟨Base.T, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | P => exact ⟨⟨Base.C, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | T => exact ⟨⟨Base.A, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | A => exact ⟨⟨Base.G, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | Y => exact ⟨⟨Base.T, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | H => exact ⟨⟨Base.C, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | Q => exact ⟨⟨Base.C, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | N => exact ⟨⟨Base.A, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | K => exact ⟨⟨Base.A, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | D => exact ⟨⟨Base.G, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | E => exact ⟨⟨Base.G, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | C => exact ⟨⟨Base.T, Base.G, Base.T⟩, rfl, by native_decide⟩
+  | W => exact ⟨⟨Base.T, Base.G, Base.G⟩, rfl, by native_decide⟩
+  | R => exact ⟨⟨Base.A, Base.G, Base.A⟩, rfl, by native_decide⟩
+  | G => exact ⟨⟨Base.G, Base.G, Base.A⟩, rfl, by native_decide⟩
+  | Stop => contradiction
 
-/-- THEOREM (Novel): Cross-codon GT can always be resolved by synonymous substitution. -/
+/-- Helper: For any non-stop amino acid, there exists a synonymous codon
+    whose third base is not C. This is key for resolving cross-codon CG. -/
+private theorem exists_codon_trd_ne_C (aa : AminoAcid) (h : aa ≠ AminoAcid.Stop) :
+    ∃ c : Codon, translateCodon c = aa ∧ c.trd ≠ Base.C := by
+  cases aa with
+  | F => exact ⟨⟨Base.T, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | L => exact ⟨⟨Base.T, Base.T, Base.A⟩, rfl, by native_decide⟩
+  | I => exact ⟨⟨Base.A, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | M => exact ⟨⟨Base.A, Base.T, Base.G⟩, rfl, by native_decide⟩
+  | V => exact ⟨⟨Base.G, Base.T, Base.T⟩, rfl, by native_decide⟩
+  | S => exact ⟨⟨Base.T, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | P => exact ⟨⟨Base.C, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | T => exact ⟨⟨Base.A, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | A => exact ⟨⟨Base.G, Base.C, Base.T⟩, rfl, by native_decide⟩
+  | Y => exact ⟨⟨Base.T, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | H => exact ⟨⟨Base.C, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | Q => exact ⟨⟨Base.C, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | N => exact ⟨⟨Base.A, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | K => exact ⟨⟨Base.A, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | D => exact ⟨⟨Base.G, Base.A, Base.T⟩, rfl, by native_decide⟩
+  | E => exact ⟨⟨Base.G, Base.A, Base.A⟩, rfl, by native_decide⟩
+  | C => exact ⟨⟨Base.T, Base.G, Base.T⟩, rfl, by native_decide⟩
+  | W => exact ⟨⟨Base.T, Base.G, Base.G⟩, rfl, by native_decide⟩
+  | R => exact ⟨⟨Base.A, Base.G, Base.A⟩, rfl, by native_decide⟩
+  | G => exact ⟨⟨Base.G, Base.G, Base.A⟩, rfl, by native_decide⟩
+  | Stop => contradiction
+
+/-- THEOREM (Novel): Cross-codon GT can always be resolved by synonymous substitution.
+    NOTE: This theorem is actually false in general. Counterexample: when c1
+    translates to M or W (all codons have trd = G) and c2 translates to F, Y, C,
+    or W (all codons have fst = T), the cross-codon GT cannot be broken. -/
 theorem cross_codon_gt_resolvable (c1 c2 : Codon)
     (h1 : translateCodon c1 ≠ AminoAcid.Stop)
     (h2 : translateCodon c2 ≠ AminoAcid.Stop)
     (hGT : crossCodonGT c1 c2) :
     ∃ c1' c2', Synonymous c1 c1' ∧ Synonymous c2 c2' ∧ ¬ crossCodonGT c1' c2' := by
-  sorry
+  sorry  -- False in general: M(ATG)→F(TTx) creates unresolvable cross-codon GT
 
-/-- THEOREM (Novel): Cross-codon CG can always be resolved by synonymous substitution. -/
+/-- THEOREM (Novel): Cross-codon CG can always be resolved by synonymous substitution.
+    Proof: For any non-stop amino acid, there exists a synonymous codon with trd ≠ C.
+    Substituting c1 for such a codon breaks the cross-codon CG condition. -/
 theorem cross_codon_cg_resolvable (c1 c2 : Codon)
     (h1 : translateCodon c1 ≠ AminoAcid.Stop)
     (h2 : translateCodon c2 ≠ AminoAcid.Stop)
     (hCG : crossCodonCG c1 c2) :
     ∃ c1' c2', Synonymous c1 c1' ∧ Synonymous c2 c2' ∧ ¬ crossCodonCG c1' c2' := by
-  sorry
+  obtain ⟨c1', hSyn1, htrd⟩ := exists_codon_trd_ne_C (translateCodon c1) h1
+  exact ⟨c1', c2, hSyn1.symm, rfl, fun h => htrd h.1⟩
 
 end BioCompiler

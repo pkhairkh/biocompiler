@@ -9,6 +9,16 @@ import BioCompiler.CodonTable
 namespace BioCompiler
 
 -- ────────────────────────────────────────────────────────────
+-- Float Order Properties (axioms for IEEE 754 semantics)
+-- Lean 4's Float lacks these in the standard library; they hold
+-- for all non-NaN values and are vacuously true for NaN.
+-- ────────────────────────────────────────────────────────────
+
+private axiom float_le_trans (a b c : Float) : a ≤ b → b ≤ c → a ≤ c
+private axiom float_lt_of_lt_of_le (a b c : Float) : a < b → b ≤ c → a < c
+private axiom float_not_lt_of_le (a b : Float) : a ≤ b → ¬(b < a)
+
+-- ────────────────────────────────────────────────────────────
 -- Splice Site Verdict (dual-threshold)
 -- ────────────────────────────────────────────────────────────
 
@@ -50,16 +60,23 @@ theorem classifySplice_lt_low (score low high : Float) (h : score < low) :
     classifySplice score low high = SpliceVerdict.PASS := by
   simp [classifySplice, h]
 
-theorem classifySplice_ge_high (score low high : Float) (h : high ≤ score) :
+theorem classifySplice_ge_high (score low high : Float) (h : high ≤ score) (h_low : low ≤ high) :
     classifySplice score low high = SpliceVerdict.FAIL := by
-  sorry  -- Float comparison requires decidability assumptions
+  unfold classifySplice
+  have h1 : ¬(score < low) := by
+    intro h_sl
+    exact float_not_lt_of_le low score (float_le_trans low high score h_low h) h_sl
+  have h2 : ¬(score < high) := by
+    intro h_sh
+    exact float_not_lt_of_le high score h h_sh
+  simp [h1, h2]
 
 /-- Dual-threshold monotonicity: PASS at strict threshold implies PASS at
     any more permissive threshold. -/
 theorem classifySplice_monotone (score low1 low2 high : Float)
     (h_low : low1 ≤ low2) (h_pass : score < low1) :
     classifySplice score low2 high = SpliceVerdict.PASS := by
-  have : score < low2 := by sorry  -- Float transitivity
+  have : score < low2 := float_lt_of_lt_of_le score low1 low2 h_pass h_low
   exact classifySplice_lt_low score low2 high this
 
 -- ────────────────────────────────────────────────────────────

@@ -55,28 +55,63 @@ def computeCertificate (results : List PredicateRecord) : CertLevel :=
 -- Soundness Theorems
 -- ────────────────────────────────────────────────────────────
 
+/-- Helper: if a SatisfactionMethod is neither unsatisfied nor mutagenesis,
+    it must be optimization. -/
+private theorem method_eq_optimization_of_ne (m : SatisfactionMethod)
+    (h1 : m ≠ .unsatisfied) (h2 : m ≠ .mutagenesis) :
+    m = .optimization := by
+  cases m with
+  | optimization => rfl
+  | mutagenesis => contradiction
+  | unsatisfied => contradiction
+
 /-- GOLD certificate implies all predicates were satisfied by optimization alone -/
 theorem gold_implies_all_optimization
     (results : List PredicateRecord)
     (hcert : computeCertificate results = CertLevel.GOLD)
     (r : PredicateRecord) (hr : r ∈ results) :
     r.method = .optimization := by
-  sorry  -- Follows from definition: if any method ≠ optimization, cert ≠ GOLD
+  by_cases h_unsat : results.any (fun r => r.method = .unsatisfied)
+  · unfold computeCertificate at hcert; simp [h_unsat] at hcert
+  · by_cases h_mut : results.any (fun r => r.method = .mutagenesis)
+    · unfold computeCertificate at hcert; simp [h_unsat, h_mut] at hcert
+    · apply method_eq_optimization_of_ne r.method
+      · intro h_eq; exact h_unsat (List.any_eq_true.mpr ⟨r, hr, by rw [h_eq]; rfl⟩)
+      · intro h_eq; exact h_mut (List.any_eq_true.mpr ⟨r, hr, by rw [h_eq]; rfl⟩)
 
-/-- SILVER certificate implies all predicates passed -/
+/-- SILVER certificate implies all predicates passed.
+    Note: r.passed = true does not follow from computeCertificate alone
+    (the function only examines r.method, not r.passed), so that part uses sorry.
+    The key guarantee r.method ≠ .unsatisfied IS provable. -/
 theorem silver_implies_all_passed
     (results : List PredicateRecord)
     (hcert : computeCertificate results = CertLevel.SILVER)
     (r : PredicateRecord) (hr : r ∈ results) :
     r.passed = true ∧ r.method ≠ .unsatisfied := by
-  sorry
+  constructor
+  · sorry  -- r.passed = true does not follow from computeCertificate definition alone
+  · intro h_eq
+    have h_any : results.any (fun r => r.method = .unsatisfied) = true :=
+      List.any_eq_true.mpr ⟨r, hr, by rw [h_eq]; rfl⟩
+    have : computeCertificate results = .BRONZE := by
+      unfold computeCertificate; simp [h_any]
+    rw [this] at hcert; simp at hcert
 
 /-- BRONZE certificate implies at least one predicate is unsatisfied -/
 theorem bronze_implies_unsatisfied
     (results : List PredicateRecord)
     (hcert : computeCertificate results = CertLevel.BRONZE) :
     ∃ r ∈ results, r.method = .unsatisfied := by
-  sorry
+  unfold computeCertificate at hcert
+  split at hcert
+  · next h =>
+    obtain ⟨r, hr, hr_method⟩ := List.any_eq_true.mp h
+    have : r.method = .unsatisfied := by simp at hr_method; exact hr_method
+    exact ⟨r, hr, this⟩
+  · next h =>
+    split at hcert
+    · next h2 => exfalso; injection hcert
+    · next h2 => exfalso; injection hcert
 
 -- ────────────────────────────────────────────────────────────
 -- Main Soundness Theorem

@@ -1,805 +1,448 @@
 """
-BioCompiler Type System — Predicate Evaluation with Registry Pattern
-
-Production-grade type system with:
-- Registry pattern for predicates (extensible, no string-prefix hacks)
-- NoCrypticSplice uses MaxEntScan scoring (not raw GT/AG counting)
-- SpliceCorrect fixes UNCERTAIN logic
-- Each predicate is a self-contained callable with metadata
-- Evaluate all registered predicates via registry (not hardcoded list)
-- Proper error handling
+BioCompiler Type System v7.0.0
+==============================
+Defines the core types, codon tables, BLOSUM62 matrix, and 8 predicate classes
+for certified gene optimization.
 """
 
-import logging
-from .types import Verdict, TypeCheckResult, Token
-from .scanner import scan_sequence, gc_content, validate_dna_sequence
-from .splicing import compute_splice_isoforms
-from .translation import compute_cai
-from .constants import INSTABILITY_MOTIF, RESTRICTION_ENZYMES, IUPAC_EXPAND, reverse_complement, CODON_TABLE, AA_TO_CODONS
-from .maxentscan import max_donor_score, max_acceptor_score, scan_splice_sites
-from .exceptions import UnknownPredicateError
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import List, Dict, Set, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+# ────────────────────────────────────────────────────────────
+# Standard Genetic Code — CODON_TABLE (fixed: no invalid entries)
+# ────────────────────────────────────────────────────────────
+CODON_TABLE: Dict[str, str] = {
+    # Phenylalanine
+    "TTT": "F", "TTC": "F",
+    # Leucine
+    "TTA": "L", "TTG": "L", "CTT": "L", "CTC": "L", "CTA": "L", "CTG": "L",
+    # Isoleucine
+    "ATT": "I", "ATC": "I", "ATA": "I",
+    # Methionine (start)
+    "ATG": "M",
+    # Valine
+    "GTT": "V", "GTC": "V", "GTA": "V", "GTG": "V",
+    # Serine
+    "TCT": "S", "TCC": "S", "TCA": "S", "TCG": "S",
+    # Proline
+    "CCT": "P", "CCC": "P", "CCA": "P", "CCG": "P",
+    # Threonine
+    "ACT": "T", "ACC": "T", "ACA": "T", "ACG": "T",
+    # Alanine
+    "GCT": "A", "GCC": "A", "GCA": "A", "GCG": "A",
+    # Tyrosine
+    "TAT": "Y", "TAC": "Y",
+    # Histidine
+    "CAT": "H", "CAC": "H",
+    # Glutamine
+    "CAA": "Q", "CAG": "Q",
+    # Asparagine
+    "AAT": "N", "AAC": "N",
+    # Lysine
+    "AAA": "K", "AAG": "K",
+    # Aspartic acid
+    "GAT": "D", "GAC": "D",
+    # Glutamic acid
+    "GAA": "E", "GAG": "E",
+    # Cysteine
+    "TGT": "C", "TGC": "C",
+    # Tryptophan
+    "TGG": "W",
+    # Arginine
+    "CGT": "R", "CGC": "R", "CGA": "R", "CGG": "R", "AGA": "R", "AGG": "R",
+    # Serine (AG- group)
+    "AGT": "S", "AGC": "S",
+    # Glycine
+    "GGT": "G", "GGC": "G", "GGA": "G", "GGG": "G",
+    # Stop codons
+    "TAA": "*", "TAG": "*", "TGA": "*",
+}
+
+# Reverse lookup: amino acid -> list of codons
+AA_TO_CODONS: Dict[str, List[str]] = {}
+for _codon, _aa in CODON_TABLE.items():
+    if _aa not in AA_TO_CODONS:
+        AA_TO_CODONS[_aa] = []
+    AA_TO_CODONS[_aa].append(_codon)
+
+# ────────────────────────────────────────────────────────────
+# BLOSUM62 Substitution Matrix (20x20 standard)
+# ────────────────────────────────────────────────────────────
+_BLOSUM62_ROWS = [
+    #  A   R   N   D   C   Q   E   G   H   I   L   K   M   F   P   S   T   W   Y   V
+    [  4, -1, -2, -2,  0, -1, -1,  0, -2, -1, -1, -1, -1, -2, -1,  1,  0, -3, -2,  0],  # A
+    [ -1,  5,  0, -2, -3,  1,  0, -2,  0, -3, -2,  2, -1, -3, -2, -1, -1, -3, -2, -3],  # R
+    [ -2,  0,  6,  1, -3,  0,  0,  0,  1, -3, -3,  0, -2, -3, -2,  1,  0, -4, -2, -3],  # N
+    [ -2, -2,  1,  6, -3,  0,  2, -1, -1, -3, -4, -1, -3, -3, -1,  0, -1, -4, -3, -3],  # D
+    [  0, -3, -3, -3,  9, -3, -4, -3, -3, -1, -1, -3, -1, -2, -3, -1, -1, -2, -2, -1],  # C
+    [ -1,  1,  0,  0, -3,  5,  2, -2,  0, -3, -2,  1,  0, -3, -1,  0, -1, -2, -1, -2],  # Q
+    [ -1,  0,  0,  2, -4,  2,  5, -2,  0, -3, -3,  1, -2, -3, -1,  0, -1, -3, -2, -2],  # E
+    [  0, -2,  0, -1, -3, -2, -2,  6, -2, -4, -4, -2, -3, -3, -2,  0, -2, -2, -3, -3],  # G
+    [ -2,  0,  1, -1, -3,  0,  0, -2,  8, -3, -3, -1, -2, -1, -2, -1, -2, -2,  2, -3],  # H
+    [ -1, -3, -3, -3, -1, -3, -3, -4, -3,  4,  2, -3,  1,  0, -3, -2, -1, -3, -1,  3],  # I
+    [ -1, -2, -3, -4, -1, -2, -3, -4, -3,  2,  4, -2,  2,  0, -3, -2, -1, -2, -1,  1],  # L
+    [ -1,  2,  0, -1, -3,  1,  1, -2, -1, -3, -2,  5, -1, -3, -1, -1, -1, -3, -2, -2],  # K
+    [ -1, -1, -2, -3, -1,  0, -2, -3, -2,  1,  2, -1,  5,  0, -2, -1, -1, -1, -1,  1],  # M
+    [ -2, -3, -3, -3, -2, -3, -3, -3, -1,  0,  0, -3,  0,  6, -4, -2, -2,  1,  3, -1],  # F
+    [ -1, -2, -2, -1, -3, -1, -1, -2, -2, -3, -3, -1, -2, -4,  7, -1, -1, -4, -3, -2],  # P
+    [  1, -1,  1,  0, -1,  0,  0,  0, -1, -2, -2,  0, -1, -2, -1,  4,  1, -3, -2, -2],  # S
+    [  0, -1,  0, -1, -1, -1, -1, -2, -2, -1, -1, -1, -1, -2, -1,  1,  5, -2, -2,  0],  # T
+    [ -3, -3, -4, -4, -2, -2, -3, -2, -2, -3, -2, -3, -1,  1, -4, -3, -2, 11,  2, -3],  # W
+    [ -2, -2, -2, -3, -2, -1, -2, -3,  2, -1, -1, -2, -1,  3, -3, -2, -2,  2,  7, -1],  # Y
+    [  0, -3, -3, -3, -1, -2, -2, -3, -3,  3,  1, -2,  1, -1, -2, -2,  0, -3, -1,  4],  # V
+]
+
+_BLOSUM_INDEX = list("ARNDCQEGHILKMFPSTWYV")
+
+BLOSUM62: Dict[Tuple[str, str], int] = {}
+for _i, _a1 in enumerate(_BLOSUM_INDEX):
+    for _j, _a2 in enumerate(_BLOSUM_INDEX):
+        BLOSUM62[(_a1, _a2)] = _BLOSUM62_ROWS[_i][_j]
 
 
-# ==============================================================================
-# GT/AG Helper Functions (for NoCrypticSplice derivation richness)
-# ==============================================================================
+# ────────────────────────────────────────────────────────────
+# Certificate levels
+# ────────────────────────────────────────────────────────────
+class CertLevel(Enum):
+    GOLD = "GOLD"
+    SILVER = "SILVER"
+    BRONZE = "BRONZE"
 
-def _is_gt_mandatory_at_position(seq: str, position: int) -> bool:
-    """Check if the amino acid at this position has GT in ALL its codons.
 
-    This is True for Valine (V), whose codons are GTT, GTC, GTA, GTG —
-    all containing the GT dinucleotide. Other amino acids with at least
-    one GT-free codon (e.g. Cysteine: TGT has GT but TGC does not) return False.
+# ────────────────────────────────────────────────────────────
+# Splice verdict (dual-threshold)
+# ────────────────────────────────────────────────────────────
+class SpliceVerdict(Enum):
+    PASS = auto()        # MaxEnt score < low threshold
+    UNCERTAIN = auto()   # low <= score < high  (warn but don't block)
+    FAIL = auto()        # score >= high threshold
+
+
+# ────────────────────────────────────────────────────────────
+# 8 Predicate Classes for Certified Optimization
+# ────────────────────────────────────────────────────────────
+PREDICATE_NAMES = [
+    "NoStopCodons",        # 1 — no internal stops
+    "NoCrypticSplice",     # 2 — dual-threshold splice check
+    "NoCpGIsland",         # 3 — CpG island avoidance
+    "NoRestrictionSite",   # 4 — enzyme site removal
+    "NoGTDinucleotide",    # 5 — GT dinucleotide avoidance (cross-codon aware)
+    "ValidCodingSeq",      # 6 — in-frame, valid codons only
+    "ConservationScore",   # 7 — BLOSUM62-based AA conservation
+    "CodonOptimality",     # 8 — CAI-based codon quality
+]
+
+
+@dataclass
+class PredicateResult:
+    """Result of checking one predicate against a sequence."""
+    predicate: str
+    passed: bool
+    verdict: Optional[SpliceVerdict] = None  # used by NoCrypticSplice
+    details: str = ""
+    positions: List[int] = field(default_factory=list)
+
+
+# ────────────────────────────────────────────────────────────
+# 8 Predicate check functions
+# ────────────────────────────────────────────────────────────
+
+def check_no_stop_codons(seq: str) -> PredicateResult:
+    """Predicate 1: No internal stop codons.
+
+    The last codon in the reading frame is allowed to be a stop
+    (natural termination). Only stops that appear BEFORE the last
+    codon are flagged as violations.
     """
-    codon_idx = position // 3
-    codon_start = codon_idx * 3
-    if codon_start + 3 > len(seq):
-        return False
-    codon = seq[codon_start:codon_start + 3]
-    aa = CODON_TABLE.get(codon, "X")
-    if aa not in AA_TO_CODONS:
-        return False
-    return all("GT" in c for c in AA_TO_CODONS[aa])
+    if len(seq) < 3:
+        return PredicateResult("NoStopCodons", True, details="Sequence too short")
+    last_codon_start = len(seq) - 3
+    violations = []
+    for i in range(0, last_codon_start, 3):  # skip the last codon
+        codon = seq[i:i+3]
+        if codon in ("TAA", "TAG", "TGA"):
+            violations.append(i)
+    if violations:
+        return PredicateResult("NoStopCodons", False, details="Internal stop codons found", positions=violations)
+    return PredicateResult("NoStopCodons", True, details="No internal stop codons")
 
 
-def _get_gt_free_alternatives(seq: str, position: int) -> list[str]:
-    """Get GT-free codon alternatives for the amino acid at this position.
-
-    Returns a (possibly empty) list of synonymous codons that do NOT contain
-    the GT dinucleotide. Empty when gt_mandatory is True (e.g. Valine).
-    """
-    codon_idx = position // 3
-    codon_start = codon_idx * 3
-    if codon_start + 3 > len(seq):
-        return []
-    codon = seq[codon_start:codon_start + 3]
-    aa = CODON_TABLE.get(codon, "X")
-    if aa not in AA_TO_CODONS:
-        return []
-    return [c for c in AA_TO_CODONS[aa] if "GT" not in c]
-
-
-def _is_ag_mandatory_at_position(seq: str, position: int) -> bool:
-    """Check if the amino acid at this position has AG in ALL its codons.
-
-    This is True for Serine (S) codons AGT/AGC and Arginine (R) codons
-    AGA/AGG — but only if ALL codons for that AA contain AG.
-    Glutamate (E): GAA, GAG — GAG contains AG, GAA does not → False.
-    Serine (S): TCT, TCC, TCA, TCG, AGT, AGC — not all contain AG → False.
-    No standard amino acid has AG in ALL codons, so this always returns False
-    for standard amino acids.
-    """
-    codon_idx = position // 3
-    codon_start = codon_idx * 3
-    if codon_start + 3 > len(seq):
-        return False
-    codon = seq[codon_start:codon_start + 3]
-    aa = CODON_TABLE.get(codon, "X")
-    if aa not in AA_TO_CODONS:
-        return False
-    return all("AG" in c for c in AA_TO_CODONS[aa])
-
-
-def _get_ag_free_alternatives(seq: str, position: int) -> list[str]:
-    """Get AG-free codon alternatives for the amino acid at this position.
-
-    Returns a (possibly empty) list of synonymous codons that do NOT contain
-    the AG dinucleotide.
-    """
-    codon_idx = position // 3
-    codon_start = codon_idx * 3
-    if codon_start + 3 > len(seq):
-        return []
-    codon = seq[codon_start:codon_start + 3]
-    aa = CODON_TABLE.get(codon, "X")
-    if aa not in AA_TO_CODONS:
-        return []
-    return [c for c in AA_TO_CODONS[aa] if "AG" not in c]
-
-
-# ==============================================================================
-# Predicate Registry
-# ==============================================================================
-
-class PredicateRegistry:
-    """
-    Registry of type predicates. Replaces fragile string-prefix dispatch.
-
-    Each predicate is registered with:
-    - name: unique identifier
-    - evaluator: callable that returns TypeCheckResult
-    - verifier: callable that re-evaluates from certificate data
-    - param_keys: list of parameter keys needed to invoke the evaluator
-    """
-
-    def __init__(self):
-        self._predicates: dict[str, dict] = {}
-
-    def register(self, name: str, evaluator, verifier=None, param_keys: list[str] | None = None):
-        """Register a predicate with its evaluator, optional verifier, and parameter keys."""
-        self._predicates[name] = {
-            "evaluator": evaluator,
-            "verifier": verifier or evaluator,
-            "param_keys": param_keys or [],
-        }
-
-    def evaluate(self, name: str, **kwargs) -> TypeCheckResult:
-        """Evaluate a registered predicate by name."""
-        if name not in self._predicates:
-            raise UnknownPredicateError(name)
-        return self._predicates[name]["evaluator"](**kwargs)
-
-    def verify(self, name: str, **kwargs) -> TypeCheckResult:
-        """Re-evaluate a predicate for certificate verification."""
-        if name not in self._predicates:
-            raise UnknownPredicateError(name)
-        return self._predicates[name]["verifier"](**kwargs)
-
-    def names(self) -> list[str]:
-        """Return all registered predicate names."""
-        return list(self._predicates.keys())
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._predicates
-
-
-# Global registry instance
-registry = PredicateRegistry()
-
-
-# ==============================================================================
-# Predicate Implementations
-# ==============================================================================
-
-def evaluate_no_cryptic_splice(
-    seq: str,
-    known_exon_boundaries: list[tuple[int, int]],
-    cryptic_threshold: float = 3.0,
-    uncertain_lo: float = 1.5,
-    **kwargs,
-) -> TypeCheckResult:
-    """
-    NoCrypticSplice: No donor/acceptor pair within known exons that could form
-    a cryptic intron, as determined by MaxEntScan scoring.
-
-    Dual-threshold system producing three verdicts:
-    - PASS:   All splice site scores < uncertain_lo
-    - UNCERTAIN: No sites >= cryptic_threshold, but some in [uncertain_lo, cryptic_threshold)
-    - FAIL:   At least one site >= cryptic_threshold
-
-    When uncertain_lo <= 0, the uncertain zone is disabled and the function
-    behaves identically to the original two-valued (PASS/FAIL) logic.
-
-    This uses the MaxEntScan model to score every GT/AG dinucleotide in exonic
-    regions. Only pairs where BOTH the donor AND acceptor score above the
-    threshold are flagged as potential cryptic splice sites. This dramatically
-    reduces false positives compared to the naive approach of flagging every
-    GT/AG pair.
-
-    Args:
-        seq: full pre-mRNA sequence
-        known_exon_boundaries: list of (start, end) tuples for known exons
-        cryptic_threshold: MaxEntScan score threshold above which a splice site
-                          is considered definitively functional (default 3.0)
-        uncertain_lo: lower bound of the uncertain zone; sites with score in
-                     [uncertain_lo, cryptic_threshold) are borderline (default 1.5).
-                     Set to 0 to disable the uncertain zone and get PASS/FAIL only.
-
-    Pre-conditions:
-    - seq is a valid DNA sequence (uppercase)
-    - known_exon_boundaries is a non-empty list of valid (start, end) tuples
-    - cryptic_threshold > 0
-    - uncertain_lo >= 0
-    - uncertain_lo < cryptic_threshold
-    """
-    assert cryptic_threshold > 0, f"Threshold must be positive, got {cryptic_threshold}"
-    assert uncertain_lo >= 0, f"uncertain_lo must be non-negative, got {uncertain_lo}"
-    assert uncertain_lo < cryptic_threshold, (
-        f"uncertain_lo ({uncertain_lo}) must be < cryptic_threshold ({cryptic_threshold})"
-    )
-    derivation = []
-    borderline_donors = []   # (abs_pos, score, gt_mandatory, gt_free_alts)
-    borderline_acceptors = []  # (abs_pos, score, ag_mandatory, ag_free_alts)
-
-    # Use the lower threshold for scanning so we capture both FAIL and UNCERTAIN sites.
-    # When uncertain_lo <= 0, fall back to cryptic_threshold only (backward compat).
-    scan_threshold = min(uncertain_lo, cryptic_threshold) if uncertain_lo > 0 else cryptic_threshold
-
-    for exon_start, exon_end in known_exon_boundaries:
-        exon_seq = seq[exon_start:exon_end]
-
-        # Use MaxEntScan to find scored splice sites within this exon
-        splice_sites = scan_splice_sites(exon_seq, scan_threshold, scan_threshold)
-
-        donors = [(pos, score) for pos, stype, score in splice_sites if stype == "donor"]
-        acceptors = [(pos, score) for pos, stype, score in splice_sites if stype == "acceptor"]
-
-        for pos, score in donors:
-            abs_pos = exon_start + pos
-            gt_mandatory = _is_gt_mandatory_at_position(seq, abs_pos)
-            gt_free_alts = _get_gt_free_alternatives(seq, abs_pos)
-            is_borderline = (uncertain_lo > 0
-                             and uncertain_lo <= score < cryptic_threshold)
-            derivation.append({
-                "step": "maxentscan_donor_in_exon",
-                "position": abs_pos,
-                "score": score,
-                "threshold": cryptic_threshold,
-                "uncertain_lo": uncertain_lo if uncertain_lo > 0 else None,
-                "borderline": is_borderline,
-                "gt_mandatory": gt_mandatory,
-                "gt_free_alternatives": gt_free_alts,
-            })
-            if is_borderline:
-                borderline_donors.append((abs_pos, score, gt_mandatory, gt_free_alts))
-        for pos, score in acceptors:
-            abs_pos = exon_start + pos
-            ag_mandatory = _is_ag_mandatory_at_position(seq, abs_pos)
-            ag_free_alts = _get_ag_free_alternatives(seq, abs_pos)
-            is_borderline = (uncertain_lo > 0
-                             and uncertain_lo <= score < cryptic_threshold)
-            derivation.append({
-                "step": "maxentscan_acceptor_in_exon",
-                "position": abs_pos,
-                "score": score,
-                "threshold": cryptic_threshold,
-                "uncertain_lo": uncertain_lo if uncertain_lo > 0 else None,
-                "borderline": is_borderline,
-                "ag_mandatory": ag_mandatory,
-                "ag_free_alternatives": ag_free_alts,
-            })
-            if is_borderline:
-                borderline_acceptors.append((abs_pos, score, ag_mandatory, ag_free_alts))
-
-        # Check 1: Strong standalone donors (GT sites above cryptic_threshold)
-        # Even without a paired acceptor, a strong cryptic donor can trigger
-        # aberrant splicing by pairing with downstream genomic acceptors.
-        # This is the key issue with Valine positions: their GT dinucleotides
-        # create unrepairable cryptic splice donors.
-        for d_pos, d_score in donors:
-            if d_score >= cryptic_threshold:
-                abs_pos = exon_start + d_pos
-                gt_mandatory = _is_gt_mandatory_at_position(seq, abs_pos)
-                mandatory_suffix = (
-                    " — GT-MANDATORY (all codons contain GT, e.g. Valine)"
-                    if gt_mandatory
-                    else " — GT-free alternatives available"
-                )
-                return TypeCheckResult(
-                    predicate="NoCrypticSplice",
-                    verdict=Verdict.FAIL,
-                    derivation=derivation,
-                    violation=(
-                        f"Cryptic splice donor in exon [{exon_start},{exon_end}): "
-                        f"GT at position {abs_pos} (MaxEntScan score={d_score:.2f}, "
-                        f"threshold={cryptic_threshold})"
-                        f"{mandatory_suffix}"
-                    ),
-                )
-
-        # Check 2: Strong standalone acceptors (AG sites above cryptic_threshold)
-        for a_pos, a_score in acceptors:
-            if a_score >= cryptic_threshold:
-                abs_pos = exon_start + a_pos
-                ag_mandatory = _is_ag_mandatory_at_position(seq, abs_pos)
-                mandatory_suffix = (
-                    " — AG-MANDATORY (all codons contain AG)"
-                    if ag_mandatory
-                    else " — AG-free alternatives available"
-                )
-                return TypeCheckResult(
-                    predicate="NoCrypticSplice",
-                    verdict=Verdict.FAIL,
-                    derivation=derivation,
-                    violation=(
-                        f"Cryptic splice acceptor in exon [{exon_start},{exon_end}): "
-                        f"AG at position {abs_pos} (MaxEntScan score={a_score:.2f}, "
-                        f"threshold={cryptic_threshold})"
-                        f"{mandatory_suffix}"
-                    ),
-                )
-
-    # No sites >= cryptic_threshold — check for borderline (UNCERTAIN) sites
-    if borderline_donors or borderline_acceptors:
-        borderline_details = []
-        for abs_pos, score, gt_mandatory, gt_free_alts in borderline_donors:
-            detail = (
-                f"GT at position {abs_pos} (score={score:.2f}, "
-                f"zone=[{uncertain_lo},{cryptic_threshold}))"
-            )
-            if gt_mandatory:
-                detail += " — GT-MANDATORY (all codons contain GT, e.g. Valine)"
-            else:
-                detail += f" — GT-free alternatives: {gt_free_alts}"
-            borderline_details.append(detail)
-        for abs_pos, score, ag_mandatory, ag_free_alts in borderline_acceptors:
-            detail = (
-                f"AG at position {abs_pos} (score={score:.2f}, "
-                f"zone=[{uncertain_lo},{cryptic_threshold}))"
-            )
-            if ag_mandatory:
-                detail += " — AG-MANDATORY (all codons contain AG)"
-            else:
-                detail += f" — AG-free alternatives: {ag_free_alts}"
-            borderline_details.append(detail)
-
-        # Build enriched derivation with borderline site alternatives
-        uncertain_derivation = derivation + [{
-            "step": "borderline_sites_found",
-            "evidence": "maxentscan_scored_exhaustive_scan",
-            "threshold": cryptic_threshold,
-            "uncertain_lo": uncertain_lo,
-            "borderline_donor_count": len(borderline_donors),
-            "borderline_acceptor_count": len(borderline_acceptors),
-            "borderline_sites": [
-                {
-                    "position": pos,
-                    "site_type": "donor",
-                    "score": score,
-                    "gt_mandatory": gt_mandatory,
-                    "gt_free_alternatives": gt_free_alts,
-                }
-                for pos, score, gt_mandatory, gt_free_alts in borderline_donors
-            ] + [
-                {
-                    "position": pos,
-                    "site_type": "acceptor",
-                    "score": score,
-                    "ag_mandatory": ag_mandatory,
-                    "ag_free_alternatives": ag_free_alts,
-                }
-                for pos, score, ag_mandatory, ag_free_alts in borderline_acceptors
-            ],
-        }]
-
-        return TypeCheckResult(
-            predicate="NoCrypticSplice",
-            verdict=Verdict.UNCERTAIN,
-            derivation=uncertain_derivation,
-            knowledge_gap=(
-                f"{len(borderline_donors) + len(borderline_acceptors)} borderline "
-                f"splice site(s) in uncertain zone "
-                f"[{uncertain_lo}, {cryptic_threshold}): "
-                f"{'; '.join(borderline_details)}"
-            ),
-        )
-
-    return TypeCheckResult(
-        predicate="NoCrypticSplice",
-        verdict=Verdict.PASS,
-        derivation=derivation + [{
-            "step": "no_cryptic_pairs_found",
-            "evidence": "maxentscan_scored_exhaustive_scan",
-            "threshold": cryptic_threshold,
-            "uncertain_lo": uncertain_lo if uncertain_lo > 0 else None,
-        }],
-    )
-
-
-def evaluate_splice_correct(
-    seq: str, known_exon_boundaries: list[tuple[int, int]],
-    cellular_context: str = "HEK293T", **kwargs
-) -> TypeCheckResult:
-    """
-    SpliceCorrect(C): The intended isoform is the only possible splice isoform.
-
-    Pre-conditions:
-    - seq is a valid DNA sequence
-    - known_exon_boundaries is a non-empty list of valid (start, end) tuples
-    """
-    assert known_exon_boundaries, "Exon boundaries must not be empty"
-    isoforms = compute_splice_isoforms(seq, known_exon_boundaries, cellular_context)
-    target_seq = "".join(seq[start:end] for start, end in known_exon_boundaries)
-    non_target = [iso for iso in isoforms if iso.sequence != target_seq]
-
-    derivation = [
-        {"step": "ndfst_output_set_size", "value": len(isoforms)},
-        {"step": "target_isoform", "exon_boundaries": known_exon_boundaries},
-    ]
-
-    if len(non_target) == 0:
-        # All isoforms have the same sequence as the target → PASS
-        # This covers both: only one isoform (singleton), and multiple isoforms
-        # that all produce the same sequence
-        return TypeCheckResult(
-            predicate=f"SpliceCorrect({cellular_context})",
-            verdict=Verdict.PASS,
-            derivation=derivation + [{
-                "step": "all_isoforms_match_target",
-                "total_isoforms": len(isoforms),
-            }],
-        )
-    else:
-        # There are alternative isoforms with different sequences → FAIL
-        alt_desc = [
-            f"boundaries={iso.exon_boundaries} via {iso.parse_path}"
-            for iso in non_target[:5]
-        ]
-        return TypeCheckResult(
-            predicate=f"SpliceCorrect({cellular_context})",
-            verdict=Verdict.FAIL,
-            derivation=derivation,
-            violation=f"Found {len(non_target)} alternative isoforms: {'; '.join(alt_desc)}",
-        )
-
-
-def evaluate_gc_in_range(seq: str, gc_lo: float = 0.30, gc_hi: float = 0.70, **kwargs) -> TypeCheckResult:
-    """GCInRange(lo, hi): GC content is within [lo, hi].
-
-    Pre-conditions:
-    - 0.0 <= gc_lo < gc_hi <= 1.0
-
-    If pre-conditions are violated (lo >= hi), returns FAIL since no
-    GC value can satisfy an empty or inverted range.
-    """
-    if not (0.0 <= gc_lo < gc_hi <= 1.0):
-        # Invalid bounds — no value can satisfy this, so FAIL
-        return TypeCheckResult(
-            predicate=f"GCInRange({gc_lo}, {gc_hi})",
-            verdict=Verdict.FAIL,
-            derivation=[{"step": "invalid_bounds", "gc_lo": gc_lo, "gc_hi": gc_hi}],
-            violation=f"Invalid GC bounds: [{gc_lo}, {gc_hi}] — lo must be < hi",
-        )
-    gc = gc_content(seq)
-    passed = gc_lo <= gc <= gc_hi
-    return TypeCheckResult(
-        predicate=f"GCInRange({gc_lo}, {gc_hi})",
-        verdict=Verdict.PASS if passed else Verdict.FAIL,
-        derivation=[{"step": "compute_gc", "gc_content": gc, "g_count": seq.count('G'), "c_count": seq.count('C'), "total": len(seq)}],
-        violation=f"GC content {gc} not in [{gc_lo}, {gc_hi}]" if not passed else None,
-    )
-
-
-def evaluate_codon_adapted(seq: str, organism: str = "Homo_sapiens", threshold: float = 0.5, **kwargs) -> TypeCheckResult:
-    """CodonAdapted(O, theta): CAI >= threshold for organism O.
-
-    Pre-conditions:
-    - organism is a supported organism name
-    - 0.0 < threshold <= 1.0
-    """
-    assert 0.0 < threshold <= 1.0, f"Invalid CAI threshold: {threshold}"
-    cai = compute_cai(seq, organism)
-    passed = cai >= threshold
-    return TypeCheckResult(
-        predicate=f"CodonAdapted({organism}, {threshold})",
-        verdict=Verdict.PASS if passed else Verdict.FAIL,
-        derivation=[{"step": "compute_cai", "cai": cai, "organism": organism}],
-        violation=f"CAI {cai} < threshold {threshold}" if not passed else None,
-    )
-
-
-def evaluate_no_restriction_site(seq: str, enzyme_set: list[str] | None = None, **kwargs) -> TypeCheckResult:
-    """NoRestrictionSite(S): No restriction enzyme recognition site from set S in sequence (both strands)."""
-    enzyme_set = enzyme_set or list(RESTRICTION_ENZYMES.keys())
-    found_sites: list[dict] = []
-
-    for enz_name in enzyme_set:
-        # Support both name-based and sequence-based enzyme specification
-        if enz_name in RESTRICTION_ENZYMES:
-            site = RESTRICTION_ENZYMES[enz_name]
-        elif all(b in "ACGT" for b in enz_name.upper()):
-            # Treat as a raw recognition sequence
-            site = enz_name.upper()
+def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> PredicateResult:
+    """Predicate 2: No cryptic splice sites (dual-threshold PASS/UNCERTAIN/FAIL)."""
+    from .splice import maxent_score
+    gt_positions = []
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "GT":
+            gt_positions.append(i)
+    if not gt_positions:
+        return PredicateResult("NoCrypticSplice", True, verdict=SpliceVerdict.PASS,
+                               details="No GT dinucleotides found")
+    max_score = 0.0
+    worst_pos = -1
+    worst_verdict = SpliceVerdict.PASS
+    for pos in gt_positions:
+        context_start = max(0, pos - 3)
+        context_end = min(len(seq), pos + 6)
+        context = seq[context_start:context_end]
+        score = maxent_score(context)
+        if score < low_thresh:
+            v = SpliceVerdict.PASS
+        elif score < high_thresh:
+            v = SpliceVerdict.UNCERTAIN
         else:
-            logger.warning("Unknown enzyme '%s' and not a valid DNA sequence — skipping", enz_name)
+            v = SpliceVerdict.FAIL
+        if score > max_score:
+            max_score = score
+            worst_pos = pos
+            worst_verdict = v
+
+    passed = worst_verdict != SpliceVerdict.FAIL
+    return PredicateResult("NoCrypticSplice", passed, verdict=worst_verdict,
+                           details=f"Worst splice score {max_score:.2f} at pos {worst_pos}",
+                           positions=[worst_pos] if worst_pos >= 0 else [])
+
+
+def check_no_cpg_island(seq: str, window: int = 200, threshold: float = 0.6) -> PredicateResult:
+    """Predicate 3: No CpG islands (Obs/Exp CG ratio > threshold in any window)."""
+    worst_ratio = 0.0
+    worst_start = -1
+    for start in range(0, len(seq) - window + 1):
+        window_seq = seq[start:start + window]
+        c_count = window_seq.count("C")
+        g_count = window_seq.count("G")
+        cg_count = sum(1 for i in range(len(window_seq) - 1) if window_seq[i:i+2] == "CG")
+        expected = (c_count * g_count) / len(window_seq) if len(window_seq) > 0 else 0
+        obs_exp = cg_count / expected if expected > 0 else 0.0
+        if obs_exp > worst_ratio:
+            worst_ratio = obs_exp
+            worst_start = start
+    if worst_ratio > threshold:
+        return PredicateResult("NoCpGIsland", False,
+                               details=f"CpG island at pos {worst_start}, Obs/Exp={worst_ratio:.3f} > {threshold}",
+                               positions=[worst_start])
+    return PredicateResult("NoCpGIsland", True,
+                           details=f"Worst CpG Obs/Exp ratio {worst_ratio:.3f} <= {threshold}")
+
+
+def check_no_restriction_site(seq: str, enzymes: List[str]) -> PredicateResult:
+    """Predicate 4: No restriction enzyme recognition sites."""
+    from .restriction_sites import get_recognition_site
+    violations = []
+    for enzyme in enzymes:
+        site = get_recognition_site(enzyme)
+        if site is None:
             continue
+        pos = seq.find(site)
+        while pos != -1:
+            violations.append(pos)
+            pos = seq.find(site, pos + 1)
+    if violations:
+        return PredicateResult("NoRestrictionSite", False,
+                               details=f"Restriction sites found at {violations}",
+                               positions=violations)
+    return PredicateResult("NoRestrictionSite", True, details="No restriction sites found")
 
-        has_iupac = any(b not in "ACGT" for b in site.upper())
 
-        # Forward strand with IUPAC-aware matching
-        for i in range(len(seq) - len(site) + 1):
-            window = seq[i:i+len(site)]
-            if has_iupac:
-                match = all(window[j] in IUPAC_EXPAND.get(site[j].upper(), site[j].upper())
-                            for j in range(len(site)) if j < len(window))
-                if match:
-                    found_sites.append({"enzyme": enz_name, "position": i, "site": window, "strand": "+"})
+def check_no_gt_dinucleotide(seq: str) -> PredicateResult:
+    """Predicate 5: No GT dinucleotides (5' splice donor mimic), including cross-codon.
+
+    This is the STRICT version — any GT fails the predicate.
+    """
+    positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
+    if positions:
+        return PredicateResult("NoGTDinucleotide", False,
+                               details=f"GT dinucleotides at {positions}",
+                               positions=positions)
+    return PredicateResult("NoGTDinucleotide", True, details="No GT dinucleotides found")
+
+
+def check_no_avoidable_gt(seq: str) -> PredicateResult:
+    """Predicate 5 (relaxed): No avoidable GT dinucleotides.
+
+    A GT is "unavoidable" if ALL synonymous codons for that amino acid
+    also contain GT or create a cross-codon GT.  This predicate PASSES
+    if every remaining GT in the sequence is unavoidable — i.e., there
+    is no synonymous substitution that could remove it.
+
+    Specifically:
+    - Within-codon GT: unavoidable if every synonymous codon for the AA
+      also contains "GT" (e.g., Valine GTN where all 4 codons start with GT)
+    - Cross-codon GT: unavoidable if no combination of synonymous codons
+      for the two adjacent AAs eliminates the boundary GT
+    """
+    gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
+    if not gt_positions:
+        return PredicateResult("NoGTDinucleotide", True, details="No GT dinucleotides found")
+
+    avoidable_positions = []
+    unavoidable_positions = []
+
+    for pos in gt_positions:
+        codon_idx = pos // 3  # which codon does position 'pos' fall in?
+        codon_start = codon_idx * 3
+        next_codon_start = codon_start + 3
+
+        # Determine whether this GT is within a single codon or crosses a boundary
+        if pos + 1 < next_codon_start:
+            # Within-codon GT (both bases in the same codon)
+            codon = seq[codon_start:codon_start + 3]
+            aa = CODON_TABLE.get(codon)
+            if aa is None or aa == "*":
+                unavoidable_positions.append(pos)
+                continue
+
+            # Check if any synonymous codon avoids GT
+            has_avoidable = False
+            for alt in AA_TO_CODONS.get(aa, []):
+                if "GT" not in alt:
+                    # Also check this alt doesn't create cross-codon GT
+                    # with the previous codon's last base
+                    if codon_start > 0:
+                        prev_base = seq[codon_start - 1]
+                        if prev_base + alt[0] == "GT":
+                            continue  # would create cross-codon GT
+                    # And check it doesn't create GT with the next codon's first base
+                    if next_codon_start + 3 <= len(seq):
+                        next_base = seq[next_codon_start]
+                        if alt[-1] + next_base == "GT":
+                            continue  # would create cross-codon GT
+                    has_avoidable = True
+                    break
+
+            if has_avoidable:
+                avoidable_positions.append(pos)
             else:
-                if window == site:
-                    found_sites.append({"enzyme": enz_name, "position": i, "site": site, "strand": "+"})
-
-        # Reverse complement strand (only for non-IUPAC sites)
-        if not has_iupac:
-            site_rc = reverse_complement(site)
-            if site_rc != site:
-                for i in range(len(seq) - len(site_rc) + 1):
-                    if seq[i:i+len(site_rc)] == site_rc:
-                        found_sites.append({"enzyme": enz_name, "position": i, "site": site_rc, "strand": "-"})
-
-    if found_sites:
-        return TypeCheckResult(
-            predicate=f"NoRestrictionSite({enzyme_set})",
-            verdict=Verdict.FAIL,
-            violation=f"Found {len(found_sites)} restriction sites: {found_sites[:5]}",
-        )
-    return TypeCheckResult(
-        predicate=f"NoRestrictionSite({enzyme_set})",
-        verdict=Verdict.PASS,
-        derivation=[{"step": "exhaustive_search", "enzymes_checked": enzyme_set, "sites_found": 0, "both_strands": True}],
-    )
-
-
-def evaluate_in_frame(seq: str, exon_boundaries: list[tuple[int, int]], **kwargs) -> TypeCheckResult:
-    """InFrame: Reading frame consistent across exon boundaries, no premature stop codons."""
-    frame_issues = []
-    for i, (start, end) in enumerate(exon_boundaries):
-        exon_len = end - start
-        if exon_len % 3 != 0:
-            frame_issues.append(f"Exon {i} length {exon_len} is not a multiple of 3")
-
-    coding_seq = "".join(seq[start:end] for start, end in exon_boundaries)
-    premature_stops = []
-    for i in range(0, len(coding_seq) - 2, 3):
-        codon = coding_seq[i:i+3]
-        if codon in ("TAA", "TAG", "TGA") and i < len(coding_seq) - 3:
-            premature_stops.append({"position": i, "codon": codon})
-
-    if frame_issues:
-        return TypeCheckResult(
-            predicate="InFrame",
-            verdict=Verdict.FAIL,
-            violation=f"Frame issues: {'; '.join(frame_issues)}",
-        )
-    if premature_stops:
-        return TypeCheckResult(
-            predicate="InFrame",
-            verdict=Verdict.FAIL,
-            violation=f"Premature stop codons: {premature_stops}",
-        )
-    return TypeCheckResult(
-        predicate="InFrame",
-        verdict=Verdict.PASS,
-        derivation=[
-            {"step": "frame_consistency", "all_exons_multiple_of_3": True},
-            {"step": "no_premature_stop", "checked_codons": len(coding_seq) // 3},
-        ],
-    )
-
-
-def evaluate_no_instability_motif(seq: str, **kwargs) -> TypeCheckResult:
-    """NoInstabilityMotif: No ATTTA or U-rich motifs present."""
-    motifs_found = []
-    for i in range(len(seq) - 4):
-        if seq[i:i+5] == INSTABILITY_MOTIF:
-            motifs_found.append({"position": i, "motif": seq[i:i+5], "type": "ATTTA"})
-
-    # U-rich regions (6+ consecutive T in DNA)
-    i = 0
-    while i < len(seq):
-        if seq[i] == 'T':
-            j = i
-            while j < len(seq) and seq[j] == 'T':
-                j += 1
-            run_len = j - i
-            if run_len >= 6:
-                motifs_found.append({"position": i, "motif": seq[i:j], "type": "U_rich", "length": run_len})
-            i = j
+                unavoidable_positions.append(pos)
         else:
-            i += 1
+            # Cross-codon GT (pos is last base of one codon, pos+1 is first of next)
+            prev_codon_start = codon_start  # codon containing 'pos'
+            curr_codon_start = next_codon_start  # codon containing 'pos+1'
 
-    if motifs_found:
-        return TypeCheckResult(
-            predicate="NoInstabilityMotif",
-            verdict=Verdict.FAIL,
-            violation=f"Found {len(motifs_found)} instability motifs: {motifs_found[:5]}",
-        )
-    return TypeCheckResult(
-        predicate="NoInstabilityMotif",
-        verdict=Verdict.PASS,
-        derivation=[{"step": "exhaustive_motif_scan", "motifs_found": 0}],
-    )
+            if curr_codon_start + 3 > len(seq):
+                unavoidable_positions.append(pos)
+                continue
 
+            prev_codon = seq[prev_codon_start:prev_codon_start + 3]
+            curr_codon = seq[curr_codon_start:curr_codon_start + 3]
+            prev_aa = CODON_TABLE.get(prev_codon)
+            curr_aa = CODON_TABLE.get(curr_codon)
 
-def evaluate_no_cpg_island(seq: str, window_size: int = 200, threshold: float = 0.6, min_obs_exp: float = 0.65, **kwargs) -> TypeCheckResult:
-    """
-    NoCpGIsland: No CpG islands in the coding sequence that could trigger
-    epigenetic silencing.
+            if prev_aa is None or curr_aa is None:
+                unavoidable_positions.append(pos)
+                continue
 
-    A CpG island is defined as a region of at least `window_size` bp with:
-    - GC content >= threshold (default 0.6)
-    - Observed/Expected CpG ratio >= min_obs_exp (default 0.65)
+            # If one side is a stop codon, we can only try changing the other side
+            if prev_aa == "*" and curr_aa == "*":
+                unavoidable_positions.append(pos)
+                continue
 
-    CpG islands in coding sequences can trigger DNA methylation and
-    epigenetic silencing, which is undesirable for expression constructs.
+            has_avoidable = False
 
-    Pre-conditions:
-    - window_size > 0
-    - 0.0 <= threshold <= 1.0
-    - 0.0 <= min_obs_exp <= 1.0
-    """
-    assert window_size > 0, f"Window size must be positive, got {window_size}"
-    assert 0.0 <= threshold <= 1.0, f"GC threshold must be in [0,1], got {threshold}"
-    assert 0.0 <= min_obs_exp <= 1.0, f"Obs/Exp threshold must be in [0,1], got {min_obs_exp}"
-    seq = seq.upper()
-    cpg_islands = []
+            if prev_aa == "*":
+                # Can only change the current codon
+                for c_alt in AA_TO_CODONS.get(curr_aa, [curr_codon]):
+                    if prev_codon[-1] + c_alt[0] != "GT" and "GT" not in c_alt:
+                        has_avoidable = True
+                        break
+            elif curr_aa == "*":
+                # Can only change the previous codon
+                for p_alt in AA_TO_CODONS.get(prev_aa, [prev_codon]):
+                    if p_alt[-1] + curr_codon[0] != "GT" and "GT" not in p_alt:
+                        has_avoidable = True
+                        break
+            else:
+                # Both are regular AAs — try all combinations
+                prev_alts = AA_TO_CODONS.get(prev_aa, [prev_codon])
+                curr_alts = AA_TO_CODONS.get(curr_aa, [curr_codon])
 
-    for start in range(len(seq) - window_size + 1):
-        window = seq[start:start + window_size]
-        gc = gc_content(window)
+                for p_alt in prev_alts:
+                    for c_alt in curr_alts:
+                        if p_alt[-1] + c_alt[0] != "GT":
+                            if "GT" not in p_alt and "GT" not in c_alt:
+                                has_avoidable = True
+                                break
+                    if has_avoidable:
+                        break
 
-        if gc >= threshold:
-            # Compute observed/expected CpG ratio
-            cpg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
-            c_count = window.count('C')
-            g_count = window.count('G')
-            expected = (c_count * g_count) / max(len(window), 1)
-            obs_exp = cpg_count / max(expected, 1e-10)
+            if has_avoidable:
+                avoidable_positions.append(pos)
+            else:
+                unavoidable_positions.append(pos)
 
-            if obs_exp >= min_obs_exp:
-                cpg_islands.append({
-                    "start": start,
-                    "end": start + window_size,
-                    "gc_content": round(gc, 4),
-                    "cpg_obs_exp": round(obs_exp, 4),
-                })
-
-    # Merge overlapping islands
-    merged = []
-    for island in cpg_islands:
-        if merged and island["start"] <= merged[-1]["end"]:
-            merged[-1]["end"] = max(merged[-1]["end"], island["end"])
-        else:
-            merged.append(dict(island))
-
-    if merged:
-        return TypeCheckResult(
-            predicate="NoCpGIsland",
-            verdict=Verdict.FAIL,
-            violation=f"Found {len(merged)} CpG island(s): {merged[:5]}",
-        )
-    return TypeCheckResult(
-        predicate="NoCpGIsland",
-        verdict=Verdict.PASS,
-        derivation=[{
-            "step": "cpg_island_scan",
-            "window_size": window_size,
-            "gc_threshold": threshold,
-            "obs_exp_threshold": min_obs_exp,
-            "islands_found": 0,
-        }],
-    )
+    if avoidable_positions:
+        return PredicateResult("NoGTDinucleotide", False,
+                               details=(f"Avoidable GT dinucleotides at {avoidable_positions}; "
+                                        f"unavoidable at {unavoidable_positions}"),
+                               positions=avoidable_positions)
+    return PredicateResult("NoGTDinucleotide", True,
+                           details=(f"All {len(unavoidable_positions)} GT dinucleotides are "
+                                    f"unavoidable (no synonymous substitution can remove them)"),
+                           positions=unavoidable_positions)
 
 
-# ==============================================================================
-# Register all built-in predicates
-# ==============================================================================
-
-registry.register("NoCrypticSplice", evaluate_no_cryptic_splice,
-                  param_keys=["seq", "known_exon_boundaries", "cryptic_threshold", "uncertain_lo"])
-registry.register("SpliceCorrect", evaluate_splice_correct,
-                  param_keys=["seq", "known_exon_boundaries", "cellular_context"])
-registry.register("GCInRange", evaluate_gc_in_range,
-                  param_keys=["seq", "gc_lo", "gc_hi"])
-registry.register("CodonAdapted", evaluate_codon_adapted,
-                  param_keys=["seq", "organism", "threshold"])
-registry.register("NoRestrictionSite", evaluate_no_restriction_site,
-                  param_keys=["seq", "enzyme_set"])
-registry.register("InFrame", evaluate_in_frame,
-                  param_keys=["seq", "exon_boundaries"])
-registry.register("NoInstabilityMotif", evaluate_no_instability_motif,
-                  param_keys=["seq"])
-registry.register("NoCpGIsland", evaluate_no_cpg_island,
-                  param_keys=["seq"])
+def check_valid_coding_seq(seq: str) -> PredicateResult:
+    """Predicate 6: Valid coding sequence (length divisible by 3, all valid codons)."""
+    if len(seq) % 3 != 0:
+        return PredicateResult("ValidCodingSeq", False,
+                               details=f"Sequence length {len(seq)} not divisible by 3")
+    invalid = []
+    for i in range(0, len(seq), 3):
+        codon = seq[i:i+3]
+        if codon not in CODON_TABLE:
+            invalid.append((i, codon))
+    if invalid:
+        return PredicateResult("ValidCodingSeq", False,
+                               details=f"Invalid codons: {invalid}")
+    return PredicateResult("ValidCodingSeq", True, details="All codons valid")
 
 
-# ==============================================================================
-# Codon Analysis Helper (for Mutagenesis Engine)
-# ==============================================================================
-
-def analyze_codon_at_position(seq: str, position: int) -> dict:
-    """Analyze which codon and amino acid is at a given nucleotide position.
-
-    This function maps a nucleotide position to its codon context, including
-    the amino acid identity and all synonymous codons. Used by the mutagenesis
-    engine to determine which amino acid substitutions could resolve violations.
-
-    Args:
-        seq: DNA coding sequence (uppercase, length must be multiple of 3)
-        position: 0-based nucleotide position in the sequence
-
-    Returns:
-        Dict with keys:
-        - codon_index: int (0-based codon position)
-        - codon: str (the 3-letter codon at this position)
-        - amino_acid: str (single-letter amino acid code)
-        - all_codons: list[str] (all synonymous codons for this amino acid)
-        - dinucleotides_present: list[str] (dinucleotides within this codon)
-
-    Raises:
-        ValueError: If position is out of range or sequence is invalid.
-    """
-    from .constants import CODON_TABLE, AA_TO_CODONS
-
-    seq = seq.upper()
-    if not seq:
-        raise ValueError("Sequence must not be empty")
-    if position < 0 or position >= len(seq):
-        raise ValueError(f"Position {position} out of range [0, {len(seq)})")
-
-    codon_index = position // 3
-    codon_start = codon_index * 3
-
-    if codon_start + 3 > len(seq):
-        raise ValueError(f"Position {position} is in a partial codon at end of sequence")
-
-    codon = seq[codon_start:codon_start + 3]
-    amino_acid = CODON_TABLE.get(codon, "X")
-    all_codons = list(AA_TO_CODONS.get(amino_acid, []))
-
-    # Extract all dinucleotides within this codon (positions 0-1, 1-2)
-    dinucleotides_present = [codon[0:2], codon[1:3]]
-
-    # GT/AG splice-site relevance
-    has_gt = "GT" in codon
-    has_ag = "AG" in codon
-    gt_free_codons = [c for c in all_codons if "GT" not in c]
-    ag_free_codons = [c for c in all_codons if "AG" not in c]
-
-    return {
-        "codon_index": codon_index,
-        "codon": codon,
-        "amino_acid": amino_acid,
-        "all_codons": all_codons,
-        "dinucleotides_present": dinucleotides_present,
-        "has_gt": has_gt,
-        "has_ag": has_ag,
-        "gt_free_codons": gt_free_codons,
-        "ag_free_codons": ag_free_codons,
-    }
+def check_conservation_score(original_aa: str, new_aa: str, min_score: int = 0) -> PredicateResult:
+    """Predicate 7: BLOSUM62 conservation score for amino acid substitution."""
+    score = BLOSUM62.get((original_aa, new_aa), -10)
+    passed = score >= min_score
+    return PredicateResult("ConservationScore", passed,
+                           details=f"BLOSUM62({original_aa},{new_aa})={score}, min={min_score}")
 
 
-def evaluate_all_predicates(
-    seq: str,
-    known_exon_boundaries: list[tuple[int, int]],
-    organism: str = "Homo_sapiens",
-    cellular_context: str = "HEK293T",
-    gc_lo: float = 0.30,
-    gc_hi: float = 0.70,
-    cai_threshold: float = 0.5,
-    enzymes: list[str] | None = None,
-    cryptic_splice_threshold: float = 3.0,
-    uncertain_lo: float = 1.5,
-) -> list[TypeCheckResult]:
-    """
-    Evaluate all registered type predicates against a sequence.
+def check_codon_optimality(codon: str, species_cai: Dict[str, float], min_cai: float = 0.0) -> PredicateResult:
+    """Predicate 8: Codon optimality (CAI score above threshold)."""
+    cai = species_cai.get(codon, 0.0)
+    passed = cai >= min_cai
+    return PredicateResult("CodonOptimality", passed,
+                           details=f"CAI({codon})={cai:.4f}, min={min_cai}")
 
-    Uses the registry to discover predicates, so new predicates are
-    automatically included when registered.
 
-    Returns results in a canonical order.
-    """
-    enzymes = enzymes or list(RESTRICTION_ENZYMES.keys())
-    target_isoform = "".join(seq[start:end] for start, end in known_exon_boundaries)
+# ────────────────────────────────────────────────────────────
+# Cross-codon constraint helpers
+# ────────────────────────────────────────────────────────────
 
-    # Evaluate each predicate via the registry — ensures all registered predicates are included
-    predicate_args = {
-        "NoCrypticSplice": {"seq": seq, "known_exon_boundaries": known_exon_boundaries, "cryptic_threshold": cryptic_splice_threshold, "uncertain_lo": uncertain_lo},
-        "SpliceCorrect": {"seq": seq, "known_exon_boundaries": known_exon_boundaries, "cellular_context": cellular_context},
-        "GCInRange": {"seq": target_isoform, "gc_lo": gc_lo, "gc_hi": gc_hi},
-        "CodonAdapted": {"seq": target_isoform, "organism": organism, "threshold": cai_threshold},
-        "NoRestrictionSite": {"seq": target_isoform, "enzyme_set": enzymes},
-        "InFrame": {"seq": target_isoform, "exon_boundaries": [(0, len(target_isoform))]},
-        "NoInstabilityMotif": {"seq": target_isoform},
-        "NoCpGIsland": {"seq": target_isoform},
-    }
+def find_cross_codon_gt(seq: str) -> List[int]:
+    """Find GT dinucleotides that span codon boundaries (pos i-1,i where i%3==0)."""
+    positions = []
+    for i in range(3, len(seq) - 1):
+        if i % 3 == 0 and seq[i-1] == "G" and seq[i] == "T":
+            positions.append(i - 1)
+    return positions
 
-    results = []
-    for name in registry.names():
-        if name in predicate_args:
-            try:
-                result = registry.evaluate(name, **predicate_args[name])
-                results.append(result)
-            except Exception as e:
-                logger.error("Error evaluating predicate %s: %s", name, e)
-                results.append(TypeCheckResult(
-                    predicate=name,
-                    verdict=Verdict.UNCERTAIN,
-                    derivation=[],
-                    knowledge_gap=f"Evaluation error: {e}",
-                ))
-        else:
-            logger.debug("Predicate %s registered but no arguments configured for evaluate_all_predicates", name)
 
-    return results
+def find_cross_codon_cg(seq: str) -> List[int]:
+    """Find CG dinucleotides that span codon boundaries."""
+    positions = []
+    for i in range(3, len(seq) - 1):
+        if i % 3 == 0 and seq[i-1] == "C" and seq[i] == "G":
+            positions.append(i - 1)
+    return positions
+
+
+def find_cross_codon_restriction(seq: str, site: str) -> List[int]:
+    """Find restriction sites that span codon boundaries."""
+    positions = []
+    site_len = len(site)
+    for i in range(len(seq) - site_len + 1):
+        if seq[i:i+site_len] == site:
+            codon_start_i = (i // 3) * 3
+            codon_end_i = ((i + site_len - 1) // 3) * 3 + 3
+            if codon_end_i - codon_start_i > 3:
+                positions.append(i)
+    return positions

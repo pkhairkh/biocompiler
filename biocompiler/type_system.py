@@ -149,9 +149,17 @@ class PredicateResult:
 # ────────────────────────────────────────────────────────────
 
 def check_no_stop_codons(seq: str) -> PredicateResult:
-    """Predicate 1: No internal stop codons."""
+    """Predicate 1: No internal stop codons.
+
+    The last codon in the reading frame is allowed to be a stop
+    (natural termination). Only stops that appear BEFORE the last
+    codon are flagged as violations.
+    """
+    if len(seq) < 3:
+        return PredicateResult("NoStopCodons", True, details="Sequence too short")
+    last_codon_start = len(seq) - 3
     violations = []
-    for i in range(0, len(seq) - 2, 3):
+    for i in range(0, last_codon_start, 3):  # skip the last codon
         codon = seq[i:i+3]
         if codon in ("TAA", "TAG", "TGA"):
             violations.append(i)
@@ -237,13 +245,140 @@ def check_no_restriction_site(seq: str, enzymes: List[str]) -> PredicateResult:
 
 
 def check_no_gt_dinucleotide(seq: str) -> PredicateResult:
-    """Predicate 5: No GT dinucleotides (5' splice donor mimic), including cross-codon."""
+    """Predicate 5: No GT dinucleotides (5' splice donor mimic), including cross-codon.
+
+    This is the STRICT version — any GT fails the predicate.
+    """
     positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
     if positions:
         return PredicateResult("NoGTDinucleotide", False,
                                details=f"GT dinucleotides at {positions}",
                                positions=positions)
     return PredicateResult("NoGTDinucleotide", True, details="No GT dinucleotides found")
+
+
+def check_no_avoidable_gt(seq: str) -> PredicateResult:
+    """Predicate 5 (relaxed): No avoidable GT dinucleotides.
+
+    A GT is "unavoidable" if ALL synonymous codons for that amino acid
+    also contain GT or create a cross-codon GT.  This predicate PASSES
+    if every remaining GT in the sequence is unavoidable — i.e., there
+    is no synonymous substitution that could remove it.
+
+    Specifically:
+    - Within-codon GT: unavoidable if every synonymous codon for the AA
+      also contains "GT" (e.g., Valine GTN where all 4 codons start with GT)
+    - Cross-codon GT: unavoidable if no combination of synonymous codons
+      for the two adjacent AAs eliminates the boundary GT
+    """
+    gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
+    if not gt_positions:
+        return PredicateResult("NoGTDinucleotide", True, details="No GT dinucleotides found")
+
+    avoidable_positions = []
+    unavoidable_positions = []
+
+    for pos in gt_positions:
+        codon_idx = pos // 3  # which codon does position 'pos' fall in?
+        codon_start = codon_idx * 3
+        next_codon_start = codon_start + 3
+
+        # Determine whether this GT is within a single codon or crosses a boundary
+        if pos + 1 < next_codon_start:
+            # Within-codon GT (both bases in the same codon)
+            codon = seq[codon_start:codon_start + 3]
+            aa = CODON_TABLE.get(codon)
+            if aa is None or aa == "*":
+                unavoidable_positions.append(pos)
+                continue
+
+            # Check if any synonymous codon avoids GT
+            has_avoidable = False
+            for alt in AA_TO_CODONS.get(aa, []):
+                if "GT" not in alt:
+                    # Also check this alt doesn't create cross-codon GT
+                    # with the previous codon's last base
+                    if codon_start > 0:
+                        prev_base = seq[codon_start - 1]
+                        if prev_base + alt[0] == "GT":
+                            continue  # would create cross-codon GT
+                    # And check it doesn't create GT with the next codon's first base
+                    if next_codon_start + 3 <= len(seq):
+                        next_base = seq[next_codon_start]
+                        if alt[-1] + next_base == "GT":
+                            continue  # would create cross-codon GT
+                    has_avoidable = True
+                    break
+
+            if has_avoidable:
+                avoidable_positions.append(pos)
+            else:
+                unavoidable_positions.append(pos)
+        else:
+            # Cross-codon GT (pos is last base of one codon, pos+1 is first of next)
+            prev_codon_start = codon_start  # codon containing 'pos'
+            curr_codon_start = next_codon_start  # codon containing 'pos+1'
+
+            if curr_codon_start + 3 > len(seq):
+                unavoidable_positions.append(pos)
+                continue
+
+            prev_codon = seq[prev_codon_start:prev_codon_start + 3]
+            curr_codon = seq[curr_codon_start:curr_codon_start + 3]
+            prev_aa = CODON_TABLE.get(prev_codon)
+            curr_aa = CODON_TABLE.get(curr_codon)
+
+            if prev_aa is None or curr_aa is None:
+                unavoidable_positions.append(pos)
+                continue
+
+            # If one side is a stop codon, we can only try changing the other side
+            if prev_aa == "*" and curr_aa == "*":
+                unavoidable_positions.append(pos)
+                continue
+
+            has_avoidable = False
+
+            if prev_aa == "*":
+                # Can only change the current codon
+                for c_alt in AA_TO_CODONS.get(curr_aa, [curr_codon]):
+                    if prev_codon[-1] + c_alt[0] != "GT" and "GT" not in c_alt:
+                        has_avoidable = True
+                        break
+            elif curr_aa == "*":
+                # Can only change the previous codon
+                for p_alt in AA_TO_CODONS.get(prev_aa, [prev_codon]):
+                    if p_alt[-1] + curr_codon[0] != "GT" and "GT" not in p_alt:
+                        has_avoidable = True
+                        break
+            else:
+                # Both are regular AAs — try all combinations
+                prev_alts = AA_TO_CODONS.get(prev_aa, [prev_codon])
+                curr_alts = AA_TO_CODONS.get(curr_aa, [curr_codon])
+
+                for p_alt in prev_alts:
+                    for c_alt in curr_alts:
+                        if p_alt[-1] + c_alt[0] != "GT":
+                            if "GT" not in p_alt and "GT" not in c_alt:
+                                has_avoidable = True
+                                break
+                    if has_avoidable:
+                        break
+
+            if has_avoidable:
+                avoidable_positions.append(pos)
+            else:
+                unavoidable_positions.append(pos)
+
+    if avoidable_positions:
+        return PredicateResult("NoGTDinucleotide", False,
+                               details=(f"Avoidable GT dinucleotides at {avoidable_positions}; "
+                                        f"unavoidable at {unavoidable_positions}"),
+                               positions=avoidable_positions)
+    return PredicateResult("NoGTDinucleotide", True,
+                           details=(f"All {len(unavoidable_positions)} GT dinucleotides are "
+                                    f"unavoidable (no synonymous substitution can remove them)"),
+                           positions=unavoidable_positions)
 
 
 def check_valid_coding_seq(seq: str) -> PredicateResult:
