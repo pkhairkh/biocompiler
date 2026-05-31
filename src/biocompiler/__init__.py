@@ -36,6 +36,7 @@ from .exceptions import (
     InvalidProteinError,
     FileFormatError,
     SplicingError,
+    MutagenesisError,
 )
 from .scanner import (
     validate_dna_sequence,
@@ -58,6 +59,7 @@ from .type_system import (
     evaluate_no_instability_motif,
     evaluate_no_cpg_island,
     evaluate_all_predicates,
+    analyze_codon_at_position,
     registry as predicate_registry,
 )
 from .certificate import (
@@ -71,14 +73,7 @@ from .maxentscan import (
     max_donor_score,
     max_acceptor_score,
 )
-from .optimization import optimize_sequence
-from .mutagenesis import (
-    type_directed_mutagenesis,
-    MutagenesisResult,
-    AASubstitution,
-    BLOSUM62,
-    GT_MANDATORY_AAS,
-)
+from .optimization import optimize_sequence, OptimizationResult
 from .grammar_loader import load_grammar, grammar_to_predicate_params
 from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta
 from .report import generate_report
@@ -90,6 +85,17 @@ from .dataset_validation import run_dataset_validation, DatasetValidationReport
 from .import_seq import import_fasta, import_genbank, import_sequence
 from .biopython_compat import to_seqrecord, from_seqrecord, optimize_to_seqrecord
 from .jupyter import display_sequence, display_optimization_result, display_type_check, plot_gc_content, plot_codon_usage
+from .mutagenesis import (
+    MutagenesisResult,
+    AASubstitution,
+    BLOSUM62,
+    GT_MANDATORY_AAS,
+    type_directed_mutagenesis,
+    find_unrepairable_cryptic_donors,
+    find_unrepairable_cryptic_acceptors,
+    propose_substitutions,
+    apply_substitution,
+)
 
 __all__ = [
     # Version
@@ -103,7 +109,7 @@ __all__ = [
     "CertificateGenerationError", "CertificateVerificationError",
     "UnknownPredicateError", "OptimizationError",
     "UnsupportedOrganismError", "InvalidProteinError",
-    "FileFormatError", "SplicingError",
+    "FileFormatError", "SplicingError", "MutagenesisError",
     # Scanner
     "validate_dna_sequence", "gc_content", "scan_sequence",
     # Translation
@@ -115,17 +121,14 @@ __all__ = [
     "evaluate_gc_in_range", "evaluate_codon_adapted",
     "evaluate_no_restriction_site", "evaluate_in_frame",
     "evaluate_no_instability_motif", "evaluate_no_cpg_island",
-    "evaluate_all_predicates", "predicate_registry",
+    "evaluate_all_predicates", "analyze_codon_at_position", "predicate_registry",
     # Certificate
     "generate_certificate", "verify_certificate",
     # MaxEntScan
     "score_donor", "score_acceptor", "scan_splice_sites",
     "max_donor_score", "max_acceptor_score",
     # Optimization
-    "optimize_sequence",
-    # Mutagenesis
-    "type_directed_mutagenesis", "MutagenesisResult", "AASubstitution",
-    "BLOSUM62", "GT_MANDATORY_AAS",
+    "optimize_sequence", "OptimizationResult",
     # Grammar
     "load_grammar", "grammar_to_predicate_params",
     # Export
@@ -149,4 +152,9 @@ __all__ = [
     # Jupyter Integration
     "display_sequence", "display_optimization_result", "display_type_check",
     "plot_gc_content", "plot_codon_usage",
+    # Mutagenesis Engine
+    "MutagenesisResult", "AASubstitution", "BLOSUM62", "GT_MANDATORY_AAS",
+    "type_directed_mutagenesis", "find_unrepairable_cryptic_donors",
+    "find_unrepairable_cryptic_acceptors", "propose_substitutions",
+    "apply_substitution",
 ]

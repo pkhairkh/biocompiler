@@ -97,7 +97,13 @@ def evaluate_no_cryptic_splice(
         known_exon_boundaries: list of (start, end) tuples for known exons
         cryptic_threshold: MaxEntScan score threshold above which a splice site
                           is considered functional (default 3.0)
+
+    Pre-conditions:
+    - seq is a valid DNA sequence (uppercase)
+    - known_exon_boundaries is a non-empty list of valid (start, end) tuples
+    - cryptic_threshold > 0
     """
+    assert cryptic_threshold > 0, f"Threshold must be positive, got {cryptic_threshold}"
     derivation = []
 
     for exon_start, exon_end in known_exon_boundaries:
@@ -124,22 +130,37 @@ def evaluate_no_cryptic_splice(
                 "threshold": cryptic_threshold,
             })
 
-        # Check for donor-acceptor pairs that could form cryptic introns
-        # Only pairs where gap > MIN_INTRON_LENGTH are biologically plausible
+        # Check 1: Strong standalone donors (GT sites above threshold)
+        # Even without a paired acceptor, a strong cryptic donor can trigger
+        # aberrant splicing by pairing with downstream genomic acceptors.
+        # This is the key issue with Valine positions: their GT dinucleotides
+        # create unrepairable cryptic splice donors.
         for d_pos, d_score in donors:
-            for a_pos, a_score in acceptors:
-                if a_pos > d_pos + 30:  # Minimum intron length
-                    # Both sites score above threshold → potential cryptic intron
-                    return TypeCheckResult(
-                        predicate="NoCrypticSplice",
-                        verdict=Verdict.FAIL,
-                        derivation=derivation,
-                        violation=(
-                            f"Cryptic splice site pair in exon [{exon_start},{exon_end}): "
-                            f"donor at {exon_start + d_pos} (score={d_score:.2f}), "
-                            f"acceptor at {exon_start + a_pos} (score={a_score:.2f})"
-                        ),
-                    )
+            if d_score >= cryptic_threshold:
+                return TypeCheckResult(
+                    predicate="NoCrypticSplice",
+                    verdict=Verdict.FAIL,
+                    derivation=derivation,
+                    violation=(
+                        f"Cryptic splice donor in exon [{exon_start},{exon_end}): "
+                        f"GT at position {exon_start + d_pos} (MaxEntScan score={d_score:.2f}, "
+                        f"threshold={cryptic_threshold})"
+                    ),
+                )
+
+        # Check 2: Strong standalone acceptors (AG sites above threshold)
+        for a_pos, a_score in acceptors:
+            if a_score >= cryptic_threshold:
+                return TypeCheckResult(
+                    predicate="NoCrypticSplice",
+                    verdict=Verdict.FAIL,
+                    derivation=derivation,
+                    violation=(
+                        f"Cryptic splice acceptor in exon [{exon_start},{exon_end}): "
+                        f"AG at position {exon_start + a_pos} (MaxEntScan score={a_score:.2f}, "
+                        f"threshold={cryptic_threshold})"
+                    ),
+                )
 
     return TypeCheckResult(
         predicate="NoCrypticSplice",
@@ -158,7 +179,12 @@ def evaluate_splice_correct(
 ) -> TypeCheckResult:
     """
     SpliceCorrect(C): The intended isoform is the only possible splice isoform.
+
+    Pre-conditions:
+    - seq is a valid DNA sequence
+    - known_exon_boundaries is a non-empty list of valid (start, end) tuples
     """
+    assert known_exon_boundaries, "Exon boundaries must not be empty"
     isoforms = compute_splice_isoforms(seq, known_exon_boundaries, cellular_context)
     target_seq = "".join(seq[start:end] for start, end in known_exon_boundaries)
     non_target = [iso for iso in isoforms if iso.sequence != target_seq]
@@ -195,7 +221,22 @@ def evaluate_splice_correct(
 
 
 def evaluate_gc_in_range(seq: str, gc_lo: float = 0.30, gc_hi: float = 0.70, **kwargs) -> TypeCheckResult:
-    """GCInRange(lo, hi): GC content is within [lo, hi]."""
+    """GCInRange(lo, hi): GC content is within [lo, hi].
+
+    Pre-conditions:
+    - 0.0 <= gc_lo < gc_hi <= 1.0
+
+    If pre-conditions are violated (lo >= hi), returns FAIL since no
+    GC value can satisfy an empty or inverted range.
+    """
+    if not (0.0 <= gc_lo < gc_hi <= 1.0):
+        # Invalid bounds — no value can satisfy this, so FAIL
+        return TypeCheckResult(
+            predicate=f"GCInRange({gc_lo}, {gc_hi})",
+            verdict=Verdict.FAIL,
+            derivation=[{"step": "invalid_bounds", "gc_lo": gc_lo, "gc_hi": gc_hi}],
+            violation=f"Invalid GC bounds: [{gc_lo}, {gc_hi}] — lo must be < hi",
+        )
     gc = gc_content(seq)
     passed = gc_lo <= gc <= gc_hi
     return TypeCheckResult(
@@ -207,7 +248,13 @@ def evaluate_gc_in_range(seq: str, gc_lo: float = 0.30, gc_hi: float = 0.70, **k
 
 
 def evaluate_codon_adapted(seq: str, organism: str = "Homo_sapiens", threshold: float = 0.5, **kwargs) -> TypeCheckResult:
-    """CodonAdapted(O, theta): CAI >= threshold for organism O."""
+    """CodonAdapted(O, theta): CAI >= threshold for organism O.
+
+    Pre-conditions:
+    - organism is a supported organism name
+    - 0.0 < threshold <= 1.0
+    """
+    assert 0.0 < threshold <= 1.0, f"Invalid CAI threshold: {threshold}"
     cai = compute_cai(seq, organism)
     passed = cai >= threshold
     return TypeCheckResult(
@@ -351,7 +398,15 @@ def evaluate_no_cpg_island(seq: str, window_size: int = 200, threshold: float = 
 
     CpG islands in coding sequences can trigger DNA methylation and
     epigenetic silencing, which is undesirable for expression constructs.
+
+    Pre-conditions:
+    - window_size > 0
+    - 0.0 <= threshold <= 1.0
+    - 0.0 <= min_obs_exp <= 1.0
     """
+    assert window_size > 0, f"Window size must be positive, got {window_size}"
+    assert 0.0 <= threshold <= 1.0, f"GC threshold must be in [0,1], got {threshold}"
+    assert 0.0 <= min_obs_exp <= 1.0, f"Obs/Exp threshold must be in [0,1], got {min_obs_exp}"
     seq = seq.upper()
     cpg_islands = []
 
@@ -422,6 +477,62 @@ registry.register("NoInstabilityMotif", evaluate_no_instability_motif,
                   param_keys=["seq"])
 registry.register("NoCpGIsland", evaluate_no_cpg_island,
                   param_keys=["seq"])
+
+
+# ==============================================================================
+# Codon Analysis Helper (for Mutagenesis Engine)
+# ==============================================================================
+
+def analyze_codon_at_position(seq: str, position: int) -> dict:
+    """Analyze which codon and amino acid is at a given nucleotide position.
+
+    This function maps a nucleotide position to its codon context, including
+    the amino acid identity and all synonymous codons. Used by the mutagenesis
+    engine to determine which amino acid substitutions could resolve violations.
+
+    Args:
+        seq: DNA coding sequence (uppercase, length must be multiple of 3)
+        position: 0-based nucleotide position in the sequence
+
+    Returns:
+        Dict with keys:
+        - codon_index: int (0-based codon position)
+        - codon: str (the 3-letter codon at this position)
+        - amino_acid: str (single-letter amino acid code)
+        - all_codons: list[str] (all synonymous codons for this amino acid)
+        - dinucleotides_present: list[str] (dinucleotides within this codon)
+
+    Raises:
+        ValueError: If position is out of range or sequence is invalid.
+    """
+    from .constants import CODON_TABLE, AA_TO_CODONS
+
+    seq = seq.upper()
+    if not seq:
+        raise ValueError("Sequence must not be empty")
+    if position < 0 or position >= len(seq):
+        raise ValueError(f"Position {position} out of range [0, {len(seq)})")
+
+    codon_index = position // 3
+    codon_start = codon_index * 3
+
+    if codon_start + 3 > len(seq):
+        raise ValueError(f"Position {position} is in a partial codon at end of sequence")
+
+    codon = seq[codon_start:codon_start + 3]
+    amino_acid = CODON_TABLE.get(codon, "X")
+    all_codons = list(AA_TO_CODONS.get(amino_acid, []))
+
+    # Extract all dinucleotides within this codon (positions 0-1, 1-2)
+    dinucleotides_present = [codon[0:2], codon[1:3]]
+
+    return {
+        "codon_index": codon_index,
+        "codon": codon,
+        "amino_acid": amino_acid,
+        "all_codons": all_codons,
+        "dinucleotides_present": dinucleotides_present,
+    }
 
 
 def evaluate_all_predicates(

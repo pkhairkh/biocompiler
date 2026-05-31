@@ -427,4 +427,4 @@ class TestCrypticSpliceElimination:
         )
         result = optimize_sequence(target_protein=protein, organism="Homo_sapiens")
         # EGFP should benefit from cryptic splice elimination
-        assert "CodonAdapted" in result.satisfied_predicates
+        assert any("CodonAdapted" in p for p in result.satisfied_predicates)

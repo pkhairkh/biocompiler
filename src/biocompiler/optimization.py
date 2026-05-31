@@ -6,10 +6,16 @@ Production-grade optimizer with:
 - Greedy optimizer as default (z3 optional via use_z3 flag)
 - Organism-specific GC targeting (natural GC, not just "in range")
 - Smart phase ordering with reconciliation pass
-- Length-adaptive strategy
+- Type-directed mutagenesis integration loop
+- Delegation to type system for predicate checking (SOC)
 
 Architecture: gene design is multi-objective optimization, not compilation.
 The optimizer searches for sequences satisfying competing constraints simultaneously.
+
+Separation of Concerns:
+- Predicate evaluation is the type system's responsibility, NOT the optimizer's.
+- The optimizer only CALLS the type system; it never re-implements predicate logic.
+- This eliminates the duplicate _check_predicates and ensures single source of truth.
 """
 
 import logging
@@ -33,9 +39,21 @@ from .maxentscan import max_donor_score, max_acceptor_score, score_donor, score_
 logger = logging.getLogger(__name__)
 
 
+# ==============================================================================
+# Data Structures
+# ==============================================================================
+
 @dataclass
 class OptimizationResult:
-    """Result of multi-objective optimization."""
+    """Result of multi-objective optimization.
+
+    Invariants:
+    - sequence length == len(protein) * 3 (if protein is non-empty)
+    - 0.0 <= cai <= 1.0
+    - 0.0 <= gc_content <= 1.0
+    - failed_predicates is a subset of all checked predicate names
+    - if mutagenesis_applied, then aa_substitutions is non-None and non-empty
+    """
     sequence: str
     protein: str
     cai: float
@@ -47,9 +65,37 @@ class OptimizationResult:
     mutagenesis_applied: bool = False
     aa_substitutions: list[dict] | None = None  # [{pos, from, to, blosum62}]
 
+    def __post_init__(self):
+        """Validate OptimizationResult invariants."""
+        if self.protein and self.sequence:
+            assert len(self.sequence) == len(self.protein) * 3, (
+                f"Sequence length ({len(self.sequence)}) must equal "
+                f"protein length * 3 ({len(self.protein) * 3})"
+            )
+        assert 0.0 <= self.cai <= 1.0, f"CAI must be in [0, 1], got {self.cai}"
+        assert 0.0 <= self.gc_content <= 1.0, f"GC content must be in [0, 1], got {self.gc_content}"
+        if self.mutagenesis_applied:
+            assert self.aa_substitutions is not None and len(self.aa_substitutions) > 0, (
+                "Mutagenesis applied but no substitutions recorded"
+            )
+
+
+# ==============================================================================
+# Input Validation
+# ==============================================================================
 
 def protein_to_aa_list(protein: str) -> list[str]:
-    """Convert protein string to list of amino acid codes. Raises InvalidProteinError for bad input."""
+    """Convert protein string to list of amino acid codes. Raises InvalidProteinError for bad input.
+
+    Pre-conditions:
+    - protein must be a non-empty string of standard amino acid codes
+
+    Post-conditions:
+    - result is a list of valid single-letter amino acid codes
+    - len(result) == len(protein.strip())
+    """
+    if not protein or not protein.strip():
+        raise InvalidProteinError(protein, set())
     protein = protein.upper().strip()
     valid_aas = set(AA_TO_CODONS.keys())
     invalid = set(ch for ch in protein if ch not in valid_aas)
@@ -58,8 +104,21 @@ def protein_to_aa_list(protein: str) -> list[str]:
     return list(protein)
 
 
+# ==============================================================================
+# Restriction Site Removal Helpers
+# ==============================================================================
+
 def _find_site_in_sequence(sequence: str, site: str, site_rc: str) -> list[int]:
-    """Find all positions where site or its reverse complement appears in sequence."""
+    """Find all positions where site or its reverse complement appears in sequence.
+
+    Pre-conditions:
+    - sequence is a valid uppercase DNA string
+    - site is a non-empty uppercase DNA string
+    - site_rc is the reverse complement of site (or empty string)
+
+    Post-conditions:
+    - returns sorted list of unique positions
+    """
     positions = []
     if site:
         start = 0
@@ -81,7 +140,20 @@ def _find_site_in_sequence(sequence: str, site: str, site_rc: str) -> list[int]:
 
 
 def _get_overlapping_codons(pos: int, site_len: int, n_codons: int) -> list[int]:
-    """Get indices of codons that overlap with a site at position pos."""
+    """Get indices of codons that overlap with a site at position pos.
+
+    Pre-conditions:
+    - pos >= 0
+    - site_len > 0
+    - n_codons > 0
+
+    Post-conditions:
+    - all indices in result are in [0, n_codons)
+    """
+    assert pos >= 0, f"Position must be non-negative, got {pos}"
+    assert site_len > 0, f"Site length must be positive, got {site_len}"
+    assert n_codons > 0, f"Number of codons must be positive, got {n_codons}"
+
     first_codon = pos // 3
     last_base = pos + site_len - 1
     last_codon = last_base // 3
@@ -99,7 +171,15 @@ def _remove_site_multicodon(
     single-codon swaps fail because changing either codon alone doesn't eliminate the site.
     This function enumerates valid codon COMBINATIONS for all overlapping codons.
 
-    Returns (new_sequence, was_fixed).
+    Pre-conditions:
+    - sequence is uppercase DNA
+    - len(aas) > 0
+    - sorted_codons maps each aa in aas to a non-empty list of codons
+    - site_upper is a valid uppercase DNA string
+
+    Post-conditions:
+    - if fixed, returned sequence has same length as input and encodes same protein
+    - if not fixed, returned sequence is identical to input
     """
     n_codons = len(aas)
     positions = _find_site_in_sequence(sequence, site_upper, site_rc)
@@ -127,12 +207,14 @@ def _remove_site_multicodon(
 
             # Check if site is eliminated
             if site_upper not in test_seq and (not site_rc or site_rc not in test_seq):
-                # Also check we didn't introduce NEW instances of the same site elsewhere
-                # (rare but possible with large coordinated changes)
                 return test_seq, True
 
     return sequence, False
 
+
+# ==============================================================================
+# Greedy Optimizer
+# ==============================================================================
 
 def _greedy_optimize(
     protein: str,
@@ -148,9 +230,21 @@ def _greedy_optimize(
     Phase ordering prioritizes hard constraints (restriction sites) over soft constraints (CAI).
     Reconciliation pass ensures earlier phases aren't undone by later ones.
 
-    Returns:
-        Tuple of (optimized_sequence, list_of_warnings)
+    Pre-conditions:
+    - protein is a valid amino acid sequence (no invalid codes)
+    - organism is in SUPPORTED_ORGANISMS
+    - 0.0 <= gc_lo < gc_hi <= 1.0
+    - cryptic_splice_threshold > 0
+
+    Post-conditions:
+    - returned sequence translates to the input protein
+    - len(returned sequence) == len(protein) * 3
+    - all codons in sequence are valid for their amino acid
     """
+    # Validate pre-conditions
+    assert 0.0 <= gc_lo < gc_hi <= 1.0, f"GC bounds invalid: [{gc_lo}, {gc_hi}]"
+    assert cryptic_splice_threshold > 0, f"Threshold must be positive, got {cryptic_splice_threshold}"
+
     usage = CODON_ADAPTIVENESS_TABLES.get(organism)
     if usage is None:
         raise UnsupportedOrganismError(organism, SUPPORTED_ORGANISMS)
@@ -166,6 +260,7 @@ def _greedy_optimize(
 
     # Phase 1: Best codon per position (maximize CAI)
     sequence = "".join(sorted_codons[aa][0] for aa in aas)
+    assert len(sequence) == len(aas) * 3, "Phase 1: sequence length mismatch"
 
     # Phase 2: Remove restriction sites (HIGHEST PRIORITY — multi-codon coordinated)
     # Process concrete sites first, then IUPAC sites
@@ -560,11 +655,146 @@ def _greedy_optimize(
             if fixed:
                 sequence = new_seq
 
+    # Post-condition: verify sequence still encodes the same protein
+    from .translation import translate
+    translated = translate(sequence)
+    assert translated == protein, (
+        f"Post-condition violation: optimizer changed the protein. "
+        f"Expected '{protein[:20]}...', got '{translated[:20]}...'"
+    )
+    assert len(sequence) == len(aas) * 3, (
+        f"Post-condition violation: sequence length {len(sequence)} "
+        f"!= expected {len(aas) * 3}"
+    )
+
     for w in warnings:
         logger.warning(w)
 
     return sequence, warnings
 
+
+# ==============================================================================
+# IUPAC Expansion
+# ==============================================================================
+
+def _expand_iupac_site(pattern: str) -> list[str]:
+    """Expand an IUPAC restriction site pattern into all concrete ACGT sequences.
+
+    E.g., GGCCNNNNNGGCC expands into 4^5 = 1024 concrete sequences.
+    For very large expansions, we cap at 4096 to avoid combinatorial explosion.
+
+    Pre-conditions:
+    - pattern is a non-empty string containing IUPAC codes
+
+    Post-conditions:
+    - all returned strings contain only ACGT characters
+    - len(result[0]) == len(pattern) for all results
+    """
+    assert len(pattern) > 0, "Pattern must not be empty"
+
+    if not any(b not in "ACGT" for b in pattern):
+        return [pattern]
+
+    total_combos = 1
+    for b in pattern:
+        if b not in "ACGT":
+            total_combos *= len(IUPAC_EXPAND.get(b, "A"))
+
+    if total_combos > 4096:
+        logger.warning(
+            "IUPAC site %s expands to %d variants (>4096), skipping",
+            pattern, total_combos,
+        )
+        return []
+
+    results = [""]
+    for b in pattern:
+        bases = IUPAC_EXPAND.get(b, b)
+        results = [r + x for r in results for x in bases]
+    return results
+
+
+# ==============================================================================
+# Predicate Checking (Delegates to Type System — SOC)
+# ==============================================================================
+
+def _check_predicates_via_type_system(
+    sequence: str,
+    gc_lo: float,
+    gc_hi: float,
+    restriction_sites: list[str],
+    cai_threshold: float,
+    organism: str,
+    cryptic_splice_threshold: float = 3.0,
+) -> tuple[list[str], list[str]]:
+    """Check all type predicates against the optimized sequence.
+
+    DELEGATES to the type system's evaluate_all_predicates rather than
+    re-implementing predicate logic here. This is the single source of truth.
+
+    Pre-conditions:
+    - sequence is a valid DNA string
+    - organism is in SUPPORTED_ORGANISMS
+    - 0.0 <= gc_lo < gc_hi <= 1.0
+    - cai_threshold > 0
+
+    Post-conditions:
+    - satisfied + failed covers all checked predicates
+    - satisfied and failed are disjoint
+    """
+    from .type_system import evaluate_all_predicates
+    from .types import Verdict
+
+    assert 0.0 <= gc_lo < gc_hi <= 1.0, f"Invalid GC bounds: [{gc_lo}, {gc_hi}]"
+    assert cai_threshold > 0, f"CAI threshold must be positive, got {cai_threshold}"
+
+    # Build exon boundaries for a coding sequence (single exon)
+    exon_boundaries = [(0, len(sequence))]
+
+    # Get enzyme names from sequences
+    enzyme_names = []
+    for site in restriction_sites:
+        found = False
+        for name, seq in RESTRICTION_ENZYMES.items():
+            if seq.upper() == site.upper():
+                enzyme_names.append(name)
+                found = True
+                break
+        if not found:
+            enzyme_names.append(site)  # Use raw sequence as name
+
+    results = evaluate_all_predicates(
+        seq=sequence,
+        known_exon_boundaries=exon_boundaries,
+        organism=organism,
+        gc_lo=gc_lo,
+        gc_hi=gc_hi,
+        cai_threshold=cai_threshold,
+        enzymes=enzyme_names,
+        cryptic_splice_threshold=cryptic_splice_threshold,
+    )
+
+    satisfied = []
+    failed = []
+    for r in results:
+        predicate_name = r.predicate
+        if r.verdict == Verdict.PASS:
+            satisfied.append(predicate_name)
+        else:
+            failed.append(predicate_name)
+
+    # Verify disjoint
+    assert not (set(satisfied) & set(failed)), (
+        f"Predicates cannot be both satisfied and failed: "
+        f"{set(satisfied) & set(failed)}"
+    )
+
+    return satisfied, failed
+
+
+# ==============================================================================
+# Main Optimization Entry Point
+# ==============================================================================
 
 def optimize_sequence(
     target_protein: str,
@@ -594,6 +824,13 @@ def optimize_sequence(
     mutagenesis) to make constraint satisfaction possible.
 
     The optimizer targets organism-specific GC content rather than just "in range."
+
+    Pre-conditions:
+    - target_protein contains only valid standard amino acid codes
+    - organism is in SUPPORTED_ORGANISMS
+    - 0.0 <= gc_lo < gc_hi <= 1.0
+    - 0.0 < cai_threshold <= 1.0
+    - cryptic_splice_threshold > 0
     """
     aas = protein_to_aa_list(target_protein)
     n_aa = len(aas)
@@ -602,6 +839,10 @@ def optimize_sequence(
 
     if organism not in SUPPORTED_ORGANISMS:
         raise UnsupportedOrganismError(organism, SUPPORTED_ORGANISMS)
+
+    assert 0.0 <= gc_lo < gc_hi <= 1.0, f"Invalid GC bounds: [{gc_lo}, {gc_hi}]"
+    assert 0.0 < cai_threshold <= 1.0, f"Invalid CAI threshold: {cai_threshold}"
+    assert cryptic_splice_threshold > 0, f"Threshold must be positive: {cryptic_splice_threshold}"
 
     restriction_sites = restriction_sites or list(RESTRICTION_ENZYMES.values())
     fallback_used = False
@@ -691,7 +932,9 @@ def optimize_sequence(
 
     cai = compute_cai(sequence, organism)
     gc = gc_content(sequence)
-    satisfied, failed = _check_predicates(
+
+    # Delegate predicate checking to the type system (SOC)
+    satisfied, failed = _check_predicates_via_type_system(
         sequence, gc_lo, gc_hi, restriction_sites, cai_threshold, organism,
         cryptic_splice_threshold,
     )
@@ -768,92 +1011,3 @@ def optimize_sequence(
         mutagenesis_applied=mutagenesis_applied,
         aa_substitutions=aa_substitutions,
     )
-
-
-def _expand_iupac_site(pattern: str) -> list[str]:
-    """Expand an IUPAC restriction site pattern into all concrete ACGT sequences.
-
-    E.g., GGCCNNNNNGGCC expands into 4^5 = 1024 concrete sequences.
-    For very large expansions, we cap at 4096 to avoid combinatorial explosion.
-    """
-    if not any(b not in "ACGT" for b in pattern):
-        return [pattern]
-
-    total_combos = 1
-    for b in pattern:
-        if b not in "ACGT":
-            total_combos *= len(IUPAC_EXPAND.get(b, "A"))
-
-    if total_combos > 4096:
-        logger.warning(
-            "IUPAC site %s expands to %d variants (>4096), skipping",
-            pattern, total_combos,
-        )
-        return []
-
-    results = [""]
-    for b in pattern:
-        bases = IUPAC_EXPAND.get(b, b)
-        results = [r + x for r in results for x in bases]
-    return results
-
-
-def _check_predicates(
-    sequence: str, gc_lo: float, gc_hi: float,
-    restriction_sites: list[str], cai_threshold: float, organism: str,
-    cryptic_splice_threshold: float = 3.0,
-) -> tuple[list[str], list[str]]:
-    """Check all type predicates against the optimized sequence."""
-    satisfied, failed = [], []
-
-    satisfied.append("InFrame")
-    gc = gc_content(sequence)
-    gc_ok = gc_lo <= gc <= gc_hi
-    (satisfied if gc_ok else failed).append(
-        "GCInRange" if gc_ok else f"GCInRange(gc={gc:.3f})"
-    )
-
-    has_restriction = False
-    for site in restriction_sites:
-        site_upper = site.upper()
-        if any(b not in "ACGT" for b in site_upper):
-            from .scanner import _iupac_match
-            for i in range(len(sequence) - len(site_upper) + 1):
-                window = sequence[i:i + len(site_upper)]
-                if _iupac_match(window, site_upper):
-                    has_restriction = True
-                    break
-            if not has_restriction:
-                site_rc = reverse_complement(site_upper)
-                for i in range(len(sequence) - len(site_rc) + 1):
-                    window = sequence[i:i + len(site_rc)]
-                    if _iupac_match(window, site_rc):
-                        has_restriction = True
-                        break
-        else:
-            if site_upper in sequence or reverse_complement(site_upper) in sequence:
-                has_restriction = True
-        if has_restriction:
-            break
-    (satisfied if not has_restriction else failed).append("NoRestrictionSite")
-
-    has_atta = "ATTTA" in sequence
-    has_t6 = any(sequence[i:i + 6] == "TTTTTT" for i in range(len(sequence) - 5))
-    inst_ok = not (has_atta or has_t6)
-    (satisfied if inst_ok else failed).append("NoInstabilityMotif")
-
-    cai = compute_cai(sequence, organism)
-    cai_ok = cai >= cai_threshold
-    (satisfied if cai_ok else failed).append(
-        "CodonAdapted" if cai_ok else f"CodonAdapted(cai={cai:.4f})"
-    )
-
-    max_d = max_donor_score(sequence)
-    max_a = max_acceptor_score(sequence)
-    cryptic_ok = max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold
-    (satisfied if cryptic_ok else failed).append(
-        "NoCrypticSplice" if cryptic_ok
-        else f"NoCrypticSplice(donor={max_d:.2f},acceptor={max_a:.2f})"
-    )
-
-    return satisfied, failed

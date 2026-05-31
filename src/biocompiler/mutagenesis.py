@@ -26,17 +26,25 @@ BLOSUM62 scores for key substitutions:
   L->I: +2 (conservative, similar properties)
   L->V: +1 (conservative)
   L->M: +2 (conservative)
+
+Separation of Concerns:
+- Impossibility detection (find_unrepairable_*) queries the type system's
+  scoring functions (MaxEntScan) but does NOT re-implement type checking.
+- Substitution proposal is purely about amino acid properties (BLOSUM62).
+- The optimizer handles the re-optimization loop; mutagenesis only proposes
+  substitutions and applies them to the protein string.
 """
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 
-from .constants import AA_TO_CODONS
+from .constants import AA_TO_CODONS, CODON_TABLE
 from .maxentscan import score_donor, score_acceptor, max_donor_score, max_acceptor_score
 from .translation import compute_cai
 from .scanner import gc_content
 from .types import Verdict, TypeCheckResult
+from .exceptions import InvalidProteinError
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +88,9 @@ POLAR_UNCHARGED = {"S", "T", "N", "Q", "C", "Y", "G"}
 POSITIVELY_CHARGED = {"K", "R", "H"}
 NEGATIVELY_CHARGED = {"D", "E"}
 
+# Standard amino acid set for validation
+STANDARD_AAS = set("ACDEFGHIKLMNPQRSTVWY")
+
 # Amino acids whose ALL codons contain the GT splice donor dinucleotide
 # Valine: GTT, GTC, GTA, GTG — ALL contain GT
 GT_MANDATORY_AAS: set[str] = set()
@@ -109,7 +120,14 @@ VERY_CONSERVATIVE_THRESHOLD = 2
 
 @dataclass(frozen=True)
 class AASubstitution:
-    """A proposed amino acid substitution with rationale."""
+    """A proposed amino acid substitution with rationale.
+
+    Invariants:
+    - original_aa and substitute_aa are single standard amino acid codes
+    - original_aa != substitute_aa
+    - position >= 0
+    - blosum62_score == BLOSUM62[original_aa][substitute_aa]
+    """
     position: int          # 0-indexed position in protein
     original_aa: str       # original amino acid
     substitute_aa: str     # proposed substitution
@@ -118,6 +136,22 @@ class AASubstitution:
     predicate_addressed: str  # which predicate this fixes
     cai_impact: float = 0.0   # predicted CAI change (negative = loss)
     confidence: str = "high"   # high, medium, low
+
+    def __post_init__(self):
+        """Validate AASubstitution invariants."""
+        assert self.position >= 0, f"Position must be non-negative, got {self.position}"
+        assert self.original_aa in STANDARD_AAS, (
+            f"Original AA must be standard, got '{self.original_aa}'"
+        )
+        assert self.substitute_aa in STANDARD_AAS, (
+            f"Substitute AA must be standard, got '{self.substitute_aa}'"
+        )
+        assert self.original_aa != self.substitute_aa, (
+            f"Self-substitution not allowed: {self.original_aa}->{self.substitute_aa}"
+        )
+        assert self.confidence in ("high", "medium", "low"), (
+            f"Confidence must be high/medium/low, got '{self.confidence}'"
+        )
 
     @property
     def is_conservative(self) -> bool:
@@ -130,7 +164,13 @@ class AASubstitution:
 
 @dataclass
 class MutagenesisResult:
-    """Result of type-directed mutagenesis."""
+    """Result of type-directed mutagenesis.
+
+    Invariants:
+    - len(original_protein) == len(modified_protein)
+    - n_substitutions <= len(original_protein)
+    - 0.0 <= protein_identity_pct <= 100.0
+    """
     original_protein: str
     modified_protein: str
     substitutions: list[AASubstitution]
@@ -141,6 +181,14 @@ class MutagenesisResult:
     cai_after: float = 0.0
     gc_before: float = 0.0
     gc_after: float = 0.0
+
+    def __post_init__(self):
+        """Validate MutagenesisResult invariants."""
+        assert len(self.original_protein) == len(self.modified_protein), (
+            f"Protein length changed: {len(self.original_protein)} -> "
+            f"{len(self.modified_protein)}"
+        )
+        assert self.iterations >= 0, f"Iterations must be non-negative, got {self.iterations}"
 
     @property
     def n_substitutions(self) -> int:
@@ -168,9 +216,21 @@ def find_unrepairable_cryptic_donors(
     """
     Find cryptic splice donor sites that CANNOT be eliminated by codon swaps.
 
-    Returns list of (seq_position, codon_index, amino_acid, maxentscan_score,
-    is_codon_fixable) for each strong donor site.
+    Pre-conditions:
+    - sequence is uppercase DNA, length == len(protein) * 3
+    - protein contains only standard amino acid codes
+    - threshold > 0
+
+    Post-conditions:
+    - all positions in result are valid indices into sequence
+    - all scores are >= threshold (only strong donors are reported)
     """
+    assert threshold > 0, f"Threshold must be positive, got {threshold}"
+    assert len(sequence) == len(protein) * 3, (
+        f"Sequence length ({len(sequence)}) must equal protein length * 3 "
+        f"({len(protein) * 3})"
+    )
+
     unrepairable = []
     for i in range(len(sequence) - 1):
         if sequence[i:i+2] == "GT":
@@ -208,9 +268,21 @@ def find_unrepairable_cryptic_acceptors(
     """
     Find cryptic splice acceptor sites that CANNOT be eliminated by codon swaps.
 
-    Returns list of (seq_position, codon_index, amino_acid, maxentscan_score,
-    is_codon_fixable) for each strong acceptor site.
+    Pre-conditions:
+    - sequence is uppercase DNA, length == len(protein) * 3
+    - protein contains only standard amino acid codes
+    - threshold > 0
+
+    Post-conditions:
+    - all positions in result are valid indices into sequence
+    - all scores are >= threshold (only strong acceptors are reported)
     """
+    assert threshold > 0, f"Threshold must be positive, got {threshold}"
+    assert len(sequence) == len(protein) * 3, (
+        f"Sequence length ({len(sequence)}) must equal protein length * 3 "
+        f"({len(protein) * 3})"
+    )
+
     unrepairable = []
     for i in range(len(sequence) - 1):
         if sequence[i:i+2] == "AG":
@@ -246,11 +318,18 @@ def propose_substitutions(
     """
     Propose conservative amino acid substitutions for a given amino acid.
 
-    Returns list of (substitute_aa, blosum62_score, confidence) sorted by
-    BLOSUM62 score descending (most conservative first).
+    Pre-conditions:
+    - aa is a standard single-letter amino acid code
+    - predicate_name is a non-empty string
 
-    Only proposes substitutions with BLOSUM62 >= -1 (at minimum tolerable).
+    Post-conditions:
+    - no self-substitutions (aa not in result)
+    - all BLOSUM62 scores >= -1
+    - results sorted by BLOSUM62 score descending
     """
+    assert aa in STANDARD_AAS, f"Invalid amino acid: '{aa}'"
+    assert predicate_name, "Predicate name must not be empty"
+
     candidates = []
     scores = BLOSUM62.get(aa, {})
 
@@ -269,14 +348,11 @@ def propose_substitutions(
             if "donor" in reason.lower() or "GT" in reason:
                 has_gt_free = any("GT" not in c for c in sub_codons)
                 if not has_gt_free and aa in GT_MANDATORY_AAS:
-                    # If original AA has GT in all codons AND substitute also
-                    # has GT in all codons, this won't help for donor elimination
-                    # (but might help through context disruption — low confidence)
                     confidence = "low"
                 elif has_gt_free:
                     confidence = "high"
                 else:
-                    confidence = "medium"  # Some codons are GT-free
+                    confidence = "medium"
             elif "acceptor" in reason.lower() or "AG" in reason:
                 has_ag_free = any("AG" not in c for c in sub_codons)
                 confidence = "high" if has_ag_free else "low"
@@ -303,12 +379,30 @@ def apply_substitution(
     position: int,
     new_aa: str,
 ) -> str:
-    """Apply a single amino acid substitution to a protein sequence."""
+    """Apply a single amino acid substitution to a protein sequence.
+
+    Pre-conditions:
+    - protein is a valid amino acid sequence
+    - new_aa is a standard amino acid code
+    - 0 <= position < len(protein) (or position is out of bounds, returns unchanged)
+
+    Post-conditions:
+    - len(result) == len(protein)
+    - result[position] == new_aa (if position was in bounds)
+    - all other positions unchanged
+    """
+    assert new_aa in STANDARD_AAS, f"Invalid amino acid: '{new_aa}'"
     p = list(protein)
-    if position >= len(p):
+    if position < 0 or position >= len(p):
+        logger.warning(
+            "Substitution position %d out of bounds [0, %d), protein unchanged",
+            position, len(p),
+        )
         return protein
     p[position] = new_aa
-    return "".join(p)
+    result = "".join(p)
+    assert len(result) == len(protein), "Substitution changed protein length"
+    return result
 
 
 # ==============================================================================
@@ -319,7 +413,7 @@ def type_directed_mutagenesis(
     protein: str,
     organism: str,
     failed_predicates: list[str],
-    optimize_fn,  # Callable: (protein, organism, ...) -> OptimizationResult
+    optimize_fn: Callable,
     max_iterations: int = 10,
     max_substitutions: int = 30,
     min_blosum62: int = -1,
@@ -340,22 +434,33 @@ def type_directed_mutagenesis(
        conservative substitutions
     5. Apply the best substitution, re-optimize, iterate
 
-    Args:
-        protein: original amino acid sequence
-        organism: target organism for optimization
-        failed_predicates: initial list of failing predicate names
-        optimize_fn: function that performs optimization (optimize_sequence)
-        max_iterations: maximum mutagenesis iterations
-        max_substitutions: maximum total AA substitutions allowed
-        min_blosum62: minimum BLOSUM62 score for allowed substitutions
-        cryptic_splice_threshold: MaxEntScan threshold for cryptic splice sites
-        gc_lo: minimum GC content
-        gc_hi: maximum GC content
-        **optimize_kwargs: additional arguments passed to optimize_fn
+    Pre-conditions:
+    - protein is a valid amino acid sequence (non-empty, standard codes only)
+    - organism is a supported organism name
+    - failed_predicates is a non-empty list of predicate names
+    - optimize_fn is a callable that accepts (target_protein, organism, ...)
+      and returns an OptimizationResult
+    - max_iterations > 0
+    - max_substitutions > 0
+    - 0.0 <= gc_lo < gc_hi <= 1.0
 
-    Returns:
-        MutagenesisResult with all substitutions and final state
+    Post-conditions:
+    - len(result.modified_protein) == len(protein)
+    - all substitutions are conservative (BLOSUM62 >= min_blosum62)
+    - result.iterations <= max_iterations
     """
+    # Validate pre-conditions
+    assert protein, "Protein must not be empty"
+    assert all(aa in STANDARD_AAS for aa in protein), (
+        f"Protein contains non-standard amino acids: "
+        f"{set(aa for aa in protein if aa not in STANDARD_AAS)}"
+    )
+    assert failed_predicates, "Must have at least one failed predicate"
+    assert max_iterations > 0, f"Max iterations must be positive, got {max_iterations}"
+    assert max_substitutions > 0, f"Max substitutions must be positive, got {max_substitutions}"
+    assert 0.0 <= gc_lo < gc_hi <= 1.0, f"Invalid GC bounds: [{gc_lo}, {gc_hi}]"
+    assert cryptic_splice_threshold > 0, f"Threshold must be positive: {cryptic_splice_threshold}"
+
     current_protein = protein
     all_substitutions: list[AASubstitution] = []
     predicate_improvement: dict[str, str] = {}
@@ -372,7 +477,10 @@ def type_directed_mutagenesis(
     cai_before = initial_result.cai
     gc_before = initial_result.gc_content
 
+    iterations_used = 0
     for iteration in range(max_iterations):
+        iterations_used = iteration + 1
+
         # Re-optimize current protein
         opt_result = optimize_fn(
             target_protein=current_protein,
@@ -527,11 +635,17 @@ def type_directed_mutagenesis(
         if pred not in predicate_improvement:
             predicate_improvement[pred] = "PASS"
 
+    # Post-condition: protein length must be preserved
+    assert len(current_protein) == len(protein), (
+        f"Post-condition violation: protein length changed from "
+        f"{len(protein)} to {len(current_protein)}"
+    )
+
     return MutagenesisResult(
         original_protein=protein,
         modified_protein=current_protein,
         substitutions=all_substitutions,
-        iterations=iteration + 1 if 'iteration' in dir() else 0,
+        iterations=iterations_used,
         all_predicates_pass=len(final_result.failed_predicates) == 0,
         predicate_improvement=predicate_improvement,
         cai_before=cai_before,

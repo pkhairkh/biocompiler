@@ -40,6 +40,7 @@ def generate_certificate(
     type_results: list[TypeCheckResult],
     input_params: dict,
     require_all_pass: bool = False,
+    mutagenesis_substitutions: list[dict] | None = None,
 ) -> Certificate:
     """
     Generate a machine-checkable guarantee certificate.
@@ -59,13 +60,23 @@ def generate_certificate(
             - exon_boundaries, gc_lo, gc_hi, cai_threshold, organism, cell_type, enzymes
         require_all_pass: if True, raise CertificateGenerationError on any failure.
                          if False (default), generate graduated certificate.
+        mutagenesis_substitutions: if provided, documents AA substitutions applied
+            to make the design feasible. Each dict has keys: position, from, to,
+            blosum62, reason, predicate.
 
     Returns:
         Certificate object with all predicate results documented
 
     Raises:
         CertificateGenerationError: only if require_all_pass=True and any predicate failed
+
+    Pre-conditions:
+    - sequence is a non-empty DNA string
+    - type_results is a non-empty list
+    - input_params is a dict (may be empty)
     """
+    assert sequence, "Sequence must not be empty"
+    assert type_results, "Type results must not be empty"
     failures = [r for r in type_results if r.verdict != Verdict.PASS]
 
     if require_all_pass and failures:
@@ -90,6 +101,31 @@ def generate_certificate(
     complete_params.setdefault("cryptic_splice_threshold", 3.0)
     complete_params.setdefault("exon_boundaries", [(0, len(sequence))])
 
+    # Build provenance dict
+    provenance = {
+        "tool": "BioCompiler",
+        "version": VERSION,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "parameters": complete_params,
+        "input_hash": seq_hash,
+        "overall_status": overall_status,
+    }
+
+    # Include mutagenesis metadata if substitutions were applied
+    if mutagenesis_substitutions:
+        provenance["mutagenesis"] = {
+            "applied": True,
+            "n_substitutions": len(mutagenesis_substitutions),
+            "substitutions": mutagenesis_substitutions,
+            "description": (
+                f"{len(mutagenesis_substitutions)} conservative amino acid "
+                f"substitution(s) were applied to make constraint satisfaction "
+                f"possible. See substitutions list for details."
+            ),
+        }
+    else:
+        provenance["mutagenesis"] = {"applied": False}
+
     cert = Certificate(
         version=VERSION,
         design_id=seq_hash,
@@ -102,14 +138,7 @@ def generate_certificate(
             }
             for r in type_results
         ],
-        provenance={
-            "tool": "BioCompiler",
-            "version": VERSION,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "parameters": complete_params,
-            "input_hash": seq_hash,
-            "overall_status": overall_status,
-        },
+        provenance=provenance,
     )
     status_msg = overall_status if failures else "FULL_PASS"
     logger.info("Certificate generated: design_id=%s... status=%s", cert.design_id[:16], status_msg)

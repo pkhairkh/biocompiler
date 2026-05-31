@@ -111,3 +111,14 @@ class SplicingError(BioCompilerError):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(f"Splicing computation error: {reason}")
+
+
+class MutagenesisError(BioCompilerError):
+    """Raised when type-directed mutagenesis fails or encounters invalid state."""
+    def __init__(self, reason: str, substitutions_applied: int = 0):
+        self.reason = reason
+        self.substitutions_applied = substitutions_applied
+        super().__init__(
+            f"Mutagenesis error: {reason} "
+            f"({substitutions_applied} substitutions applied before failure)"
+        )

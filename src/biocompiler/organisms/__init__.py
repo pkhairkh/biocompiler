@@ -45,14 +45,16 @@ PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
 
 SUPPORTED_ORGANISMS = list(CODON_USAGE_TABLES.keys())
 
-# Organism-specific natural GC content targets
-# Source: Genome GC content from NCBI Genome Assembly data
+# Organism-specific GC content targets (from genome-wide measurements)
+# Source: various genome composition studies
+# These are aspirational targets, not hard constraints — the optimizer
+# will only nudge toward them when GC is already in range
 ORGANISM_GC_TARGETS: dict[str, float] = {
-    "Homo_sapiens": 0.41,
-    "Escherichia_coli": 0.52,
-    "Mus_musculus": 0.42,
-    "CHO_K1": 0.43,
-    "Saccharomyces_cerevisiae": 0.38,
+    "Homo_sapiens": 0.41,           # Human genome average GC
+    "Escherichia_coli": 0.51,      # E. coli K-12 genome GC
+    "Mus_musculus": 0.42,          # Mouse genome average GC
+    "CHO_K1": 0.44,                # Chinese Hamster genome GC
+    "Saccharomyces_cerevisiae": 0.38,  # Yeast genome average GC
 }
 
 # Aliases for backward compat
