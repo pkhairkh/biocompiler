@@ -1,5 +1,5 @@
 """
-BioCompiler Certificate Generation v7.0.0
+BioCompiler Certificate Generation v8.1.0
 ============================================
 Generates optimization certificates with GOLD/SILVER/BRONZE levels.
 
@@ -47,7 +47,7 @@ def format_certificate(results: List[PredicateResult], seq: str, species: str) -
     cert = compute_certificate(results)
     lines = [
         "=" * 60,
-        "  BioCompiler v7.0.0 — Optimization Certificate",
+        "  BioCompiler v8.1.0 — Optimization Certificate",
         "=" * 60,
         f"  Sequence length: {len(seq)} bp",
         f"  Species:         {species}",

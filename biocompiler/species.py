@@ -1,12 +1,14 @@
 """
-BioCompiler Species Data v7.0.0
+BioCompiler Species Data v8.1.0
 ================================
 Codon usage tables and CAI reference values for common expression hosts.
+
+Supports: E. coli, Human (H. sapiens), S. cerevisiae (Yeast), CHO-K1 (C. griseus)
 """
 
 from typing import Dict
 
-# E. coli codon usage (per thousand)
+# E. coli codon usage (per thousand, K-12 MG1655)
 ECOLI_CODON_USAGE: Dict[str, float] = {
     "TTT": 17.6, "TTC": 20.3,
     "TTA": 7.6, "TTG": 11.0, "CTT": 10.5, "CTC": 10.5, "CTA": 3.9, "CTG": 51.0,
@@ -74,7 +76,65 @@ HUMAN_CODON_USAGE: Dict[str, float] = {
 
 HUMAN_CAI: Dict[str, float] = compute_cai_weights(HUMAN_CODON_USAGE)
 
+# S. cerevisiae (Yeast) codon usage (per thousand)
+# Source: Nakamura et al., Codon usage tabulated from GenBank
+YEAST_CODON_USAGE: Dict[str, float] = {
+    "TTT": 18.2, "TTC": 21.3,
+    "TTA": 13.6, "TTG": 27.5, "CTT": 12.1, "CTC": 5.4, "CTA": 7.0, "CTG": 10.7,
+    "ATT": 30.1, "ATC": 17.0, "ATA": 17.8,
+    "ATG": 20.9,
+    "GTT": 22.0, "GTC": 11.8, "GTA": 10.4, "GTG": 10.8,
+    "TCT": 23.5, "TCC": 14.2, "TCA": 18.4, "TCG": 8.5, "AGT": 14.7, "AGC": 9.7,
+    "CCT": 15.3, "CCC": 6.8, "CCA": 31.8, "CCG": 5.3,
+    "ACT": 20.1, "ACC": 12.8, "ACA": 17.8, "ACG": 8.0,
+    "GCT": 35.8, "GCC": 22.4, "GCA": 30.9, "GCG": 6.1,
+    "TAT": 18.8, "TAC": 14.9,
+    "CAT": 13.6, "CAC": 7.9,
+    "CAA": 27.1, "CAG": 12.1,
+    "AAT": 35.7, "AAC": 24.8,
+    "AAA": 41.9, "AAG": 30.7,
+    "GAT": 37.0, "GAC": 20.2,
+    "GAA": 45.6, "GAG": 19.2,
+    "TGT": 6.6, "TGC": 4.7,
+    "TGG": 10.2,
+    "CGT": 6.4, "CGC": 2.6, "CGA": 3.0, "CGG": 1.7, "AGA": 21.3, "AGG": 9.2,
+    "GGT": 23.8, "GGC": 9.6, "GGA": 29.2, "GGG": 6.0,
+    "TAA": 1.0, "TAG": 0.5, "TGA": 0.7,
+}
+
+YEAST_CAI: Dict[str, float] = compute_cai_weights(YEAST_CODON_USAGE)
+
+# CHO-K1 (Chinese Hamster Ovary) codon usage (per thousand)
+# Source: Codon usage tabulated from Cricetulus griseus GenBank entries
+CHO_CODON_USAGE: Dict[str, float] = {
+    "TTT": 16.4, "TTC": 21.2,
+    "TTA": 7.0, "TTG": 12.5, "CTT": 12.8, "CTC": 19.6, "CTA": 7.2, "CTG": 40.8,
+    "ATT": 15.5, "ATC": 22.3, "ATA": 6.8,
+    "ATG": 21.8,
+    "GTT": 10.6, "GTC": 15.2, "GTA": 6.9, "GTG": 28.1,
+    "TCT": 14.6, "TCC": 17.8, "TCA": 11.4, "TCG": 4.3, "AGT": 11.8, "AGC": 19.7,
+    "CCT": 17.0, "CCC": 20.1, "CCA": 16.4, "CCG": 7.2,
+    "ACT": 12.6, "ACC": 19.2, "ACA": 14.6, "ACG": 6.0,
+    "GCT": 18.0, "GCC": 28.2, "GCA": 15.5, "GCG": 7.3,
+    "TAT": 15.0, "TAC": 16.0,
+    "CAT": 10.2, "CAC": 15.5,
+    "CAA": 11.5, "CAG": 35.2,
+    "AAT": 16.4, "AAC": 20.0,
+    "AAA": 23.5, "AAG": 33.0,
+    "GAT": 21.2, "GAC": 25.8,
+    "GAA": 28.5, "GAG": 40.5,
+    "TGT": 10.0, "TGC": 12.8,
+    "TGG": 13.0,
+    "CGT": 4.3, "CGC": 10.8, "CGA": 5.9, "CGG": 11.5, "AGA": 11.5, "AGG": 12.2,
+    "GGT": 10.5, "GGC": 22.8, "GGA": 16.2, "GGG": 16.8,
+    "TAA": 1.4, "TAG": 0.7, "TGA": 1.2,
+}
+
+CHO_CAI: Dict[str, float] = compute_cai_weights(CHO_CODON_USAGE)
+
 SPECIES: Dict[str, Dict[str, float]] = {
     "ecoli": ECOLI_CAI,
     "human": HUMAN_CAI,
+    "yeast": YEAST_CAI,
+    "cho": CHO_CAI,
 }
