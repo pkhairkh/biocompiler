@@ -41,6 +41,7 @@ from .translation import translate, compute_cai
 from .optimization import optimize_sequence, OptimizationResult
 from .organisms import CODON_ADAPTIVENESS_TABLES, SUPPORTED_ORGANISMS
 from .constants import CODON_TABLE, AA_TO_CODONS
+from .types import Verdict
 
 logger = logging.getLogger(__name__)
 
@@ -759,6 +760,60 @@ def validate_optimization_improvement(
         )
 
 
+def validate_no_cpg_island(
+    protein: str,
+    organism: str,
+    gene_name: str,
+    dataset_name: str,
+    gc_lo: float = 0.30,
+    gc_hi: float = 0.70,
+) -> DatasetValidationResult:
+    """Validate that an optimized sequence has no CpG islands.
+
+    CpG islands are regions of at least 200 bp with high GC content and
+    high observed/expected CpG ratio. Their presence in coding sequences
+    can trigger epigenetic silencing.
+
+    Note: This is a best-effort check. GC-rich genes may inevitably
+    contain CpG islands regardless of codon optimization.
+    """
+    t0 = time.perf_counter()
+    try:
+        result = optimize_sequence(
+            target_protein=protein,
+            organism=organism,
+            gc_lo=gc_lo,
+            gc_hi=gc_hi,
+            cai_threshold=0.2,
+        )
+        # Check if sequence has CpG islands
+        from .type_system import evaluate_no_cpg_island
+        cpg_result = evaluate_no_cpg_island(result.sequence)
+        passed = cpg_result.verdict == Verdict.PASS
+        elapsed = (time.perf_counter() - t0) * 1000
+
+        return DatasetValidationResult(
+            dataset_name=dataset_name,
+            gene_name=gene_name,
+            test_type="no_cpg_island",
+            passed=passed,
+            expected="No CpG islands",
+            actual=cpg_result.violation if cpg_result.violation else "No CpG islands found",
+            execution_time_ms=elapsed,
+        )
+    except Exception as e:
+        elapsed = (time.perf_counter() - t0) * 1000
+        return DatasetValidationResult(
+            dataset_name=dataset_name,
+            gene_name=gene_name,
+            test_type="no_cpg_island",
+            passed=False,
+            expected="No CpG islands",
+            actual=f"ERROR: {e}",
+            execution_time_ms=elapsed,
+        )
+
+
 # ============================================================================
 # Full Dataset Validation Runner
 # ============================================================================
@@ -767,6 +822,7 @@ def run_dataset_validation(
     datasets: list[str] | None = None,
     include_cross_organism: bool = True,
     include_optimization_improvement: bool = True,
+    include_no_cpg_island: bool = True,
 ) -> DatasetValidationReport:
     """
     Run full validation against all common biological datasets.
@@ -774,12 +830,14 @@ def run_dataset_validation(
     This is the main entry point for dataset-based testing. It validates
     BioCompiler's optimizer against well-known gene sequences from multiple
     organisms, checking translation fidelity, GC content, CAI bounds,
-    protein length, cross-organism consistency, and optimization improvement.
+    protein length, cross-organism consistency, optimization improvement,
+    and CpG island avoidance.
 
     Args:
         datasets: Subset of datasets to validate (None = all)
         include_cross_organism: Whether to run cross-organism consistency tests
         include_optimization_improvement: Whether to test CAI improvement over random
+        include_no_cpg_island: Whether to test CpG island avoidance (informational)
 
     Returns:
         DatasetValidationReport with detailed results
@@ -844,6 +902,12 @@ def run_dataset_validation(
             if include_cross_organism and len(protein) >= 20:
                 results.append(validate_cross_organism_consistency(
                     protein, gene_name, ds_name,
+                ))
+
+            # 7. No CpG islands (informational — best-effort, may not always succeed)
+            if include_no_cpg_island:
+                results.append(validate_no_cpg_island(
+                    protein, organism, gene_name, ds_name,
                 ))
 
     # Compile report

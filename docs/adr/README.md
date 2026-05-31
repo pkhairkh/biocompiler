@@ -17,6 +17,9 @@ This directory contains the Architectural Decision Records (ADRs) for the BioCom
 | ADR-0009 | Type-Directed Protein Mutagenesis | Accepted | 2026-05-31 |
 | ADR-0010 | Graduated Certificates | Accepted | 2026-05-31 |
 | ADR-0011 | Predicate Checking Delegation (Separation of Concerns) | Accepted | 2026-05-31 |
+| ADR-011 | GT-Free Codon Prioritization in Cryptic Splice Elimination | Accepted | 2026-03-05 |
+| ADR-012 | CpG Avoidance Phase in Greedy Optimizer | Accepted | 2026-03-05 |
+| ADR-013 | Mutagenesis GT-Mandatory vs Optimizer Weakness Distinction | Accepted | 2026-03-05 |
 
 ## Relationship to DOC-06 (Design Rationale)
 

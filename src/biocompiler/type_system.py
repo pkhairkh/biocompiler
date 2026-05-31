@@ -15,11 +15,88 @@ from .types import Verdict, TypeCheckResult, Token
 from .scanner import scan_sequence, gc_content, validate_dna_sequence
 from .splicing import compute_splice_isoforms
 from .translation import compute_cai
-from .constants import INSTABILITY_MOTIF, RESTRICTION_ENZYMES, IUPAC_EXPAND, reverse_complement
+from .constants import INSTABILITY_MOTIF, RESTRICTION_ENZYMES, IUPAC_EXPAND, reverse_complement, CODON_TABLE, AA_TO_CODONS
 from .maxentscan import max_donor_score, max_acceptor_score, scan_splice_sites
 from .exceptions import UnknownPredicateError
 
 logger = logging.getLogger(__name__)
+
+
+# ==============================================================================
+# GT/AG Helper Functions (for NoCrypticSplice derivation richness)
+# ==============================================================================
+
+def _is_gt_mandatory_at_position(seq: str, position: int) -> bool:
+    """Check if the amino acid at this position has GT in ALL its codons.
+
+    This is True for Valine (V), whose codons are GTT, GTC, GTA, GTG —
+    all containing the GT dinucleotide. Other amino acids with at least
+    one GT-free codon (e.g. Cysteine: TGT has GT but TGC does not) return False.
+    """
+    codon_idx = position // 3
+    codon_start = codon_idx * 3
+    if codon_start + 3 > len(seq):
+        return False
+    codon = seq[codon_start:codon_start + 3]
+    aa = CODON_TABLE.get(codon, "X")
+    if aa not in AA_TO_CODONS:
+        return False
+    return all("GT" in c for c in AA_TO_CODONS[aa])
+
+
+def _get_gt_free_alternatives(seq: str, position: int) -> list[str]:
+    """Get GT-free codon alternatives for the amino acid at this position.
+
+    Returns a (possibly empty) list of synonymous codons that do NOT contain
+    the GT dinucleotide. Empty when gt_mandatory is True (e.g. Valine).
+    """
+    codon_idx = position // 3
+    codon_start = codon_idx * 3
+    if codon_start + 3 > len(seq):
+        return []
+    codon = seq[codon_start:codon_start + 3]
+    aa = CODON_TABLE.get(codon, "X")
+    if aa not in AA_TO_CODONS:
+        return []
+    return [c for c in AA_TO_CODONS[aa] if "GT" not in c]
+
+
+def _is_ag_mandatory_at_position(seq: str, position: int) -> bool:
+    """Check if the amino acid at this position has AG in ALL its codons.
+
+    This is True for Serine (S) codons AGT/AGC and Arginine (R) codons
+    AGA/AGG — but only if ALL codons for that AA contain AG.
+    Glutamate (E): GAA, GAG — GAG contains AG, GAA does not → False.
+    Serine (S): TCT, TCC, TCA, TCG, AGT, AGC — not all contain AG → False.
+    No standard amino acid has AG in ALL codons, so this always returns False
+    for standard amino acids.
+    """
+    codon_idx = position // 3
+    codon_start = codon_idx * 3
+    if codon_start + 3 > len(seq):
+        return False
+    codon = seq[codon_start:codon_start + 3]
+    aa = CODON_TABLE.get(codon, "X")
+    if aa not in AA_TO_CODONS:
+        return False
+    return all("AG" in c for c in AA_TO_CODONS[aa])
+
+
+def _get_ag_free_alternatives(seq: str, position: int) -> list[str]:
+    """Get AG-free codon alternatives for the amino acid at this position.
+
+    Returns a (possibly empty) list of synonymous codons that do NOT contain
+    the AG dinucleotide.
+    """
+    codon_idx = position // 3
+    codon_start = codon_idx * 3
+    if codon_start + 3 > len(seq):
+        return []
+    codon = seq[codon_start:codon_start + 3]
+    aa = CODON_TABLE.get(codon, "X")
+    if aa not in AA_TO_CODONS:
+        return []
+    return [c for c in AA_TO_CODONS[aa] if "AG" not in c]
 
 
 # ==============================================================================
@@ -116,18 +193,28 @@ def evaluate_no_cryptic_splice(
         acceptors = [(pos, score) for pos, stype, score in splice_sites if stype == "acceptor"]
 
         for pos, score in donors:
+            abs_pos = exon_start + pos
+            gt_mandatory = _is_gt_mandatory_at_position(seq, abs_pos)
+            gt_free_alts = _get_gt_free_alternatives(seq, abs_pos)
             derivation.append({
                 "step": "maxentscan_donor_in_exon",
-                "position": exon_start + pos,
+                "position": abs_pos,
                 "score": score,
                 "threshold": cryptic_threshold,
+                "gt_mandatory": gt_mandatory,
+                "gt_free_alternatives": gt_free_alts,
             })
         for pos, score in acceptors:
+            abs_pos = exon_start + pos
+            ag_mandatory = _is_ag_mandatory_at_position(seq, abs_pos)
+            ag_free_alts = _get_ag_free_alternatives(seq, abs_pos)
             derivation.append({
                 "step": "maxentscan_acceptor_in_exon",
-                "position": exon_start + pos,
+                "position": abs_pos,
                 "score": score,
                 "threshold": cryptic_threshold,
+                "ag_mandatory": ag_mandatory,
+                "ag_free_alternatives": ag_free_alts,
             })
 
         # Check 1: Strong standalone donors (GT sites above threshold)
@@ -137,28 +224,44 @@ def evaluate_no_cryptic_splice(
         # create unrepairable cryptic splice donors.
         for d_pos, d_score in donors:
             if d_score >= cryptic_threshold:
+                abs_pos = exon_start + d_pos
+                gt_mandatory = _is_gt_mandatory_at_position(seq, abs_pos)
+                mandatory_suffix = (
+                    " — GT-MANDATORY (all codons contain GT, e.g. Valine)"
+                    if gt_mandatory
+                    else " — GT-free alternatives available"
+                )
                 return TypeCheckResult(
                     predicate="NoCrypticSplice",
                     verdict=Verdict.FAIL,
                     derivation=derivation,
                     violation=(
                         f"Cryptic splice donor in exon [{exon_start},{exon_end}): "
-                        f"GT at position {exon_start + d_pos} (MaxEntScan score={d_score:.2f}, "
+                        f"GT at position {abs_pos} (MaxEntScan score={d_score:.2f}, "
                         f"threshold={cryptic_threshold})"
+                        f"{mandatory_suffix}"
                     ),
                 )
 
         # Check 2: Strong standalone acceptors (AG sites above threshold)
         for a_pos, a_score in acceptors:
             if a_score >= cryptic_threshold:
+                abs_pos = exon_start + a_pos
+                ag_mandatory = _is_ag_mandatory_at_position(seq, abs_pos)
+                mandatory_suffix = (
+                    " — AG-MANDATORY (all codons contain AG)"
+                    if ag_mandatory
+                    else " — AG-free alternatives available"
+                )
                 return TypeCheckResult(
                     predicate="NoCrypticSplice",
                     verdict=Verdict.FAIL,
                     derivation=derivation,
                     violation=(
                         f"Cryptic splice acceptor in exon [{exon_start},{exon_end}): "
-                        f"AG at position {exon_start + a_pos} (MaxEntScan score={a_score:.2f}, "
+                        f"AG at position {abs_pos} (MaxEntScan score={a_score:.2f}, "
                         f"threshold={cryptic_threshold})"
+                        f"{mandatory_suffix}"
                     ),
                 )
 
@@ -526,12 +629,22 @@ def analyze_codon_at_position(seq: str, position: int) -> dict:
     # Extract all dinucleotides within this codon (positions 0-1, 1-2)
     dinucleotides_present = [codon[0:2], codon[1:3]]
 
+    # GT/AG splice-site relevance
+    has_gt = "GT" in codon
+    has_ag = "AG" in codon
+    gt_free_codons = [c for c in all_codons if "GT" not in c]
+    ag_free_codons = [c for c in all_codons if "AG" not in c]
+
     return {
         "codon_index": codon_index,
         "codon": codon,
         "amino_acid": amino_acid,
         "all_codons": all_codons,
         "dinucleotides_present": dinucleotides_present,
+        "has_gt": has_gt,
+        "has_ag": has_ag,
+        "gt_free_codons": gt_free_codons,
+        "ag_free_codons": ag_free_codons,
     }
 
 

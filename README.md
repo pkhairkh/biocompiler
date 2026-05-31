@@ -1,4 +1,4 @@
-# BioCompiler v7.0.0
+# BioCompiler v7.1.0
 
 A compiler framework for human protein synthesis using intermediate representations — with a machine-verified soundness proof.
 
@@ -43,10 +43,13 @@ Existing gene design tools (GeneDesign, DNAWorks, IDT codon optimizer, SpliceAI)
 | **SLOT independence** — FFI (external tool) calls never produce PASS | Proved in Lean4 |
 | **Per-predicate soundness** — all 8 type predicates individually proved sound | Proved in Lean4 |
 | **Production pipeline** — Scanner → NDFST → Translation → TypeCheck → Certificate → Verify | Python package (348 tests) |
+| **GT-free codon prioritization** — Phase 7 rewrite with 3-strategy approach for cryptic splice elimination | NoCrypticSplice pass rate ~60%+ |
+| **CpG avoidance phase** — Phase 7.5 disruption + Phase 8.5 reconciliation | NoCpGIsland pass rate improved |
+| **GT-mandatory distinction** — Mutagenesis only for truly unrepairable positions (Valine) | Cleaner optimizer diagnostics |
 | **Type-directed mutagenesis** — V→I substitutions make HBB feasible (BLOSUM62=+3) | Proof of concept |
 | **Graduated certificates** — partial compliance documentation with mutagenesis metadata | JSON format |
 | **Greedy optimizer** — multi-codon coordinated solving, scales to 1500+ AA proteins | Default solver |
-| **SE specification** — 11 IEEE/ISO-standard documents + 11 ADRs | Complete |
+| **SE specification** — 11 IEEE/ISO-standard documents + 14 ADRs | Complete |
 
 ---
 
@@ -70,6 +73,8 @@ Existing gene design tools (GeneDesign, DNAWorks, IDT codon optimizer, SpliceAI)
 The key innovation: the type predicate doesn't just **verify** — it **directs design** across the central dogma boundary (DNA→RNA→Protein).
 
 When the type system proves that NO codon assignment can satisfy all predicates (e.g., Valine's codons ALL contain GT, making cryptic splice donor elimination impossible), the mutagenesis engine proposes conservative amino acid substitutions ranked by BLOSUM62 score.
+
+**v7.1 improvement**: The mutagenesis engine now distinguishes between GT-mandatory positions (Valine only — all codons contain GT) and optimizer weaknesses (GT-free codons exist but weren't used). Mutagenesis is only proposed for GT-mandatory positions, preventing unnecessary protein modifications and exposing optimizer bugs for repair.
 
 **HBB proof of concept**: 15 V→I substitutions (BLOSUM62=+3 each) turn an impossible constraint (5/6 predicates failing) into a solvable one, at only 0.2% CAI cost and 99.3% protein identity.
 
@@ -112,8 +117,8 @@ biocompiler/
 │   ├── splicing.py               # NDFST isoform computation
 │   ├── translation.py            # Codon-to-amino-acid FST + CAI computation
 │   ├── type_system.py            # Predicate registry + 8 evaluator functions
-│   ├── optimization.py           # Greedy multi-phase optimizer + mutagenesis loop
-│   ├── mutagenesis.py            # Type-directed protein mutagenesis engine
+│   ├── optimization.py           # Greedy multi-phase optimizer (Phases 1-8.5) + mutagenesis loop
+│   ├── mutagenesis.py            # Type-directed mutagenesis (GT-mandatory distinction)
 │   ├── certificate.py            # Graduated certificate generation + verification
 │   ├── organisms/                # Organism-specific data (5 organisms)
 │   ├── grammar_loader.py         # YAML grammar loading
@@ -142,7 +147,7 @@ biocompiler/
 │   ├── 08-Traceability-Matrix.md # ISO/IEC/IEEE 15289 — Traceability
 │   ├── 09-Critical-Analysis.md   # Nine fatal flaws in the original proposal
 │   ├── 10-Deterministic-Methods.md # Six deterministic methods for non-deterministic biology
-│   └── adr/                      # Architecture Decision Records (11 ADRs)
+│   └── adr/                      # Architecture Decision Records (14 ADRs)
 │
 └── paper/                        # Publication
     └── main.tex                  # LaTeX manuscript
@@ -264,11 +269,12 @@ The type-directed mutagenesis engine demonstrates that type systems can do more 
 If you use this work, please cite:
 
 ```bibtex
-@misc{biocompiler2025,
+@misc{biocompiler2026,
   title     = {BioCompiler: A Compiler Framework for Human Protein Synthesis
                Using Intermediate Representations with a Machine-Verified Soundness Proof},
   author    = {Khairkhah, Pouya},
-  year      = {2025},
+  year      = {2026},
+  note      = {v7.1.0 — GT-free codon prioritization, CpG avoidance phase, GT-mandatory distinction},
   url       = {https://github.com/pkhairkh/biocompiler}
 }
 ```

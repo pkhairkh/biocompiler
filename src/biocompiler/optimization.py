@@ -9,6 +9,26 @@ Production-grade optimizer with:
 - Type-directed mutagenesis integration loop
 - Delegation to type system for predicate checking (SOC)
 
+Phase Summary:
+- Phase 7: GT-free codon prioritization for cryptic splice elimination
+  Uses GT-free and AG-free synonymous codon swaps as the primary strategy
+  for eliminating cryptic splice donor and acceptor sites. For amino acids
+  with GT-free codons (C, G, R, S), this provides a guaranteed fix.
+- Phase 7.5: CpG dinucleotide avoidance
+  Disrupts CG dinucleotides to prevent CpG island formation, but never
+  at the cost of worsening cryptic splice scores. Lower priority than
+  splice site elimination.
+- Phase 8.5: CpG reconciliation
+  After restriction site reconciliation (Phase 8) may reintroduce CpG
+  dinucleotides, this phase re-applies CpG disruption while preserving
+  restriction-site-free and splice-site-safe status.
+- Improved mutagenesis integration with GT-mandatory distinction
+  Positions where the amino acid requires GT in ALL codons (e.g., Valine)
+  are flagged as GT-mandatory, distinguishing them from positions where
+  the optimizer simply hasn't found a good codon yet (optimizer-weakness).
+  This distinction drives the mutagenesis engine to only propose AA
+  substitutions for truly GT-mandatory positions.
+
 Architecture: gene design is multi-objective optimization, not compilation.
 The optimizer searches for sequences satisfying competing constraints simultaneously.
 
@@ -216,6 +236,41 @@ def _remove_site_multicodon(
 # Greedy Optimizer
 # ==============================================================================
 
+def _find_gt_free_codons(aa: str) -> list[str]:
+    """Return codons for the given amino acid that do NOT contain the GT dinucleotide.
+
+    For amino acids like Cysteine (C), Glycine (G), Arginine (R), and Serine (S),
+    there exist synonymous codons without GT, providing a guaranteed fix for
+    cryptic splice donor elimination. Valine (V) has NO GT-free codons.
+
+    Pre-conditions:
+    - aa is a valid single-letter amino acid code present in AA_TO_CODONS
+
+    Post-conditions:
+    - all returned codons are valid for the amino acid
+    - no returned codon contains "GT" as a substring
+    - if no GT-free codons exist (e.g., Valine), returns empty list
+    """
+    return [c for c in AA_TO_CODONS[aa] if "GT" not in c]
+
+
+def _find_ag_free_codons(aa: str) -> list[str]:
+    """Return codons for the given amino acid that do NOT contain the AG dinucleotide.
+
+    Similar to _find_gt_free_codons but for acceptor (AG) dinucleotide elimination.
+    Many amino acids have AG-free synonymous codons.
+
+    Pre-conditions:
+    - aa is a valid single-letter amino acid code present in AA_TO_CODONS
+
+    Post-conditions:
+    - all returned codons are valid for the amino acid
+    - no returned codon contains "AG" as a substring
+    - if no AG-free codons exist, returns empty list
+    """
+    return [c for c in AA_TO_CODONS[aa] if "AG" not in c]
+
+
 def _greedy_optimize(
     protein: str,
     organism: str = "Homo_sapiens",
@@ -229,6 +284,18 @@ def _greedy_optimize(
 
     Phase ordering prioritizes hard constraints (restriction sites) over soft constraints (CAI).
     Reconciliation pass ensures earlier phases aren't undone by later ones.
+
+    Phases:
+    1. Best codon per position (maximize CAI)
+    2. Remove restriction sites (multi-codon coordinated)
+    3. Remove ATTTA instability motifs
+    4. Fix 6+ consecutive T runs
+    5. Adjust GC content (hard constraint, organism target aspiration)
+    6. Reconciliation — restriction sites vs GC
+    7. Eliminate cryptic splice donor/acceptor sites (GT-free/AG-free codon swap priority)
+    7.5. Disrupt CpG dinucleotides to avoid CpG islands
+    8. Reconciliation — restriction sites after splice/CpG fixes
+    8.5. CpG reconciliation — re-disrupt CpG if reconciliation reintroduced them
 
     Pre-conditions:
     - protein is a valid amino acid sequence (no invalid codes)
@@ -525,10 +592,15 @@ def _greedy_optimize(
                 pass
 
     # Phase 7: Eliminate cryptic splice donor/acceptor sites
-    # Strategy: for each strong cryptic site, try codon swaps that disrupt
-    # the 9-mer (donor) or 23-mer (acceptor) context to bring the
-    # MaxEntScan score below threshold.
-    for iteration in range(200):
+    # Strategy (ordered by effectiveness):
+    #   1. GT-free codon swap — guaranteed to eliminate the GT dinucleotide
+    #      (works for C, G, R, S which have GT-free synonymous codons)
+    #   2. 2-codon context disruption — swap GT codon + neighbor to disrupt
+    #      the 9-mer splice context (needed for Valine which has no GT-free codons)
+    #   3. Accept that some Valine positions are unrepairable by codon swaps alone
+    #      (these will be handled by mutagenesis if enabled)
+    # Same strategy applied for AG acceptor sites using AG-free codons.
+    for iteration in range(300):
         max_d = max_donor_score(sequence)
         max_a = max_acceptor_score(sequence)
         if max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold:
@@ -536,94 +608,211 @@ def _greedy_optimize(
 
         fixed_any = False
 
-        # Try to eliminate strong donors
+        # Try to eliminate strong donors (sorted by score descending for priority)
         if max_d >= cryptic_splice_threshold:
+            # Collect all strong donor positions with scores, sort by score descending
+            donor_sites = []
             for i in range(len(sequence) - 1):
                 if sequence[i:i+2] == "GT":
                     s = score_donor(sequence, i)
                     if s >= cryptic_splice_threshold:
-                        codon_idx = i // 3
-                        # Try swapping the GT codon and its neighbors
-                        # to disrupt the 9-mer splice context
-                        best_score = s
-                        best_seq = None
+                        donor_sites.append((i, s))
+            donor_sites.sort(key=lambda x: x[1], reverse=True)
 
-                        # Try single-codon swap at the GT position
-                        if codon_idx < len(aas):
-                            aa = aas[codon_idx]
-                            current = sequence[codon_idx*3:codon_idx*3+3]
-                            for alt in sorted_codons[aa]:
-                                if alt == current:
+            for gt_pos, gt_score in donor_sites:
+                codon_idx = gt_pos // 3
+                if codon_idx >= len(aas):
+                    continue
+                aa = aas[codon_idx]
+
+                # Strategy 1: GT-free codon swap (guaranteed to eliminate GT)
+                gt_free = _find_gt_free_codons(aa)
+                # Sort by CAI (best first) so we prefer high-CAI alternatives
+                gt_free_sorted = sorted(
+                    gt_free,
+                    key=lambda c: usage.get(c, 0.0),
+                    reverse=True,
+                )
+                if gt_free_sorted:
+                    for alt in gt_free_sorted:
+                        test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
+                        # Verify the GT at this position is eliminated
+                        if gt_pos < len(test) - 1 and test[gt_pos:gt_pos+2] == "GT":
+                            # GT still present at this position (shouldn't happen with GT-free codon,
+                            # but GT might straddle codon boundary)
+                            new_s = score_donor(test, gt_pos)
+                            if new_s < cryptic_splice_threshold:
+                                sequence = test
+                                fixed_any = True
+                                break
+                        else:
+                            # GT eliminated — verify no new strong donors created globally
+                            new_max_d = max_donor_score(test)
+                            if new_max_d < max_d or new_max_d < cryptic_splice_threshold:
+                                sequence = test
+                                fixed_any = True
+                                break
+                            # Even if new donors appear, this position is fixed;
+                            # they'll be handled in subsequent iterations
+                            sequence = test
+                            fixed_any = True
+                            break
+
+                if fixed_any:
+                    break  # Restart scanning from highest-scoring site
+
+                # Strategy 2: For Valine (no GT-free codons) or if Strategy 1 didn't work,
+                # try 2-codon coordinated swap (GT codon + each neighbor) to disrupt
+                # the 9-mer splice context.
+                # Also try single-codon swap for V positions where different V codons
+                # have different splice scores due to context.
+                current = sequence[codon_idx*3:codon_idx*3+3]
+                # First try single-codon swap (different V codon may give different score)
+                for v_alt in sorted_codons[aa]:
+                    if v_alt == current:
+                        continue
+                    test = sequence[:codon_idx*3] + v_alt + sequence[codon_idx*3+3:]
+                    if gt_pos < len(test) - 1 and test[gt_pos:gt_pos+2] == "GT":
+                        new_s = score_donor(test, gt_pos)
+                    else:
+                        new_s = -999  # GT eliminated (cross-boundary)
+                    if new_s < cryptic_splice_threshold:
+                        sequence = test
+                        fixed_any = True
+                        break
+                if fixed_any:
+                    break  # Restart scanning
+
+                # Then try 2-codon coordinated swap
+                for neighbor_offset in [-2, -1, 1, 2]:
+                    n_idx = codon_idx + neighbor_offset
+                    if 0 <= n_idx < len(aas):
+                        n_aa = aas[n_idx]
+                        n_current = sequence[n_idx*3:n_idx*3+3]
+                        # For the GT codon, try top 3 alternatives by CAI
+                        for v_alt in sorted_codons[aa][:3]:
+                            # For the neighbor, try all alternatives
+                            for n_alt in sorted_codons[n_aa]:
+                                if n_alt == n_current and v_alt == current:
                                     continue
-                                test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
-                                if i < len(test)-1 and test[i:i+2] == "GT":
-                                    new_s = score_donor(test, i)
+                                test = list(sequence)
+                                test[codon_idx*3:codon_idx*3+3] = list(v_alt)
+                                test[n_idx*3:n_idx*3+3] = list(n_alt)
+                                test_str = "".join(test)
+                                if gt_pos < len(test_str) - 1 and test_str[gt_pos:gt_pos+2] == "GT":
+                                    new_s = score_donor(test_str, gt_pos)
                                 else:
                                     new_s = -999  # GT eliminated
-                                if new_s < best_score:
-                                    best_score = new_s
-                                    best_seq = test
+                                if new_s < cryptic_splice_threshold:
+                                    sequence = test_str
+                                    fixed_any = True
+                                    break
+                            if fixed_any:
+                                break
+                        if fixed_any:
+                            break
+                    if fixed_any:
+                        break
 
-                        # Try 2-codon context disruption (GT codon + neighbor)
-                        if best_score >= cryptic_splice_threshold and codon_idx < len(aas):
-                            aa = aas[codon_idx]
-                            current = sequence[codon_idx*3:codon_idx*3+3]
-                            for neighbor_offset in [-1, 1]:
-                                n_idx = codon_idx + neighbor_offset
-                                if 0 <= n_idx < len(aas):
-                                    n_aa = aas[n_idx]
-                                    n_current = sequence[n_idx*3:n_idx*3+3]
-                                    for v_alt in sorted_codons[aa][:2]:
-                                        for n_alt in sorted_codons[n_aa][:3]:
-                                            if n_alt == n_current and v_alt == current:
-                                                continue
-                                            test = list(sequence)
-                                            test[codon_idx*3:codon_idx*3+3] = list(v_alt)
-                                            test[n_idx*3:n_idx*3+3] = list(n_alt)
-                                            test_str = "".join(test)
-                                            if i < len(test_str)-1 and test_str[i:i+2] == "GT":
-                                                new_s = score_donor(test_str, i)
-                                            else:
-                                                new_s = -999
-                                            if new_s < best_score:
-                                                best_score = new_s
-                                                best_seq = test_str
+                if fixed_any:
+                    break  # Restart scanning
 
-                        if best_seq is not None and best_score < cryptic_splice_threshold:
-                            sequence = best_seq
-                            fixed_any = True
-                            break  # Restart scanning
-
-        # Try to eliminate strong acceptors
+        # Try to eliminate strong acceptors (same strategy, using AG-free codons)
         if not fixed_any and max_a >= cryptic_splice_threshold:
+            # Collect all strong acceptor positions with scores, sort by score descending
+            acceptor_sites = []
             for i in range(len(sequence) - 1):
                 if sequence[i:i+2] == "AG":
                     s = score_acceptor(sequence, i)
                     if s >= cryptic_splice_threshold:
-                        codon_idx = i // 3
-                        if codon_idx >= len(aas):
-                            continue
-                        aa = aas[codon_idx]
-                        current = sequence[codon_idx*3:codon_idx*3+3]
-                        best_score = s
-                        best_seq = None
+                        acceptor_sites.append((i, s))
+            acceptor_sites.sort(key=lambda x: x[1], reverse=True)
 
-                        for alt in sorted_codons[aa]:
-                            if alt == current:
-                                continue
-                            test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
-                            if i < len(test)-1 and test[i:i+2] == "AG":
-                                new_s = score_acceptor(test, i)
-                            else:
-                                new_s = -999
-                            if new_s < best_score:
-                                best_score = new_s
-                                best_seq = test
+            for ag_pos, ag_score in acceptor_sites:
+                codon_idx = ag_pos // 3
+                if codon_idx >= len(aas):
+                    continue
+                aa = aas[codon_idx]
 
-                        if best_seq is not None and best_score < cryptic_splice_threshold:
-                            sequence = best_seq
+                # Strategy 1: AG-free codon swap (guaranteed to eliminate AG)
+                ag_free = _find_ag_free_codons(aa)
+                ag_free_sorted = sorted(
+                    ag_free,
+                    key=lambda c: usage.get(c, 0.0),
+                    reverse=True,
+                )
+                if ag_free_sorted:
+                    for alt in ag_free_sorted:
+                        test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
+                        if ag_pos < len(test) - 1 and test[ag_pos:ag_pos+2] == "AG":
+                            new_s = score_acceptor(test, ag_pos)
+                            if new_s < cryptic_splice_threshold:
+                                sequence = test
+                                fixed_any = True
+                                break
+                        else:
+                            # AG eliminated
+                            new_max_a = max_acceptor_score(test)
+                            if new_max_a < max_a or new_max_a < cryptic_splice_threshold:
+                                sequence = test
+                                fixed_any = True
+                                break
+                            sequence = test
                             fixed_any = True
                             break
+
+                if fixed_any:
+                    break
+
+                # Strategy 2: Single-codon swap then 2-codon context disruption for AG positions
+                current = sequence[codon_idx*3:codon_idx*3+3]
+                # First try single-codon swap (different codon may give different score)
+                for alt in sorted_codons[aa]:
+                    if alt == current:
+                        continue
+                    test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
+                    if ag_pos < len(test) - 1 and test[ag_pos:ag_pos+2] == "AG":
+                        new_s = score_acceptor(test, ag_pos)
+                    else:
+                        new_s = -999  # AG eliminated
+                    if new_s < cryptic_splice_threshold:
+                        sequence = test
+                        fixed_any = True
+                        break
+                if fixed_any:
+                    break
+
+                # Then try 2-codon coordinated swap
+                for neighbor_offset in [-2, -1, 1, 2]:
+                    n_idx = codon_idx + neighbor_offset
+                    if 0 <= n_idx < len(aas):
+                        n_aa = aas[n_idx]
+                        n_current = sequence[n_idx*3:n_idx*3+3]
+                        for v_alt in sorted_codons[aa][:3]:
+                            for n_alt in sorted_codons[n_aa]:
+                                if n_alt == n_current and v_alt == current:
+                                    continue
+                                test = list(sequence)
+                                test[codon_idx*3:codon_idx*3+3] = list(v_alt)
+                                test[n_idx*3:n_idx*3+3] = list(n_alt)
+                                test_str = "".join(test)
+                                if ag_pos < len(test_str) - 1 and test_str[ag_pos:ag_pos+2] == "AG":
+                                    new_s = score_acceptor(test_str, ag_pos)
+                                else:
+                                    new_s = -999
+                                if new_s < cryptic_splice_threshold:
+                                    sequence = test_str
+                                    fixed_any = True
+                                    break
+                            if fixed_any:
+                                break
+                        if fixed_any:
+                            break
+                    if fixed_any:
+                        break
+
+                if fixed_any:
+                    break
 
         if not fixed_any:
             # No more progress — some sites are unrepairable by codon swaps
@@ -644,6 +833,79 @@ def _greedy_optimize(
     else:
         warnings.append("Cryptic splice elimination: max iterations reached")
 
+    # Phase 7.5: Disrupt CpG dinucleotides to avoid CpG islands
+    # Strategy: Replace CG dinucleotides with synonymous codons that don't create CG,
+    # but ONLY if the swap doesn't reintroduce cryptic splice sites or restriction sites.
+    # Key constraint: CpG avoidance is lower priority than splice site elimination.
+    # We will NOT worsen any cryptic splice score to remove a CG dinucleotide.
+    for _cpg_iteration in range(200):
+        cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
+        if not cpg_positions:
+            break
+        fixed = False
+        for pos in cpg_positions:
+            # Try swapping the codon(s) containing the C of CG
+            for offset in [0, -1]:
+                ci = (pos + offset) // 3
+                if 0 <= ci < len(aas):
+                    aa = aas[ci]
+                    current = sequence[ci*3:ci*3+3]
+                    for alt in sorted_codons[aa]:
+                        if alt == current:
+                            continue
+                        test = sequence[:ci*3] + alt + sequence[ci*3+3:]
+                        # CRITICAL: Don't worsen any cryptic splice scores.
+                        # Check that no GT position near the swap has its donor score
+                        # increase above threshold, and similarly for AG acceptors.
+                        # We check the local region around the swapped codon.
+                        codon_start = ci * 3
+                        codon_end = ci * 3 + 3
+                        # Donor check: scan for GT dinucleotides in the affected 9-mer region
+                        splice_worsened = False
+                        for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
+                            if test[p:p+2] == "GT":
+                                new_s = score_donor(test, p)
+                                if new_s >= cryptic_splice_threshold:
+                                    # Check if this is a new or worsened site
+                                    if sequence[p:p+2] == "GT":
+                                        old_s = score_donor(sequence, p)
+                                        if new_s > old_s:
+                                            splice_worsened = True
+                                            break
+                                    else:
+                                        splice_worsened = True
+                                        break
+                            if test[p:p+2] == "AG":
+                                new_s = score_acceptor(test, p)
+                                if new_s >= cryptic_splice_threshold:
+                                    if sequence[p:p+2] == "AG":
+                                        old_s = score_acceptor(sequence, p)
+                                        if new_s > old_s:
+                                            splice_worsened = True
+                                            break
+                                    else:
+                                        splice_worsened = True
+                                        break
+                        if splice_worsened:
+                            continue
+                        # Local check: ensure no CG in the vicinity
+                        local_start = max(0, ci*3 - 2)
+                        local_end = min(len(test), ci*3 + 5)
+                        if "CG" not in test[local_start:local_end]:
+                            # Global check: verify net reduction in CpG count
+                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
+                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
+                            if new_cpg_count < old_cpg_count:
+                                sequence = test
+                                fixed = True
+                                break
+                    if fixed:
+                        break
+            if fixed:
+                break
+        if not fixed:
+            break
+
     # Phase 8: Reconciliation after cryptic splice elimination
     # Check if cryptic splice fixes reintroduced restriction sites
     for site_upper in concrete_sites:
@@ -654,6 +916,79 @@ def _greedy_optimize(
             )
             if fixed:
                 sequence = new_seq
+
+    # Phase 8.5: CpG reconciliation after restriction site reconciliation
+    # Restriction site removal may have reintroduced CpG dinucleotides;
+    # re-apply CpG disruption without reintroducing restriction sites or
+    # worsening cryptic splice scores.
+    for _cpg_iter in range(200):
+        cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
+        if not cpg_positions:
+            break
+        fixed = False
+        for pos in cpg_positions:
+            for offset in [0, -1]:
+                ci = (pos + offset) // 3
+                if 0 <= ci < len(aas):
+                    aa = aas[ci]
+                    current = sequence[ci*3:ci*3+3]
+                    for alt in sorted_codons[aa]:
+                        if alt == current:
+                            continue
+                        test = sequence[:ci*3] + alt + sequence[ci*3+3:]
+                        # Must not reintroduce restriction sites
+                        site_ok = all(
+                            s not in test and reverse_complement(s) not in test
+                            for s in concrete_sites
+                        )
+                        if not site_ok:
+                            continue
+                        # Must not worsen cryptic splice scores
+                        codon_start = ci * 3
+                        codon_end = ci * 3 + 3
+                        splice_worsened = False
+                        for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
+                            if test[p:p+2] == "GT":
+                                new_s = score_donor(test, p)
+                                if new_s >= cryptic_splice_threshold:
+                                    if sequence[p:p+2] == "GT":
+                                        old_s = score_donor(sequence, p)
+                                        if new_s > old_s:
+                                            splice_worsened = True
+                                            break
+                                    else:
+                                        splice_worsened = True
+                                        break
+                            if test[p:p+2] == "AG":
+                                new_s = score_acceptor(test, p)
+                                if new_s >= cryptic_splice_threshold:
+                                    if sequence[p:p+2] == "AG":
+                                        old_s = score_acceptor(sequence, p)
+                                        if new_s > old_s:
+                                            splice_worsened = True
+                                            break
+                                    else:
+                                        splice_worsened = True
+                                        break
+                        if splice_worsened:
+                            continue
+                        # Local check: ensure no CG in the vicinity
+                        local_start = max(0, ci*3 - 2)
+                        local_end = min(len(test), ci*3 + 5)
+                        if "CG" not in test[local_start:local_end]:
+                            # Global check: verify net reduction in CpG count
+                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
+                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
+                            if new_cpg_count < old_cpg_count:
+                                sequence = test
+                                fixed = True
+                                break
+                    if fixed:
+                        break
+            if fixed:
+                break
+        if not fixed:
+            break
 
     # Post-condition: verify sequence still encodes the same protein
     from .translation import translate

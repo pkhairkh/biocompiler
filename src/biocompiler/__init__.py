@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "7.0.0"
+__version__ = "7.1.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -90,6 +90,10 @@ from .mutagenesis import (
     AASubstitution,
     BLOSUM62,
     GT_MANDATORY_AAS,
+    AG_MANDATORY_AAS,
+    is_gt_mandatory,
+    is_ag_mandatory,
+    diagnose_optimizer_weakness,
     type_directed_mutagenesis,
     find_unrepairable_cryptic_donors,
     find_unrepairable_cryptic_acceptors,
@@ -153,7 +157,9 @@ __all__ = [
     "display_sequence", "display_optimization_result", "display_type_check",
     "plot_gc_content", "plot_codon_usage",
     # Mutagenesis Engine
-    "MutagenesisResult", "AASubstitution", "BLOSUM62", "GT_MANDATORY_AAS",
+    "MutagenesisResult", "AASubstitution", "BLOSUM62",
+    "GT_MANDATORY_AAS", "AG_MANDATORY_AAS",
+    "is_gt_mandatory", "is_ag_mandatory", "diagnose_optimizer_weakness",
     "type_directed_mutagenesis", "find_unrepairable_cryptic_donors",
     "find_unrepairable_cryptic_acceptors", "propose_substitutions",
     "apply_substitution",

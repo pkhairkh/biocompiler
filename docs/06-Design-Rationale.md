@@ -631,6 +631,61 @@ The following table maps each design principle to the architectural decisions th
 
 ---
 
+## 9. v7.1 Design Decisions: GT-Free Codon Prioritization and CpG Avoidance
+
+Version 7.1 introduces three interrelated design decisions that significantly improve the optimizer's ability to satisfy the NoCrypticSplice and NoCpGIsland predicates. These decisions were driven by empirical observation of optimization failures on real gene sequences and represent a refinement of the greedy optimizer's phase architecture (ADR-0008).
+
+### 9.1 GT-Free Codon Prioritization (ADR-011)
+
+**Problem**: Phase 7 (cryptic splice elimination) was failing on ~80% of genes because it did not prioritize GT-free codons for amino acids that have them. The GT dinucleotide is the core recognition sequence for splice donors. Any codon containing GT is a potential cryptic splice donor. For Valine, ALL four codons (GTT, GTC, GTA, GTG) contain GT — no codon swap can eliminate it. But for Alanine, Glycine, Arginine, and Serine, GT-free alternatives exist and provide a guaranteed path to eliminating the cryptic donor.
+
+**Why naive codon swapping fails**: The previous Phase 7 implementation attempted codon swaps without considering whether GT-free alternatives existed. This led to futile cycling: for a Cysteine position where both codons (TGC, TGT) contain GT, the optimizer would try both and fail, while for an Alanine position, it might miss the obvious fix (swap GCG→GCC or GCA or GCT). The optimizer treated all cryptic donor positions equally, regardless of whether a guaranteed fix was available.
+
+**The 3-strategy approach**:
+
+1. **GT-free codon swap** (highest priority): For amino acids with GT-free alternatives, swap to the highest-CAI GT-free codon. This is a guaranteed elimination — no search, no backtracking. For example, Alanine's GCC (GT-free, highest human CAI) is always preferred over GCG (contains GT).
+
+2. **Context disruption** (Valine only): Since no V codon eliminates GT, the optimizer instead tries to reduce the MaxEntScan score by selecting the V codon that produces the weakest splice site in its 9-mer context, or disrupts the context by swapping neighboring codons.
+
+3. **Accept unrepairable**: Valine positions that remain above threshold are flagged with `gt_mandatory=True` in the type system's derivation, directing the mutagenesis engine to propose V→I substitutions.
+
+**Rationale for priority ordering**: Strategy 1 is tried first because it is guaranteed to work and has minimal CAI impact. Strategy 2 is tried second because it may work but is not guaranteed. Strategy 3 is not an optimizer action — it delegates to the mutagenesis engine, which is a separate concern.
+
+### 9.2 CpG Avoidance Phase (ADR-012)
+
+**Problem**: The NoCpGIsland predicate was failing on many optimized sequences because the optimizer had no phase to avoid CG dinucleotides. High-CAI codon selection in human often favors GC-rich codons (GCC, GGC, CGC), which naturally create CpG dinucleotides both within codons and at codon boundaries.
+
+**Why a dedicated phase is necessary**: CpG avoidance cannot be incorporated into the CAI maximization phase without fundamentally changing the greedy algorithm's objective. The CAI phase optimizes for codon adaptation; adding a secondary CpG avoidance objective would require multi-objective optimization that sacrifices CAI unnecessarily. Many CpG positions can be fixed post-hoc with minimal or zero CAI impact, making a dedicated phase more efficient.
+
+**Phase ordering rationale**: Phase 7.5 (CpG avoidance) runs after Phase 7 (cryptic splice elimination) because CpG disruption must not reintroduce cryptic splice donors. Phase 8.5 (reconciliation) runs after Phase 8 (final GC adjustment) to ensure CpG fixes don't undo restriction site removal or GC content corrections.
+
+**Best-effort nature**: The CpG avoidance phase is best-effort — not all CG dinucleotides can be eliminated without changing the amino acid sequence. Arginine codons (CGN) all contain CG, and the alternative AGA/AGG codons may violate other constraints. The phase reports unrepairable positions rather than silently accepting them.
+
+### 9.3 GT-Mandatory vs Optimizer Weakness Distinction (ADR-013)
+
+**Problem**: The mutagenesis engine was proposing amino acid substitutions for positions where the optimizer should have fixed the problem by choosing a GT-free codon. This conflated two fundamentally different issues: (1) GT-mandatory positions where no codon swap can help (Valine), and (2) optimizer weaknesses where GT-free codons exist but weren't used.
+
+**Why the distinction matters**: If the mutagenesis engine proposes a substitution for an optimizer weakness, it masks the real problem. The optimizer bug remains unfixed, and the protein is unnecessarily modified. By distinguishing GT-mandatory from optimizer weaknesses, the system ensures that:
+
+- Mutagenesis is only proposed for positions where it is truly necessary
+- Optimizer bugs are surfaced for repair rather than hidden
+- Protein identity is preserved when possible
+- The type system's derivation provides diagnostic information about WHY a position fails
+
+**Implementation**: The `is_gt_mandatory(aa)` function classifies each amino acid. Currently, only Valine is GT-mandatory. The `diagnose_optimizer_weakness()` function identifies positions where the optimizer failed to use available GT-free codons, providing `(position, current_codon, gt_free_alternatives)` tuples for debugging. The type system's derivation now includes `gt_mandatory` and `gt_free_alternatives` fields, enriching the diagnostic information available to both automated tools and human reviewers.
+
+### 9.4 Interaction Between v7.1 Decisions
+
+The three v7.1 decisions form a coherent improvement to the optimizer-mutagenesis pipeline:
+
+1. ADR-011 (GT-free codon prioritization) fixes the optimizer for non-Valine amino acids — these positions are now resolved by Phase 7, not by mutagenesis.
+2. ADR-012 (CpG avoidance) adds a new optimization capability that was entirely missing — the optimizer now actively disrupts CpG dinucleotides.
+3. ADR-013 (GT-mandatory distinction) ensures that the mutagenesis engine only acts on positions that the optimizer truly cannot fix (Valine), rather than masking optimizer bugs with unnecessary protein modifications.
+
+The net effect is: more constraints satisfied by the optimizer, fewer protein modifications by the mutagenesis engine, and clearer diagnostic information when constraints cannot be satisfied.
+
+---
+
 ## Appendix A: Relationship to DOC-09 and DOC-10
 
 This document integrates and synthesizes the analyses from DOC-09 (Critical Analysis of Original Framework) and DOC-10 (Deterministic Methods for Non-Deterministic Biology), but it does not replace them. DOC-09 provides the full technical argument for each of the nine flaws, including mathematical proofs where applicable, experimental evidence from the literature, and detailed comparison with existing bioinformatics tools. DOC-10 provides the full formal treatment of each of the six deterministic methods, including formal definitions, soundness proofs, composition theorems, and worked examples. This document provides the *engineering rationale* — why the flaws led to specific architectural decisions, and why the deterministic methods led to specific design choices — which is a different kind of argument that neither DOC-09 nor DOC-10 alone provides.

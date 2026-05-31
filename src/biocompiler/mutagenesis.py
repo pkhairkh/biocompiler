@@ -27,6 +27,33 @@ BLOSUM62 scores for key substitutions:
   L->V: +1 (conservative)
   L->M: +2 (conservative)
 
+GT-mandatory vs optimizer-weakness distinction:
+- GT-mandatory: an amino acid position where ALL synonymous codons contain
+  the GT dinucleotide (e.g., Valine). No codon swap can remove GT, so
+  amino acid substitution is the ONLY option.
+- AG-mandatory: similarly, an amino acid position where ALL synonymous
+  codons contain the AG dinucleotide.
+- Optimizer-weakness: a position where the amino acid HAS codons without
+  the problematic dinucleotide, but the optimizer chose a suboptimal codon.
+  This is the optimizer's problem, not a mutagenesis target.
+
+Key functions:
+- is_gt_mandatory(aa): Returns True if all codons for the amino acid
+  contain the GT dinucleotide (i.e., the amino acid is GT-mandatory).
+- is_ag_mandatory(aa): Returns True if all codons for the amino acid
+  contain the AG dinucleotide (i.e., the amino acid is AG-mandatory).
+- diagnose_optimizer_weakness(sequence, protein, threshold): Identifies
+  positions where the predicate fails NOT because of amino acid identity
+  (GT/AG-mandatory) but because the optimizer chose a weak codon — these
+  positions should be re-optimized, not substituted.
+
+Substitution policy:
+- Only propose AA substitutions for truly GT-mandatory or AG-mandatory
+  positions. Optimizer-weakness positions should be handled by re-running
+  the optimizer with better codon selection, not by mutagenesis.
+- This avoids unnecessary protein modifications when a simple codon swap
+  would suffice.
+
 Separation of Concerns:
 - Impossibility detection (find_unrepairable_*) queries the type system's
   scoring functions (MaxEntScan) but does NOT re-implement type checking.
@@ -212,9 +239,14 @@ def find_unrepairable_cryptic_donors(
     protein: str,
     organism: str,
     threshold: float = 3.0,
-) -> list[tuple[int, int, str, float, bool]]:
+) -> list[tuple[int, int, str, float, bool, bool]]:
     """
     Find cryptic splice donor sites that CANNOT be eliminated by codon swaps.
+
+    Returns 6-tuples: (seq_pos, codon_idx, aa, score, fixable, gt_mandatory)
+    - gt_mandatory: True if ALL codons for this AA contain GT (truly unrepairable
+      at codon level, e.g. Valine). False if GT-free codons exist but optimizer
+      didn't use them (optimizer weakness, not a mutagenesis case).
 
     Pre-conditions:
     - sequence is uppercase DNA, length == len(protein) * 3
@@ -224,6 +256,7 @@ def find_unrepairable_cryptic_donors(
     Post-conditions:
     - all positions in result are valid indices into sequence
     - all scores are >= threshold (only strong donors are reported)
+    - gt_mandatory is True iff the amino acid is in GT_MANDATORY_AAS
     """
     assert threshold > 0, f"Threshold must be positive, got {threshold}"
     assert len(sequence) == len(protein) * 3, (
@@ -254,7 +287,8 @@ def find_unrepairable_cryptic_donors(
                         fixable = True
                         break
 
-                unrepairable.append((i, codon_idx, aa, s, fixable))
+                gt_mandatory = is_gt_mandatory(aa)
+                unrepairable.append((i, codon_idx, aa, s, fixable, gt_mandatory))
 
     return unrepairable
 
@@ -264,9 +298,14 @@ def find_unrepairable_cryptic_acceptors(
     protein: str,
     organism: str,
     threshold: float = 3.0,
-) -> list[tuple[int, int, str, float, bool]]:
+) -> list[tuple[int, int, str, float, bool, bool]]:
     """
     Find cryptic splice acceptor sites that CANNOT be eliminated by codon swaps.
+
+    Returns 6-tuples: (seq_pos, codon_idx, aa, score, fixable, ag_mandatory)
+    - ag_mandatory: True if ALL codons for this AA contain AG (truly unrepairable
+      at codon level). False if AG-free codons exist but optimizer didn't use
+      them (optimizer weakness, not a mutagenesis case).
 
     Pre-conditions:
     - sequence is uppercase DNA, length == len(protein) * 3
@@ -276,6 +315,7 @@ def find_unrepairable_cryptic_acceptors(
     Post-conditions:
     - all positions in result are valid indices into sequence
     - all scores are >= threshold (only strong acceptors are reported)
+    - ag_mandatory is True iff the amino acid is in AG_MANDATORY_AAS
     """
     assert threshold > 0, f"Threshold must be positive, got {threshold}"
     assert len(sequence) == len(protein) * 3, (
@@ -305,7 +345,8 @@ def find_unrepairable_cryptic_acceptors(
                         fixable = True
                         break
 
-                unrepairable.append((i, codon_idx, aa, s, fixable))
+                ag_mandatory = is_ag_mandatory(aa)
+                unrepairable.append((i, codon_idx, aa, s, fixable, ag_mandatory))
 
     return unrepairable
 
@@ -403,6 +444,103 @@ def apply_substitution(
     result = "".join(p)
     assert len(result) == len(protein), "Substitution changed protein length"
     return result
+
+
+# ==============================================================================
+# Convenience Queries for GT/AG Mandation
+# ==============================================================================
+
+def is_gt_mandatory(aa: str) -> bool:
+    """Check if ALL codons for an amino acid contain the GT dinucleotide.
+
+    This is the core biological insight that drives mutagenesis: Valine (V)
+    is the only standard amino acid where every synonymous codon contains GT,
+    making it impossible to eliminate cryptic splice donor sites by codon
+    swapping alone.
+
+    Pre-conditions:
+    - aa is a single standard amino acid code (uppercase)
+
+    Post-conditions:
+    - returns True iff every codon for aa contains "GT"
+    - returns False for non-standard or stop codons
+    """
+    if aa not in AA_TO_CODONS:
+        return False
+    return all("GT" in codon for codon in AA_TO_CODONS[aa])
+
+
+def is_ag_mandatory(aa: str) -> bool:
+    """Check if ALL codons for an amino acid contain the AG dinucleotide.
+
+    Analogous to is_gt_mandatory but for the AG splice acceptor dinucleotide.
+    If an amino acid's codons all contain AG, cryptic splice acceptor sites
+    at that position cannot be eliminated by codon swapping.
+
+    Pre-conditions:
+    - aa is a single standard amino acid code (uppercase)
+
+    Post-conditions:
+    - returns True iff every codon for aa contains "AG"
+    - returns False for non-standard or stop codons
+    """
+    if aa not in AA_TO_CODONS:
+        return False
+    return all("AG" in codon for codon in AA_TO_CODONS[aa])
+
+
+def diagnose_optimizer_weakness(
+    sequence: str,
+    protein: str,
+    organism: str = "",
+    threshold: float = 3.0,
+) -> list[dict]:
+    """Find positions where optimizer chose GT-containing codons when GT-free alternatives exist.
+
+    These are NOT mutagenesis candidates — they're optimizer bugs.
+    Returns a list of dicts with position, current_codon, gt_free_alternatives, and donor_score.
+
+    Pre-conditions:
+    - sequence is uppercase DNA, length == len(protein) * 3
+    - protein contains only standard amino acid codes
+    - threshold > 0
+
+    Post-conditions:
+    - each result dict has keys: seq_pos, codon_idx, aa, current_codon,
+      gt_free_alternatives, donor_score
+    - gt_free_alternatives is a non-empty list of codons without GT
+    - donor_score >= threshold for all results
+    - position is a 0-indexed codon position
+    """
+    assert threshold > 0, f"Threshold must be positive, got {threshold}"
+    assert len(sequence) == len(protein) * 3, (
+        f"Sequence length ({len(sequence)}) must equal protein length * 3 "
+        f"({len(protein) * 3})"
+    )
+
+    weak_positions = []
+    for i in range(len(sequence) - 1):
+        if sequence[i:i+2] == "GT":
+            s = score_donor(sequence, i)
+            if s >= threshold:
+                codon_idx = i // 3
+                if codon_idx >= len(protein):
+                    continue
+                aa = protein[codon_idx]
+                current_codon = sequence[codon_idx*3:codon_idx*3+3]
+                gt_free = [c for c in AA_TO_CODONS.get(aa, []) if "GT" not in c]
+
+                if gt_free and aa not in GT_MANDATORY_AAS:
+                    weak_positions.append({
+                        "seq_pos": i,
+                        "codon_idx": codon_idx,
+                        "aa": aa,
+                        "current_codon": current_codon,
+                        "gt_free_alternatives": gt_free,
+                        "donor_score": s,
+                    })
+
+    return weak_positions
 
 
 # ==============================================================================
@@ -514,16 +652,24 @@ def type_directed_mutagenesis(
                     threshold=cryptic_splice_threshold,
                 )
 
-                for seq_pos, codon_idx, aa, score, fixable in unrepairable_donors:
+                for seq_pos, codon_idx, aa, score, fixable, gt_mandatory in unrepairable_donors:
                     if fixable:
                         # The optimizer should handle this — skip
                         continue
+                    if not gt_mandatory:
+                        # This position HAS GT-free codons but optimizer didn't use them
+                        # This is an optimizer bug, not a mutagenesis case — log but skip
+                        logger.warning(
+                            "Mutagenesis: position %d (AA=%s) has GT-free codons but optimizer "
+                            "didn't use them. This is an optimizer issue, not mutagenesis.",
+                            codon_idx, aa
+                        )
+                        continue
 
-                    # This position is unrepairable by codon swaps
-                    # Propose amino acid substitutions
+                    # Only propose substitutions for GT-mandatory positions (Valine)
                     reason = (
                         f"Cryptic donor at seq pos {seq_pos} (MaxEntScan={score:.2f}): "
-                        f"{aa} at codon {codon_idx} has GT in all codons"
+                        f"{aa} at codon {codon_idx} has GT in ALL codons (GT-mandatory)"
                     )
 
                     candidates = propose_substitutions(aa, "NoCrypticSplice", reason)
@@ -553,13 +699,23 @@ def type_directed_mutagenesis(
                     threshold=cryptic_splice_threshold,
                 )
 
-                for seq_pos, codon_idx, aa, score, fixable in unrepairable_acceptors:
+                for seq_pos, codon_idx, aa, score, fixable, ag_mandatory in unrepairable_acceptors:
                     if fixable:
                         continue
+                    if not ag_mandatory:
+                        # This position HAS AG-free codons but optimizer didn't use them
+                        # This is an optimizer bug, not a mutagenesis case — log but skip
+                        logger.warning(
+                            "Mutagenesis: position %d (AA=%s) has AG-free codons but optimizer "
+                            "didn't use them. This is an optimizer issue, not mutagenesis.",
+                            codon_idx, aa
+                        )
+                        continue
 
+                    # Only propose substitutions for AG-mandatory positions
                     reason = (
                         f"Cryptic acceptor at seq pos {seq_pos} (MaxEntScan={score:.2f}): "
-                        f"{aa} at codon {codon_idx} has AG in all codons"
+                        f"{aa} at codon {codon_idx} has AG in ALL codons (AG-mandatory)"
                     )
 
                     candidates = propose_substitutions(aa, "NoCrypticSplice", reason)

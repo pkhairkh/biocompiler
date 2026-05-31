@@ -10,6 +10,7 @@ from src.biocompiler.mutagenesis import (
     BLOSUM62,
     GT_MANDATORY_AAS,
     AG_MANDATORY_AAS,
+    STANDARD_AAS,
     AASubstitution,
     MutagenesisResult,
     find_unrepairable_cryptic_donors,
@@ -17,6 +18,9 @@ from src.biocompiler.mutagenesis import (
     propose_substitutions,
     apply_substitution,
     type_directed_mutagenesis,
+    is_gt_mandatory,
+    is_ag_mandatory,
+    diagnose_optimizer_weakness,
 )
 from src.biocompiler.optimization import optimize_sequence, _greedy_optimize
 from src.biocompiler.constants import AA_TO_CODONS
@@ -105,8 +109,8 @@ class TestUnrepairableSiteDetection:
         )
         # Should find some positions that are unrepairable
         unrepairable_v_positions = [
-            (pos, ci, aa, score, fixable)
-            for pos, ci, aa, score, fixable in unrepairable
+            (pos, ci, aa, score, fixable, gt_mandatory)
+            for pos, ci, aa, score, fixable, gt_mandatory in unrepairable
             if not fixable and aa == "V"
         ]
         assert len(unrepairable_v_positions) > 0, (
@@ -119,11 +123,16 @@ class TestUnrepairableSiteDetection:
         unrepairable = find_unrepairable_cryptic_donors(
             result.sequence, hbb_protein, "Homo_sapiens", threshold=3.0
         )
-        for pos, ci, aa, score, fixable in unrepairable:
+        for pos, ci, aa, score, fixable, gt_mandatory in unrepairable:
             # V positions with high scores should generally be unrepairable
             if aa == "V" and score > 4.0:
                 assert not fixable, (
                     f"V at codon {ci} with score {score:.2f} should be unrepairable"
+                )
+            # V positions should always be gt_mandatory
+            if aa == "V":
+                assert gt_mandatory, (
+                    f"V at codon {ci} should be GT-mandatory"
                 )
 
 
@@ -428,3 +437,184 @@ class TestCrypticSpliceElimination:
         result = optimize_sequence(target_protein=protein, organism="Homo_sapiens")
         # EGFP should benefit from cryptic splice elimination
         assert any("CodonAdapted" in p for p in result.satisfied_predicates)
+
+
+# ==============================================================================
+# 10. GT-Mandatory Distinction Tests (v7.1)
+# ==============================================================================
+
+class TestGTMandatoryDistinction:
+    """Test that mutagenesis distinguishes GT-mandatory from optimizer-weakness.
+
+    GT-mandatory amino acids are those where ALL synonymous codons contain the
+    GT dinucleotide (only Valine). For GT-mandatory positions, codon swapping
+    can NEVER eliminate a cryptic splice donor — the only fix is amino acid
+    substitution (e.g., V→I).
+
+    Non-GT-mandatory amino acids (C, G, R, S, etc.) have GT-free synonymous
+    codons available. If the optimizer still fails at these positions, it's an
+    optimizer weakness (suboptimal codon choice), not an inherent impossibility.
+    """
+
+    def test_valine_is_gt_mandatory(self):
+        """Valine (V) is the only amino acid where ALL codons contain GT."""
+        assert "V" in GT_MANDATORY_AAS, "Valine should be GT-mandatory"
+
+    def test_non_valine_not_gt_mandatory(self):
+        """C, G, R, S are NOT GT-mandatory — they have GT-free codons."""
+        for aa in "CGRS":
+            assert aa not in GT_MANDATORY_AAS, f"{aa} should NOT be GT-mandatory"
+
+    def test_all_standard_aas_checked(self):
+        """Verify GT-mandatory status for all 20 standard amino acids."""
+        gt_mandatory = sorted(aa for aa in STANDARD_AAS if aa in GT_MANDATORY_AAS)
+        assert gt_mandatory == ["V"], (
+            f"Only Valine should be GT-mandatory, got {gt_mandatory}"
+        )
+
+    def test_gt_free_alternatives_identified_for_non_mandatory(self):
+        """Non-GT-mandatory AAs with GT codons should have GT-free alternatives.
+
+        This tests the concept that optimizer weakness (failing at non-V positions)
+        should be diagnosable by finding GT-free synonymous codons.
+        """
+        protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGR"
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+
+        if "NoCrypticSplice" in result.failed_predicates:
+            # Find unrepairable positions
+            unrepairable = find_unrepairable_cryptic_donors(
+                result.sequence, protein, "Homo_sapiens", threshold=3.0
+            )
+            # Non-V unrepairable positions should have GT-free alternatives
+            # (they are optimizer weaknesses, not inherent impossibilities)
+            for pos, ci, aa, score, fixable, gt_mandatory in unrepairable:
+                if not fixable and aa != "V":
+                    gt_free = [c for c in AA_TO_CODONS.get(aa, []) if "GT" not in c]
+                    # If AA has GT-free codons, the optimizer should have found them
+                    # This is a soft check — the optimizer may not always succeed
+                    # but the alternatives must exist
+                    assert len(gt_free) > 0, (
+                        f"Position {ci} ({aa}) has no GT-free alternatives but is not V"
+                    )
+
+    def test_mutagenesis_only_proposes_for_gt_mandatory(self):
+        """Type-directed mutagenesis should only propose V→I for GT-mandatory positions.
+
+        When the optimizer fails due to unrepairable cryptic splice donors,
+        the mutagenesis engine should only propose substitutions at Valine
+        positions (the only GT-mandatory amino acid). Non-V positions can
+        theoretically be fixed by better codon choice.
+        """
+        # HBB has 18 Valines — some should create unrepairable donors
+        protein = (
+            "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPK"
+            "VKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGK"
+            "EFTPPVQAAYQKVVAGVANALAHKYH"
+        )
+
+        result = type_directed_mutagenesis(
+            protein=protein,
+            organism="Homo_sapiens",
+            failed_predicates=["NoCrypticSplice"],
+            optimize_fn=optimize_sequence,
+            max_substitutions=30,
+            min_blosum62=-1,
+            gc_lo=0.30,
+            gc_hi=0.70,
+            enable_mutagenesis=False,
+            cai_threshold=0.2,
+        )
+
+        # All substitutions should be for GT-mandatory amino acids (V)
+        for sub in result.substitutions:
+            assert sub.original_aa == "V", (
+                f"Mutagenesis proposed {sub.original_aa}→{sub.substitute_aa} "
+                f"at pos {sub.position}, but only Valine substitutions should "
+                f"be proposed for GT-mandatory positions"
+            )
+
+    def test_ag_mandatory_set_is_correct(self):
+        """AG_MANDATORY_AAS should be correctly computed.
+
+        Unlike GT-mandatory (only Valine), no standard amino acid has AG
+        in ALL its codons. This is an important asymmetry for splice biology.
+        """
+        # Verify by independent computation
+        for aa in STANDARD_AAS:
+            codons = AA_TO_CODONS[aa]
+            all_have_ag = all("AG" in codon for codon in codons)
+            if all_have_ag:
+                assert aa in AG_MANDATORY_AAS, (
+                    f"{aa} has AG in all codons but not in AG_MANDATORY_AAS"
+                )
+            else:
+                assert aa not in AG_MANDATORY_AAS, (
+                    f"{aa} does NOT have AG in all codons but is in AG_MANDATORY_AAS"
+                )
+
+    def test_gt_mandatory_implies_unrepairable_donor(self):
+        """GT-mandatory AAs should produce unrepairable cryptic donors.
+
+        If an amino acid is GT-mandatory and its position has a strong donor
+        score, no codon swap can fix it — the GT is inherent to the amino acid.
+        """
+        protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQR"
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+
+        unrepairable = find_unrepairable_cryptic_donors(
+            result.sequence, protein, "Homo_sapiens", threshold=3.0
+        )
+
+        # Any unrepairable V position confirms the GT-mandatory concept
+        v_unrepairable = [
+            (pos, ci, aa, score, fixable, gt_mandatory)
+            for pos, ci, aa, score, fixable, gt_mandatory in unrepairable
+            if aa == "V" and not fixable
+        ]
+        # HBB has many Valines; at least some should be unrepairable
+        assert len(v_unrepairable) > 0, (
+            "Expected unrepairable cryptic donors at Valine positions in HBB"
+        )
+
+    def test_is_gt_mandatory_function(self):
+        """is_gt_mandatory() should return True only for Valine."""
+        assert is_gt_mandatory("V"), "Valine should be GT-mandatory"
+        for aa in "CGRS":
+            assert not is_gt_mandatory(aa), f"{aa} should NOT be GT-mandatory"
+
+    def test_is_ag_mandatory_function(self):
+        """is_ag_mandatory() should return False for all standard AAs."""
+        for aa in STANDARD_AAS:
+            assert is_ag_mandatory(aa) == (aa in AG_MANDATORY_AAS), (
+                f"is_ag_mandatory({aa}) mismatch with AG_MANDATORY_AAS"
+            )
+
+    def test_diagnose_optimizer_weakness_finds_gt_free_alternatives(self):
+        """Optimizer weakness diagnosis should find positions with GT-free alternatives."""
+        protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGR"
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+
+        weaknesses = diagnose_optimizer_weakness(result.sequence, protein)
+
+        # Any weakness should have gt_free_alternatives and not be V
+        for w in weaknesses:
+            assert len(w["gt_free_alternatives"]) > 0, (
+                f"Position {w['position']} has no GT-free alternatives but is not V"
+            )
+            assert w["aa"] != "V", "Valine positions should not appear in optimizer weakness"
+
+    def test_gt_mandatory_flag_in_unrepairable_donors(self):
+        """The gt_mandatory flag in unrepairable donor results should match is_gt_mandatory."""
+        protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQR"
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+
+        unrepairable = find_unrepairable_cryptic_donors(
+            result.sequence, protein, "Homo_sapiens", threshold=3.0
+        )
+
+        for pos, ci, aa, score, fixable, gt_mandatory_flag in unrepairable:
+            assert gt_mandatory_flag == is_gt_mandatory(aa), (
+                f"gt_mandatory flag mismatch at codon {ci} ({aa}): "
+                f"flag={gt_mandatory_flag}, is_gt_mandatory={is_gt_mandatory(aa)}"
+            )

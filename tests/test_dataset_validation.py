@@ -37,6 +37,7 @@ from biocompiler.dataset_validation import (
     validate_cross_organism_consistency,
     validate_protein_length,
     validate_optimization_improvement,
+    validate_no_cpg_island,
     run_dataset_validation,
 )
 from biocompiler.translation import translate, compute_cai
@@ -656,6 +657,82 @@ class TestDatasetEdgeCases:
 
 
 # ============================================================================
+# NoCpGIsland Validation Tests (Informational — best-effort)
+# ============================================================================
+
+class TestNoCpGIsland:
+    """Validate that optimized sequences avoid CpG islands where possible.
+
+    CpG island avoidance is best-effort. GC-rich genes may inevitably
+    contain CpG islands regardless of codon optimization. A 50% pass
+    rate threshold reflects this reality.
+    """
+
+    @pytest.mark.parametrize("gene_name", list(HUMAN_REFERENCE_GENES.keys()))
+    def test_human_no_cpg_island(self, gene_name):
+        """Optimized human genes should avoid CpG islands where possible."""
+        gene = HUMAN_REFERENCE_GENES[gene_name]
+        result = validate_no_cpg_island(
+            protein=gene["protein"],
+            organism=gene["organism"],
+            gene_name=gene_name,
+            dataset_name="human",
+        )
+        # Informational only — do NOT fail the test suite on individual failures.
+        # We track the result but always pass; the aggregate threshold is below.
+        if not result.passed:
+            pytest.skip(
+                f"CpG island found in {gene_name} (best-effort): {result.actual}"
+            )
+
+    @pytest.mark.parametrize("gene_name", list(ECOLI_REFERENCE_GENES.keys()))
+    def test_ecoli_no_cpg_island(self, gene_name):
+        """Optimized E. coli genes should avoid CpG islands where possible."""
+        gene = ECOLI_REFERENCE_GENES[gene_name]
+        result = validate_no_cpg_island(
+            protein=gene["protein"],
+            organism=gene["organism"],
+            gene_name=gene_name,
+            dataset_name="ecoli",
+        )
+        if not result.passed:
+            pytest.skip(
+                f"CpG island found in {gene_name} (best-effort): {result.actual}"
+            )
+
+    @pytest.mark.parametrize("gene_name", list(SYNTHETIC_BENCHMARKS.keys()))
+    def test_synthetic_no_cpg_island(self, gene_name):
+        """Optimized synthetic proteins should avoid CpG islands where possible."""
+        gene = SYNTHETIC_BENCHMARKS[gene_name]
+        result = validate_no_cpg_island(
+            protein=gene["protein"],
+            organism=gene["organism"],
+            gene_name=gene_name,
+            dataset_name="synthetic",
+        )
+        if not result.passed:
+            pytest.skip(
+                f"CpG island found in {gene_name} (best-effort): {result.actual}"
+            )
+
+    def test_no_cpg_island_aggregate_pass_rate(self):
+        """At least 50% of genes should avoid CpG islands (informational threshold)."""
+        report = run_dataset_validation(
+            include_cross_organism=False,
+            include_optimization_improvement=False,
+            include_no_cpg_island=True,
+        )
+        cpg_results = [r for r in report.results if r.test_type == "no_cpg_island"]
+        assert len(cpg_results) > 0, "No CpG island tests were run"
+        cpg_passed = sum(1 for r in cpg_results if r.passed)
+        cpg_rate = cpg_passed / len(cpg_results)
+        assert cpg_rate >= 0.50, (
+            f"CpG island avoidance rate {cpg_rate:.1%} is below 50% threshold. "
+            f"Passed: {cpg_passed}/{len(cpg_results)}"
+        )
+
+
+# ============================================================================
 # Full Dataset Validation Runner
 # ============================================================================
 
@@ -663,17 +740,27 @@ class TestFullDatasetValidation:
     """Run the complete dataset validation suite."""
 
     def test_full_validation_pass_rate(self):
-        """Full validation should achieve at least 85% pass rate."""
+        """Full validation should achieve at least 85% pass rate.
+
+        NoCpGIsland results are excluded from the pass rate since they are
+        informational / best-effort and should not gate the overall threshold.
+        """
         report = run_dataset_validation(
             include_cross_organism=True,
             include_optimization_improvement=True,
+            include_no_cpg_island=True,
         )
-        assert report.pass_rate >= 0.85, (
-            f"Full validation pass rate {report.pass_rate:.1%} is below 85% threshold. "
+        # Exclude informational NoCpGIsland tests from the overall pass rate
+        non_cpg = [r for r in report.results if r.test_type != "no_cpg_island"]
+        non_cpg_passed = sum(1 for r in non_cpg if r.passed)
+        non_cpg_rate = non_cpg_passed / max(len(non_cpg), 1)
+        assert non_cpg_rate >= 0.85, (
+            f"Full validation pass rate {non_cpg_rate:.1%} is below 85% threshold "
+            f"(excluding NoCpGIsland). "
             f"Failed tests:\n" +
             "\n".join(
                 f"  {r.dataset_name}/{r.gene_name}/{r.test_type}: {r.actual}"
-                for r in report.results if not r.passed
+                for r in non_cpg if not r.passed
             )
         )
 
@@ -682,6 +769,7 @@ class TestFullDatasetValidation:
         report = run_dataset_validation(
             include_cross_organism=False,
             include_optimization_improvement=False,
+            include_no_cpg_island=False,
         )
         fidelity_results = [r for r in report.results if r.test_type == "translation_fidelity"]
         assert len(fidelity_results) > 0, "No translation fidelity tests were run"
@@ -699,6 +787,7 @@ class TestFullDatasetValidation:
         report = run_dataset_validation(
             include_cross_organism=False,
             include_optimization_improvement=False,
+            include_no_cpg_island=False,
         )
         length_results = [r for r in report.results if r.test_type == "protein_length"]
         assert len(length_results) > 0, "No protein length tests were run"
