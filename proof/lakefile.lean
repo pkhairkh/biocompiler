@@ -2,8 +2,8 @@ import Lake
 open Lake DSL
 
 package BioCompiler where
-  leanOptions := #[⟨`autoImplicit, false⟩]
+  moreLeanArgs := #["-DautoImplicit=false"]
 
 @[default_target]
 lean_lib BioCompiler where
-  roots := #[`BioCompiler.Soundness]
+  roots := #[`BioCompiler.Soundness, `BioCompiler.ThreeValued, `BioCompiler.Sequence, `BioCompiler.NDFST, `BioCompiler.Scanners, `BioCompiler.TypeSystem, `BioCompiler.Compositional, `BioCompiler.SLOTIndependence]

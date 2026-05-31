@@ -1,27 +1,18 @@
 /-
   BioCompiler.ThreeValued — Three-Valued Logic for Biological Verdicts
-
-  This module defines the three-valued logic (PASS/FAIL/UNCERTAIN) used by the
-  BioCompiler type system, proves its key algebraic properties, and establishes
-  the soundness of composition (conjunction preserves PASS guarantees).
-
   Reference: DOC-03 (SDD) §3.5.3, DOC-10 (Deterministic Methods) §8
 -/
 
 namespace BioCompiler
 
-/-- Three-valued logic for type-check verdicts. -/
 inductive Verdict where
-  | PASS      : Verdict  -- Guaranteed to hold in every possible execution
-  | FAIL      : Verdict  -- Guaranteed NOT to hold in any possible execution
-  | UNCERTAIN : Verdict  -- Cannot determine from available information
+  | PASS      : Verdict
+  | FAIL      : Verdict
+  | UNCERTAIN : Verdict
   deriving DecidableEq, Repr, BEq
 
 namespace Verdict
 
-/-- Conjunction (AND) in three-valued logic.
-    Preserves soundness: if both operands are PASS, the result is PASS.
-    If either operand is FAIL, the result is FAIL (a known violation). -/
 def and : Verdict → Verdict → Verdict
   | PASS,      PASS      => PASS
   | PASS,      UNCERTAIN => UNCERTAIN
@@ -33,7 +24,6 @@ def and : Verdict → Verdict → Verdict
   | FAIL,      UNCERTAIN => FAIL
   | FAIL,      FAIL      => FAIL
 
-/-- Disjunction (OR) in three-valued logic. -/
 def or : Verdict → Verdict → Verdict
   | PASS,      PASS      => PASS
   | PASS,      UNCERTAIN => PASS
@@ -45,147 +35,117 @@ def or : Verdict → Verdict → Verdict
   | FAIL,      UNCERTAIN => UNCERTAIN
   | FAIL,      FAIL      => FAIL
 
-/-- Negation in three-valued logic. -/
 def not : Verdict → Verdict
   | PASS      => FAIL
   | FAIL      => PASS
   | UNCERTAIN => UNCERTAIN
 
-/-- Notation for three-valued conjunction. -/
-infixl:35 " ⊓ " => Verdict.and
+-- Key reduction lemmas
+@[simp] theorem and_PASS (v : Verdict) : Verdict.and PASS v = v := by cases v <;> rfl
+@[simp] theorem and_FAIL_left (v : Verdict) : Verdict.and FAIL v = FAIL := by cases v <;> rfl
+@[simp] theorem and_FAIL_right (v : Verdict) : Verdict.and v FAIL = FAIL := by cases v <;> rfl
 
-/-- Notation for three-valued disjunction. -/
-infixl:30 " ⊔ " => Verdict.or
+-- Discrimination
+private theorem FAIL_ne_PASS : FAIL ≠ PASS := by intro h; cases h
+private theorem UNCERTAIN_ne_PASS : UNCERTAIN ≠ PASS := by intro h; cases h
 
-prefix:40 "∼" => Verdict.not
+-- Verdict.and init hd = PASS ↔ init = PASS ∧ hd = PASS
+theorem and_eq_PASS_iff {init hd : Verdict} :
+    Verdict.and init hd = PASS ↔ init = PASS ∧ hd = PASS := by
+  cases init <;> cases hd <;> simp [Verdict.and]
 
--- ==============================================================================
--- Algebraic Properties of Three-Valued Logic
--- ==============================================================================
-
-/-- Commutativity of conjunction. -/
-theorem and_comm (v₁ v₂ : Verdict) : v₁ ⊓ v₂ = v₂ ⊓ v₁ := by
+-- Algebraic properties
+theorem and_comm (v₁ v₂ : Verdict) : Verdict.and v₁ v₂ = Verdict.and v₂ v₁ := by
   cases v₁ <;> cases v₂ <;> rfl
 
-/-- Commutativity of disjunction. -/
-theorem or_comm (v₁ v₂ : Verdict) : v₁ ⊔ v₂ = v₂ ⊔ v₁ := by
+theorem or_comm (v₁ v₂ : Verdict) : Verdict.or v₁ v₂ = Verdict.or v₂ v₁ := by
   cases v₁ <;> cases v₂ <;> rfl
 
-/-- Associativity of conjunction. -/
-theorem and_assoc (v₁ v₂ v₃ : Verdict) : (v₁ ⊓ v₂) ⊓ v₃ = v₁ ⊓ (v₂ ⊓ v₃) := by
+theorem and_assoc (v₁ v₂ v₃ : Verdict) : Verdict.and (Verdict.and v₁ v₂) v₃ = Verdict.and v₁ (Verdict.and v₂ v₃) := by
   cases v₁ <;> cases v₂ <;> cases v₃ <;> rfl
 
-/-- Associativity of disjunction. -/
-theorem or_assoc (v₁ v₂ v₃ : Verdict) : (v₁ ⊔ v₂) ⊔ v₃ = v₁ ⊔ (v₂ ⊔ v₃) := by
+theorem or_assoc (v₁ v₂ v₃ : Verdict) : Verdict.or (Verdict.or v₁ v₂) v₃ = Verdict.or v₁ (Verdict.or v₂ v₃) := by
   cases v₁ <;> cases v₂ <;> cases v₃ <;> rfl
 
-/-- Idempotency of conjunction. -/
-theorem and_idem (v : Verdict) : v ⊓ v = v := by
-  cases v <;> rfl
+theorem and_idem (v : Verdict) : Verdict.and v v = v := by cases v <;> rfl
+theorem or_idem (v : Verdict) : Verdict.or v v = v := by cases v <;> rfl
 
-/-- Idempotency of disjunction. -/
-theorem or_idem (v : Verdict) : v ⊔ v = v := by
-  cases v <;> rfl
+-- Soundness-critical properties
+theorem and_pass_pass : ∀ v₁ v₂, v₁ = PASS → v₂ = PASS → Verdict.and v₁ v₂ = PASS := by
+  intro v₁ v₂ h₁ h₂; rw [h₁, h₂]; rfl
 
--- ==============================================================================
--- SOUNDNESS-CRITICAL PROPERTIES
---
--- These are the key theorems that make three-valued logic safe for
--- verification: PASS verdicts propagate through conjunction, and FAIL
--- verdicts are sticky (they cannot be hidden by conjunction with PASS).
--- ==============================================================================
+theorem and_pass_uncertain : Verdict.and PASS UNCERTAIN = UNCERTAIN := rfl
+theorem and_uncertain_pass : Verdict.and UNCERTAIN PASS = UNCERTAIN := rfl
 
-/-- THEOREM (Conjunction Soundness): If both conjuncts are PASS,
-    the conjunction is PASS. -/
-theorem and_pass_pass : ∀ v₁ v₂, v₁ = PASS → v₂ = PASS → v₁ ⊓ v₂ = PASS := by
-  intro v₁ v₂ h₁ h₂
-  rw [h₁, h₂]
-  rfl
-
-/-- THEOREM: FAIL is left-annihilating for conjunction. -/
-theorem and_fail_left (v : Verdict) : FAIL ⊓ v = FAIL := by
-  cases v <;> rfl
-
-/-- THEOREM: FAIL is right-annihilating for conjunction. -/
-theorem and_fail_right (v : Verdict) : v ⊓ FAIL = FAIL := by
-  cases v <;> rfl
-
-/-- THEOREM (FAIL Detection): If the conjunction is PASS,
-    neither conjunct is FAIL. -/
-theorem and_pass_no_fail (v₁ v₂ : Verdict) : v₁ ⊓ v₂ = PASS → v₁ ≠ FAIL ∧ v₂ ≠ FAIL := by
-  intro h
-  constructor
-  · intro h₁; rw [h₁] at h; exact h.elim
-  · intro h₂; rw [h₂] at h; exact h.elim
-
-/-- THEOREM (PASS Implies No FAIL): If the conjunction of all type
-    predicates yields PASS, then no individual predicate returned FAIL. -/
-theorem and_pass_all_pass (vs : List Verdict) :
-    vs.foldl Verdict.and PASS = PASS → ∀ v ∈ vs, v ≠ FAIL := by
-  intro h v hv
-  induction vs generalizing h with
-  | nil => simp at hv
+/-- foldl starting from non-PASS init never reaches PASS. -/
+theorem foldl_ne_pass_of_ne_pass (init : Verdict) (vs : List Verdict) :
+    init ≠ PASS → (vs.foldl Verdict.and init) ≠ PASS := by
+  intro h_init
+  induction vs generalizing init with
+  | nil => simp [List.foldl_nil]; exact h_init
   | cons hd tl ih =>
-    simp [List.foldl_cons] at h
-    cases h_head : hd with
-    | PASS =>
-      have h_tail := ih (by simp [h_head] at h; exact h)
-      cases hv with
-      | head => intro h_fail; rw [h_fail] at h_head; exact h_head.elim
-      | tail _ hv_mem => exact h_tail v hv_mem
-    | FAIL =>
-      simp [h_head, Verdict.and] at h
-      exact h.elim
-    | UNCERTAIN =>
-      simp [h_head, Verdict.and] at h
-      exact h.elim
+    simp only [List.foldl_cons]
+    intro h_pass
+    have h_and_ne : Verdict.and init hd ≠ PASS := by
+      intro h; exact h_init (and_eq_PASS_iff.mp h).left
+    exact ih (Verdict.and init hd) h_and_ne h_pass
 
-/-- THEOREM: PASS ⊓ UNCERTAIN = UNCERTAIN. -/
-theorem and_pass_uncertain : PASS ⊓ UNCERTAIN = UNCERTAIN := rfl
+/-- foldl starting from UNCERTAIN never reaches PASS. -/
+theorem foldl_uncertain_ne_pass (vs : List Verdict) :
+    (vs.foldl Verdict.and UNCERTAIN) ≠ PASS :=
+  foldl_ne_pass_of_ne_pass UNCERTAIN vs UNCERTAIN_ne_PASS
 
-/-- THEOREM: UNCERTAIN ⊓ PASS = UNCERTAIN. -/
-theorem and_uncertain_pass : UNCERTAIN ⊓ PASS = UNCERTAIN := rfl
+/-- foldl starting from FAIL never reaches PASS. -/
+theorem foldl_fail_ne_pass (vs : List Verdict) :
+    (vs.foldl Verdict.and FAIL) ≠ PASS :=
+  foldl_ne_pass_of_ne_pass FAIL vs FAIL_ne_PASS
 
-/-- THEOREM: If conjunction of verdicts yields PASS, every individual
-    verdict must be PASS (not FAIL, and not UNCERTAIN, because
-    UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS). -/
+/-- If foldl from PASS yields PASS, every element must be PASS. -/
 theorem foldl_and_pass_implies_all_pass (vs : List Verdict) :
-    vs.foldl Verdict.and PASS = PASS → ∀ v ∈ vs, v = PASS := by
+    (vs.foldl Verdict.and PASS) = PASS → ∀ v ∈ vs, v = PASS := by
   intro h v hv
-  induction vs generalizing h with
+  induction vs with
   | nil => simp at hv
   | cons hd tl ih =>
-    simp [List.foldl_cons] at h
-    cases h_hd : hd with
-    | PASS =>
-      have h_tail := ih (by simp [h_hd] at h; exact h) v
-      cases hv with
-      | head => exact h_hd
-      | tail _ hv_mem => exact h_tail hv_mem
-    | FAIL =>
-      simp [h_hd, Verdict.and] at h
-    | UNCERTAIN =>
-      simp [h_hd, Verdict.and] at h
+    simp only [List.foldl_cons, and_PASS] at h
+    -- h : tl.foldl Verdict.and hd = PASS
+    -- Prove hd = PASS: if hd ≠ PASS, foldl can't reach PASS
+    have h_hd_pass : hd = PASS := by
+      apply Decidable.byContradiction
+      intro h_ne
+      exact absurd h (foldl_ne_pass_of_ne_pass hd tl h_ne)
+    -- h is already simplified to: tl.foldl Verdict.and PASS = PASS
+    -- v ∈ hd :: tl
+    rw [h_hd_pass] at h
+    obtain h_eq | h_mem := List.mem_cons.mp hv
+    · rw [h_eq]; exact h_hd_pass
+    · exact ih h h_mem
 
-/-- Information ordering on verdicts: PASS > UNCERTAIN > FAIL. -/
+/-- If foldl from PASS yields PASS, no element is FAIL. -/
+theorem and_pass_all_pass (vs : List Verdict) :
+    (vs.foldl Verdict.and PASS) = PASS → ∀ v ∈ vs, v ≠ FAIL := by
+  intro h v hv
+  have h_v_pass := foldl_and_pass_implies_all_pass vs h v hv
+  rw [h_v_pass]; intro h; cases h
+
+/-- Information ordering on verdicts. -/
 def ordering : Verdict → Nat
   | PASS => 2
   | UNCERTAIN => 1
   | FAIL => 0
 
-/-- Monotonicity of conjunction with respect to the information ordering. -/
 theorem and_monotone_left (v₁ v₂ v : Verdict) :
-    ordering v₁ ≤ ordering v₂ → ordering (v₁ ⊓ v) ≤ ordering (v₂ ⊓ v) := by
+    ordering v₁ ≤ ordering v₂ → ordering (Verdict.and v₁ v) ≤ ordering (Verdict.and v₂ v) := by
   intro h
-  cases v₁ <;> cases v₂ <;> cases v <;> simp [ordering] at h ⊢ <;> omega
+  cases v₁ <;> cases v₂ <;> cases v <;>
+    simp only [Verdict.and, ordering] <;>
+    first | rfl | omega | (nomatch h)
 
-/-- PASS has the highest information value. -/
 theorem ordering_pass_highest (v : Verdict) : ordering v ≤ ordering PASS := by
-  cases v <;> simp [ordering] <;> omega
+  cases v <;> simp [ordering] <;> decide
 
-/-- FAIL has the lowest information value. -/
 theorem ordering_fail_lowest (v : Verdict) : ordering FAIL ≤ ordering v := by
-  cases v <;> simp [ordering] <;> omega
+  cases v <;> simp [ordering] <;> decide
 
 end Verdict
 

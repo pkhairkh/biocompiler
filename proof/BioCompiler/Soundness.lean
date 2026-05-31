@@ -104,21 +104,21 @@ namespace BioCompiler
 -- Re-export the main theorems for easy access
 
 /-- The central soundness theorem: PASS implies property holds. -/
-theorem soundness := @type_soundness
+def soundness := @type_soundness
 
 /-- Compositional soundness: overall PASS implies all properties hold. -/
-theorem comp_soundness := @compositional_soundness
+def comp_soundness := @compositional_soundness
 
 /-- Certificate soundness: valid certificate implies all properties hold. -/
-theorem cert_soundness := @certificate_soundness
+def cert_soundness := @certificate_soundness
 
 /-- SLOT independence: certificate validity is FFI-output independent. -/
-theorem slot_indep := @full_slot_independence
+def slot_indep := @full_slot_independence
 
 /-- Three-valued conjunction preserves PASS. -/
-theorem and_sound := @and_pass_pass
+def and_sound := @and_pass_pass
 
 /-- FFI-dependent predicates never produce PASS. -/
-theorem ffi_no_pass := @ffi_never_pass
+def ffi_no_pass := @ffi_never_pass
 
 end BioCompiler
