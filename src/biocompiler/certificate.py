@@ -28,7 +28,7 @@ try:
     from . import __version__ as _PKG_VERSION
     VERSION = _PKG_VERSION
 except ImportError:
-    VERSION = "7.0.0"
+    VERSION = "7.2.0"
 
 # Required keys in a certificate dict for verification
 _CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}

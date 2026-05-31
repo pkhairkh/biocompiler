@@ -10,18 +10,27 @@ Production-grade optimizer with:
 - Delegation to type system for predicate checking (SOC)
 
 Phase Summary:
+- Phase 0 (implicit): Splice-safe codon reordering via _reorder_for_splice_safety()
+  Before Phase 1, codon preference lists are reordered so that GT-free and AG-free
+  codons are preferred for amino acids where splice-safe alternatives exist (C, G,
+  R, S). This ensures Phase 1 starts with a splice-safe codon when possible,
+  reducing the work Phase 7 must do and preventing the "chose poorly" pattern
+  where Phase 1 selects a GT-containing codon that Phase 7 must later fix.
 - Phase 7: GT-free codon prioritization for cryptic splice elimination
   Uses GT-free and AG-free synonymous codon swaps as the primary strategy
   for eliminating cryptic splice donor and acceptor sites. For amino acids
   with GT-free codons (C, G, R, S), this provides a guaranteed fix.
-- Phase 7.5: CpG dinucleotide avoidance
-  Disrupts CG dinucleotides to prevent CpG island formation, but never
-  at the cost of worsening cryptic splice scores. Lower priority than
-  splice site elimination.
+- Phase 7.5: Window-aware CpG island elimination
+  Uses the same sliding-window CpG island metric as the NoCpGIsland predicate
+  in type_system.py (window_size=200, gc_threshold=0.6, obs_exp_threshold=0.65).
+  Finds all windows failing the CpG island check, then targets CG dinucleotide
+  removal within those windows specifically. Falls back to GC-reducing codon
+  swaps when CG removal alone cannot bring obs/exp below threshold. Never
+  worsens cryptic splice scores or reintroduces restriction sites.
 - Phase 8.5: CpG reconciliation
   After restriction site reconciliation (Phase 8) may reintroduce CpG
-  dinucleotides, this phase re-applies CpG disruption while preserving
-  restriction-site-free and splice-site-safe status.
+  dinucleotides, this phase re-applies window-aware CpG island elimination
+  using the same parameters as Phase 7.5 and the NoCpGIsland predicate.
 - Improved mutagenesis integration with GT-mandatory distinction
   Positions where the amino acid requires GT in ALL codons (e.g., Valine)
   are flagged as GT-mandatory, distinguishing them from positions where
@@ -271,6 +280,331 @@ def _find_ag_free_codons(aa: str) -> list[str]:
     return [c for c in AA_TO_CODONS[aa] if "AG" not in c]
 
 
+def _reorder_for_splice_safety(
+    sorted_codons: dict[str, list[str]],
+    aas: list[str],
+    cryptic_splice_threshold: float,
+) -> dict[str, list[str]]:
+    """Reorder codon preference to put GT-free and AG-free codons first.
+
+    When cryptic splice elimination is a concern (threshold > 0), for amino acids
+    that have GT-free or AG-free synonymous codons, this function demotes
+    dinucleotide-containing codons to the END of the preference list. This way,
+    Phase 1 starts with a splice-safe codon when possible.
+
+    Strategy: Prioritize codons that are BOTH GT-free AND AG-free first,
+    then codons that are only GT-free, then codons that are only AG-free,
+    then codons with both GT and AG. This dual-prioritization handles both
+    donor and acceptor sites simultaneously.
+
+    Scope: Only amino acids that have splice-problematic codons (containing GT
+    or AG) with available splice-safe alternatives are reordered. This targets
+    the amino acids where Phase 7 struggles (C, G, R, S) and avoids unnecessary
+    CAI penalties for amino acids like E, K, Q where Phase 7 handles AG sites
+    efficiently through simple AG-free swaps.
+
+    Pre-conditions:
+    - sorted_codons maps each unique amino acid in aas to a list of codons
+      sorted by CAI descending
+    - cryptic_splice_threshold > 0 (if <= 0, returns sorted_codons unchanged)
+
+    Post-conditions:
+    - returned dict has the same keys as sorted_codons
+    - for each aa, the returned list is a permutation of sorted_codons[aa]
+    """
+    if cryptic_splice_threshold <= 0:
+        return sorted_codons
+
+    # Amino acids with splice-problematic codons that have splice-safe alternatives.
+    # C, G have GT-containing codons (TGT, GGT) with GT-free alternatives.
+    # R has AG-containing codons (AGA, AGG) with AG-free alternatives (CG*).
+    # S has both GT and AG-containing codons (AGT, AGC) with alternatives (TC*).
+    # V is excluded because ALL V codons contain GT (no alternatives).
+    # E, K, Q have AG-containing codons (GAG, AAG, CAG) but Phase 7 handles
+    # their AG sites efficiently — reordering would sacrifice too much CAI.
+    SPLICE_REORDER_AAS = {"C", "G", "R", "S"}
+
+    reordered: dict[str, list[str]] = {}
+    for aa, codons in sorted_codons.items():
+        if aa not in SPLICE_REORDER_AAS:
+            reordered[aa] = codons
+            continue
+
+        # Tier 1: Both GT-free and AG-free (best for splice safety)
+        tier1 = [c for c in codons if "GT" not in c and "AG" not in c]
+        # Tier 2: GT-free only (eliminates donors but may have AG)
+        tier2 = [c for c in codons if "GT" not in c and "AG" in c]
+        # Tier 3: AG-free only (eliminates acceptors but may have GT)
+        tier3 = [c for c in codons if "GT" in c and "AG" not in c]
+        # Tier 4: Both GT and AG (worst for splice safety)
+        tier4 = [c for c in codons if "GT" in c and "AG" in c]
+
+        result = tier1 + tier2 + tier3 + tier4
+        if len(result) == len(codons):
+            reordered[aa] = result
+        else:
+            # Fallback (shouldn't happen, but defensive)
+            reordered[aa] = codons
+    return reordered
+
+
+def _find_failing_cpg_windows(
+    sequence: str,
+    window_size: int = 200,
+    gc_threshold: float = 0.6,
+    obs_exp_threshold: float = 0.65,
+) -> list[tuple[int, int, float, float]]:
+    """Find all windows in the sequence that fail the CpG island check.
+
+    Returns a list of tuples: (window_start, window_end, gc_content, obs_exp_ratio)
+    for each window where GC >= gc_threshold AND obs_exp >= obs_exp_threshold.
+
+    Results are sorted by obs_exp_ratio descending (worst first).
+
+    Pre-conditions:
+    - sequence is a valid uppercase DNA string
+    - window_size > 0
+    - 0.0 <= gc_threshold <= 1.0
+    - 0.0 <= obs_exp_threshold <= 1.0
+
+    Post-conditions:
+    - all returned windows have gc_content >= gc_threshold and obs_exp >= obs_exp_threshold
+    - results are sorted by obs_exp descending
+    """
+    failing = []
+    for start in range(len(sequence) - window_size + 1):
+        window = sequence[start:start + window_size]
+        gc = gc_content(window)
+        if gc < gc_threshold:
+            continue  # Not enough GC to be a CpG island
+        cpg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
+        c_count = window.count('C')
+        g_count = window.count('G')
+        expected = (c_count * g_count) / max(len(window), 1)
+        obs_exp = cpg_count / max(expected, 1e-10)
+        if obs_exp >= obs_exp_threshold:
+            failing.append((start, start + window_size, gc, obs_exp))
+    failing.sort(key=lambda x: x[3], reverse=True)  # Sort by obs_exp descending
+    return failing
+
+
+def _reduce_cpg_in_window(
+    sequence: str,
+    window_start: int,
+    window_end: int,
+    aas: list[str],
+    sorted_codons: dict[str, list[str]],
+    usage: dict,
+    cryptic_splice_threshold: float,
+    concrete_sites: list[str],
+    max_iterations: int = 50,
+    window_size: int = 200,
+    gc_threshold: float = 0.6,
+    obs_exp_threshold: float = 0.65,
+) -> tuple[str, bool]:
+    """Reduce CpG density within a specific failing window.
+
+    Strategy:
+    1. Identify all CG dinucleotides within the window
+    2. Try swapping to CG-free synonymous codons that don't worsen splice/restriction
+    3. After each swap, re-evaluate the window's CpG island status
+    4. If obs/exp drops below threshold or GC drops below threshold, success
+    5. Fallback: try GC-reducing codon swaps to push GC below gc_threshold
+
+    Pre-conditions:
+    - sequence is a valid uppercase DNA string
+    - window_start >= 0, window_end <= len(sequence), window_start < window_end
+    - aas corresponds to the protein encoded by sequence
+    - sorted_codons maps each aa to a list of synonymous codons (sorted by CAI desc)
+    - usage is the codon adaptiveness table for the target organism
+    - cryptic_splice_threshold > 0
+    - concrete_sites is a list of concrete restriction site sequences
+
+    Post-conditions:
+    - returned sequence encodes the same protein
+    - if successful, the window no longer fails the CpG island check
+    """
+    for iteration in range(max_iterations):
+        window = sequence[window_start:window_end]
+        gc_val = gc_content(window)
+
+        # If GC dropped below threshold, CpG island is eliminated
+        if gc_val < gc_threshold:
+            return sequence, True
+
+        # Compute obs/exp for current window
+        cpg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
+        c_count = window.count('C')
+        g_count = window.count('G')
+        expected = (c_count * g_count) / max(len(window), 1)
+        obs_exp = cpg_count / max(expected, 1e-10)
+
+        # If obs/exp dropped below threshold, CpG island is eliminated
+        if obs_exp < obs_exp_threshold:
+            return sequence, True
+
+        # Find all CG positions within the window
+        cgs = [i for i in range(window_start, window_end - 1) if sequence[i:i+2] == "CG"]
+        if not cgs:
+            # No more CGs to remove but still failing — try GC reduction
+            break
+
+        # Try to remove a CG by swapping the codon containing C or G
+        best_swap = None  # (ci, alt_codon, new_obs_exp)
+        best_obs_exp = obs_exp
+
+        for pos in cgs:
+            for offset in [0, -1]:
+                ci = (pos + offset) // 3
+                if ci < 0 or ci >= len(aas):
+                    continue
+                aa = aas[ci]
+                current = sequence[ci*3:ci*3+3]
+                for alt in sorted_codons[aa]:
+                    if alt == current:
+                        continue
+                    test = sequence[:ci*3] + alt + sequence[ci*3+3:]
+
+                    # Check: local CG elimination
+                    local_start = max(0, ci*3 - 2)
+                    local_end = min(len(test), ci*3 + 5)
+                    if "CG" in test[local_start:local_end]:
+                        # This swap doesn't help with the CG at this position
+                        continue
+
+                    # Check: splice safety
+                    codon_start = ci * 3
+                    codon_end = ci * 3 + 3
+                    splice_worsened = False
+                    for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
+                        if test[p:p+2] == "GT":
+                            new_s = score_donor(test, p)
+                            if new_s >= cryptic_splice_threshold:
+                                if sequence[p:p+2] == "GT":
+                                    old_s = score_donor(sequence, p)
+                                    if new_s > old_s:
+                                        splice_worsened = True
+                                        break
+                                else:
+                                    splice_worsened = True
+                                    break
+                        if test[p:p+2] == "AG":
+                            new_s = score_acceptor(test, p)
+                            if new_s >= cryptic_splice_threshold:
+                                if sequence[p:p+2] == "AG":
+                                    old_s = score_acceptor(sequence, p)
+                                    if new_s > old_s:
+                                        splice_worsened = True
+                                        break
+                                else:
+                                    splice_worsened = True
+                                    break
+                    if splice_worsened:
+                        continue
+
+                    # Check: restriction site safety
+                    site_ok = all(
+                        s not in test and reverse_complement(s) not in test
+                        for s in concrete_sites
+                    )
+                    if not site_ok:
+                        continue
+
+                    # Check: window-level CpG improvement
+                    new_window = test[window_start:window_end]
+                    new_cpg_count = sum(1 for i in range(len(new_window) - 1) if new_window[i:i+2] == "CG")
+                    new_c_count = new_window.count('C')
+                    new_g_count = new_window.count('G')
+                    new_expected = (new_c_count * new_g_count) / max(len(new_window), 1)
+                    new_obs_exp = new_cpg_count / max(new_expected, 1e-10)
+
+                    if new_obs_exp < best_obs_exp:
+                        best_obs_exp = new_obs_exp
+                        best_swap = (ci, alt, new_obs_exp)
+
+        if best_swap is not None:
+            ci, alt_codon, _ = best_swap
+            sequence = sequence[:ci*3] + alt_codon + sequence[ci*3+3:]
+        else:
+            # No CG-removing swap found — try GC reduction fallback
+            break
+
+    # Fallback: try to reduce GC below threshold
+    window = sequence[window_start:window_end]
+    gc_val = gc_content(window)
+    if gc_val >= gc_threshold and gc_val < gc_threshold + 0.05:
+        # GC is close to threshold — try GC-reducing swaps
+        for ci in range(max(0, window_start // 3), min(len(aas), (window_end + 2) // 3)):
+            aa = aas[ci]
+            current = sequence[ci*3:ci*3+3]
+            current_gc_count = sum(1 for b in current if b in "GC")
+            for alt in sorted_codons[aa]:
+                if alt == current:
+                    continue
+                alt_gc_count = sum(1 for b in alt if b in "GC")
+                if alt_gc_count >= current_gc_count:
+                    continue  # Doesn't reduce GC
+
+                test = sequence[:ci*3] + alt + sequence[ci*3+3:]
+
+                # Splice safety check
+                codon_start = ci * 3
+                codon_end = ci * 3 + 3
+                splice_worsened = False
+                for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
+                    if test[p:p+2] == "GT":
+                        new_s = score_donor(test, p)
+                        if new_s >= cryptic_splice_threshold:
+                            if sequence[p:p+2] == "GT":
+                                old_s = score_donor(sequence, p)
+                                if new_s > old_s:
+                                    splice_worsened = True
+                                    break
+                            else:
+                                splice_worsened = True
+                                break
+                    if test[p:p+2] == "AG":
+                        new_s = score_acceptor(test, p)
+                        if new_s >= cryptic_splice_threshold:
+                            if sequence[p:p+2] == "AG":
+                                old_s = score_acceptor(sequence, p)
+                                if new_s > old_s:
+                                    splice_worsened = True
+                                    break
+                            else:
+                                splice_worsened = True
+                                break
+                if splice_worsened:
+                    continue
+
+                # Restriction site check
+                site_ok = all(
+                    s not in test and reverse_complement(s) not in test
+                    for s in concrete_sites
+                )
+                if not site_ok:
+                    continue
+
+                # Check if this swap drops GC below threshold in the window
+                new_window = test[window_start:window_end]
+                new_gc = gc_content(new_window)
+                if new_gc < gc_threshold:
+                    return test, True
+
+    # Final check
+    window = sequence[window_start:window_end]
+    gc_val = gc_content(window)
+    cpg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
+    c_count = window.count('C')
+    g_count = window.count('G')
+    expected = (c_count * g_count) / max(len(window), 1)
+    obs_exp = cpg_count / max(expected, 1e-10)
+
+    if gc_val < gc_threshold or obs_exp < obs_exp_threshold:
+        return sequence, True
+    return sequence, False
+
+
 def _greedy_optimize(
     protein: str,
     organism: str = "Homo_sapiens",
@@ -325,7 +659,13 @@ def _greedy_optimize(
         codons_sorted = sorted(codons, key=lambda c: usage.get(c, 0.0), reverse=True)
         sorted_codons[aa] = codons_sorted
 
-    # Phase 1: Best codon per position (maximize CAI)
+    # When cryptic splice elimination is active, reorder codon preference so that
+    # GT-free and AG-free codons are preferred for amino acids where alternatives exist.
+    # This ensures Phase 1 starts with a splice-safe codon when possible, reducing
+    # the work Phase 7 must do and preventing the "chose poorly" pattern.
+    sorted_codons = _reorder_for_splice_safety(sorted_codons, aas, cryptic_splice_threshold)
+
+    # Phase 1: Best codon per position (maximize CAI, with splice-safe reordering)
     sequence = "".join(sorted_codons[aa][0] for aa in aas)
     assert len(sequence) == len(aas) * 3, "Phase 1: sequence length mismatch"
 
@@ -833,77 +1173,35 @@ def _greedy_optimize(
     else:
         warnings.append("Cryptic splice elimination: max iterations reached")
 
-    # Phase 7.5: Disrupt CpG dinucleotides to avoid CpG islands
-    # Strategy: Replace CG dinucleotides with synonymous codons that don't create CG,
-    # but ONLY if the swap doesn't reintroduce cryptic splice sites or restriction sites.
-    # Key constraint: CpG avoidance is lower priority than splice site elimination.
-    # We will NOT worsen any cryptic splice score to remove a CG dinucleotide.
-    for _cpg_iteration in range(200):
-        cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
-        if not cpg_positions:
+    # Phase 7.5: Window-aware CpG island avoidance
+    # Strategy: Find windows that fail the CpG island check and target them
+    # specifically, using the same window_size, gc_threshold, and obs_exp_threshold
+    # as the NoCpGIsland predicate in type_system.py.
+    CpG_WINDOW_SIZE = 200
+    CpG_GC_THRESHOLD = 0.6
+    CpG_OBS_EXP_THRESHOLD = 0.65
+
+    for _cpg_outer in range(20):  # Max 20 failing windows to fix
+        failing_windows = _find_failing_cpg_windows(
+            sequence, CpG_WINDOW_SIZE, CpG_GC_THRESHOLD, CpG_OBS_EXP_THRESHOLD
+        )
+        if not failing_windows:
             break
-        fixed = False
-        for pos in cpg_positions:
-            # Try swapping the codon(s) containing the C of CG
-            for offset in [0, -1]:
-                ci = (pos + offset) // 3
-                if 0 <= ci < len(aas):
-                    aa = aas[ci]
-                    current = sequence[ci*3:ci*3+3]
-                    for alt in sorted_codons[aa]:
-                        if alt == current:
-                            continue
-                        test = sequence[:ci*3] + alt + sequence[ci*3+3:]
-                        # CRITICAL: Don't worsen any cryptic splice scores.
-                        # Check that no GT position near the swap has its donor score
-                        # increase above threshold, and similarly for AG acceptors.
-                        # We check the local region around the swapped codon.
-                        codon_start = ci * 3
-                        codon_end = ci * 3 + 3
-                        # Donor check: scan for GT dinucleotides in the affected 9-mer region
-                        splice_worsened = False
-                        for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
-                            if test[p:p+2] == "GT":
-                                new_s = score_donor(test, p)
-                                if new_s >= cryptic_splice_threshold:
-                                    # Check if this is a new or worsened site
-                                    if sequence[p:p+2] == "GT":
-                                        old_s = score_donor(sequence, p)
-                                        if new_s > old_s:
-                                            splice_worsened = True
-                                            break
-                                    else:
-                                        splice_worsened = True
-                                        break
-                            if test[p:p+2] == "AG":
-                                new_s = score_acceptor(test, p)
-                                if new_s >= cryptic_splice_threshold:
-                                    if sequence[p:p+2] == "AG":
-                                        old_s = score_acceptor(sequence, p)
-                                        if new_s > old_s:
-                                            splice_worsened = True
-                                            break
-                                    else:
-                                        splice_worsened = True
-                                        break
-                        if splice_worsened:
-                            continue
-                        # Local check: ensure no CG in the vicinity
-                        local_start = max(0, ci*3 - 2)
-                        local_end = min(len(test), ci*3 + 5)
-                        if "CG" not in test[local_start:local_end]:
-                            # Global check: verify net reduction in CpG count
-                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
-                                sequence = test
-                                fixed = True
-                                break
-                    if fixed:
-                        break
-            if fixed:
-                break
+
+        # Fix the worst window first (highest obs/exp ratio)
+        w_start, w_end, w_gc, w_obs_exp = failing_windows[0]
+        sequence, fixed = _reduce_cpg_in_window(
+            sequence, w_start, w_end, aas, sorted_codons, usage,
+            cryptic_splice_threshold, concrete_sites,
+            window_size=CpG_WINDOW_SIZE,
+            gc_threshold=CpG_GC_THRESHOLD,
+            obs_exp_threshold=CpG_OBS_EXP_THRESHOLD,
+        )
         if not fixed:
+            warnings.append(
+                f"CpG island at [{w_start},{w_end}): GC={w_gc:.3f}, "
+                f"obs/exp={w_obs_exp:.3f} — cannot reduce below threshold"
+            )
             break
 
     # Phase 8: Reconciliation after cryptic splice elimination
@@ -918,76 +1216,28 @@ def _greedy_optimize(
                 sequence = new_seq
 
     # Phase 8.5: CpG reconciliation after restriction site reconciliation
-    # Restriction site removal may have reintroduced CpG dinucleotides;
-    # re-apply CpG disruption without reintroducing restriction sites or
-    # worsening cryptic splice scores.
-    for _cpg_iter in range(200):
-        cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
-        if not cpg_positions:
+    # Re-apply window-aware CpG elimination (restriction site removal may have
+    # reintroduced CpG islands).
+    for _cpg_outer in range(20):
+        failing_windows = _find_failing_cpg_windows(
+            sequence, CpG_WINDOW_SIZE, CpG_GC_THRESHOLD, CpG_OBS_EXP_THRESHOLD
+        )
+        if not failing_windows:
             break
-        fixed = False
-        for pos in cpg_positions:
-            for offset in [0, -1]:
-                ci = (pos + offset) // 3
-                if 0 <= ci < len(aas):
-                    aa = aas[ci]
-                    current = sequence[ci*3:ci*3+3]
-                    for alt in sorted_codons[aa]:
-                        if alt == current:
-                            continue
-                        test = sequence[:ci*3] + alt + sequence[ci*3+3:]
-                        # Must not reintroduce restriction sites
-                        site_ok = all(
-                            s not in test and reverse_complement(s) not in test
-                            for s in concrete_sites
-                        )
-                        if not site_ok:
-                            continue
-                        # Must not worsen cryptic splice scores
-                        codon_start = ci * 3
-                        codon_end = ci * 3 + 3
-                        splice_worsened = False
-                        for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
-                            if test[p:p+2] == "GT":
-                                new_s = score_donor(test, p)
-                                if new_s >= cryptic_splice_threshold:
-                                    if sequence[p:p+2] == "GT":
-                                        old_s = score_donor(sequence, p)
-                                        if new_s > old_s:
-                                            splice_worsened = True
-                                            break
-                                    else:
-                                        splice_worsened = True
-                                        break
-                            if test[p:p+2] == "AG":
-                                new_s = score_acceptor(test, p)
-                                if new_s >= cryptic_splice_threshold:
-                                    if sequence[p:p+2] == "AG":
-                                        old_s = score_acceptor(sequence, p)
-                                        if new_s > old_s:
-                                            splice_worsened = True
-                                            break
-                                    else:
-                                        splice_worsened = True
-                                        break
-                        if splice_worsened:
-                            continue
-                        # Local check: ensure no CG in the vicinity
-                        local_start = max(0, ci*3 - 2)
-                        local_end = min(len(test), ci*3 + 5)
-                        if "CG" not in test[local_start:local_end]:
-                            # Global check: verify net reduction in CpG count
-                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
-                                sequence = test
-                                fixed = True
-                                break
-                    if fixed:
-                        break
-            if fixed:
-                break
+
+        w_start, w_end, w_gc, w_obs_exp = failing_windows[0]
+        sequence, fixed = _reduce_cpg_in_window(
+            sequence, w_start, w_end, aas, sorted_codons, usage,
+            cryptic_splice_threshold, concrete_sites,
+            window_size=CpG_WINDOW_SIZE,
+            gc_threshold=CpG_GC_THRESHOLD,
+            obs_exp_threshold=CpG_OBS_EXP_THRESHOLD,
+        )
         if not fixed:
+            warnings.append(
+                f"CpG reconciliation: island at [{w_start},{w_end}) "
+                f"GC={w_gc:.3f}, obs/exp={w_obs_exp:.3f} — cannot reduce"
+            )
             break
 
     # Post-condition: verify sequence still encodes the same protein
@@ -1281,6 +1531,39 @@ def optimize_sequence(
     # propose conservative amino acid substitutions to make satisfaction possible.
     mutagenesis_applied = False
     aa_substitutions = None
+
+    # Before proposing any amino acid substitutions, try to fix "chose poorly"
+    # positions — non-Valine positions with strong cryptic donors where the
+    # optimizer used a GT-containing codon despite GT-free alternatives.
+    if failed and any("CrypticSplice" in p for p in failed):
+        from .mutagenesis import force_gt_free_reoptimization, is_gt_mandatory
+        from .maxentscan import score_donor as _score_donor
+
+        # Check if there are non-GT-mandatory positions with strong donors
+        has_chose_poorly = False
+        for i in range(len(sequence) - 1):
+            if sequence[i:i+2] == "GT":
+                s = _score_donor(sequence, i)
+                if s >= cryptic_splice_threshold:
+                    codon_idx = i // 3
+                    if codon_idx < len(target_protein):
+                        aa = target_protein[codon_idx]
+                        if not is_gt_mandatory(aa):
+                            has_chose_poorly = True
+                            break
+
+        if has_chose_poorly:
+            sequence = force_gt_free_reoptimization(
+                sequence, target_protein, organism,
+                threshold=cryptic_splice_threshold,
+            )
+            # Re-check predicates after forced re-optimization
+            cai = compute_cai(sequence, organism)
+            gc = gc_content(sequence)
+            satisfied, failed = _check_predicates_via_type_system(
+                sequence, gc_lo, gc_hi, restriction_sites, cai_threshold,
+                organism, cryptic_splice_threshold,
+            )
 
     if enable_mutagenesis and failed:
         from .mutagenesis import type_directed_mutagenesis

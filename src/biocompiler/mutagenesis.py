@@ -543,6 +543,103 @@ def diagnose_optimizer_weakness(
     return weak_positions
 
 
+def force_gt_free_reoptimization(
+    sequence: str,
+    protein: str,
+    organism: str,
+    threshold: float = 3.0,
+) -> str:
+    """Aggressively force GT-free codons at all non-Valine positions with strong cryptic donors.
+
+    This function is called when NoCrypticSplice fails and there are non-Valine
+    positions with strong cryptic donors where GT-free synonymous codons exist.
+    Unlike the optimizer's Phase 7 which uses a cautious acceptance check, this
+    function UNCONDITIONALLY swaps to the highest-CAI GT-free codon at every
+    non-GT-mandatory position with a donor score >= threshold.
+
+    It does NOT propose amino acid substitutions — it only does synonymous
+    codon swaps, so the protein is unchanged.
+
+    Pre-conditions:
+    - sequence is uppercase DNA, length == len(protein) * 3
+    - protein contains only standard amino acid codes
+    - organism is a supported organism name
+    - threshold > 0
+
+    Post-conditions:
+    - returned sequence has the same length as input
+    - returned sequence encodes the same protein
+    - all non-GT-mandatory positions with donor score >= threshold have been
+      swapped to GT-free codons (where available)
+    - GT-mandatory positions (Valine) are left unchanged
+    """
+    assert threshold > 0, f"Threshold must be positive, got {threshold}"
+    assert len(sequence) == len(protein) * 3, (
+        f"Sequence length ({len(sequence)}) must equal protein length * 3 "
+        f"({len(protein) * 3})"
+    )
+
+    from .organisms import CODON_ADAPTIVENESS_TABLES
+    usage = CODON_ADAPTIVENESS_TABLES.get(organism, {})
+    aas = list(protein)
+
+    for iteration in range(5):  # Max 5 rounds for cross-boundary GT propagation
+        swapped = False
+        # Collect all strong donor positions
+        donor_sites = []
+        for i in range(len(sequence) - 1):
+            if sequence[i:i+2] == "GT":
+                s = score_donor(sequence, i)
+                if s >= threshold:
+                    donor_sites.append((i, s))
+
+        if not donor_sites:
+            break
+
+        # Sort by score descending to fix worst sites first
+        donor_sites.sort(key=lambda x: x[1], reverse=True)
+
+        for gt_pos, gt_score in donor_sites:
+            codon_idx = gt_pos // 3
+            if codon_idx >= len(aas):
+                continue
+            aa = aas[codon_idx]
+
+            # Skip GT-mandatory amino acids (Valine) — can't fix with codon swaps
+            if is_gt_mandatory(aa):
+                continue
+
+            # Get GT-free alternatives, sorted by CAI
+            gt_free = [c for c in AA_TO_CODONS.get(aa, []) if "GT" not in c]
+            if not gt_free:
+                continue  # Shouldn't happen for non-GT-mandatory, but defensive
+
+            gt_free_sorted = sorted(
+                gt_free,
+                key=lambda c: usage.get(c, 0.0),
+                reverse=True,
+            )
+
+            # Unconditionally swap to the best GT-free codon
+            current_codon = sequence[codon_idx*3:codon_idx*3+3]
+            if current_codon == gt_free_sorted[0]:
+                # Already using best GT-free codon — try next best
+                if len(gt_free_sorted) > 1:
+                    new_codon = gt_free_sorted[1]
+                else:
+                    continue  # Only one GT-free codon and it's already selected
+            else:
+                new_codon = gt_free_sorted[0]
+
+            sequence = sequence[:codon_idx*3] + new_codon + sequence[codon_idx*3+3:]
+            swapped = True
+
+        if not swapped:
+            break
+
+    return sequence
+
+
 # ==============================================================================
 # Main Mutagenesis Loop
 # ==============================================================================
