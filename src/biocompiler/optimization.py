@@ -28,7 +28,7 @@ from .organisms import (
 from .exceptions import UnsupportedOrganismError, InvalidProteinError, OptimizationError
 from .translation import compute_cai
 from .scanner import gc_content
-from .maxentscan import max_donor_score, max_acceptor_score
+from .maxentscan import max_donor_score, max_acceptor_score, score_donor, score_acceptor
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,8 @@ class OptimizationResult:
     failed_predicates: list[str]
     unsat_core: list[str] | None = None
     fallback_used: bool = False
+    mutagenesis_applied: bool = False
+    aa_substitutions: list[dict] | None = None  # [{pos, from, to, blosum62}]
 
 
 def protein_to_aa_list(protein: str) -> list[str]:
@@ -427,14 +429,136 @@ def _greedy_optimize(
                 # Could not remove — already warned in Phase 2
                 pass
 
-    # Phase 7: Check cryptic splice sites (warning only)
-    max_d = max_donor_score(sequence)
-    max_a = max_acceptor_score(sequence)
-    if max_d >= cryptic_splice_threshold or max_a >= cryptic_splice_threshold:
-        warnings.append(
-            f"Cryptic splice sites remain: max_donor={max_d:.2f}, max_acceptor={max_a:.2f} "
-            f"(threshold={cryptic_splice_threshold})"
-        )
+    # Phase 7: Eliminate cryptic splice donor/acceptor sites
+    # Strategy: for each strong cryptic site, try codon swaps that disrupt
+    # the 9-mer (donor) or 23-mer (acceptor) context to bring the
+    # MaxEntScan score below threshold.
+    for iteration in range(200):
+        max_d = max_donor_score(sequence)
+        max_a = max_acceptor_score(sequence)
+        if max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold:
+            break
+
+        fixed_any = False
+
+        # Try to eliminate strong donors
+        if max_d >= cryptic_splice_threshold:
+            for i in range(len(sequence) - 1):
+                if sequence[i:i+2] == "GT":
+                    s = score_donor(sequence, i)
+                    if s >= cryptic_splice_threshold:
+                        codon_idx = i // 3
+                        # Try swapping the GT codon and its neighbors
+                        # to disrupt the 9-mer splice context
+                        best_score = s
+                        best_seq = None
+
+                        # Try single-codon swap at the GT position
+                        if codon_idx < len(aas):
+                            aa = aas[codon_idx]
+                            current = sequence[codon_idx*3:codon_idx*3+3]
+                            for alt in sorted_codons[aa]:
+                                if alt == current:
+                                    continue
+                                test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
+                                if i < len(test)-1 and test[i:i+2] == "GT":
+                                    new_s = score_donor(test, i)
+                                else:
+                                    new_s = -999  # GT eliminated
+                                if new_s < best_score:
+                                    best_score = new_s
+                                    best_seq = test
+
+                        # Try 2-codon context disruption (GT codon + neighbor)
+                        if best_score >= cryptic_splice_threshold and codon_idx < len(aas):
+                            aa = aas[codon_idx]
+                            current = sequence[codon_idx*3:codon_idx*3+3]
+                            for neighbor_offset in [-1, 1]:
+                                n_idx = codon_idx + neighbor_offset
+                                if 0 <= n_idx < len(aas):
+                                    n_aa = aas[n_idx]
+                                    n_current = sequence[n_idx*3:n_idx*3+3]
+                                    for v_alt in sorted_codons[aa][:2]:
+                                        for n_alt in sorted_codons[n_aa][:3]:
+                                            if n_alt == n_current and v_alt == current:
+                                                continue
+                                            test = list(sequence)
+                                            test[codon_idx*3:codon_idx*3+3] = list(v_alt)
+                                            test[n_idx*3:n_idx*3+3] = list(n_alt)
+                                            test_str = "".join(test)
+                                            if i < len(test_str)-1 and test_str[i:i+2] == "GT":
+                                                new_s = score_donor(test_str, i)
+                                            else:
+                                                new_s = -999
+                                            if new_s < best_score:
+                                                best_score = new_s
+                                                best_seq = test_str
+
+                        if best_seq is not None and best_score < cryptic_splice_threshold:
+                            sequence = best_seq
+                            fixed_any = True
+                            break  # Restart scanning
+
+        # Try to eliminate strong acceptors
+        if not fixed_any and max_a >= cryptic_splice_threshold:
+            for i in range(len(sequence) - 1):
+                if sequence[i:i+2] == "AG":
+                    s = score_acceptor(sequence, i)
+                    if s >= cryptic_splice_threshold:
+                        codon_idx = i // 3
+                        if codon_idx >= len(aas):
+                            continue
+                        aa = aas[codon_idx]
+                        current = sequence[codon_idx*3:codon_idx*3+3]
+                        best_score = s
+                        best_seq = None
+
+                        for alt in sorted_codons[aa]:
+                            if alt == current:
+                                continue
+                            test = sequence[:codon_idx*3] + alt + sequence[codon_idx*3+3:]
+                            if i < len(test)-1 and test[i:i+2] == "AG":
+                                new_s = score_acceptor(test, i)
+                            else:
+                                new_s = -999
+                            if new_s < best_score:
+                                best_score = new_s
+                                best_seq = test
+
+                        if best_seq is not None and best_score < cryptic_splice_threshold:
+                            sequence = best_seq
+                            fixed_any = True
+                            break
+
+        if not fixed_any:
+            # No more progress — some sites are unrepairable by codon swaps
+            max_d = max_donor_score(sequence)
+            max_a = max_acceptor_score(sequence)
+            if max_d >= cryptic_splice_threshold:
+                warnings.append(
+                    f"Cryptic splice donors remain: max_donor={max_d:.2f} "
+                    f"(threshold={cryptic_splice_threshold}). "
+                    f"Some positions may require amino acid substitution (e.g., V->I)"
+                )
+            if max_a >= cryptic_splice_threshold:
+                warnings.append(
+                    f"Cryptic splice acceptors remain: max_acceptor={max_a:.2f} "
+                    f"(threshold={cryptic_splice_threshold})"
+                )
+            break
+    else:
+        warnings.append("Cryptic splice elimination: max iterations reached")
+
+    # Phase 8: Reconciliation after cryptic splice elimination
+    # Check if cryptic splice fixes reintroduced restriction sites
+    for site_upper in concrete_sites:
+        site_rc = reverse_complement(site_upper)
+        if site_upper in sequence or site_rc in sequence:
+            new_seq, fixed = _remove_site_multicodon(
+                sequence, aas, sorted_codons, site_upper, site_rc
+            )
+            if fixed:
+                sequence = new_seq
 
     for w in warnings:
         logger.warning(w)
@@ -453,6 +577,9 @@ def optimize_sequence(
     z3_timeout_ms: int = 30000,
     cryptic_splice_threshold: float = 3.0,
     use_z3: bool = False,
+    enable_mutagenesis: bool = False,
+    max_mutagenesis_substitutions: int = 30,
+    min_blosum62: int = -1,
 ) -> OptimizationResult:
     """
     Find or generate a DNA sequence encoding the target protein that satisfies
@@ -460,6 +587,11 @@ def optimize_sequence(
 
     By default, uses the greedy optimizer for all protein lengths (fast, high CAI).
     Set use_z3=True to use z3 constraint solver (experimental, slower for short proteins).
+
+    When enable_mutagenesis=True and codon-level optimization cannot satisfy all
+    predicates (e.g., Valine positions creating unrepairable cryptic splice donors),
+    the engine proposes conservative amino acid substitutions (type-directed
+    mutagenesis) to make constraint satisfaction possible.
 
     The optimizer targets organism-specific GC content rather than just "in range."
     """
@@ -567,10 +699,74 @@ def optimize_sequence(
     if all_warnings:
         logger.info("Optimization warnings: %s", "; ".join(all_warnings))
 
+    # Type-directed mutagenesis: if predicates fail and mutagenesis is enabled,
+    # propose conservative amino acid substitutions to make satisfaction possible.
+    mutagenesis_applied = False
+    aa_substitutions = None
+
+    if enable_mutagenesis and failed:
+        from .mutagenesis import type_directed_mutagenesis
+        mut_result = type_directed_mutagenesis(
+            protein=target_protein,
+            organism=organism,
+            failed_predicates=failed,
+            optimize_fn=optimize_sequence,
+            max_substitutions=max_mutagenesis_substitutions,
+            min_blosum62=min_blosum62,
+            cryptic_splice_threshold=cryptic_splice_threshold,
+            gc_lo=gc_lo,
+            gc_hi=gc_hi,
+            # Pass through non-mutagenesis kwargs (avoid recursion)
+            enable_mutagenesis=False,
+            cai_threshold=cai_threshold,
+        )
+
+        if mut_result.substitutions:
+            mutagenesis_applied = True
+            aa_substitutions = [
+                {
+                    "position": sub.position,
+                    "from": sub.original_aa,
+                    "to": sub.substitute_aa,
+                    "blosum62": sub.blosum62_score,
+                    "reason": sub.reason,
+                    "predicate": sub.predicate_addressed,
+                }
+                for sub in mut_result.substitutions
+            ]
+
+            # Re-optimize with the modified protein
+            mut_protein = mut_result.modified_protein
+            # Re-run the full optimization pipeline (mutagenesis disabled to avoid recursion)
+            final_result = optimize_sequence(
+                target_protein=mut_protein,
+                organism=organism,
+                gc_lo=gc_lo,
+                gc_hi=gc_hi,
+                restriction_sites=restriction_sites,
+                cai_threshold=cai_threshold,
+                cryptic_splice_threshold=cryptic_splice_threshold,
+                enable_mutagenesis=False,
+            )
+
+            return OptimizationResult(
+                sequence=final_result.sequence,
+                protein=mut_protein,
+                cai=final_result.cai,
+                gc_content=final_result.gc_content,
+                satisfied_predicates=final_result.satisfied_predicates,
+                failed_predicates=final_result.failed_predicates,
+                fallback_used=final_result.fallback_used,
+                mutagenesis_applied=True,
+                aa_substitutions=aa_substitutions,
+            )
+
     return OptimizationResult(
         sequence=sequence, protein=target_protein, cai=cai,
         gc_content=gc, satisfied_predicates=satisfied,
         failed_predicates=failed, fallback_used=fallback_used,
+        mutagenesis_applied=mutagenesis_applied,
+        aa_substitutions=aa_substitutions,
     )
 
 

@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "5.1.0"
+__version__ = "7.0.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -72,6 +72,13 @@ from .maxentscan import (
     max_acceptor_score,
 )
 from .optimization import optimize_sequence
+from .mutagenesis import (
+    type_directed_mutagenesis,
+    MutagenesisResult,
+    AASubstitution,
+    BLOSUM62,
+    GT_MANDATORY_AAS,
+)
 from .grammar_loader import load_grammar, grammar_to_predicate_params
 from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta
 from .report import generate_report
@@ -116,6 +123,9 @@ __all__ = [
     "max_donor_score", "max_acceptor_score",
     # Optimization
     "optimize_sequence",
+    # Mutagenesis
+    "type_directed_mutagenesis", "MutagenesisResult", "AASubstitution",
+    "BLOSUM62", "GT_MANDATORY_AAS",
     # Grammar
     "load_grammar", "grammar_to_predicate_params",
     # Export
