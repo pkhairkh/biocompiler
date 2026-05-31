@@ -157,11 +157,20 @@ def evaluate_no_cryptic_splice(
     seq: str,
     known_exon_boundaries: list[tuple[int, int]],
     cryptic_threshold: float = 3.0,
+    uncertain_lo: float = 1.5,
     **kwargs,
 ) -> TypeCheckResult:
     """
     NoCrypticSplice: No donor/acceptor pair within known exons that could form
     a cryptic intron, as determined by MaxEntScan scoring.
+
+    Dual-threshold system producing three verdicts:
+    - PASS:   All splice site scores < uncertain_lo
+    - UNCERTAIN: No sites >= cryptic_threshold, but some in [uncertain_lo, cryptic_threshold)
+    - FAIL:   At least one site >= cryptic_threshold
+
+    When uncertain_lo <= 0, the uncertain zone is disabled and the function
+    behaves identically to the original two-valued (PASS/FAIL) logic.
 
     This uses the MaxEntScan model to score every GT/AG dinucleotide in exonic
     regions. Only pairs where BOTH the donor AND acceptor score above the
@@ -173,21 +182,36 @@ def evaluate_no_cryptic_splice(
         seq: full pre-mRNA sequence
         known_exon_boundaries: list of (start, end) tuples for known exons
         cryptic_threshold: MaxEntScan score threshold above which a splice site
-                          is considered functional (default 3.0)
+                          is considered definitively functional (default 3.0)
+        uncertain_lo: lower bound of the uncertain zone; sites with score in
+                     [uncertain_lo, cryptic_threshold) are borderline (default 1.5).
+                     Set to 0 to disable the uncertain zone and get PASS/FAIL only.
 
     Pre-conditions:
     - seq is a valid DNA sequence (uppercase)
     - known_exon_boundaries is a non-empty list of valid (start, end) tuples
     - cryptic_threshold > 0
+    - uncertain_lo >= 0
+    - uncertain_lo < cryptic_threshold
     """
     assert cryptic_threshold > 0, f"Threshold must be positive, got {cryptic_threshold}"
+    assert uncertain_lo >= 0, f"uncertain_lo must be non-negative, got {uncertain_lo}"
+    assert uncertain_lo < cryptic_threshold, (
+        f"uncertain_lo ({uncertain_lo}) must be < cryptic_threshold ({cryptic_threshold})"
+    )
     derivation = []
+    borderline_donors = []   # (abs_pos, score, gt_mandatory, gt_free_alts)
+    borderline_acceptors = []  # (abs_pos, score, ag_mandatory, ag_free_alts)
+
+    # Use the lower threshold for scanning so we capture both FAIL and UNCERTAIN sites.
+    # When uncertain_lo <= 0, fall back to cryptic_threshold only (backward compat).
+    scan_threshold = min(uncertain_lo, cryptic_threshold) if uncertain_lo > 0 else cryptic_threshold
 
     for exon_start, exon_end in known_exon_boundaries:
         exon_seq = seq[exon_start:exon_end]
 
         # Use MaxEntScan to find scored splice sites within this exon
-        splice_sites = scan_splice_sites(exon_seq, cryptic_threshold, cryptic_threshold)
+        splice_sites = scan_splice_sites(exon_seq, scan_threshold, scan_threshold)
 
         donors = [(pos, score) for pos, stype, score in splice_sites if stype == "donor"]
         acceptors = [(pos, score) for pos, stype, score in splice_sites if stype == "acceptor"]
@@ -196,28 +220,40 @@ def evaluate_no_cryptic_splice(
             abs_pos = exon_start + pos
             gt_mandatory = _is_gt_mandatory_at_position(seq, abs_pos)
             gt_free_alts = _get_gt_free_alternatives(seq, abs_pos)
+            is_borderline = (uncertain_lo > 0
+                             and uncertain_lo <= score < cryptic_threshold)
             derivation.append({
                 "step": "maxentscan_donor_in_exon",
                 "position": abs_pos,
                 "score": score,
                 "threshold": cryptic_threshold,
+                "uncertain_lo": uncertain_lo if uncertain_lo > 0 else None,
+                "borderline": is_borderline,
                 "gt_mandatory": gt_mandatory,
                 "gt_free_alternatives": gt_free_alts,
             })
+            if is_borderline:
+                borderline_donors.append((abs_pos, score, gt_mandatory, gt_free_alts))
         for pos, score in acceptors:
             abs_pos = exon_start + pos
             ag_mandatory = _is_ag_mandatory_at_position(seq, abs_pos)
             ag_free_alts = _get_ag_free_alternatives(seq, abs_pos)
+            is_borderline = (uncertain_lo > 0
+                             and uncertain_lo <= score < cryptic_threshold)
             derivation.append({
                 "step": "maxentscan_acceptor_in_exon",
                 "position": abs_pos,
                 "score": score,
                 "threshold": cryptic_threshold,
+                "uncertain_lo": uncertain_lo if uncertain_lo > 0 else None,
+                "borderline": is_borderline,
                 "ag_mandatory": ag_mandatory,
                 "ag_free_alternatives": ag_free_alts,
             })
+            if is_borderline:
+                borderline_acceptors.append((abs_pos, score, ag_mandatory, ag_free_alts))
 
-        # Check 1: Strong standalone donors (GT sites above threshold)
+        # Check 1: Strong standalone donors (GT sites above cryptic_threshold)
         # Even without a paired acceptor, a strong cryptic donor can trigger
         # aberrant splicing by pairing with downstream genomic acceptors.
         # This is the key issue with Valine positions: their GT dinucleotides
@@ -243,7 +279,7 @@ def evaluate_no_cryptic_splice(
                     ),
                 )
 
-        # Check 2: Strong standalone acceptors (AG sites above threshold)
+        # Check 2: Strong standalone acceptors (AG sites above cryptic_threshold)
         for a_pos, a_score in acceptors:
             if a_score >= cryptic_threshold:
                 abs_pos = exon_start + a_pos
@@ -265,6 +301,71 @@ def evaluate_no_cryptic_splice(
                     ),
                 )
 
+    # No sites >= cryptic_threshold — check for borderline (UNCERTAIN) sites
+    if borderline_donors or borderline_acceptors:
+        borderline_details = []
+        for abs_pos, score, gt_mandatory, gt_free_alts in borderline_donors:
+            detail = (
+                f"GT at position {abs_pos} (score={score:.2f}, "
+                f"zone=[{uncertain_lo},{cryptic_threshold}))"
+            )
+            if gt_mandatory:
+                detail += " — GT-MANDATORY (all codons contain GT, e.g. Valine)"
+            else:
+                detail += f" — GT-free alternatives: {gt_free_alts}"
+            borderline_details.append(detail)
+        for abs_pos, score, ag_mandatory, ag_free_alts in borderline_acceptors:
+            detail = (
+                f"AG at position {abs_pos} (score={score:.2f}, "
+                f"zone=[{uncertain_lo},{cryptic_threshold}))"
+            )
+            if ag_mandatory:
+                detail += " — AG-MANDATORY (all codons contain AG)"
+            else:
+                detail += f" — AG-free alternatives: {ag_free_alts}"
+            borderline_details.append(detail)
+
+        # Build enriched derivation with borderline site alternatives
+        uncertain_derivation = derivation + [{
+            "step": "borderline_sites_found",
+            "evidence": "maxentscan_scored_exhaustive_scan",
+            "threshold": cryptic_threshold,
+            "uncertain_lo": uncertain_lo,
+            "borderline_donor_count": len(borderline_donors),
+            "borderline_acceptor_count": len(borderline_acceptors),
+            "borderline_sites": [
+                {
+                    "position": pos,
+                    "site_type": "donor",
+                    "score": score,
+                    "gt_mandatory": gt_mandatory,
+                    "gt_free_alternatives": gt_free_alts,
+                }
+                for pos, score, gt_mandatory, gt_free_alts in borderline_donors
+            ] + [
+                {
+                    "position": pos,
+                    "site_type": "acceptor",
+                    "score": score,
+                    "ag_mandatory": ag_mandatory,
+                    "ag_free_alternatives": ag_free_alts,
+                }
+                for pos, score, ag_mandatory, ag_free_alts in borderline_acceptors
+            ],
+        }]
+
+        return TypeCheckResult(
+            predicate="NoCrypticSplice",
+            verdict=Verdict.UNCERTAIN,
+            derivation=uncertain_derivation,
+            knowledge_gap=(
+                f"{len(borderline_donors) + len(borderline_acceptors)} borderline "
+                f"splice site(s) in uncertain zone "
+                f"[{uncertain_lo}, {cryptic_threshold}): "
+                f"{'; '.join(borderline_details)}"
+            ),
+        )
+
     return TypeCheckResult(
         predicate="NoCrypticSplice",
         verdict=Verdict.PASS,
@@ -272,6 +373,7 @@ def evaluate_no_cryptic_splice(
             "step": "no_cryptic_pairs_found",
             "evidence": "maxentscan_scored_exhaustive_scan",
             "threshold": cryptic_threshold,
+            "uncertain_lo": uncertain_lo if uncertain_lo > 0 else None,
         }],
     )
 
@@ -565,7 +667,7 @@ def evaluate_no_cpg_island(seq: str, window_size: int = 200, threshold: float = 
 # ==============================================================================
 
 registry.register("NoCrypticSplice", evaluate_no_cryptic_splice,
-                  param_keys=["seq", "known_exon_boundaries", "cryptic_threshold"])
+                  param_keys=["seq", "known_exon_boundaries", "cryptic_threshold", "uncertain_lo"])
 registry.register("SpliceCorrect", evaluate_splice_correct,
                   param_keys=["seq", "known_exon_boundaries", "cellular_context"])
 registry.register("GCInRange", evaluate_gc_in_range,
@@ -658,6 +760,7 @@ def evaluate_all_predicates(
     cai_threshold: float = 0.5,
     enzymes: list[str] | None = None,
     cryptic_splice_threshold: float = 3.0,
+    uncertain_lo: float = 1.5,
 ) -> list[TypeCheckResult]:
     """
     Evaluate all registered type predicates against a sequence.
@@ -672,7 +775,7 @@ def evaluate_all_predicates(
 
     # Evaluate each predicate via the registry — ensures all registered predicates are included
     predicate_args = {
-        "NoCrypticSplice": {"seq": seq, "known_exon_boundaries": known_exon_boundaries, "cryptic_threshold": cryptic_splice_threshold},
+        "NoCrypticSplice": {"seq": seq, "known_exon_boundaries": known_exon_boundaries, "cryptic_threshold": cryptic_splice_threshold, "uncertain_lo": uncertain_lo},
         "SpliceCorrect": {"seq": seq, "known_exon_boundaries": known_exon_boundaries, "cellular_context": cellular_context},
         "GCInRange": {"seq": target_isoform, "gc_lo": gc_lo, "gc_hi": gc_hi},
         "CodonAdapted": {"seq": target_isoform, "organism": organism, "threshold": cai_threshold},

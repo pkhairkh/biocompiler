@@ -13,10 +13,14 @@
     Proved via dite_fail_imp (contrapositive: ¬condition → FAIL = PASS, contradiction).
   - Scanner predicates (NoCrypticSplice, NoRestrictionSite, NoInstabilityMotif, NoCpGIsland):
     PASS → scanner = false → contrapositive of completeness → no match exists.
+  - NoCrypticSplice uses dual-threshold (PASS/UNCERTAIN/FAIL):
+    FAIL if cryptic site found, UNCERTAIN if borderline site found, PASS otherwise.
+    PASS guarantee: all sites have score < uncertainLoThreshold.
   - NDFST predicate (SpliceCorrect): PASS → singleton output set → ctx matches.
 
   SORRY STATUS: 0 remaining. All proofs are sorry-free, including ndfstRun_complete
   (proved via ConsumesInput in NDFST.lean). NoCpGIsland added as 8th predicate.
+  Dual-threshold NoCrypticSplice with PASS/UNCERTAIN/FAIL support.
 
   REFERENCE: DOC-03 (SDD) §3.5, DOC-10 (Deterministic Methods) §4
 -/
@@ -101,7 +105,9 @@ def evaluate [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
         | _ => FAIL
 
   | TypePredicate.NoCrypticSplice, seq, _ =>
-      if SpliceSiteScanner.hasCrypticSpliceSite seq = true then FAIL else PASS
+      if SpliceSiteScanner.hasCrypticSpliceSite seq = true then FAIL
+      else if SpliceSiteScanner.hasBorderlineSpliceSite seq = true then UNCERTAIN
+      else PASS
 
   | TypePredicate.CodonAdapted org threshold, seq, _ =>
       if CodonAdaptationIndex.computeCAI seq org ≥ threshold then PASS else FAIL
@@ -133,8 +139,13 @@ def propertyHolds [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
       ctx.cellType = cellType ∧
         (ndfstUniqueOutputSet (SplicingNDFST.ndfst : NDFST State) seq).length = 1
   | TypePredicate.NoCrypticSplice, seq, _ =>
+      -- PASS means: no strong cryptic sites AND no borderline sites.
+      -- Stated in contrapositive form: no site with score ≥ uncertainLoThreshold
+      -- exists. This is equivalent to "all sites have score < uncertainLoThreshold"
+      -- and matches the proof structure (contrapositive of scanner completeness).
       ∀ (pos : Nat) (site : SpliceSiteMatch),
-        pos < seq.length → site.position = pos → site.score < crypticThreshold
+        pos < seq.length → site.position = pos →
+        site.score ≥ uncertainLoThreshold → False
   | TypePredicate.CodonAdapted org threshold, seq, _ =>
       CodonAdaptationIndex.computeCAI seq org ≥ threshold
   | TypePredicate.GCInRange lo hi, seq, _ =>
@@ -235,21 +246,51 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
     exact ⟨h_cell_eq, h_list_len⟩
 
   -- ═══════════════════════════════════════════════════════════════════════════
-  -- Case 2: NoCrypticSplice — PROVED COMPLETELY
+  -- Case 2: NoCrypticSplice — PROVED COMPLETELY (dual-threshold)
+  --
+  -- PASS means: no cryptic sites AND no borderline sites.
+  -- If hasCrypticSpliceSite = true → FAIL ≠ PASS (contradiction)
+  -- If hasBorderlineSpliceSite = true → UNCERTAIN ≠ PASS (contradiction)
+  -- Therefore both scanners returned false, and by contrapositive of
+  -- their completeness, no site with score ≥ uncertainLoThreshold exists.
+  --
+  -- The property is stated in contrapositive form:
+  --   site.score ≥ uncertainLoThreshold → False
+  -- which is equivalent to site.score < uncertainLoThreshold.
   -- ═══════════════════════════════════════════════════════════════════════════
   | NoCrypticSplice =>
     unfold evaluate at h_pass
-    have h_not_true : SpliceSiteScanner.hasCrypticSpliceSite seq ≠ true := by
-      intro h_true
-      simp only [dif_pos h_true] at h_pass
-      cases h_pass
-    have h_false : SpliceSiteScanner.hasCrypticSpliceSite seq = false :=
-      (bool_ne_true_iff_false _).mp h_not_true
+    -- h_pass : (if hasCrypticSpliceSite seq = true then FAIL
+    --           else if hasBorderlineSpliceSite seq = true then UNCERTAIN
+    --           else PASS) = PASS
+    -- For PASS, neither condition can be true
+    have h_not_cryptic : SpliceSiteScanner.hasCrypticSpliceSite seq ≠ true := by
+      intro h; simp [dif_pos h] at h_pass; cases h_pass
+    have h_false_cryptic : SpliceSiteScanner.hasCrypticSpliceSite seq = false :=
+      (bool_ne_true_iff_false _).mp h_not_cryptic
+    have h_not_borderline : SpliceSiteScanner.hasBorderlineSpliceSite seq ≠ true := by
+      intro h
+      have : (if SpliceSiteScanner.hasCrypticSpliceSite seq = true then FAIL
+              else if SpliceSiteScanner.hasBorderlineSpliceSite seq = true then UNCERTAIN
+              else PASS) = UNCERTAIN := by
+        simp [dif_neg h_false_cryptic, dif_pos h]
+      rw [this] at h_pass; cases h_pass
+    have h_false_borderline : SpliceSiteScanner.hasBorderlineSpliceSite seq = false :=
+      (bool_ne_true_iff_false _).mp h_not_borderline
     unfold propertyHolds
     intro pos site h_pos h_site_pos h_ge
-    have h_absurd := SpliceSiteScanner.scanner_completeness seq pos site
-                      h_pos h_site_pos h_ge h_false
-    exact absurd rfl h_absurd
+    -- h_ge : site.score ≥ uncertainLoThreshold
+    -- Goal: False
+    -- If score ≥ uncertainLoThreshold, it's either cryptic or borderline
+    by_cases h_cryptic : site.score ≥ crypticThreshold
+    · -- Strong cryptic site → scanner should have found it → contradiction
+      have h_absurd := SpliceSiteScanner.scanner_completeness seq pos site
+                        h_pos h_site_pos h_cryptic h_false_cryptic
+      exact absurd rfl h_absurd
+    · -- Not cryptic, so borderline → borderline scanner should have found it → contradiction
+      have h_absurd := SpliceSiteScanner.borderline_completeness seq pos site
+                        h_pos h_site_pos h_ge h_cryptic h_false_borderline
+      exact absurd rfl h_absurd
 
   -- ═══════════════════════════════════════════════════════════════════════════
   -- Case 3: CodonAdapted — PROVED COMPLETELY

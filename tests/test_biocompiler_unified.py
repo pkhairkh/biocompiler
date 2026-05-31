@@ -427,7 +427,8 @@ class TestTypePredicates:
 class TestPredicateRegistry:
     def test_all_predicates_registered(self):
         expected = {"NoCrypticSplice", "SpliceCorrect", "GCInRange",
-                     "CodonAdapted", "NoRestrictionSite", "InFrame", "NoInstabilityMotif"}
+                     "CodonAdapted", "NoRestrictionSite", "InFrame",
+                     "NoInstabilityMotif", "NoCpGIsland"}
         assert expected.issubset(set(predicate_registry.names()))
 
     def test_unknown_predicate_raises(self):
@@ -651,6 +652,51 @@ class TestNoCpGIsland:
         """Custom window size and threshold."""
         result = evaluate_no_cpg_island("ATGC" * 100, window_size=50, threshold=0.7)
         assert result.verdict in (Verdict.PASS, Verdict.FAIL)
+
+
+# ==============================================================================
+# Dual-threshold NoCrypticSplice tests (PASS/UNCERTAIN/FAIL)
+# ==============================================================================
+
+class TestDualThresholdNoCrypticSplice:
+    """Test the dual-threshold NoCrypticSplice with PASS/UNCERTAIN/FAIL verdicts."""
+
+    def test_legacy_mode_uncertain_lo_zero(self):
+        """When uncertain_lo=0, only PASS/FAIL (backward compat)."""
+        seq = "ATGCTGATCGTAGCTAGCTAGCTAGCTGATCGATCG"
+        boundaries = [(0, len(seq))]
+        result = evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold=3.0, uncertain_lo=0)
+        assert result.verdict in (Verdict.PASS, Verdict.FAIL)
+
+    def test_uncertain_verdict_produced(self):
+        """UNCERTAIN verdict should be produced when borderline sites exist."""
+        # Use a high cryptic_threshold so nothing is FAIL,
+        # and a low uncertain_lo so borderline sites produce UNCERTAIN
+        seq = "ATGCTGATCGTAGCTAGCTAGCTAGCTGATCGATCG"
+        boundaries = [(0, len(seq))]
+        result = evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold=10.0, uncertain_lo=0.1)
+        assert result.verdict == Verdict.UNCERTAIN
+
+    def test_pass_when_all_below_uncertain_lo(self):
+        """PASS when all sites score below uncertain_lo."""
+        # A simple sequence with no strong splice context
+        seq = "ATG" + "GCT" * 100 + "TAA"
+        boundaries = [(0, len(seq))]
+        result = evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold=3.0, uncertain_lo=1.5)
+        assert result.verdict == Verdict.PASS
+
+    def test_fail_takes_precedence_over_uncertain(self):
+        """FAIL should take precedence over UNCERTAIN."""
+        # HBB has strong cryptic donors — should be FAIL regardless of uncertain_lo
+        hbb = "ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAACGTGGATGAAGTTGGTGGTGAGGCCCTGGGCAG"
+        boundaries = [(0, len(hbb))]
+        result = evaluate_no_cryptic_splice(hbb, boundaries, cryptic_threshold=3.0, uncertain_lo=1.5)
+        assert result.verdict == Verdict.FAIL
+
+    def test_eight_predicates_in_registry(self):
+        """Exactly 8 predicates should be registered in the predicate registry."""
+        assert len(predicate_registry.names()) == 8
+        assert "NoCpGIsland" in predicate_registry.names()
 
 
 # ==============================================================================

@@ -47,10 +47,13 @@ type_system:
 
     - name: "NoCrypticSplice"
       cryptic_threshold: 3.0  # MaxEntScan score threshold
+      uncertain_lo: 1.5       # Lower bound of uncertain zone (borderline sites)
       notes: >
         Check the entire CDS for GT/AG dinucleotides that could
         function as splice sites if this gene were inserted into
-        a genomic context with introns.
+        a genomic context with introns. Sites with scores in
+        [uncertain_lo, cryptic_threshold) are borderline — they
+        COULD be functional but aren't definitively strong.
 
     - name: "CodonAdapted"
       organism: "Homo_sapiens"

@@ -55,9 +55,11 @@
   │                         │            │ both proved; ConsumesInput replaces    │
   │                         │            │ ValidPath for completeness             │
   │ Scanners.lean           │ FULLY      │ Concrete scanner implementations       │
-  │                         │            │ with proved completeness               │
+  │                         │            │ with proved completeness; includes     │
+  │                         │            │ dual-threshold borderline scanner      │
   │ TypeSystem.lean         │ FULLY      │ All 8 predicates proved, 0 sorry       │
-  │                         │            │ (incl. NoCpGIsland)                    │
+  │                         │            │ (incl. NoCpGIsland); NoCrypticSplice   │
+  │                         │            │ uses dual-threshold PASS/UNCERTAIN/FAIL│
   │ Compositional.lean      │ FULLY      │ UNCERTAIN propagation proved via       │
   │                         │            │ foldl_uncertain_ne_pass lemma          │
   │ SLOTIndependence.lean   │ FULLY      │ All theorems proved, 0 sorry           │
@@ -66,17 +68,27 @@
   Trusted Computing Base (axioms that are NOT proved within Lean4):
   1. SpliceSiteScanner.scanner_completeness — scanner finds all cryptic sites
   2. SpliceSiteScanner.scanner_soundness — scanner only reports real sites
-  3. CpGIslandScanner.scanner_completeness — CpG island scanner finds all islands
-  4. CpGIslandScanner.scanner_soundness — CpG island scanner only reports real islands
-  5. SplicingNDFST.output_is_valid — NDFST outputs are valid isoforms
-  6. SplicingNDFST.all_isoforms_produced — NDFST is complete
-  7. CodonAdaptationIndex.computeCAI — deterministic CAI computation
+  3. SpliceSiteScanner.borderline_completeness — borderline scanner finds all
+     sites with score in [uncertainLoThreshold, crypticThreshold)
+  4. CpGIslandScanner.scanner_completeness — CpG island scanner finds all islands
+  5. CpGIslandScanner.scanner_soundness — CpG island scanner only reports real islands
+  6. SplicingNDFST.output_is_valid — NDFST outputs are valid isoforms
+  7. SplicingNDFST.all_isoforms_produced — NDFST is complete
+  8. CodonAdaptationIndex.computeCAI — deterministic CAI computation
 
   These are PARAMETERS of the proof, not gaps. The soundness theorem says:
   "ASSUMING the scanners are complete and the NDFST is correct,
    the type system is sound." This is the standard approach in formal methods:
   prove the TYPE SYSTEM sound conditional on correct oracles, then validate
   the oracles independently.
+
+  DUAL-THRESHOLD BACKWARD COMPATIBILITY:
+  The dual-threshold NoCrypticSplice (PASS/UNCERTAIN/FAIL) is backward
+  compatible with the original binary (PASS/FAIL) behavior. If no borderline
+  scanner is provided, the old behavior is recovered by treating all sites
+  with score in [uncertainLoThreshold, crypticThreshold) as PASS (since they
+  are below the cryptic threshold). The PASS guarantee is now stronger:
+  all sites must have score < uncertainLoThreshold, not just < crypticThreshold.
 -/
 
 import BioCompiler.ThreeValued

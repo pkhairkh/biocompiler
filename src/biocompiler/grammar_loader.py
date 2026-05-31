@@ -151,6 +151,7 @@ def grammar_to_predicate_params(grammar: dict) -> dict[str, Any]:
             params.setdefault("cai_threshold", pred.get("threshold", 0.5))
         elif name == "NoCrypticSplice":
             params.setdefault("cryptic_splice_threshold", pred.get("cryptic_threshold", 3.0))
+            params.setdefault("uncertain_lo", pred.get("uncertain_lo", 1.5))
         elif name == "NoRestrictionSite":
             params.setdefault("enzymes", pred.get("enzyme_sites", []))
 
@@ -159,6 +160,7 @@ def grammar_to_predicate_params(grammar: dict) -> dict[str, Any]:
     params.setdefault("gc_hi", 0.70)
     params.setdefault("cai_threshold", 0.5)
     params.setdefault("cryptic_splice_threshold", 3.0)
+    params.setdefault("uncertain_lo", 1.5)
     params.setdefault("enzymes", ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"])
     params.setdefault("exon_boundaries", [(0, 0)])
 

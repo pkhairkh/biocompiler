@@ -207,6 +207,13 @@ structure SpliceSiteMatch where
     This is a parameter of the type system, not a fixed constant. -/
 def crypticThreshold : Rat := 3.0  -- Based on MaxEntScan scoring
 
+/-- Lower threshold for borderline (uncertain) cryptic splice sites.
+    Sites with score in [uncertainLoThreshold, crypticThreshold) are
+    borderline — potentially functional but not definitively strong
+    cryptic splice sites. This enables the dual-threshold
+    PASS/UNCERTAIN/FAIL verdict for NoCrypticSplice. -/
+def uncertainLoThreshold : Rat := 1.5
+
 /-- The CpG dinucleotide pattern. -/
 def cpgDinucleotide : Sequence :=
   [Nucleotide.C, Nucleotide.G]
@@ -361,6 +368,28 @@ class SpliceSiteScanner where
       hasCrypticSpliceSite seq = true →
         ∃ (pos : Nat) (site : SpliceSiteMatch),
           pos < seq.length ∧ site.position = pos ∧ site.score ≥ crypticThreshold
+
+  /-- Check if any splice site has a score in the UNCERTAIN range:
+      uncertain_lo <= score < crypticThreshold.
+      This identifies sites that are borderline — potentially functional
+      but not definitively strong cryptic splice sites. -/
+  hasBorderlineSpliceSite : Sequence → Bool
+
+  /-- COMPLETENESS for borderline sites: If a site with score in
+      [uncertain_lo, crypticThreshold) exists at some position,
+      hasBorderlineSpliceSite returns true.
+
+      We state the upper bound as ¬(score ≥ crypticThreshold) rather than
+      score < crypticThreshold. These are logically equivalent for Rat
+      (which has a linear order), but the negated form avoids the need
+      for an explicit order-conversion lemma in the soundness proof. -/
+  borderline_completeness :
+    ∀ (seq : Sequence) (pos : Nat) (site : SpliceSiteMatch),
+      pos < seq.length →
+      site.position = pos →
+      site.score ≥ uncertainLoThreshold →
+      ¬(site.score ≥ crypticThreshold) →
+      hasBorderlineSpliceSite seq = false → False
 
 -- ==============================================================================
 -- Codon Adaptation Index (CAI) Computation

@@ -1361,12 +1361,20 @@ def _check_predicates_via_type_system(
 
     satisfied = []
     failed = []
+    uncertain = []
     for r in results:
         predicate_name = r.predicate
         if r.verdict == Verdict.PASS:
             satisfied.append(predicate_name)
-        else:
+        elif r.verdict == Verdict.FAIL:
             failed.append(predicate_name)
+        else:
+            # UNCERTAIN — not a definitive failure, but a knowledge gap.
+            # The optimizer treats UNCERTAIN as "satisfied for now" since
+            # no site exceeds cryptic_threshold, but downstream consumers
+            # should be aware of borderline sites.
+            uncertain.append(predicate_name)
+            satisfied.append(predicate_name)
 
     # Verify disjoint
     assert not (set(satisfied) & set(failed)), (
