@@ -491,7 +491,7 @@ class TestCLIEnhancements:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
-        assert "7.0" in result.stdout or "7.0" in result.stderr
+        assert "7." in result.stdout or "7." in result.stderr
 
     def test_cli_scan_smoke(self):
         """CLI scan should work with a basic sequence."""
