@@ -1,0 +1,2 @@
+[console_scripts]
+dnachisel = dnachisel.cli:main

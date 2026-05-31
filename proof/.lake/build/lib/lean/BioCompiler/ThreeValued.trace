@@ -1,0 +1,32 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["5abeabd4e2a9d918.olean"],
+  "m": false,
+  "i": "9e0393868cc8c05f.ilean",
+  "c": "519453cd0434aac3.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/z/my-project/biocompiler/proof/.lake/build/lib/lean /home/z/.elan/toolchains/leanprover--lean4---v4.30.0/bin/lean -DautoImplicit=false /home/z/my-project/biocompiler/proof/BioCompiler/ThreeValued.lean -o /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/ThreeValued.olean -i /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/ThreeValued.ilean -c /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/ThreeValued.c --setup /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/ThreeValued.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["BioCompiler.ThreeValued:deps",
+   [["deps",
+     [["BioCompiler/BioCompiler:extraDep",
+       [["@BioCompiler:extraDep", "00000000000006bb"]]],
+      ["imports", "00000000000006bb"]]],
+    ["libs",
+     [["import dynlibs", "00000000000006bb"],
+      ["package external libraries", "00000000000006bb"],
+      ["module dynlibs", "00000000000006bb"],
+      ["module plugins", "00000000000006bb"]]]]],
+  ["Lean 4.30.0, commit d024af099ca4bf2c86f649261ebf59565dc8c622",
+   "2f4703bb19086252"],
+  ["/home/z/my-project/biocompiler/proof/BioCompiler/ThreeValued.lean",
+   "c36519baa91ad7fe"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: BioCompiler.ThreeValued", "a8bd9aad8abbc5b1"],
+  ["Package.id?: (some BioCompiler)", "143d9b3ae216737d"],
+  ["Module.leanArgs: #[-DautoImplicit=false]", "83bf8aa7a6e9844b"]],
+ "depHash": "c3e9915d3caeaee6"}

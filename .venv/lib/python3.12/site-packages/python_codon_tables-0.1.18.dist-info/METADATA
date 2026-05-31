@@ -1,0 +1,41 @@
+Metadata-Version: 2.4
+Name: python_codon_tables
+Version: 0.1.18
+Summary: Codon Usage Tables for Python, from kazusa.or.jp
+Author: Zulko
+License-Expression: CC0-1.0
+Project-URL: Homepage, https://github.com/Edinburgh-Genome-Foundry/python_codon_tables
+Keywords: DNA,codon,usage
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Dynamic: license-file
+
+Python Codon Tables
+===================
+
+Provides codon usage tables as dictionaries, for Python.
+
+
+Infos
+-----
+
+**PIP installation:**
+
+.. code:: bash
+
+  pip install python_codon_tables
+
+**Web documentation:** `<https://edinburgh-genome-foundry.github.io/python_codon_tables/>`_
+
+**Github Page:** `<https://github.com/Edinburgh-Genome-Foundry/python_codon_tables>`_
+
+**License:** CC0
+
+
+More biology software
+---------------------
+
+.. image:: https://raw.githubusercontent.com/Edinburgh-Genome-Foundry/Edinburgh-Genome-Foundry.github.io/master/static/imgs/logos/egf-codon-horizontal.png
+  :target: https://edinburgh-genome-foundry.github.io/
+
+Python Codon Tables is part of the `EGF Codons <https://edinburgh-genome-foundry.github.io/>`_ synthetic biology software suite for DNA design, manufacturing and validation.

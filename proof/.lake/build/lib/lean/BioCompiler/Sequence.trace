@@ -1,0 +1,35 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["21a425d3ff037ba5.olean"],
+  "m": false,
+  "i": "8ccd1cad42925f81.ilean",
+  "c": "4301ed047aa9b230.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/z/my-project/biocompiler/proof/.lake/build/lib/lean /home/z/.elan/toolchains/leanprover--lean4---v4.30.0/bin/lean -DautoImplicit=false /home/z/my-project/biocompiler/proof/BioCompiler/Sequence.lean -o /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/Sequence.olean -i /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/Sequence.ilean -c /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/Sequence.c --setup /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/Sequence.setup.json --json",
+   "level": "trace"},
+  {"message":
+   "BioCompiler/Sequence.lean:37:5: unused variable `h`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"}],
+ "inputs":
+ [["BioCompiler.Sequence:deps",
+   [["deps",
+     [["BioCompiler/BioCompiler:extraDep",
+       [["@BioCompiler:extraDep", "00000000000006bb"]]],
+      ["imports", "00000000000006bb"]]],
+    ["libs",
+     [["import dynlibs", "00000000000006bb"],
+      ["package external libraries", "00000000000006bb"],
+      ["module dynlibs", "00000000000006bb"],
+      ["module plugins", "00000000000006bb"]]]]],
+  ["Lean 4.30.0, commit d024af099ca4bf2c86f649261ebf59565dc8c622",
+   "2f4703bb19086252"],
+  ["/home/z/my-project/biocompiler/proof/BioCompiler/Sequence.lean",
+   "f63eed4d40e54456"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: BioCompiler.Sequence", "decd0463d172657a"],
+  ["Package.id?: (some BioCompiler)", "143d9b3ae216737d"],
+  ["Module.leanArgs: #[-DautoImplicit=false]", "83bf8aa7a6e9844b"]],
+ "depHash": "764ce32373c27897"}

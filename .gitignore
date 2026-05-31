@@ -1,51 +1,13 @@
-# Lean4 build artifacts
-proof/.lake/
-proof/.lake/build/
-proof/build/
-proof/lake-manifest.json
-*.olean
-*.ilean
+# BioCompiler
 
-# Python
+# Python bytecode
 __pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-dist/
-build/
-.eggs/
-*.egg
+*.pyc
+*.pyo
 
-# Virtual environments
-venv/
-.venv/
-env/
+# Lean build artifacts
+lean/.lake/build/
+lean/.lake/config/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
+# OS files
 .DS_Store
-Thumbs.db
-
-# Temporary / generated
-*.tmp
-*.log
-
-# Generated certificates (output, not source)
-certificates/*.json
-
-# pytest
-.pytest_cache/
-
-# Coverage
-.coverage
-coverage.xml
-htmlcov/
-
-# SQLite databases
-*.db
