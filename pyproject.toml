@@ -27,11 +27,12 @@ dependencies = [
 [project.optional-dependencies]
 optimizer = ["z3-solver>=4.12.0"]
 compare = ["dnachisel>=3.0.0"]
+head-to-head = ["dnachisel>=3.0.0", "biopython>=1.80"]
 api = ["httpx>=0.24.0"]
 parsing = ["beautifulsoup4>=4.12.0"]
 biopython = ["biopython>=1.80"]
 jupyter = ["ipython>=8.0", "matplotlib>=3.5", "ipywidgets>=8.0"]
-dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1.0", "mypy>=1.0", "httpx>=0.24.0", "dnachisel>=3.0.0", "beautifulsoup4>=4.12.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1.0", "mypy>=1.0", "httpx>=0.24.0", "dnachisel>=3.0.0", "beautifulsoup4>=4.12.0", "biopython>=1.80"]
 
 [project.urls]
 Homepage = "https://github.com/pkhairkh/biocompiler"
@@ -51,7 +52,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-biocompiler = ["py.typed"]
+biocompiler = ["py.typed", "grammars/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,2 @@
+[console_scripts]
+biocompiler = biocompiler.cli:main

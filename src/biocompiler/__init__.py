@@ -74,13 +74,18 @@ from .maxentscan import (
     max_acceptor_score,
 )
 from .optimization import optimize_sequence, OptimizationResult
-from .grammar_loader import load_grammar, grammar_to_predicate_params
+from .grammar_loader import load_grammar, grammar_to_predicate_params, load_builtin_grammar, list_builtin_grammars
 from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta
 from .report import generate_report
 from .benchmark import run_benchmarks, BenchmarkReport
 from .organism_db import OrganismDatabase, get_database
 from .tissue_data import get_tissue_weights, list_available_tissues, add_custom_tissue
 from .dna_chisel_compat import compare_optimizers, run_comparative_benchmark
+from .tool_comparison import (
+    run_head_to_head_benchmark, compare_tools, HeadToHeadReport,
+    format_head_to_head_text, format_head_to_head_json,
+    is_dna_chisel_available,
+)
 from .dataset_validation import run_dataset_validation, DatasetValidationReport
 from .import_seq import import_fasta, import_genbank, import_sequence
 from .biopython_compat import to_seqrecord, from_seqrecord, optimize_to_seqrecord
@@ -136,6 +141,7 @@ __all__ = [
     "optimize_sequence", "OptimizationResult",
     # Grammar
     "load_grammar", "grammar_to_predicate_params",
+    "load_builtin_grammar", "list_builtin_grammars",
     # Export
     "export_fasta", "export_genbank", "export_genbank_with_certificate", "export_multi_fasta",
     # Report
@@ -148,6 +154,10 @@ __all__ = [
     "get_tissue_weights", "list_available_tissues", "add_custom_tissue",
     # DNA Chisel Compatibility
     "compare_optimizers", "run_comparative_benchmark",
+    # Head-to-Head Tool Comparison
+    "run_head_to_head_benchmark", "compare_tools", "HeadToHeadReport",
+    "format_head_to_head_text", "format_head_to_head_json",
+    "is_dna_chisel_available",
     # Dataset Validation
     "run_dataset_validation", "DatasetValidationReport",
     # Import

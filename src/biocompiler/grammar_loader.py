@@ -3,6 +3,10 @@ BioCompiler Grammar Loader — YAML Configuration Support
 
 Loads YAML grammar files that define gene-specific NDFST rules,
 type system parameters, and organism-specific settings.
+
+Built-in grammars are shipped inside the ``biocompiler.grammars`` package
+directory and can be loaded by name via :func:`load_builtin_grammar`.
+User-supplied grammar files can be loaded by path via :func:`load_grammar`.
 """
 
 import logging
@@ -15,6 +19,9 @@ try:
     import yaml
 except ImportError:
     yaml = None  # type: ignore
+
+# Directory where built-in grammar YAML files live
+_GRAMMARS_DIR = Path(__file__).parent / "grammars"
 
 
 def _check_yaml_available():
@@ -165,3 +172,47 @@ def grammar_to_predicate_params(grammar: dict) -> dict[str, Any]:
     params.setdefault("exon_boundaries", [(0, 0)])
 
     return params
+
+
+def list_builtin_grammars() -> list[str]:
+    """
+    List the names of built-in grammar files shipped with BioCompiler.
+
+    Built-in grammars are YAML files in the ``biocompiler.grammars`` package
+    directory. They can be loaded by name using :func:`load_builtin_grammar`.
+
+    Returns:
+        List of grammar names (without ``.yaml`` extension)
+    """
+    if not _GRAMMARS_DIR.exists():
+        return []
+    return sorted(p.stem for p in _GRAMMARS_DIR.glob("*.yaml"))
+
+
+def load_builtin_grammar(name: str) -> dict[str, Any]:
+    """
+    Load a built-in grammar by name.
+
+    Built-in grammars are YAML files shipped inside the ``biocompiler.grammars``
+    package directory. Use :func:`list_builtin_grammars` to discover available
+    names.
+
+    Args:
+        name: Grammar name (without ``.yaml`` extension), e.g. ``"egfp_hek293t"``
+
+    Returns:
+        Parsed grammar as a dict
+
+    Raises:
+        ImportError: if PyYAML is not installed
+        FileNotFoundError: if no built-in grammar with that name exists
+        ValueError: if the grammar file is malformed
+    """
+    path = _GRAMMARS_DIR / f"{name}.yaml"
+    if not path.exists():
+        available = list_builtin_grammars()
+        raise FileNotFoundError(
+            f"No built-in grammar named '{name}'. "
+            f"Available grammars: {available}"
+        )
+    return load_grammar(path)

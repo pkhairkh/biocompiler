@@ -669,6 +669,10 @@ class TestNoCpGIsland:
     """
 
     @pytest.mark.parametrize("gene_name", list(HUMAN_REFERENCE_GENES.keys()))
+    @pytest.mark.xfail(
+        reason="CpG island avoidance is best-effort; GC-rich genes may inevitably contain CpG islands",
+        strict=False,
+    )
     def test_human_no_cpg_island(self, gene_name):
         """Optimized human genes should avoid CpG islands where possible."""
         gene = HUMAN_REFERENCE_GENES[gene_name]
@@ -678,14 +682,17 @@ class TestNoCpGIsland:
             gene_name=gene_name,
             dataset_name="human",
         )
-        # Informational only — do NOT fail the test suite on individual failures.
-        # We track the result but always pass; the aggregate threshold is below.
-        if not result.passed:
-            pytest.skip(
-                f"CpG island found in {gene_name} (best-effort): {result.actual}"
-            )
+        # CpG island avoidance is best-effort for GC-rich proteins.
+        # Individual gene failures appear as XFAIL (visible, not hidden).
+        # The aggregate threshold in test_no_cpg_island_aggregate_pass_rate
+        # is the real gate — it requires >= 50% of genes to pass.
+        assert result.passed, f"CpG island found in {gene_name}: {result.actual}"
 
     @pytest.mark.parametrize("gene_name", list(ECOLI_REFERENCE_GENES.keys()))
+    @pytest.mark.xfail(
+        reason="CpG island avoidance is best-effort; GC-rich genes may inevitably contain CpG islands",
+        strict=False,
+    )
     def test_ecoli_no_cpg_island(self, gene_name):
         """Optimized E. coli genes should avoid CpG islands where possible."""
         gene = ECOLI_REFERENCE_GENES[gene_name]
@@ -695,12 +702,13 @@ class TestNoCpGIsland:
             gene_name=gene_name,
             dataset_name="ecoli",
         )
-        if not result.passed:
-            pytest.skip(
-                f"CpG island found in {gene_name} (best-effort): {result.actual}"
-            )
+        assert result.passed, f"CpG island found in {gene_name}: {result.actual}"
 
     @pytest.mark.parametrize("gene_name", list(SYNTHETIC_BENCHMARKS.keys()))
+    @pytest.mark.xfail(
+        reason="CpG island avoidance is best-effort; GC-rich proteins may inevitably contain CpG islands",
+        strict=False,
+    )
     def test_synthetic_no_cpg_island(self, gene_name):
         """Optimized synthetic proteins should avoid CpG islands where possible."""
         gene = SYNTHETIC_BENCHMARKS[gene_name]
@@ -710,10 +718,7 @@ class TestNoCpGIsland:
             gene_name=gene_name,
             dataset_name="synthetic",
         )
-        if not result.passed:
-            pytest.skip(
-                f"CpG island found in {gene_name} (best-effort): {result.actual}"
-            )
+        assert result.passed, f"CpG island found in {gene_name}: {result.actual}"
 
     def test_no_cpg_island_aggregate_pass_rate(self):
         """At least 50% of genes should avoid CpG islands (informational threshold)."""
