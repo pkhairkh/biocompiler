@@ -228,7 +228,7 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
         | nil => simp [h_list] at h_pass
         | cons hd tl =>
           cases tl with
-          | nil => simp [h_list]
+          | nil => simp
           | cons hd' tl' => simp [h_list] at h_pass
       simp only [propertyHolds]
       exact ⟨h_cell_eq, h_list_len⟩

@@ -14,6 +14,8 @@ Phase 6:   Re-optimization pass (iterative until convergence)
 
 from typing import List, Dict, Optional, Tuple, Set
 
+from dataclasses import dataclass, field
+
 from .type_system import (
     CODON_TABLE, AA_TO_CODONS, BLOSUM62, SpliceVerdict, PredicateResult,
     check_no_stop_codons, check_no_cryptic_splice, check_no_cpg_island,
@@ -26,6 +28,159 @@ from .type_system import (
 from .species import SPECIES
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
 from .certificates import compute_certificate, format_certificate
+from .exceptions import InvalidProteinError, UnsupportedOrganismError
+
+
+# ────────────────────────────────────────────────────────────
+# High-level OptimizationResult and optimize_sequence API
+# ────────────────────────────────────────────────────────────
+
+@dataclass
+class OptimizationResult:
+    """Result of optimizing a protein sequence.
+
+    Provides the optimized DNA sequence along with quality metrics
+    and a list of predicates that the result fails to satisfy.
+    """
+    sequence: str
+    gc_content: float
+    cai: float
+    failed_predicates: list = field(default_factory=list)
+    predicate_results: list = field(default_factory=list)
+    certificate_text: str = ""
+
+
+def optimize_sequence(
+    target_protein: str | None = None,
+    organism: str = "Homo_sapiens",
+    gc_lo: float = 0.30,
+    gc_hi: float = 0.70,
+    cai_threshold: float = 0.5,
+    enzymes: list | None = None,
+    strategy: str = "constraint_first",
+    **kwargs,
+) -> OptimizationResult:
+    """Optimize a protein sequence for expression in the target organism.
+
+    This is the high-level convenience API that wraps BioOptimizer.
+    It takes a protein sequence and returns an OptimizationResult with
+    the optimized DNA sequence and quality metrics.
+
+    Args:
+        target_protein: Amino acid sequence (1-letter codes, no stop).
+            Can also be passed as the first positional argument.
+        organism: Target organism (e.g., 'Homo_sapiens', 'Escherichia_coli').
+        gc_lo: Minimum acceptable GC fraction.
+        gc_hi: Maximum acceptable GC fraction.
+        cai_threshold: Minimum CAI score for the CodonAdapted predicate.
+        enzymes: List of restriction enzyme names to avoid.
+        strategy: Optimization strategy ('constraint_first' or 'cai_first').
+        **kwargs: Additional arguments (e.g., splice_low, splice_high).
+
+    Returns:
+        OptimizationResult with optimized sequence and metrics.
+
+    Raises:
+        InvalidProteinError: if the protein contains invalid amino acid codes.
+        UnsupportedOrganismError: if the organism is not supported.
+    """
+    # Handle positional arg: optimize_sequence("MVHLTPEEK", organism="...")
+    if target_protein is None and len(kwargs.get("_args", [])) > 0:
+        target_protein = kwargs["_args"][0]
+
+    if not target_protein:
+        raise InvalidProteinError("", {"<empty>"})
+
+    target_protein = target_protein.strip().upper()
+
+    # Validate protein
+    valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
+    invalid = set(target_protein) - valid_aas
+    if invalid:
+        raise InvalidProteinError(target_protein, invalid)
+
+    # Map organism name to species key
+    species_key = _organism_to_species_key(organism)
+
+    # Configure optimizer
+    opt = BioOptimizer(
+        species=species_key,
+        enzymes=enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"],
+        splice_low=kwargs.get("splice_low", 3.0),
+        splice_high=kwargs.get("splice_high", 6.0),
+        min_cai=cai_threshold,
+        strategy=strategy,
+    )
+
+    # Back-translate protein to DNA for the optimizer
+    from .translation import compute_cai
+    initial_seq = _back_translate_protein(target_protein, species_key)
+
+    # Run optimization
+    optimized_seq, pred_results, cert_text = opt.optimize(initial_seq, strategy=strategy)
+
+    # Compute metrics
+    gc = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
+    gc = round(gc, 4)
+
+    try:
+        cai_val = compute_cai(optimized_seq, organism)
+    except UnsupportedOrganismError:
+        cai_val = opt._compute_seq_cai(optimized_seq)
+
+    # Collect failed predicates
+    failed = [r.predicate for r in pred_results if not r.passed]
+
+    return OptimizationResult(
+        sequence=optimized_seq,
+        gc_content=gc,
+        cai=cai_val,
+        failed_predicates=failed,
+        predicate_results=pred_results,
+        certificate_text=cert_text,
+    )
+
+
+def _organism_to_species_key(organism: str) -> str:
+    """Map an organism name to the species key used in the SPECIES dict."""
+    mapping = {
+        "Homo_sapiens": "human",
+        "human": "human",
+        "Escherichia_coli": "ecoli",
+        "E_coli": "ecoli",
+        "ecoli": "ecoli",
+        "Saccharomyces_cerevisiae": "yeast",
+        "yeast": "yeast",
+        "Mus_musculus": "mouse",
+        "mouse": "mouse",
+        "CHO": "cho",
+        "CHO_K1": "cho",
+    }
+    key = mapping.get(organism)
+    if key and key in SPECIES:
+        return key
+    # Fallback: try the organism name directly
+    if organism in SPECIES:
+        return organism
+    # Default to ecoli
+    return "ecoli"
+
+
+def _back_translate_protein(protein: str, species_key: str) -> str:
+    """Back-translate a protein to DNA using highest-CAI codons."""
+    species_cai = SPECIES.get(species_key, SPECIES["ecoli"])
+    codons = []
+    for aa in protein:
+        if aa == "*":
+            codons.append("TAA")
+            continue
+        candidates = AA_TO_CODONS.get(aa, [])
+        if not candidates:
+            codons.append("NNN")
+            continue
+        best = max(candidates, key=lambda c: species_cai.get(c, 0.0))
+        codons.append(best)
+    return "".join(codons)
 
 
 def _count_gts(s: str) -> int:

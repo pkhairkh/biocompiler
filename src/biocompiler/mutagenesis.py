@@ -250,3 +250,100 @@ def _resolves_constraints(
                 return False
 
     return True
+
+
+# ────────────────────────────────────────────────────────────
+# GT-mandatory amino acids and cryptic donor analysis
+# ────────────────────────────────────────────────────────────
+
+# Amino acids where ALL synonymous codons contain GT
+# Valine (V): GTT, GTC, GTA, GTG — all start with GT
+GT_MANDATORY_AAS: Set[str] = {"V"}
+
+
+def find_unrepairable_cryptic_donors(
+    seq: str,
+    protein: str,
+    organism: str = "Homo_sapiens",
+    threshold: float = 3.0,
+) -> List[Tuple[int, int, str, float, bool, bool]]:
+    """Find cryptic splice donors that cannot be repaired by synonymous substitution.
+
+    A cryptic splice donor is "unrepairable" if all synonymous codons for the
+    amino acid at that position also contain GT, meaning no synonymous
+    substitution can eliminate the GT dinucleotide. This is only possible
+    for GT-mandatory amino acids like Valine (all codons: GTN).
+
+    Args:
+        seq: Optimized DNA sequence.
+        protein: Target protein sequence (1-letter codes).
+        organism: Target organism for CAI lookup.
+        threshold: MaxEntScan score threshold for considering a GT a cryptic donor.
+
+    Returns:
+        List of tuples (position, codon_index, amino_acid, score, fixable, gt_mandatory)
+        where:
+        - position: 0-based nucleotide position of the GT
+        - codon_index: 0-based codon index in the protein
+        - amino_acid: single-letter amino acid code
+        - score: MaxEntScan donor score at this position
+        - fixable: True if a synonymous codon can eliminate the GT
+        - gt_mandatory: True if the AA has no GT-free synonymous codons
+    """
+    from .maxentscan import score_donor
+    from .species import SPECIES
+
+    seq = seq.upper()
+    results = []
+
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] != "GT":
+            continue
+
+        # Score this GT as a donor
+        donor_score = score_donor(seq, i)
+        if donor_score <= -50.0:
+            donor_score = 0.0
+
+        if donor_score < threshold:
+            continue
+
+        # Determine codon context
+        codon_start = (i // 3) * 3
+        next_codon_start = codon_start + 3
+        codon_idx = codon_start // 3
+
+        if codon_idx >= len(protein):
+            continue
+
+        aa = protein[codon_idx]
+
+        # Determine if within-codon or cross-codon
+        is_within = (i + 1) < next_codon_start
+
+        gt_mandatory = aa in GT_MANDATORY_AAS
+
+        if is_within:
+            # Within-codon GT: check if any synonymous codon avoids GT
+            has_gt_free = any("GT" not in c for c in AA_TO_CODONS.get(aa, []))
+            fixable = has_gt_free
+        else:
+            # Cross-codon GT: check if adjacent codons can be changed
+            # to eliminate the boundary GT
+            fixable = True  # Cross-codon GTs are generally fixable
+            if codon_start + 3 <= len(seq):
+                prev_cs = codon_start
+                next_cs = next_codon_start
+                if next_cs + 3 <= len(seq):
+                    prev_codon = seq[prev_cs:prev_cs + 3]
+                    next_codon = seq[next_cs:next_cs + 3]
+                    prev_aa = CODON_TABLE.get(prev_codon)
+                    next_aa = CODON_TABLE.get(next_codon)
+                    if prev_aa and next_aa:
+                        prev_can_avoid = any(c[-1] != 'G' for c in AA_TO_CODONS.get(prev_aa, [prev_codon]))
+                        next_can_avoid = any(c[0] != 'T' for c in AA_TO_CODONS.get(next_aa, [next_codon]))
+                        fixable = prev_can_avoid or next_can_avoid
+
+        results.append((i, codon_idx, aa, donor_score, fixable, gt_mandatory))
+
+    return results

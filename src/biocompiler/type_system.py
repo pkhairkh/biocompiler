@@ -447,3 +447,697 @@ def find_cross_codon_restriction(seq: str, site: str) -> List[int]:
             if codon_end_i - codon_start_i > 3:
                 positions.append(i)
     return positions
+
+
+# ════════════════════════════════════════════════════════════════
+# High-level evaluate_* API — returns TypeCheckResult objects
+# ════════════════════════════════════════════════════════════════
+
+from .types import TypeCheckResult
+
+
+def evaluate_gc_in_range(seq: str, gc_lo: float = 0.30, gc_hi: float = 0.70) -> TypeCheckResult:
+    """Evaluate whether GC content falls within the specified range.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        gc_lo: Minimum acceptable GC fraction (inclusive).
+        gc_hi: Maximum acceptable GC fraction (inclusive).
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    if not seq:
+        return TypeCheckResult(
+            predicate=f"GCInRange({gc_lo}, {gc_hi})",
+            verdict=Verdict.UNCERTAIN,
+            violation="Empty sequence",
+        )
+    seq = seq.upper()
+    gc = (seq.count("G") + seq.count("C")) / len(seq)
+    if gc_lo <= gc <= gc_hi:
+        return TypeCheckResult(
+            predicate=f"GCInRange({gc_lo}, {gc_hi})",
+            verdict=Verdict.PASS,
+        )
+    direction = "below" if gc < gc_lo else "above"
+    return TypeCheckResult(
+        predicate=f"GCInRange({gc_lo}, {gc_hi})",
+        verdict=Verdict.FAIL,
+        violation=f"GC content {gc:.3f} is {direction} range [{gc_lo}, {gc_hi}]",
+    )
+
+
+def evaluate_no_cryptic_splice(
+    seq: str,
+    boundaries: List[Tuple[int, int]] | None = None,
+    cryptic_threshold: float = 3.0,
+    uncertain_lo: float = 0.0,
+) -> TypeCheckResult:
+    """Evaluate whether the sequence contains cryptic splice sites.
+
+    Uses dual-threshold MaxEntScan scoring: sites scoring >= cryptic_threshold
+    are FAIL, sites scoring >= uncertain_lo (but < cryptic_threshold) are
+    UNCERTAIN, and sites below uncertain_lo are PASS.
+
+    When uncertain_lo=0 (default), only PASS/FAIL verdicts are produced,
+    preserving backward compatibility.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        boundaries: Exon boundaries (used for context; currently informational).
+        cryptic_threshold: Score threshold above which a site is FAIL.
+        uncertain_lo: Score threshold above which a site is UNCERTAIN.
+            Set to 0 to disable UNCERTAIN zone (binary PASS/FAIL only).
+
+    Returns:
+        TypeCheckResult with PASS/UNCERTAIN/FAIL verdict.
+    """
+    from .maxentscan import score_donor
+
+    seq = seq.upper()
+    gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
+
+    if not gt_positions:
+        return TypeCheckResult(
+            predicate="NoCrypticSplice",
+            verdict=Verdict.PASS,
+        )
+
+    worst_score = -50.0
+    worst_pos = -1
+    worst_verdict = Verdict.PASS
+
+    for pos in gt_positions:
+        score = score_donor(seq, pos)
+        # If score_donor returns -50 (insufficient context), treat as 0
+        if score <= -50.0:
+            score = 0.0
+
+        if score >= cryptic_threshold:
+            v = Verdict.FAIL
+        elif uncertain_lo > 0 and score >= uncertain_lo:
+            v = Verdict.UNCERTAIN
+        else:
+            v = Verdict.PASS
+
+        if score > worst_score:
+            worst_score = score
+            worst_pos = pos
+            worst_verdict = v
+
+    return TypeCheckResult(
+        predicate="NoCrypticSplice",
+        verdict=worst_verdict,
+        violation=(
+            f"Worst cryptic splice score {worst_score:.2f} at pos {worst_pos}"
+            if worst_verdict != Verdict.PASS else None
+        ),
+    )
+
+
+def evaluate_splice_correct(
+    seq: str,
+    boundaries: List[Tuple[int, int]] | None = None,
+    cellular_context: str = "HEK293T",
+) -> TypeCheckResult:
+    """Evaluate splice correctness — whether known exon boundaries are respected.
+
+    This is an informational predicate that checks for canonical splice signals
+    (GT..AG) at intron boundaries. It passes if all introns have canonical
+    splice signals, and fails if any intron lacks them.
+
+    Args:
+        seq: Full pre-mRNA sequence.
+        boundaries: List of (start, end) tuples for each exon.
+        cellular_context: Cell type context (currently informational).
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    seq = seq.upper()
+
+    if not boundaries or len(boundaries) < 2:
+        # Single-exon gene or no boundaries provided — nothing to check
+        return TypeCheckResult(
+            predicate="SpliceCorrect",
+            verdict=Verdict.PASS,
+        )
+
+    # Check canonical splice signals at each intron boundary
+    for i in range(len(boundaries) - 1):
+        intron_start = boundaries[i][1]
+        intron_end = boundaries[i + 1][0]
+
+        if intron_start >= intron_end:
+            continue
+
+        # Check donor (GT) at intron start
+        if intron_start + 2 <= len(seq):
+            donor = seq[intron_start:intron_start + 2]
+            if donor != "GT":
+                return TypeCheckResult(
+                    predicate="SpliceCorrect",
+                    verdict=Verdict.FAIL,
+                    violation=f"Non-canonical donor {donor} at pos {intron_start}",
+                )
+
+        # Check acceptor (AG) at intron end
+        if intron_end - 2 >= 0:
+            acceptor = seq[intron_end - 2:intron_end]
+            if acceptor != "AG":
+                return TypeCheckResult(
+                    predicate="SpliceCorrect",
+                    verdict=Verdict.FAIL,
+                    violation=f"Non-canonical acceptor {acceptor} at pos {intron_end - 2}",
+                )
+
+    return TypeCheckResult(
+        predicate="SpliceCorrect",
+        verdict=Verdict.PASS,
+    )
+
+
+def evaluate_codon_adapted(
+    seq: str,
+    organism: str = "Homo_sapiens",
+    threshold: float = 0.5,
+) -> TypeCheckResult:
+    """Evaluate whether codon adaptation index meets the threshold.
+
+    Args:
+        seq: DNA coding sequence.
+        organism: Target organism for CAI computation.
+        threshold: Minimum CAI score for PASS.
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+
+    Raises:
+        UnsupportedOrganismError: if organism is not in the supported set.
+    """
+    from .translation import compute_cai
+
+    cai = compute_cai(seq, organism)
+    if cai >= threshold:
+        return TypeCheckResult(
+            predicate=f"CodonAdapted({organism}, {threshold})",
+            verdict=Verdict.PASS,
+        )
+    return TypeCheckResult(
+        predicate=f"CodonAdapted({organism}, {threshold})",
+        verdict=Verdict.FAIL,
+        violation=f"CAI {cai:.4f} is below threshold {threshold}",
+    )
+
+
+def evaluate_no_restriction_site(
+    seq: str,
+    enzymes: List[str] | None = None,
+    enzyme_set: List[str] | None = None,
+) -> TypeCheckResult:
+    """Evaluate whether the sequence contains restriction enzyme recognition sites.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        enzymes: List of enzyme names to check for.
+        enzyme_set: Alias for enzymes (used by certificate verification).
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    from .restriction_sites import get_recognition_site
+
+    effective_enzymes = enzymes or enzyme_set or []
+    seq = seq.upper()
+    violations = []
+
+    for enzyme in effective_enzymes:
+        site = get_recognition_site(enzyme)
+        if site is None:
+            continue
+        # Check for IUPAC patterns
+        has_iupac = any(b not in "ACGT" for b in site.upper())
+        if has_iupac:
+            # Use IUPAC matching
+            for i in range(len(seq) - len(site) + 1):
+                window = seq[i:i + len(site)]
+                match = True
+                for s_base, p_base in zip(window, site.upper()):
+                    from .constants import IUPAC_EXPAND
+                    allowed = IUPAC_EXPAND.get(p_base, p_base)
+                    if s_base not in allowed:
+                        match = False
+                        break
+                if match:
+                    violations.append((i, enzyme))
+        else:
+            pos = seq.find(site)
+            while pos != -1:
+                violations.append((pos, enzyme))
+                pos = seq.find(site, pos + 1)
+
+    if violations:
+        details = ", ".join(f"{e}@{p}" for p, e in violations)
+        return TypeCheckResult(
+            predicate="NoRestrictionSite",
+            verdict=Verdict.FAIL,
+            violation=f"Restriction sites found: {details}",
+        )
+    return TypeCheckResult(
+        predicate="NoRestrictionSite",
+        verdict=Verdict.PASS,
+    )
+
+
+def evaluate_in_frame(
+    seq: str,
+    boundaries: List[Tuple[int, int]] | None = None,
+    exon_boundaries: List[Tuple[int, int]] | None = None,
+) -> TypeCheckResult:
+    """Evaluate whether the coding sequence is in-frame (valid ORF).
+
+    Checks that each exon's length is divisible by 3 and that all codons
+    in the coding regions are valid.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        boundaries: List of (start, end) tuples for each exon.
+        exon_boundaries: Alias for boundaries (used by certificate verification).
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    effective_boundaries = boundaries or exon_boundaries or [(0, len(seq))]
+    seq = seq.upper()
+
+    for start, end in effective_boundaries:
+        exon_seq = seq[start:end]
+        if len(exon_seq) % 3 != 0:
+            return TypeCheckResult(
+                predicate="InFrame",
+                verdict=Verdict.FAIL,
+                violation=f"Exon [{start}, {end}) length {len(exon_seq)} not divisible by 3",
+            )
+        # Check all codons are valid
+        for i in range(0, len(exon_seq), 3):
+            codon = exon_seq[i:i+3]
+            if codon not in CODON_TABLE:
+                return TypeCheckResult(
+                    predicate="InFrame",
+                    verdict=Verdict.FAIL,
+                    violation=f"Invalid codon '{codon}' at position {start + i}",
+                )
+
+    return TypeCheckResult(
+        predicate="InFrame",
+        verdict=Verdict.PASS,
+    )
+
+
+def evaluate_no_instability_motif(seq: str) -> TypeCheckResult:
+    """Evaluate whether the sequence contains mRNA instability motifs.
+
+    Detects two classes of instability motifs:
+    1. ATTTA — the canonical AUUUA mRNA destabilizing element (5 bases)
+    2. U-rich regions — 6 or more consecutive T's in DNA (corresponding to
+       poly-U in mRNA), which are known mRNA degradation signals.
+
+    Five consecutive T's (TTTTT) is NOT flagged, as the threshold is 6.
+
+    Args:
+        seq: DNA sequence to evaluate.
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    seq = seq.upper()
+    positions = []
+
+    # Check for ATTTA (AUUUA in mRNA)
+    for i in range(len(seq) - 4):
+        if seq[i:i+5] == "ATTTA":
+            positions.append(i)
+
+    # Check for U-rich regions (6+ consecutive T's in DNA)
+    i = 0
+    while i < len(seq):
+        if seq[i] == "T":
+            run_start = i
+            while i < len(seq) and seq[i] == "T":
+                i += 1
+            run_len = i - run_start
+            if run_len >= 6:
+                positions.append(run_start)
+        else:
+            i += 1
+
+    if positions:
+        return TypeCheckResult(
+            predicate="NoInstabilityMotif",
+            verdict=Verdict.FAIL,
+            violation=f"Instability motifs at positions {positions}",
+        )
+    return TypeCheckResult(
+        predicate="NoInstabilityMotif",
+        verdict=Verdict.PASS,
+    )
+
+
+def evaluate_no_cpg_island(
+    seq: str,
+    window: int = 200,
+    threshold: float = 0.6,
+) -> TypeCheckResult:
+    """Evaluate whether the sequence contains CpG islands.
+
+    A CpG island is detected when the observed/expected CG ratio exceeds
+    the threshold in any sliding window of the specified size.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        window: Window size for CpG island scanning.
+        threshold: Maximum allowed Obs/Exp CG ratio.
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    seq = seq.upper()
+
+    if len(seq) < window:
+        # Sequence shorter than window — compute for the whole sequence
+        c_count = seq.count("C")
+        g_count = seq.count("G")
+        cg_count = sum(1 for i in range(len(seq) - 1) if seq[i:i+2] == "CG")
+        expected = (c_count * g_count) / len(seq) if len(seq) > 0 else 0
+        obs_exp = cg_count / expected if expected > 0 else 0.0
+        if obs_exp > threshold:
+            return TypeCheckResult(
+                predicate="NoCpGIsland",
+                verdict=Verdict.FAIL,
+                violation=f"CpG island Obs/Exp={obs_exp:.3f} > {threshold}",
+            )
+        return TypeCheckResult(
+            predicate="NoCpGIsland",
+            verdict=Verdict.PASS,
+        )
+
+    worst_ratio = 0.0
+    worst_start = -1
+    for start in range(0, len(seq) - window + 1):
+        window_seq = seq[start:start + window]
+        c_count = window_seq.count("C")
+        g_count = window_seq.count("G")
+        cg_count = sum(1 for i in range(len(window_seq) - 1) if window_seq[i:i+2] == "CG")
+        expected = (c_count * g_count) / len(window_seq) if len(window_seq) > 0 else 0
+        obs_exp = cg_count / expected if expected > 0 else 0.0
+        if obs_exp > worst_ratio:
+            worst_ratio = obs_exp
+            worst_start = start
+
+    if worst_ratio > threshold:
+        return TypeCheckResult(
+            predicate="NoCpGIsland",
+            verdict=Verdict.FAIL,
+            violation=f"CpG island at pos {worst_start}, Obs/Exp={worst_ratio:.3f} > {threshold}",
+        )
+    return TypeCheckResult(
+        predicate="NoCpGIsland",
+        verdict=Verdict.PASS,
+    )
+
+
+def analyze_codon_at_position(
+    seq: str,
+    position: int,
+    organism: str = "Homo_sapiens",
+) -> dict:
+    """Analyze the codon at a given position for optimality and alternatives.
+
+    Args:
+        seq: DNA coding sequence.
+        position: 0-based nucleotide position (will be rounded to codon start).
+        organism: Target organism for CAI lookup.
+
+    Returns:
+        Dict with keys: codon, amino_acid, cai, alternatives, position.
+    """
+    from .species import SPECIES
+
+    codon_start = (position // 3) * 3
+    if codon_start + 3 > len(seq):
+        return {"codon": "N/A", "amino_acid": "N/A", "cai": 0.0, "alternatives": [], "position": codon_start}
+
+    seq = seq.upper()
+    codon = seq[codon_start:codon_start + 3]
+    aa = CODON_TABLE.get(codon, "?")
+    species_cai = SPECIES.get(organism, SPECIES.get("ecoli", {}))
+    cai = species_cai.get(codon, 0.0)
+
+    alternatives = []
+    for alt in AA_TO_CODONS.get(aa, []):
+        if alt != codon:
+            alternatives.append({
+                "codon": alt,
+                "cai": species_cai.get(alt, 0.0),
+            })
+
+    return {
+        "codon": codon,
+        "amino_acid": aa,
+        "cai": cai,
+        "alternatives": sorted(alternatives, key=lambda x: x["cai"], reverse=True),
+        "position": codon_start,
+    }
+
+
+def evaluate_all_predicates(
+    seq: str,
+    boundaries: List[Tuple[int, int]] | None = None,
+    organism: str = "Homo_sapiens",
+    gc_lo: float = 0.30,
+    gc_hi: float = 0.70,
+    enzymes: List[str] | None = None,
+    cryptic_threshold: float = 3.0,
+    uncertain_lo: float = 0.0,
+    cai_threshold: float = 0.5,
+) -> List[TypeCheckResult]:
+    """Evaluate all 8 type predicates against a sequence.
+
+    The 8 predicates are:
+    1. NoCrypticSplice — no cryptic splice donors
+    2. SpliceCorrect — canonical splice signals at intron boundaries
+    3. GCInRange — GC content within acceptable range
+    4. CodonAdapted — CAI above threshold
+    5. NoRestrictionSite — no restriction enzyme sites
+    6. InFrame — valid coding frame
+    7. NoInstabilityMotif — no mRNA instability motifs
+    8. NoCpGIsland — no CpG islands
+
+    Args:
+        seq: DNA sequence to evaluate.
+        boundaries: Exon boundary tuples [(start, end), ...].
+        organism: Target organism for CAI computation.
+        gc_lo: Minimum GC fraction.
+        gc_hi: Maximum GC fraction.
+        enzymes: Restriction enzymes to check. If None, uses a default set
+            of common cloning enzymes: EcoRI, BamHI, XhoI, HindIII, NotI.
+        cryptic_threshold: MaxEnt score threshold for cryptic splice FAIL.
+        uncertain_lo: MaxEnt score threshold for UNCERTAIN.
+        cai_threshold: Minimum CAI for CodonAdapted PASS.
+
+    Returns:
+        List of 8 TypeCheckResult objects.
+    """
+    if enzymes is None:
+        enzymes = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
+    results: List[TypeCheckResult] = [
+        evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold, uncertain_lo),
+        evaluate_splice_correct(seq, boundaries),
+        evaluate_gc_in_range(seq, gc_lo, gc_hi),
+        evaluate_codon_adapted(seq, organism, cai_threshold),
+        evaluate_no_restriction_site(seq, enzymes),
+        evaluate_in_frame(seq, boundaries),
+        evaluate_no_instability_motif(seq),
+        evaluate_no_cpg_island(seq),
+    ]
+    return results
+
+
+# ════════════════════════════════════════════════════════════════
+# Predicate Registry — named dispatch for certificate verification
+# ════════════════════════════════════════════════════════════════
+
+from .exceptions import UnknownPredicateError
+
+
+class PredicateRegistry:
+    """Registry of named type predicates with evaluate() and verify() dispatch.
+
+    The registry provides a single entry point for certificate generation
+    and verification, mapping predicate names to their evaluate functions.
+    It supports both evaluation (with default parameters) and verification
+    (re-running a predicate with specific parameters from a certificate).
+    """
+
+    def __init__(self) -> None:
+        self._predicates: Dict[str, callable] = {}
+        self._verify_params: Dict[str, Dict[str, str]] = {}
+
+    def register(
+        self,
+        name: str,
+        fn: callable,
+        verify_param_map: Dict[str, str] | None = None,
+    ) -> None:
+        """Register a predicate evaluation function.
+
+        Args:
+            name: Predicate name (e.g., 'NoCrypticSplice').
+            fn: Callable that returns TypeCheckResult.
+            verify_param_map: Optional mapping from certificate param names
+                to function kwarg names.
+        """
+        self._predicates[name] = fn
+        if verify_param_map:
+            self._verify_params[name] = verify_param_map
+
+    def names(self) -> List[str]:
+        """Return sorted list of registered predicate names."""
+        return sorted(self._predicates.keys())
+
+    def evaluate(self, name: str, **kwargs) -> TypeCheckResult:
+        """Evaluate a named predicate.
+
+        Args:
+            name: Predicate name.
+            **kwargs: Arguments to pass to the predicate function.
+
+        Returns:
+            TypeCheckResult from the predicate.
+
+        Raises:
+            UnknownPredicateError: if name is not registered.
+        """
+        if name not in self._predicates:
+            raise UnknownPredicateError(name)
+        return self._predicates[name](**kwargs)
+
+    def verify(self, name: str, **kwargs) -> TypeCheckResult:
+        """Verify a predicate — same as evaluate but with certificate params.
+
+        The verify method maps certificate parameter names to the function's
+        expected kwargs before calling evaluate.
+
+        Args:
+            name: Predicate name.
+            **kwargs: Certificate parameters, possibly with different names
+                than the evaluate function expects.
+
+        Returns:
+            TypeCheckResult from re-evaluation.
+
+        Raises:
+            UnknownPredicateError: if name is not registered.
+        """
+        if name not in self._predicates:
+            raise UnknownPredicateError(name)
+
+        # Map certificate-style kwargs to evaluate-style kwargs
+        param_map = self._verify_params.get(name, {})
+        mapped_kwargs = {}
+        for cert_key, fn_key in param_map.items():
+            if cert_key in kwargs:
+                mapped_kwargs[fn_key] = kwargs[cert_key]
+
+        # Pass through any kwargs that match the function's signature directly
+        fn = self._predicates[name]
+        import inspect
+        sig = inspect.signature(fn)
+        for key, val in kwargs.items():
+            if key in sig.parameters:
+                mapped_kwargs[key] = val
+
+        return fn(**mapped_kwargs)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._predicates
+
+
+# ────────────────────────────────────────────────────────────
+# Global registry instance with all 8 predicates registered
+# ────────────────────────────────────────────────────────────
+registry = PredicateRegistry()
+
+registry.register(
+    "NoCrypticSplice",
+    evaluate_no_cryptic_splice,
+    verify_param_map={
+        "seq": "seq",
+        "known_exon_boundaries": "boundaries",
+    },
+)
+
+registry.register(
+    "SpliceCorrect",
+    evaluate_splice_correct,
+    verify_param_map={
+        "seq": "seq",
+        "known_exon_boundaries": "boundaries",
+        "cellular_context": "cellular_context",
+    },
+)
+
+registry.register(
+    "GCInRange",
+    evaluate_gc_in_range,
+    verify_param_map={
+        "seq": "seq",
+        "gc_lo": "gc_lo",
+        "gc_hi": "gc_hi",
+    },
+)
+
+registry.register(
+    "CodonAdapted",
+    evaluate_codon_adapted,
+    verify_param_map={
+        "seq": "seq",
+        "organism": "organism",
+        "threshold": "threshold",
+    },
+)
+
+registry.register(
+    "NoRestrictionSite",
+    evaluate_no_restriction_site,
+    verify_param_map={
+        "seq": "seq",
+        "enzyme_set": "enzymes",
+    },
+)
+
+registry.register(
+    "InFrame",
+    evaluate_in_frame,
+    verify_param_map={
+        "seq": "seq",
+        "exon_boundaries": "boundaries",
+    },
+)
+
+registry.register(
+    "NoInstabilityMotif",
+    evaluate_no_instability_motif,
+    verify_param_map={
+        "seq": "seq",
+    },
+)
+
+registry.register(
+    "NoCpGIsland",
+    evaluate_no_cpg_island,
+    verify_param_map={
+        "seq": "seq",
+    },
+)

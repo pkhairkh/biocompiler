@@ -50,38 +50,20 @@ from .translation import (
 )
 from .splicing import compute_splice_isoforms
 
-# Type system imports — use try/except for compatibility
-try:
-    from .type_system import (
-        evaluate_no_cryptic_splice,
-        evaluate_splice_correct,
-        evaluate_gc_in_range,
-        evaluate_codon_adapted,
-        evaluate_no_restriction_site,
-        evaluate_in_frame,
-        evaluate_no_instability_motif,
-        evaluate_no_cpg_island,
-        evaluate_all_predicates,
-        analyze_codon_at_position,
-        registry as predicate_registry,
-    )
-except ImportError:
-    try:
-        from .type_system import (
-            check_no_cryptic_splice as evaluate_no_cryptic_splice,
-            check_valid_coding_seq as evaluate_in_frame,
-            check_no_restriction_site as evaluate_no_restriction_site,
-            check_no_cpg_island as evaluate_no_cpg_island,
-            check_codon_optimality as evaluate_codon_adapted,
-        )
-        evaluate_splice_correct = evaluate_no_cryptic_splice
-    except ImportError:
-        pass
-    evaluate_gc_in_range = None
-    evaluate_no_instability_motif = None
-    evaluate_all_predicates = None
-    analyze_codon_at_position = None
-    predicate_registry = {}
+# Type system imports
+from .type_system import (
+    evaluate_no_cryptic_splice,
+    evaluate_splice_correct,
+    evaluate_gc_in_range,
+    evaluate_codon_adapted,
+    evaluate_no_restriction_site,
+    evaluate_in_frame,
+    evaluate_no_instability_motif,
+    evaluate_no_cpg_island,
+    evaluate_all_predicates,
+    analyze_codon_at_position,
+    registry as predicate_registry,
+)
 
 try:
     from .certificate import generate_certificate, verify_certificate
@@ -96,13 +78,7 @@ try:
 except ImportError:
     pass
 
-from .optimization import BioOptimizer
-
-try:
-    from .optimization import optimize_sequence, OptimizationResult
-except ImportError:
-    optimize_sequence = None
-    OptimizationResult = None
+from .optimization import BioOptimizer, optimize_sequence, OptimizationResult
 
 try:
     from .grammar_loader import load_grammar, grammar_to_predicate_params, load_builtin_grammar, list_builtin_grammars

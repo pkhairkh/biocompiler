@@ -109,7 +109,7 @@ theorem all_predicates_are_core (P : TypePredicate) :
 theorem evaluate_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
-    (slots₁ slots₂ : SLOTValues) :
+    (_slots₁ _slots₂ : SLOTValues) :
     @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx =
     @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
   rfl
@@ -120,7 +120,7 @@ theorem evaluate_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : 
 theorem property_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
-    (slots₁ slots₂ : SLOTValues) :
+    (_slots₁ _slots₂ : SLOTValues) :
     @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx ↔
     @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
   rfl
@@ -134,7 +134,7 @@ theorem property_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : 
 theorem certificate_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
-    (slots₁ slots₂ : SLOTValues) :
+    (_slots₁ _slots₂ : SLOTValues) :
     @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx →
     @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx := by
   intro h; exact h
@@ -169,7 +169,7 @@ theorem ffi_never_pass (P : FFIDependentPredicate) (slots : SLOTValues) :
   | StructureConfident threshold =>
     cases h_plddt : slots.meanPLDDT with
     | some plddt =>
-      simp only [evaluateFFIDependent, h_plddt, Option.some.injEq]
+      simp only [evaluateFFIDependent, h_plddt]
       split
       · intro h; cases h
       · intro h; cases h
@@ -192,11 +192,11 @@ theorem full_slot_independence [inst_splice : SpliceSiteScanner] [inst_cai : Cod
     -- All predicates are core
     (∀ P ∈ predicates, isCorePredicate P = true) ∧
     -- Certificate validity is SLOT-independent
-    (∀ (slots₁ : SLOTValues) (slots₂ : SLOTValues),
+    (∀ (_slots₁ : SLOTValues) (_slots₂ : SLOTValues),
       @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx →
       @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx) ∧
     -- Soundness is SLOT-independent
-    (∀ (slots₁ : SLOTValues) (slots₂ : SLOTValues),
+    (∀ (_slots₁ : SLOTValues) (_slots₂ : SLOTValues),
       (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx) →
       (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx)) ∧
     -- FFI-dependent predicates never produce PASS

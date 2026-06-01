@@ -170,13 +170,11 @@ private theorem ndfstRun_complete_general (ndfst : NDFST State) :
     rename_i path1 consumed1 accOutput1 symbol1 nextState1 chunk1 h_prev h_trans ih
     intro input h_eq
     rw [← h_eq, ndfstRun_append_singleton]
-    have h_in : (path1.getLast!, accOutput1) ∈ ndfstRun ndfst consumed1 :=
-      ih consumed1 rfl
     have h_last : (path1 ++ [nextState1]).getLast! = nextState1 :=
       list_getLast_append_singleton path1 nextState1 (ConsumesInput.path_ne h_prev)
     rw [h_last]
     exact ndfstStep_membership ndfst (ndfstRun ndfst consumed1) path1.getLast! accOutput1
-      nextState1 chunk1 symbol1 h_in h_trans
+      nextState1 chunk1 symbol1 (ih consumed1 rfl) h_trans
 
 -- ==============================================================================
 -- NDFST Run Completeness

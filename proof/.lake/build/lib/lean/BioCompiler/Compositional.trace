@@ -22,12 +22,12 @@
          "00000000000006bb"],
         ["BioCompiler.Sequence:importAllArts", "0296985af1483811"],
         ["BioCompiler.NDFST transitive imports (legacy)", "e9a07f1bb4174e26"],
-        ["BioCompiler.NDFST:importAllArts", "6d62662314c8790c"],
+        ["BioCompiler.NDFST:importAllArts", "f920b497a40bb281"],
         ["BioCompiler.Scanners transitive imports (legacy)",
          "e9a07f1bb4174e26"],
         ["BioCompiler.Scanners:importAllArts", "c208e93f584adf71"],
         ["BioCompiler.TypeSystem transitive imports (legacy)",
-         "6000da43e9da94aa"],
+         "1721e316345ce8c1"],
         ["BioCompiler.TypeSystem:importAllArts", "fcbfce3ff15d40f9"]]]]],
     ["libs",
      [["import dynlibs", "00000000000006bb"],
@@ -43,4 +43,4 @@
   ["Module.name: BioCompiler.Compositional", "75e3a06193373bb5"],
   ["Package.id?: (some BioCompiler)", "143d9b3ae216737d"],
   ["Module.leanArgs: #[-DautoImplicit=false]", "83bf8aa7a6e9844b"]],
- "depHash": "adb5e82610c335a3"}
+ "depHash": "72e9befd0ced4c65"}

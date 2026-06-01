@@ -8,10 +8,7 @@
  "log":
  [{"message":
    ".> LEAN_PATH=/home/z/my-project/biocompiler/proof/.lake/build/lib/lean /home/z/.elan/toolchains/leanprover--lean4---v4.30.0/bin/lean -DautoImplicit=false /home/z/my-project/biocompiler/proof/BioCompiler/TypeSystem.lean -o /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/TypeSystem.olean -i /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/TypeSystem.ilean -c /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/TypeSystem.c --setup /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/TypeSystem.setup.json --json",
-   "level": "trace"},
-  {"message":
-   "BioCompiler/TypeSystem.lean:231:25: This simp argument is unused:\n  h_list\n\nHint: Omit it from the simp argument list.\n  simp ̵[̵h̵_̵l̵i̵s̵t̵]̵\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
-   "level": "warning"}],
+   "level": "trace"}],
  "inputs":
  [["BioCompiler.TypeSystem:deps",
    [["deps",
@@ -25,7 +22,7 @@
          "00000000000006bb"],
         ["BioCompiler.Sequence:importAllArts", "0296985af1483811"],
         ["BioCompiler.NDFST transitive imports (legacy)", "e9a07f1bb4174e26"],
-        ["BioCompiler.NDFST:importAllArts", "6d62662314c8790c"],
+        ["BioCompiler.NDFST:importAllArts", "f920b497a40bb281"],
         ["BioCompiler.Scanners transitive imports (legacy)",
          "e9a07f1bb4174e26"],
         ["BioCompiler.Scanners:importAllArts", "c208e93f584adf71"]]]]],
@@ -37,10 +34,10 @@
   ["Lean 4.30.0, commit d024af099ca4bf2c86f649261ebf59565dc8c622",
    "2f4703bb19086252"],
   ["/home/z/my-project/biocompiler/proof/BioCompiler/TypeSystem.lean",
-   "5f2e123ff6fb9acb"],
+   "94c5ee351033c368"],
   ["options", "00000000000006bb"],
   ["isModule: false", "feefd2a0d3a1847e"],
   ["Module.name: BioCompiler.TypeSystem", "2ae5ee8daaa80e31"],
   ["Package.id?: (some BioCompiler)", "143d9b3ae216737d"],
   ["Module.leanArgs: #[-DautoImplicit=false]", "83bf8aa7a6e9844b"]],
- "depHash": "3affc7ff8adbb51f"}
+ "depHash": "d54974b022b092b2"}
