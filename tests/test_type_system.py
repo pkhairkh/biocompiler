@@ -147,7 +147,7 @@ class TestPredicateNames:
     """Test that all 8 predicate names are defined."""
 
     def test_eight_predicates(self):
-        assert len(PREDICATE_NAMES) == 8
+        assert len(PREDICATE_NAMES) == 12
         assert "NoStopCodons" in PREDICATE_NAMES
         assert "NoCrypticSplice" in PREDICATE_NAMES
         assert "NoCpGIsland" in PREDICATE_NAMES

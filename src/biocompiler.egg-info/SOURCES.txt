@@ -61,6 +61,7 @@ tests/test_restriction_sites.py
 tests/test_species.py
 tests/test_splice.py
 tests/test_standalone_verifier.py
+tests/test_tier1_predicates.py
 tests/test_type_system.py
 tests/test_v31_enhancements.py
 tests/test_v32_hardening.py

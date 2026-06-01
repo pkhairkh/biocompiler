@@ -1,7 +1,7 @@
 """Test BioCompiler Optimizer — full 6-phase pipeline, certificate generation, eGFP optimization."""
 
 import pytest
-from biocompiler.optimizer import BioOptimizer
+from biocompiler.optimization import BioOptimizer
 from biocompiler.type_system import CertLevel, CODON_TABLE
 from biocompiler.restriction_sites import get_recognition_site
 
@@ -103,4 +103,4 @@ class TestOptimizerPipeline:
         optimizer = BioOptimizer(species="human")
         optimized, results, cert_text = optimizer.optimize(EGFP_SEQ)
         assert len(optimized) == len(EGFP_SEQ)
-        assert len(results) == 8  # All 8 predicates evaluated
+        assert len(results) == 12  # All 12 predicates evaluated

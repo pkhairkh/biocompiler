@@ -297,3 +297,7 @@ def compare_tools() -> None:
     print("    - BioCompiler:   Full pipeline with formal GOLD/SILVER/BRONZE certificates")
     print("=" * 80)
     print()
+
+
+# Alias for compatibility with tests that use run_benchmarks (plural)
+run_benchmarks = run_benchmark

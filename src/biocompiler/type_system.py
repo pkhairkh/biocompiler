@@ -1,7 +1,7 @@
 """
 BioCompiler Type System v7.0.0
 ==============================
-Defines the core types, codon tables, BLOSUM62 matrix, and 8 predicate classes
+Defines the core types, codon tables, BLOSUM62 matrix, and 12 predicate classes
 for certified gene optimization.
 """
 
@@ -121,18 +121,76 @@ class SpliceVerdict(Enum):
 
 
 # ────────────────────────────────────────────────────────────
-# 8 Predicate Classes for Certified Optimization
+# 12 Predicate Classes for Certified Optimization
 # ────────────────────────────────────────────────────────────
 PREDICATE_NAMES = [
-    "NoStopCodons",        # 1 — no internal stops
-    "NoCrypticSplice",     # 2 — dual-threshold splice check
-    "NoCpGIsland",         # 3 — CpG island avoidance
-    "NoRestrictionSite",   # 4 — enzyme site removal
-    "NoGTDinucleotide",    # 5 — GT dinucleotide avoidance (cross-codon aware)
-    "ValidCodingSeq",      # 6 — in-frame, valid codons only
-    "ConservationScore",   # 7 — BLOSUM62-based AA conservation
-    "CodonOptimality",     # 8 — CAI-based codon quality
+    "NoStopCodons",           # 1 — no internal stops
+    "NoCrypticSplice",        # 2 — dual-threshold splice check
+    "NoCpGIsland",            # 3 — CpG island avoidance
+    "NoRestrictionSite",      # 4 — enzyme site removal
+    "NoGTDinucleotide",       # 5 — GT dinucleotide avoidance (cross-codon aware)
+    "ValidCodingSeq",         # 6 — in-frame, valid codons only
+    "ConservationScore",      # 7 — BLOSUM62-based AA conservation
+    "CodonOptimality",        # 8 — CAI-based codon quality
+    "NoCrypticPromoter",      # 9 — cryptic promoter avoidance
+    "NoUnexpectedTMDomain",   # 10 — unexpected transmembrane domain detection
+    "mRNASecondaryStructure", # 11 — mRNA secondary structure around RBS
+    "CoTranslationalFolding", # 12 — co-translational folding pause-site preservation
 ]
+
+
+# ────────────────────────────────────────────────────────────
+# Promoter consensus sequences
+# ────────────────────────────────────────────────────────────
+PROMOTER_CONSENSUS: Dict[str, Dict] = {
+    "E_coli": {
+        "type": "prokaryotic",
+        "sigma": "sigma70",
+        "-35_box": "TTGACA",
+        "-10_box": "TATAAT",
+        "spacer": 17,  # optimal spacer length between -35 and -10 boxes
+    },
+    "eukaryote": {
+        "type": "eukaryotic",
+        "TATA_box": "TATAAA",
+        "Initiator": "YYANWYY",  # IUPAC: Y=C/T, W=A/T, N=any
+    },
+}
+
+# IUPAC ambiguity code expansion for promoter matching
+_IUPAC_DNA = {
+    "A": {"A"},
+    "C": {"C"},
+    "G": {"G"},
+    "T": {"T"},
+    "R": {"A", "G"},
+    "Y": {"C", "T"},
+    "S": {"G", "C"},
+    "W": {"A", "T"},
+    "K": {"G", "T"},
+    "M": {"A", "C"},
+    "B": {"C", "G", "T"},
+    "D": {"A", "G", "T"},
+    "H": {"A", "C", "T"},
+    "V": {"A", "C", "G"},
+    "N": {"A", "C", "G", "T"},
+}
+
+
+def _match_iupac(base: str, pattern_base: str) -> bool:
+    """Check if a DNA base matches an IUPAC ambiguity code."""
+    return base in _IUPAC_DNA.get(pattern_base.upper(), {pattern_base.upper()})
+
+
+def _score_consensus(seq_region: str, consensus: str) -> float:
+    """Score a sequence region against a consensus pattern.
+
+    Returns a value between 0.0 (no match) and 1.0 (perfect match).
+    """
+    if len(seq_region) != len(consensus):
+        return 0.0
+    matches = sum(1 for s, c in zip(seq_region, consensus) if _match_iupac(s, c))
+    return matches / len(consensus)
 
 
 @dataclass
@@ -146,7 +204,7 @@ class PredicateResult:
 
 
 # ────────────────────────────────────────────────────────────
-# 8 Predicate check functions
+# 12 Predicate check functions
 # ────────────────────────────────────────────────────────────
 
 def check_no_stop_codons(seq: str) -> PredicateResult:
@@ -167,6 +225,95 @@ def check_no_stop_codons(seq: str) -> PredicateResult:
     if violations:
         return PredicateResult("NoStopCodons", False, verdict=Verdict.FAIL, details="Internal stop codons found", positions=violations)
     return PredicateResult("NoStopCodons", True, verdict=Verdict.PASS, details="No internal stop codons")
+
+
+def check_no_cryptic_promoter(seq: str, organism: str = "E_coli", threshold: float = 0.7) -> PredicateResult:
+    """Predicate 9: No cryptic promoter sites.
+
+    Scans for promoter motifs using position weight matrix scoring.
+    For prokaryotes (E_coli), scans for -35 (TTGACA) and -10 (TATAAT)
+    boxes separated by a 17bp spacer. For eukaryotes, scans for TATA box
+    (TATAAA) and Initiator (YYANWYY).
+
+    Scoring is based on match quality (how many positions match the consensus).
+    - If match score >= threshold: FAIL (strong cryptic promoter)
+    - If match score >= threshold * 0.8: UNCERTAIN (weak match)
+    - Otherwise: PASS
+    """
+    seq = seq.upper()
+    if len(seq) < 6:
+        return PredicateResult("NoCrypticPromoter", True, verdict=Verdict.PASS,
+                               details="Sequence too short for promoter motifs")
+
+    consensus_info = PROMOTER_CONSENSUS.get(organism, PROMOTER_CONSENSUS["E_coli"])
+    worst_score = 0.0
+    worst_pos = -1
+    worst_verdict = Verdict.PASS
+    promoter_positions: List[int] = []
+
+    if consensus_info["type"] == "prokaryotic":
+        box35 = consensus_info["-35_box"]
+        box10 = consensus_info["-10_box"]
+        spacer = consensus_info["spacer"]
+        # Total promoter length: len(-35) + spacer + len(-10)
+        promoter_len = len(box35) + spacer + len(box10)
+
+        for i in range(len(seq) - promoter_len + 1):
+            region_35 = seq[i:i + len(box35)]
+            region_10 = seq[i + len(box35) + spacer:i + promoter_len]
+
+            if len(region_10) < len(box10):
+                continue
+
+            score_35 = _score_consensus(region_35, box35)
+            score_10 = _score_consensus(region_10, box10)
+            # Combined score: average of both boxes
+            combined = (score_35 + score_10) / 2.0
+
+            if combined > worst_score:
+                worst_score = combined
+                worst_pos = i
+                promoter_positions = [i, i + len(box35) + spacer]
+
+    elif consensus_info["type"] == "eukaryotic":
+        tata_box = consensus_info["TATA_box"]
+        initiator = consensus_info["Initiator"]
+
+        # Scan for TATA box
+        for i in range(len(seq) - len(tata_box) + 1):
+            score_tata = _score_consensus(seq[i:i + len(tata_box)], tata_box)
+
+            # Look for initiator within ~25-35bp downstream of TATA box start
+            for offset in range(20, 40):
+                ini_start = i + offset
+                if ini_start + len(initiator) > len(seq):
+                    break
+                score_ini = _score_consensus(seq[ini_start:ini_start + len(initiator)], initiator)
+                combined = (score_tata + score_ini) / 2.0
+
+                if combined > worst_score:
+                    worst_score = combined
+                    worst_pos = i
+                    promoter_positions = [i, ini_start]
+
+    # Determine verdict based on worst score
+    if worst_score >= threshold:
+        worst_verdict = Verdict.FAIL
+    elif worst_score >= threshold * 0.8:
+        worst_verdict = Verdict.UNCERTAIN
+    else:
+        worst_verdict = Verdict.PASS
+
+    passed = worst_verdict != Verdict.FAIL
+    details = f"Worst promoter score {worst_score:.3f} at pos {worst_pos}"
+    if worst_verdict == Verdict.PASS:
+        details = f"No significant promoter motifs found (worst score {worst_score:.3f})"
+
+    return PredicateResult(
+        "NoCrypticPromoter", passed, verdict=worst_verdict,
+        details=details,
+        positions=promoter_positions,
+    )
 
 
 def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> PredicateResult:
@@ -412,6 +559,442 @@ def check_codon_optimality(codon: str, species_cai: Dict[str, float], min_cai: f
     passed = cai >= min_cai
     return PredicateResult("CodonOptimality", passed, verdict=Verdict.PASS if passed else SpliceVerdict.FAIL,
                            details=f"CAI({codon})={cai:.4f}, min={min_cai}")
+
+
+def check_no_unexpected_tm_domain(
+    seq: str,
+    is_cytosolic: bool = True,
+    window_size: int = 19,
+    threshold: float = 0.68,
+) -> PredicateResult:
+    """Predicate 10: No unexpected transmembrane (TM) domains after mutagenesis.
+
+    If a cytosolic protein gains hydrophobic stretches from amino acid
+    substitutions, that constitutes a FAIL. Transmembrane domains are
+    detected by sliding a window of `window_size` amino acids and computing
+    the fraction of hydrophobic residues (A, V, I, L, M, F, W, Y).
+
+    Verdict logic (only applies when is_cytosolic=True):
+    - If any window exceeds `threshold`: FAIL
+    - If any window exceeds `threshold * 0.85`: UNCERTAIN
+    - Otherwise: PASS
+
+    If is_cytosolic=False (membrane protein), TM domains are expected: PASS.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        is_cytosolic: Whether the protein is cytosolic (default True).
+        window_size: Sliding window size in amino acids (default 19).
+        threshold: Hydrophobic fraction threshold for FAIL (default 0.68).
+
+    Returns:
+        PredicateResult with PASS/UNCERTAIN/FAIL verdict.
+    """
+    seq = seq.upper()
+
+    if not is_cytosolic:
+        return PredicateResult(
+            "NoUnexpectedTMDomain", True, verdict=Verdict.PASS,
+            details="Membrane protein — TM domains are expected",
+        )
+
+    # Translate DNA to amino acids
+    aa_seq = _translate_dna_to_aa(seq)
+
+    if len(aa_seq) < window_size:
+        return PredicateResult(
+            "NoUnexpectedTMDomain", True, verdict=Verdict.PASS,
+            details=f"Protein too short for TM domain scan ({len(aa_seq)} aa < {window_size} window)",
+        )
+
+    HYDROPHOBIC = set("AVILMFWY")
+    worst_frac = 0.0
+    worst_pos = -1
+    borderline_positions: List[int] = []
+    fail_positions: List[int] = []
+
+    for i in range(len(aa_seq) - window_size + 1):
+        window = aa_seq[i:i + window_size]
+        hydro_count = sum(1 for aa in window if aa in HYDROPHOBIC)
+        frac = hydro_count / window_size
+        if frac > worst_frac:
+            worst_frac = frac
+            worst_pos = i
+        if frac > threshold * 0.85:
+            borderline_positions.append(i)
+        if frac > threshold:
+            fail_positions.append(i)
+
+    if fail_positions:
+        return PredicateResult(
+            "NoUnexpectedTMDomain", False, verdict=Verdict.FAIL,
+            details=(f"TM domain detected: worst hydrophobic fraction {worst_frac:.3f} "
+                     f"at AA pos {worst_pos} exceeds threshold {threshold} "
+                     f"({len(fail_positions)} window(s) failing)"),
+            positions=fail_positions,
+        )
+
+    if borderline_positions:
+        return PredicateResult(
+            "NoUnexpectedTMDomain", True, verdict=Verdict.UNCERTAIN,
+            details=(f"Borderline TM domain: worst hydrophobic fraction {worst_frac:.3f} "
+                     f"at AA pos {worst_pos} exceeds {threshold * 0.85:.3f} "
+                     f"({len(borderline_positions)} window(s) borderline)"),
+            positions=borderline_positions,
+        )
+
+    return PredicateResult(
+        "NoUnexpectedTMDomain", True, verdict=Verdict.PASS,
+        details=f"No TM domain detected (worst hydrophobic fraction {worst_frac:.3f})",
+    )
+
+
+def check_mrna_secondary_structure(
+    seq: str,
+    window_start: int = 0,
+    window_end: int = 50,
+    dg_threshold: float = -15.0,
+) -> PredicateResult:
+    """Predicate 11: No strong mRNA secondary structure around RBS/start codon.
+
+    Checks for stable secondary structure near the ribosome binding site
+    that could block ribosome binding. Uses a simplified nearest-neighbor
+    ΔG approximation based on counting potential base pairs in the window.
+
+    Scoring (simplified ViennaRNA-style):
+    - Count GC pairs (G-C and C-G) in the window
+    - Count AU pairs (A-U and U-A) in the window
+    - Count GU wobble pairs (G-U and U-G) in the window
+    - ΔG ≈ -1.5 * gc_pairs - 0.5 * au_pairs - 0.3 * gu_pairs
+
+    Verdict logic:
+    - If ΔG <= dg_threshold (very stable structure): FAIL
+    - If ΔG <= dg_threshold * 0.7: UNCERTAIN
+    - Otherwise: PASS
+
+    Args:
+        seq: DNA sequence to evaluate.
+        window_start: Start position of the analysis window (default 0).
+        window_end: End position of the analysis window (default 50).
+        dg_threshold: ΔG threshold for FAIL (default -15.0 kcal/mol).
+
+    Returns:
+        PredicateResult with PASS/UNCERTAIN/FAIL verdict.
+    """
+    seq = seq.upper()
+    # Extract the window around the RBS/start codon
+    effective_end = min(window_end, len(seq))
+    window_seq = seq[window_start:effective_end]
+
+    if len(window_seq) < 4:
+        return PredicateResult(
+            "mRNASecondaryStructure", True, verdict=Verdict.PASS,
+            details="Sequence window too short for structure analysis",
+        )
+
+    # Convert DNA to RNA for pairing analysis (T -> U)
+    rna = window_seq.replace("T", "U")
+
+    # Count potential base pairs using a simplified complementary pairing
+    # We look at each position and its potential complement in the sequence
+    # A simplified approach: count pairs in the first half pairing with
+    # the reversed second half (mimicking a hairpin stem)
+    gc_pairs = 0
+    au_pairs = 0
+    gu_pairs = 0
+
+    half = len(rna) // 2
+    first_half = rna[:half]
+    second_half = rna[half:2 * half]  # mirror region
+
+    for i in range(min(len(first_half), len(second_half))):
+        # Pair first_half[i] with second_half reversed
+        j = len(second_half) - 1 - i
+        if j < 0:
+            break
+        base_5 = first_half[i]
+        base_3 = second_half[j]
+
+        if (base_5 == "G" and base_3 == "C") or (base_5 == "C" and base_3 == "G"):
+            gc_pairs += 1
+        elif (base_5 == "A" and base_3 == "U") or (base_5 == "U" and base_3 == "A"):
+            au_pairs += 1
+        elif (base_5 == "G" and base_3 == "U") or (base_5 == "U" and base_3 == "G"):
+            gu_pairs += 1
+
+    # Simplified nearest-neighbor ΔG estimate
+    dg = -1.5 * gc_pairs - 0.5 * au_pairs - 0.3 * gu_pairs
+
+    if dg <= dg_threshold:
+        return PredicateResult(
+            "mRNASecondaryStructure", False, verdict=Verdict.FAIL,
+            details=(f"Strong mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
+                     f"<= {dg_threshold} (GC={gc_pairs}, AU={au_pairs}, GU={gu_pairs} pairs)"),
+        )
+
+    if dg <= dg_threshold * 0.7:
+        return PredicateResult(
+            "mRNASecondaryStructure", True, verdict=Verdict.UNCERTAIN,
+            details=(f"Moderate mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
+                     f"<= {dg_threshold * 0.7:.1f} (GC={gc_pairs}, AU={au_pairs}, GU={gu_pairs} pairs)"),
+        )
+
+    return PredicateResult(
+        "mRNASecondaryStructure", True, verdict=Verdict.PASS,
+        details=(f"Weak mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
+                 f"(GC={gc_pairs}, AU={au_pairs}, GU={gu_pairs} pairs)"),
+    )
+
+
+# ────────────────────────────────────────────────────────────
+# Predicate 12: Co-translational folding helpers
+# ────────────────────────────────────────────────────────────
+
+# Mapping from standard organism names to SPECIES dict keys
+_ORGANISM_TO_SPECIES_KEY: Dict[str, str] = {
+    "Homo_sapiens": "human",
+    "human": "human",
+    "Escherichia_coli": "ecoli",
+    "E_coli": "ecoli",
+    "ecoli": "ecoli",
+    "Mus_musculus": "human",  # fallback — closest available
+    "CHO_K1": "human",       # fallback — closest available
+    "Saccharomyces_cerevisiae": "ecoli",  # fallback — closest available
+}
+
+
+def _compute_codon_ramp_score(seq: str, species_cai: Dict[str, float]) -> Dict:
+    """Compute codon ramp score and identify pause sites / speed disruptions.
+
+    The codon ramp is the first ~30 codons where slow codons are beneficial
+    for proper ribosome loading. Outside the ramp, slow codons (CAI < 0.3)
+    serve as pause sites that allow co-translational folding of protein
+    domains before downstream sequence emerges from the ribosome.
+
+    Args:
+        seq: DNA coding sequence (uppercase, length divisible by 3).
+        species_cai: Dict mapping codon strings to their CAI values
+            (relative adaptiveness, 0.0–1.0).
+
+    Returns:
+        Dict with keys:
+          - ramp_score: average CAI in the first 30 codons (lower = more
+            ramp = better for ribosome loading).
+          - pause_sites: list of (codon_position, CAI) tuples where
+            CAI < 0.3 outside the ramp region (positions 30+).
+          - speed_disruptions: list of (codon_position, original_slow_cai,
+            new_fast_cai) tuples where a likely pause site was replaced by
+            a fast codon during optimization (heuristic: CAI in 0.7–1.0
+            where the slowest synonymous codon would have CAI < 0.3).
+    """
+    seq = seq.upper()
+    num_codons = len(seq) // 3
+    ramp_length = min(30, num_codons)  # first 30 codons = ramp region
+
+    # Collect per-codon CAI values
+    codon_cais: List[Tuple[int, float]] = []  # (codon_index, cai)
+    for i in range(num_codons):
+        codon = seq[i * 3:(i + 1) * 3]
+        cai = species_cai.get(codon, 0.0)
+        codon_cais.append((i, cai))
+
+    # Ramp score: average CAI in first 30 codons
+    ramp_cais = [cai for idx, cai in codon_cais[:ramp_length]]
+    ramp_score = sum(ramp_cais) / len(ramp_cais) if ramp_cais else 0.0
+
+    # Pause sites: slow codons outside the ramp
+    pause_sites: List[Tuple[int, float]] = []
+    for idx, cai in codon_cais[ramp_length:]:
+        if cai < 0.3:
+            pause_sites.append((idx, cai))
+
+    # Speed disruptions: fast codons that likely replaced slow ones
+    # A speed disruption is detected when the current codon is fast (CAI > 0.7)
+    # but the slowest synonymous codon for the same AA has CAI < 0.3,
+    # suggesting an optimization replaced a natural pause site.
+    speed_disruptions: List[Tuple[int, float, float]] = []
+    for idx, cai in codon_cais:
+        if idx < ramp_length:
+            continue  # ramp region — speed-ups are expected there
+        if cai <= 0.7:
+            continue  # not a fast codon
+        codon = seq[idx * 3:(idx + 1) * 3]
+        aa = CODON_TABLE.get(codon)
+        if aa is None or aa == "*":
+            continue
+        # Check if the slowest synonymous codon for this AA is a pause site
+        syn_codons = AA_TO_CODONS.get(aa, [codon])
+        slowest_cai = min(species_cai.get(c, 0.0) for c in syn_codons)
+        if slowest_cai < 0.3:
+            speed_disruptions.append((idx, slowest_cai, cai))
+
+    return {
+        "ramp_score": ramp_score,
+        "pause_sites": pause_sites,
+        "speed_disruptions": speed_disruptions,
+    }
+
+
+def check_co_translational_folding(
+    seq: str,
+    species_cai: Dict[str, float],
+    domain_boundaries: List[int] | None = None,
+    min_pause_cai: float = 0.3,
+) -> PredicateResult:
+    """Predicate 12: Check co-translational folding preservation.
+
+    Checks whether codon optimization has disrupted critical pause sites
+    that are important for proper protein folding during translation.
+    Slow codons (low tRNA adaptation) at domain boundaries allow the
+    nascent chain to fold properly before downstream sequence emerges.
+
+    Args:
+        seq: DNA coding sequence (uppercase).
+        species_cai: Dict mapping codon strings to CAI values.
+        domain_boundaries: Optional list of codon positions (0-based)
+            where protein domains start/end. If provided, these positions
+            are checked for speed-up (CAI > 0.7 where a pause is needed).
+        min_pause_cai: CAI threshold below which a codon is considered
+            a pause site (default 0.3).
+
+    Returns:
+        PredicateResult with PASS/UNCERTAIN/FAIL verdict.
+    """
+    seq = seq.upper()
+    num_codons = len(seq) // 3
+
+    if num_codons == 0:
+        return PredicateResult(
+            "CoTranslationalFolding", True, verdict=Verdict.PASS,
+            details="Sequence too short for co-translational folding analysis",
+        )
+
+    ramp_info = _compute_codon_ramp_score(seq, species_cai)
+    ramp_score = ramp_info["ramp_score"]
+    pause_sites = ramp_info["pause_sites"]
+    speed_disruptions = ramp_info["speed_disruptions"]
+
+    # Positions to report in result
+    flagged_positions: List[int] = []
+    details_parts: List[str] = []
+
+    # --- Check ramp region ---
+    ramp_length = min(30, num_codons)
+    ramp_all_fast = all(
+        species_cai.get(seq[i * 3:(i + 1) * 3], 0.0) > 0.7
+        for i in range(ramp_length)
+    )
+
+    if ramp_all_fast and ramp_length >= 10:
+        details_parts.append(
+            f"Ramp region (first {ramp_length} codons) is entirely fast "
+            f"(avg CAI={ramp_score:.3f}) — ribosome jam risk"
+        )
+        flagged_positions.extend(range(ramp_length))
+
+    # --- Check domain boundaries ---
+    domain_disrupted = 0
+    if domain_boundaries:
+        for boundary_pos in domain_boundaries:
+            if boundary_pos < 0 or boundary_pos >= num_codons:
+                continue
+            codon = seq[boundary_pos * 3:(boundary_pos + 1) * 3]
+            boundary_cai = species_cai.get(codon, 0.0)
+            if boundary_cai > 0.7:
+                # Fast codon at domain boundary — pause site was disrupted
+                domain_disrupted += 1
+                flagged_positions.append(boundary_pos)
+                details_parts.append(
+                    f"Domain boundary at codon {boundary_pos} has CAI={boundary_cai:.3f} "
+                    f"(fast codon where pause is needed)"
+                )
+    else:
+        # Use heuristics: proline-rich regions and hydrophobicity changes
+        # suggest domain boundaries. Flag UNCERTAIN if the average CAI
+        # is very high (>0.9) throughout (no pause sites at all).
+        avg_cai = sum(
+            species_cai.get(seq[i * 3:(i + 1) * 3], 0.0)
+            for i in range(num_codons)
+        ) / num_codons if num_codons > 0 else 0.0
+
+        if avg_cai > 0.9 and not pause_sites:
+            details_parts.append(
+                f"Average CAI={avg_cai:.3f} with no pause sites detected — "
+                f"co-translational folding may be disrupted (no domain boundaries provided)"
+            )
+
+    # --- Determine verdict ---
+    if domain_boundaries and domain_disrupted > 0 and ramp_all_fast:
+        # Ramp destroyed AND domain boundaries disrupted
+        verdict = Verdict.FAIL
+        passed = False
+    elif domain_boundaries and domain_disrupted >= 2:
+        # Multiple domain boundaries disrupted
+        verdict = Verdict.LIKELY_FAIL
+        passed = False
+    elif domain_boundaries and domain_disrupted == 1:
+        # Single domain boundary disrupted
+        verdict = Verdict.UNCERTAIN
+        passed = True
+    elif ramp_all_fast and ramp_length >= 10:
+        # Ramp too fast — ribosome jam risk
+        verdict = Verdict.UNCERTAIN
+        passed = True
+    elif speed_disruptions:
+        # Some pause sites may have been replaced by fast codons
+        verdict = Verdict.UNCERTAIN
+        passed = True
+        details_parts.append(
+            f"{len(speed_disruptions)} potential pause site(s) replaced by fast codons"
+        )
+    else:
+        verdict = Verdict.PASS
+        passed = True
+        if pause_sites:
+            details_parts.append(
+                f"Good ramp (avg CAI={ramp_score:.3f}) with {len(pause_sites)} "
+                f"natural pause site(s) preserved"
+            )
+        else:
+            details_parts.append(
+                f"Ramp avg CAI={ramp_score:.3f}, no pause site concerns detected"
+            )
+
+    details = "; ".join(details_parts) if details_parts else "Co-translational folding appears preserved"
+
+    return PredicateResult(
+        "CoTranslationalFolding",
+        passed,
+        verdict=verdict,
+        details=details,
+        positions=flagged_positions,
+    )
+
+
+# ────────────────────────────────────────────────────────────
+# Helper: DNA-to-amino-acid translation
+# ────────────────────────────────────────────────────────────
+
+def _translate_dna_to_aa(seq: str) -> str:
+    """Translate a DNA sequence to an amino acid string using the CODON_TABLE.
+
+    Reads the sequence in-frame from position 0. Codons not found in
+    CODON_TABLE are silently skipped.
+
+    Args:
+        seq: DNA sequence (uppercase or mixed case).
+
+    Returns:
+        Amino acid string (single-letter codes, stops as '*').
+    """
+    seq = seq.upper()
+    aa_list: List[str] = []
+    for i in range(0, len(seq) - 2, 3):
+        codon = seq[i:i + 3]
+        aa = CODON_TABLE.get(codon)
+        if aa is not None:
+            aa_list.append(aa)
+    return "".join(aa_list)
 
 
 # ────────────────────────────────────────────────────────────
@@ -804,6 +1387,277 @@ def evaluate_no_instability_motif(seq: str) -> TypeCheckResult:
     )
 
 
+def evaluate_no_unexpected_tm_domain(
+    seq: str,
+    is_cytosolic: bool = True,
+    window_size: int = 19,
+    threshold: float = 0.68,
+) -> TypeCheckResult:
+    """Evaluate whether a cytosolic protein has gained unexpected TM domains.
+
+    Checks for hydrophobic stretches in the translated protein that could
+    form transmembrane domains — a common side-effect of mutagenesis on
+    cytosolic proteins.
+
+    Verdicts use the five-valued logic:
+    - LIKELY_PASS: No hydrophobic stretches detected and protein is cytosolic
+    - UNCERTAIN: Borderline hydrophobic stretches (fraction between
+      threshold*0.85 and threshold)
+    - FAIL: Clear TM domains in a cytosolic protein (fraction > threshold)
+    - PASS: If not cytosolic (membrane protein), TM domains are expected
+
+    Args:
+        seq: DNA sequence to evaluate.
+        is_cytosolic: Whether the protein is cytosolic (default True).
+        window_size: Sliding window size in amino acids (default 19).
+        threshold: Hydrophobic fraction threshold for FAIL (default 0.68).
+
+    Returns:
+        TypeCheckResult with LIKELY_PASS/UNCERTAIN/FAIL/PASS verdict.
+    """
+    seq = seq.upper()
+
+    if not is_cytosolic:
+        return TypeCheckResult(
+            predicate="NoUnexpectedTMDomain",
+            verdict=Verdict.PASS,
+        )
+
+    # Translate DNA to amino acids
+    aa_seq = _translate_dna_to_aa(seq)
+
+    if len(aa_seq) < window_size:
+        return TypeCheckResult(
+            predicate="NoUnexpectedTMDomain",
+            verdict=Verdict.LIKELY_PASS,
+        )
+
+    HYDROPHOBIC = set("AVILMFWY")
+    worst_frac = 0.0
+    worst_pos = -1
+
+    for i in range(len(aa_seq) - window_size + 1):
+        window = aa_seq[i:i + window_size]
+        hydro_count = sum(1 for aa in window if aa in HYDROPHOBIC)
+        frac = hydro_count / window_size
+        if frac > worst_frac:
+            worst_frac = frac
+            worst_pos = i
+
+    # Determine verdict using five-valued logic
+    if worst_frac > threshold:
+        verdict = Verdict.FAIL
+    elif worst_frac > threshold * 0.85:
+        verdict = Verdict.UNCERTAIN
+    else:
+        verdict = Verdict.LIKELY_PASS
+
+    violation = None
+    if verdict == Verdict.FAIL:
+        violation = (
+            f"TM domain at AA pos {worst_pos}, hydrophobic fraction "
+            f"{worst_frac:.3f} > {threshold}"
+        )
+    elif verdict == Verdict.UNCERTAIN:
+        violation = (
+            f"Borderline TM domain at AA pos {worst_pos}, hydrophobic fraction "
+            f"{worst_frac:.3f} > {threshold * 0.85:.3f}"
+        )
+
+    return TypeCheckResult(
+        predicate=f"NoUnexpectedTMDomain({is_cytosolic}, {threshold})",
+        verdict=verdict,
+        violation=violation,
+    )
+
+
+def evaluate_mrna_secondary_structure(
+    seq: str,
+    window_start: int = 0,
+    window_end: int = 50,
+    dg_threshold: float = -15.0,
+) -> TypeCheckResult:
+    """Evaluate mRNA secondary structure stability around the RBS/start codon.
+
+    Strong secondary structure in the 5' UTR or around the start codon can
+    block ribosome binding and reduce translation efficiency. This predicate
+    uses a simplified nearest-neighbor ΔG approximation.
+
+    Verdicts use the five-valued logic:
+    - LIKELY_PASS: Weak structure (ΔG close to 0, easy for ribosome access)
+    - UNCERTAIN: Moderate structure (ΔG between dg_threshold*0.7 and dg_threshold)
+    - FAIL: Very stable structure that blocks ribosome binding
+      (ΔG <= dg_threshold)
+
+    Args:
+        seq: DNA sequence to evaluate.
+        window_start: Start position of the analysis window (default 0).
+        window_end: End position of the analysis window (default 50).
+        dg_threshold: ΔG threshold for FAIL (default -15.0 kcal/mol).
+
+    Returns:
+        TypeCheckResult with LIKELY_PASS/UNCERTAIN/FAIL verdict.
+    """
+    seq = seq.upper()
+    effective_end = min(window_end, len(seq))
+    window_seq = seq[window_start:effective_end]
+
+    if len(window_seq) < 4:
+        return TypeCheckResult(
+            predicate="mRNASecondaryStructure",
+            verdict=Verdict.LIKELY_PASS,
+        )
+
+    # Convert DNA to RNA for pairing analysis (T -> U)
+    rna = window_seq.replace("T", "U")
+
+    # Count potential base pairs using simplified hairpin model
+    gc_pairs = 0
+    au_pairs = 0
+    gu_pairs = 0
+
+    half = len(rna) // 2
+    first_half = rna[:half]
+    second_half = rna[half:2 * half]
+
+    for i in range(min(len(first_half), len(second_half))):
+        j = len(second_half) - 1 - i
+        if j < 0:
+            break
+        base_5 = first_half[i]
+        base_3 = second_half[j]
+
+        if (base_5 == "G" and base_3 == "C") or (base_5 == "C" and base_3 == "G"):
+            gc_pairs += 1
+        elif (base_5 == "A" and base_3 == "U") or (base_5 == "U" and base_3 == "A"):
+            au_pairs += 1
+        elif (base_5 == "G" and base_3 == "U") or (base_5 == "U" and base_3 == "G"):
+            gu_pairs += 1
+
+    # Simplified nearest-neighbor ΔG estimate
+    dg = -1.5 * gc_pairs - 0.5 * au_pairs - 0.3 * gu_pairs
+
+    if dg <= dg_threshold:
+        verdict = Verdict.FAIL
+    elif dg <= dg_threshold * 0.7:
+        verdict = Verdict.UNCERTAIN
+    else:
+        verdict = Verdict.LIKELY_PASS
+
+    violation = None
+    if verdict == Verdict.FAIL:
+        violation = (
+            f"Strong mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
+            f"<= {dg_threshold}"
+        )
+    elif verdict == Verdict.UNCERTAIN:
+        violation = (
+            f"Moderate mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
+            f"<= {dg_threshold * 0.7:.1f}"
+        )
+
+    return TypeCheckResult(
+        predicate=f"mRNASecondaryStructure({window_start}, {window_end}, {dg_threshold})",
+        verdict=verdict,
+        violation=violation,
+    )
+
+
+def evaluate_no_cryptic_promoter(
+    seq: str,
+    organism: str = "E_coli",
+    threshold: float = 0.7,
+) -> TypeCheckResult:
+    """Evaluate whether the sequence contains cryptic promoter sites.
+
+    Uses position weight matrix scoring to scan for promoter motifs.
+    For prokaryotes (E_coli), scans for -35 and -10 boxes; for eukaryotes,
+    scans for TATA box and Initiator.
+
+    Verdicts use the five-valued logic:
+    - LIKELY_PASS: No significant promoter motifs (best score well below threshold)
+    - UNCERTAIN: Borderline match (score between threshold*0.8 and threshold)
+    - FAIL: Strong cryptic promoter match (score >= threshold)
+
+    Args:
+        seq: DNA sequence to evaluate.
+        organism: Organism whose promoter consensus to use (default: "E_coli").
+        threshold: Score threshold above which a match is FAIL.
+
+    Returns:
+        TypeCheckResult with LIKELY_PASS/UNCERTAIN/FAIL verdict.
+    """
+    seq = seq.upper()
+    if len(seq) < 6:
+        return TypeCheckResult(
+            predicate="NoCrypticPromoter",
+            verdict=Verdict.LIKELY_PASS,
+        )
+
+    consensus_info = PROMOTER_CONSENSUS.get(organism, PROMOTER_CONSENSUS["E_coli"])
+    worst_score = 0.0
+    worst_pos = -1
+
+    if consensus_info["type"] == "prokaryotic":
+        box35 = consensus_info["-35_box"]
+        box10 = consensus_info["-10_box"]
+        spacer = consensus_info["spacer"]
+        promoter_len = len(box35) + spacer + len(box10)
+
+        for i in range(len(seq) - promoter_len + 1):
+            region_35 = seq[i:i + len(box35)]
+            region_10 = seq[i + len(box35) + spacer:i + promoter_len]
+
+            if len(region_10) < len(box10):
+                continue
+
+            score_35 = _score_consensus(region_35, box35)
+            score_10 = _score_consensus(region_10, box10)
+            combined = (score_35 + score_10) / 2.0
+
+            if combined > worst_score:
+                worst_score = combined
+                worst_pos = i
+
+    elif consensus_info["type"] == "eukaryotic":
+        tata_box = consensus_info["TATA_box"]
+        initiator = consensus_info["Initiator"]
+
+        for i in range(len(seq) - len(tata_box) + 1):
+            score_tata = _score_consensus(seq[i:i + len(tata_box)], tata_box)
+
+            for offset in range(20, 40):
+                ini_start = i + offset
+                if ini_start + len(initiator) > len(seq):
+                    break
+                score_ini = _score_consensus(seq[ini_start:ini_start + len(initiator)], initiator)
+                combined = (score_tata + score_ini) / 2.0
+
+                if combined > worst_score:
+                    worst_score = combined
+                    worst_pos = i
+
+    # Determine verdict using five-valued logic
+    if worst_score >= threshold:
+        verdict = Verdict.FAIL
+    elif worst_score >= threshold * 0.8:
+        verdict = Verdict.UNCERTAIN
+    else:
+        verdict = Verdict.LIKELY_PASS
+
+    violation = None
+    if verdict == Verdict.FAIL:
+        violation = f"Cryptic promoter at pos {worst_pos}, score={worst_score:.3f} >= {threshold}"
+    elif verdict == Verdict.UNCERTAIN:
+        violation = f"Borderline promoter at pos {worst_pos}, score={worst_score:.3f} >= {threshold * 0.8:.3f}"
+
+    return TypeCheckResult(
+        predicate=f"NoCrypticPromoter({organism}, {threshold})",
+        verdict=verdict,
+        violation=violation,
+    )
+
+
 def evaluate_no_cpg_island(
     seq: str,
     window: int = 200,
@@ -911,6 +1765,135 @@ def analyze_codon_at_position(
     }
 
 
+def evaluate_co_translational_folding(
+    seq: str,
+    organism: str = "Homo_sapiens",
+    domain_boundaries: List[int] | None = None,
+    min_pause_cai: float = 0.3,
+) -> TypeCheckResult:
+    """Evaluate co-translational folding preservation after codon optimization.
+
+    Checks whether codon optimization has disrupted critical pause sites
+    that are important for proper protein folding during translation. The
+    key insight is that slow codons (low tRNA adaptation) at domain
+    boundaries allow the nascent chain to fold properly before downstream
+    sequence emerges from the ribosome.
+
+    Verdicts use the five-valued logic:
+    - PASS: Good ramp with appropriate pause sites preserved.
+    - LIKELY_PASS: Acceptable ramp with minor concerns.
+    - UNCERTAIN: Ramp too fast or domain boundaries speeded-up.
+    - LIKELY_FAIL: Multiple domain boundaries disrupted.
+    - FAIL: Ramp destroyed AND domain boundaries disrupted.
+
+    Args:
+        seq: DNA coding sequence.
+        organism: Target organism for CAI computation (default: "Homo_sapiens").
+        domain_boundaries: Optional list of codon positions (0-based) where
+            protein domains start/end. If provided, these positions are
+            checked for speed-up (CAI > 0.7 where a pause is needed).
+        min_pause_cai: CAI threshold below which a codon is considered a
+            pause site (default 0.3).
+
+    Returns:
+        TypeCheckResult with PASS/LIKELY_PASS/UNCERTAIN/LIKELY_FAIL/FAIL verdict.
+    """
+    from .species import SPECIES
+
+    seq = seq.upper()
+
+    # Resolve organism name to SPECIES dict key
+    species_key = _ORGANISM_TO_SPECIES_KEY.get(organism, "human")
+    species_cai = SPECIES.get(species_key, SPECIES.get("human", {}))
+
+    # Run the low-level predicate check
+    result = check_co_translational_folding(
+        seq, species_cai, domain_boundaries, min_pause_cai
+    )
+
+    # Map the PredicateResult verdict to a TypeCheckResult verdict using
+    # the five-valued logic, incorporating additional context about the
+    # severity of the findings.
+    ramp_info = _compute_codon_ramp_score(seq, species_cai)
+    ramp_score = ramp_info["ramp_score"]
+    speed_disruptions = ramp_info["speed_disruptions"]
+    pause_sites = ramp_info["pause_sites"]
+
+    ramp_length = min(30, len(seq) // 3)
+    ramp_all_fast = ramp_length >= 10 and all(
+        species_cai.get(seq[i * 3:(i + 1) * 3], 0.0) > 0.7
+        for i in range(ramp_length)
+    )
+
+    # Count domain boundary disruptions
+    domain_disrupted = 0
+    if domain_boundaries:
+        num_codons = len(seq) // 3
+        for bp in domain_boundaries:
+            if 0 <= bp < num_codons:
+                codon = seq[bp * 3:(bp + 1) * 3]
+                if species_cai.get(codon, 0.0) > 0.7:
+                    domain_disrupted += 1
+
+    # Determine the TypeCheckResult verdict
+    if domain_boundaries and domain_disrupted > 0 and ramp_all_fast:
+        # Ramp destroyed AND domain boundaries disrupted
+        verdict = Verdict.FAIL
+        violation = (
+            f"Ramp destroyed (avg CAI={ramp_score:.3f}) and {domain_disrupted} "
+            f"domain boundary(ies) disrupted by fast codons"
+        )
+    elif domain_boundaries and domain_disrupted >= 2:
+        # Multiple domain boundaries disrupted
+        verdict = Verdict.LIKELY_FAIL
+        violation = (
+            f"{domain_disrupted} domain boundary(ies) have fast codons "
+            f"(CAI > 0.7) where pause sites are needed"
+        )
+    elif domain_boundaries and domain_disrupted == 1:
+        # Single domain boundary disrupted
+        verdict = Verdict.UNCERTAIN
+        violation = (
+            f"1 domain boundary has a fast codon (CAI > 0.7) where "
+            f"a pause site may be needed"
+        )
+    elif ramp_all_fast and ramp_length >= 10:
+        # Ramp too fast — ribosome jam risk
+        verdict = Verdict.UNCERTAIN
+        violation = (
+            f"Codon ramp (first {ramp_length} codons) is entirely fast "
+            f"(avg CAI={ramp_score:.3f}) — ribosome jam risk"
+        )
+    elif speed_disruptions:
+        # Some pause sites may have been replaced by fast codons
+        if len(speed_disruptions) <= 2:
+            verdict = Verdict.LIKELY_PASS
+            violation = (
+                f"{len(speed_disruptions)} potential pause site(s) replaced by "
+                f"fast codons — minor concern"
+            )
+        else:
+            verdict = Verdict.UNCERTAIN
+            violation = (
+                f"{len(speed_disruptions)} potential pause site(s) replaced by "
+                f"fast codons — may affect co-translational folding"
+            )
+    elif pause_sites:
+        # Good — pause sites preserved
+        verdict = Verdict.PASS
+        violation = None
+    else:
+        # No pause sites, but no obvious issues either
+        verdict = Verdict.LIKELY_PASS
+        violation = None
+
+    return TypeCheckResult(
+        predicate=f"CoTranslationalFolding({organism}, {min_pause_cai})",
+        verdict=verdict,
+        violation=violation,
+    )
+
+
 def evaluate_all_predicates(
     seq: str,
     boundaries: List[Tuple[int, int]] | None = None,
@@ -921,10 +1904,17 @@ def evaluate_all_predicates(
     cryptic_threshold: float = 3.0,
     uncertain_lo: float = 0.0,
     cai_threshold: float = 0.5,
+    promoter_threshold: float = 0.7,
+    is_cytosolic: bool = True,
+    tm_threshold: float = 0.68,
+    mrna_window: int = 50,
+    mrna_dg_threshold: float = -15.0,
+    folding_threshold: float = 0.3,
+    domain_boundaries: List[int] | None = None,
 ) -> List[TypeCheckResult]:
-    """Evaluate all 8 type predicates against a sequence.
+    """Evaluate all 12 type predicates against a sequence.
 
-    The 8 predicates are:
+    The 12 predicates are:
     1. NoCrypticSplice — no cryptic splice donors
     2. SpliceCorrect — canonical splice signals at intron boundaries
     3. GCInRange — GC content within acceptable range
@@ -933,11 +1923,15 @@ def evaluate_all_predicates(
     6. InFrame — valid coding frame
     7. NoInstabilityMotif — no mRNA instability motifs
     8. NoCpGIsland — no CpG islands
+    9. NoCrypticPromoter — no cryptic promoter sites
+    10. NoUnexpectedTMDomain — no unexpected transmembrane domains
+    11. mRNASecondaryStructure — no strong mRNA secondary structure
+    12. CoTranslationalFolding — co-translational folding pause-site preservation
 
     Args:
         seq: DNA sequence to evaluate.
         boundaries: Exon boundary tuples [(start, end), ...].
-        organism: Target organism for CAI computation.
+        organism: Target organism for CAI and promoter computation.
         gc_lo: Minimum GC fraction.
         gc_hi: Maximum GC fraction.
         enzymes: Restriction enzymes to check. If None, uses a default set
@@ -945,12 +1939,23 @@ def evaluate_all_predicates(
         cryptic_threshold: MaxEnt score threshold for cryptic splice FAIL.
         uncertain_lo: MaxEnt score threshold for UNCERTAIN.
         cai_threshold: Minimum CAI for CodonAdapted PASS.
+        promoter_threshold: Score threshold for cryptic promoter FAIL.
+        is_cytosolic: Whether the protein is cytosolic (for TM domain check).
+        tm_threshold: Hydrophobic fraction threshold for TM domain FAIL.
+        mrna_window: Window size for mRNA secondary structure analysis.
+        mrna_dg_threshold: ΔG threshold for mRNA structure FAIL.
+        folding_threshold: Minimum CAI for a codon to be considered a pause
+            site (used by CoTranslationalFolding predicate).
+        domain_boundaries: Codon positions where protein domains start/end
+            (used by CoTranslationalFolding predicate).
 
     Returns:
-        List of 8 TypeCheckResult objects.
+        List of 12 TypeCheckResult objects.
     """
     if enzymes is None:
         enzymes = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
+    # Map organism name to promoter organism key
+    promoter_organism = "E_coli" if organism in ("E_coli", "ecoli", "Escherichia_coli") else "eukaryote"
     results: List[TypeCheckResult] = [
         evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold, uncertain_lo),
         evaluate_splice_correct(seq, boundaries),
@@ -960,6 +1965,10 @@ def evaluate_all_predicates(
         evaluate_in_frame(seq, boundaries),
         evaluate_no_instability_motif(seq),
         evaluate_no_cpg_island(seq),
+        evaluate_no_cryptic_promoter(seq, promoter_organism, promoter_threshold),
+        evaluate_no_unexpected_tm_domain(seq, is_cytosolic, 19, tm_threshold),
+        evaluate_mrna_secondary_structure(seq, 0, mrna_window, mrna_dg_threshold),
+        evaluate_co_translational_folding(seq, organism, domain_boundaries, folding_threshold),
     ]
     return results
 
@@ -1065,7 +2074,7 @@ class PredicateRegistry:
 
 
 # ────────────────────────────────────────────────────────────
-# Global registry instance with all 8 predicates registered
+# Global registry instance with all 12 predicates registered
 # ────────────────────────────────────────────────────────────
 registry = PredicateRegistry()
 
@@ -1139,5 +2148,47 @@ registry.register(
     evaluate_no_cpg_island,
     verify_param_map={
         "seq": "seq",
+    },
+)
+
+registry.register(
+    "NoCrypticPromoter",
+    evaluate_no_cryptic_promoter,
+    verify_param_map={
+        "seq": "seq",
+        "organism": "organism",
+        "threshold": "threshold",
+    },
+)
+
+registry.register(
+    "CoTranslationalFolding",
+    evaluate_co_translational_folding,
+    verify_param_map={
+        "seq": "seq",
+        "organism": "organism",
+        "domain_boundaries": "domain_boundaries",
+        "min_pause_cai": "min_pause_cai",
+    },
+)
+
+registry.register(
+    "NoUnexpectedTMDomain",
+    evaluate_no_unexpected_tm_domain,
+    verify_param_map={
+        "seq": "seq",
+        "is_cytosolic": "is_cytosolic",
+        "threshold": "threshold",
+    },
+)
+
+registry.register(
+    "mRNASecondaryStructure",
+    evaluate_mrna_secondary_structure,
+    verify_param_map={
+        "seq": "seq",
+        "window_start": "window_start",
+        "window_end": "window_end",
+        "dg_threshold": "dg_threshold",
     },
 )

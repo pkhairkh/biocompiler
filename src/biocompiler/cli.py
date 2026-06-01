@@ -14,7 +14,7 @@ import sys
 import os
 from typing import List, Optional
 
-from .optimizer import BioOptimizer
+from .optimization import BioOptimizer
 from .type_system import (
     CODON_TABLE,
     check_no_stop_codons,
@@ -174,7 +174,10 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the BioCompiler CLI."""
     parser = argparse.ArgumentParser(
         prog="biocompiler",
-        description="BioCompiler v7.0.0 — Certified Gene Optimization with Formal Verification",
+        description="BioCompiler v7.2.0 — Certified Gene Optimization with Formal Verification",
+    )
+    parser.add_argument(
+        "--version", action="version", version="BioCompiler v7.2.0",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -266,7 +269,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="High splice score threshold (default: 6.0)",
     )
 
+    # ── scan ──
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan a DNA sequence for features (splice sites, restriction sites, etc.)",
+    )
+    scan_parser.add_argument(
+        "--sequence", "-s", required=True,
+        help="DNA sequence to scan",
+    )
+    scan_parser.add_argument(
+        "--enzymes", default="",
+        help="Comma-separated restriction enzymes to scan for",
+    )
+
+    # ── serve ──
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start the REST API server",
+    )
+    serve_parser.add_argument(
+        "--host", default="0.0.0.0",
+        help="Host to bind to (default: 0.0.0.0)",
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=8000,
+        help="Port to bind to (default: 8000)",
+    )
+
     return parser
+
+
+def cmd_scan(args: argparse.Namespace) -> None:
+    """Handle the 'scan' command — scan a sequence for features."""
+    from .scanner import scan_sequence
+    seq = args.sequence.upper().strip()
+    seq = "".join(c for c in seq if c in "ACGT")
+    if len(seq) < 3:
+        print("Error: Sequence too short for scanning.", file=sys.stderr)
+        sys.exit(1)
+    enzymes: List[str] = []
+    if args.enzymes:
+        enzymes = [e.strip() for e in args.enzymes.split(",") if e.strip()]
+    tokens = scan_sequence(seq, restriction_enzymes=enzymes)
+    print(f"Scanned {len(seq)} bp sequence")
+    print(f"Tokens found: {len(tokens)}")
+    for t in tokens:
+        print(f"  {t.element_type} at pos {t.position}: {t.match_sequence} (score={t.score:.2f})")
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -284,6 +333,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         cmd_check(args)
     elif args.command == "benchmark":
         cmd_benchmark(args)
+    elif args.command == "scan":
+        cmd_scan(args)
+    elif args.command == "serve":
+        import uvicorn
+        from .api import app
+        uvicorn.run(app, host=args.host, port=args.port)
     else:
         parser.print_help()
         sys.exit(1)

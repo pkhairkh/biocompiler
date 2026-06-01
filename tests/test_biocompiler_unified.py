@@ -576,7 +576,7 @@ class TestFullPipeline:
         results = evaluate_all_predicates(
             pre_mrna, boundaries, organism="Homo_sapiens"
         )
-        assert len(results) == 8  # 7 original + NoCpGIsland
+        assert len(results) == 12  # 12 predicates
 
         # Overall verdict
         overall = combined_verdict([r.verdict for r in results])
@@ -695,7 +695,7 @@ class TestDualThresholdNoCrypticSplice:
 
     def test_eight_predicates_in_registry(self):
         """Exactly 8 predicates should be registered in the predicate registry."""
-        assert len(predicate_registry.names()) == 8
+        assert len(predicate_registry.names()) == 12
         assert "NoCpGIsland" in predicate_registry.names()
 
 

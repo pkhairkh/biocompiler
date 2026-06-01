@@ -447,7 +447,7 @@ def _type_check_single(item: BatchCheckItem) -> dict[str, Any]:
     # Type check
     results = evaluate_all_predicates(
         seq=seq,
-        known_exon_boundaries=exon_boundaries,
+        boundaries=exon_boundaries,
         organism=item.organism,
         gc_lo=item.gc_lo,
         gc_hi=item.gc_hi,
@@ -675,7 +675,7 @@ def create_app() -> FastAPI:
             # Type check
             results = evaluate_all_predicates(
                 seq=seq,
-                known_exon_boundaries=exon_boundaries,
+                boundaries=exon_boundaries,
                 organism=input_data.organism,
                 gc_lo=input_data.gc_lo,
                 gc_hi=input_data.gc_hi,

@@ -48,6 +48,11 @@ class OptimizationResult:
     failed_predicates: list = field(default_factory=list)
     predicate_results: list = field(default_factory=list)
     certificate_text: str = ""
+    # Extended attributes for API/visualization compatibility
+    protein: str = ""
+    fallback_used: bool = False
+    satisfied_predicates: list = field(default_factory=list)
+    aa_substitutions: list = field(default_factory=list)
 
 
 def optimize_sequence(
@@ -128,8 +133,12 @@ def optimize_sequence(
     except UnsupportedOrganismError:
         cai_val = opt._compute_seq_cai(optimized_seq)
 
-    # Collect failed predicates
+    # Collect failed and satisfied predicates
     failed = [r.predicate for r in pred_results if not r.passed]
+    satisfied = [r.predicate for r in pred_results if r.passed]
+
+    # Detect if mutagenesis fallback was used (any V->I or similar)
+    fallback = bool(opt._applied_mutagenesis)
 
     return OptimizationResult(
         sequence=optimized_seq,
@@ -138,6 +147,10 @@ def optimize_sequence(
         failed_predicates=failed,
         predicate_results=pred_results,
         certificate_text=cert_text,
+        protein=target_protein,
+        fallback_used=fallback,
+        satisfied_predicates=satisfied,
+        aa_substitutions=opt._applied_mutagenesis,
     )
 
 

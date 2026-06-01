@@ -15,28 +15,62 @@ from typing import Optional
 
 
 class Verdict(str, Enum):
-    """Three-valued logic for type-check verdicts (Kleene strong logic)."""
+    """Five-valued logic for type-check verdicts (Kleene-style).
+
+    Ordering: PASS > LIKELY_PASS > UNCERTAIN > LIKELY_FAIL > FAIL
+    """
     PASS = "PASS"
-    FAIL = "FAIL"
+    LIKELY_PASS = "LIKELY_PASS"
     UNCERTAIN = "UNCERTAIN"
+    LIKELY_FAIL = "LIKELY_FAIL"
+    FAIL = "FAIL"
+
+    @property
+    def confidence(self) -> float:
+        """Return a confidence score: 1.0 for PASS, 0.75 for LIKELY_PASS,
+        0.5 for UNCERTAIN, 0.25 for LIKELY_FAIL, 0.0 for FAIL."""
+        _confidence_map = {
+            Verdict.PASS: 1.0,
+            Verdict.LIKELY_PASS: 0.75,
+            Verdict.UNCERTAIN: 0.5,
+            Verdict.LIKELY_FAIL: 0.25,
+            Verdict.FAIL: 0.0,
+        }
+        return _confidence_map[self]
+
+    @property
+    def is_definite(self) -> bool:
+        """True for PASS/FAIL (definite verdicts), False for LIKELY_PASS/UNCERTAIN/LIKELY_FAIL."""
+        return self in (Verdict.PASS, Verdict.FAIL)
 
 
-def three_valued_and(a: Verdict, b: Verdict) -> Verdict:
-    """Conjunction in three-valued logic (Kleene strong K3)."""
-    if a == Verdict.FAIL or b == Verdict.FAIL:
-        return Verdict.FAIL
-    if a == Verdict.UNCERTAIN or b == Verdict.UNCERTAIN:
-        return Verdict.UNCERTAIN
-    return Verdict.PASS
+# Internal ordering: PASS > LIKELY_PASS > UNCERTAIN > LIKELY_FAIL > FAIL
+_VERDICT_ORDER = {
+    Verdict.PASS: 4,
+    Verdict.LIKELY_PASS: 3,
+    Verdict.UNCERTAIN: 2,
+    Verdict.LIKELY_FAIL: 1,
+    Verdict.FAIL: 0,
+}
 
 
-def three_valued_or(a: Verdict, b: Verdict) -> Verdict:
-    """Disjunction in three-valued logic (Kleene strong K3)."""
-    if a == Verdict.PASS or b == Verdict.PASS:
-        return Verdict.PASS
-    if a == Verdict.UNCERTAIN or b == Verdict.UNCERTAIN:
-        return Verdict.UNCERTAIN
-    return Verdict.FAIL
+def five_valued_and(a: Verdict, b: Verdict) -> Verdict:
+    """Conjunction in five-valued logic (Kleene-style). AND takes the minimum."""
+    if _VERDICT_ORDER[a] <= _VERDICT_ORDER[b]:
+        return a
+    return b
+
+
+def five_valued_or(a: Verdict, b: Verdict) -> Verdict:
+    """Disjunction in five-valued logic (Kleene-style). OR takes the maximum."""
+    if _VERDICT_ORDER[a] >= _VERDICT_ORDER[b]:
+        return a
+    return b
+
+
+# Backward-compatible aliases
+three_valued_and = five_valued_and
+three_valued_or = five_valued_or
 
 
 def combined_verdict(verdicts: list[Verdict]) -> Verdict:
@@ -45,7 +79,7 @@ def combined_verdict(verdicts: list[Verdict]) -> Verdict:
         return Verdict.UNCERTAIN
     result = verdicts[0]
     for v in verdicts[1:]:
-        result = three_valued_and(result, v)
+        result = five_valued_and(result, v)
     return result
 
 
