@@ -1,0 +1,65 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["cfa24d79ab7ea5f5.olean"],
+  "m": false,
+  "i": "bd81ca0457ffc499.ilean",
+  "c": "2a15b9acaf543f85.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/z/my-project/biocompiler/proof/.lake/build/lib/lean /home/z/.elan/toolchains/leanprover--lean4---v4.30.0/bin/lean -DautoImplicit=false /home/z/my-project/biocompiler/proof/BioCompiler/NDFST.lean -o /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/NDFST.olean -i /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/NDFST.ilean -c /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/NDFST.c --setup /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/NDFST.setup.json --json",
+   "level": "trace"},
+  {"message":
+   "BioCompiler/NDFST.lean:70:0: automatically included section variable(s) unused in theorem `BioCompiler.ndfstRun_append_singleton`:\n  [DecidableEq State]\n  [Inhabited State]\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:74:0: automatically included section variable(s) unused in theorem `BioCompiler.ndfstStep_membership`:\n  [DecidableEq State]\n  [Inhabited State]\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:92:0: automatically included section variable(s) unused in theorem `BioCompiler.ConsumesInput.path_ne`:\n  [DecidableEq State]\n  [Inhabited State]\n  [DecidableEq State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] [DecidableEq State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:102:8: automatically included section variable(s) unused in theorem `_private.BioCompiler.NDFST.0.BioCompiler.ndfstRun_sound_general`:\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:140:0: automatically included section variable(s) unused in theorem `BioCompiler.ndfstRun_sound`:\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:159:8: automatically included section variable(s) unused in theorem `_private.BioCompiler.NDFST.0.BioCompiler.ndfstRun_complete_general`:\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:185:0: automatically included section variable(s) unused in theorem `BioCompiler.ndfstRun_complete`:\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:197:0: automatically included section variable(s) unused in theorem `BioCompiler.ndfst_deterministic`:\n  [DecidableEq State]\n  [Inhabited State]\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:200:0: automatically included section variable(s) unused in theorem `BioCompiler.ndfst_unique_deterministic`:\n  [DecidableEq State]\n  [Inhabited State]\n  [DecidableEq State]\n  [Inhabited State]\nconsider restructuring your `variable` declarations so that the variables are not in scope or explicitly omit them:\n  omit [DecidableEq State] [Inhabited State] [DecidableEq State] [Inhabited State] in theorem ...\n\nNote: This linter can be disabled with `set_option linter.unusedSectionVars false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/NDFST.lean:224:7: unused variable `ctx`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"}],
+ "inputs":
+ [["BioCompiler.NDFST:deps",
+   [["deps",
+     [["BioCompiler/BioCompiler:extraDep",
+       [["@BioCompiler:extraDep", "00000000000006bb"]]],
+      ["imports",
+       [["BioCompiler.Sequence transitive imports (legacy)",
+         "00000000000006bb"],
+        ["BioCompiler.Sequence:importAllArts", "0296985af1483811"]]]]],
+    ["libs",
+     [["import dynlibs", "00000000000006bb"],
+      ["package external libraries", "00000000000006bb"],
+      ["module dynlibs", "00000000000006bb"],
+      ["module plugins", "00000000000006bb"]]]]],
+  ["Lean 4.30.0, commit d024af099ca4bf2c86f649261ebf59565dc8c622",
+   "2f4703bb19086252"],
+  ["/home/z/my-project/biocompiler/proof/BioCompiler/NDFST.lean",
+   "5ef5ebefe7aad77e"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: BioCompiler.NDFST", "e3d998b1ffbccee6"],
+  ["Package.id?: (some BioCompiler)", "143d9b3ae216737d"],
+  ["Module.leanArgs: #[-DautoImplicit=false]", "83bf8aa7a6e9844b"]],
+ "depHash": "cf25ab8da2fd26ca"}

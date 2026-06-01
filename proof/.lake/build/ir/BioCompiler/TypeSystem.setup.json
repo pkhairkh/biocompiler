@@ -1,0 +1,15 @@
+{"plugins": [],
+ "package": "BioCompiler",
+ "options": {},
+ "name": "BioCompiler.TypeSystem",
+ "isModule": false,
+ "importArts":
+ {"BioCompiler.ThreeValued":
+  ["/home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/ThreeValued.olean"],
+  "BioCompiler.Sequence":
+  ["/home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/Sequence.olean"],
+  "BioCompiler.Scanners":
+  ["/home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/Scanners.olean"],
+  "BioCompiler.NDFST":
+  ["/home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/NDFST.olean"]},
+ "dynlibs": []}

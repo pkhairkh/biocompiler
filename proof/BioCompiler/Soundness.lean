@@ -97,6 +97,7 @@ import BioCompiler.NDFST
 import BioCompiler.Scanners
 import BioCompiler.TypeSystem
 import BioCompiler.Compositional
+import BioCompiler.Certificates
 import BioCompiler.SLOTIndependence
 
 namespace BioCompiler
@@ -116,7 +117,7 @@ def cert_soundness := @certificate_soundness
 def slot_indep := @full_slot_independence
 
 /-- Three-valued conjunction preserves PASS. -/
-def and_sound := @and_pass_pass
+def and_sound := @Verdict.and_pass_pass
 
 /-- FFI-dependent predicates never produce PASS. -/
 def ffi_no_pass := @ffi_never_pass

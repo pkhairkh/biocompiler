@@ -8,6 +8,7 @@ for certified gene optimization.
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Dict, Set, Optional, Tuple
+from .types import Verdict
 
 # ────────────────────────────────────────────────────────────
 # Standard Genetic Code — CODON_TABLE (fixed: no invalid entries)
@@ -139,7 +140,7 @@ class PredicateResult:
     """Result of checking one predicate against a sequence."""
     predicate: str
     passed: bool
-    verdict: Optional[SpliceVerdict] = None  # used by NoCrypticSplice
+    verdict: Optional[Verdict] = None  # used by NoCrypticSplice and others
     details: str = ""
     positions: List[int] = field(default_factory=list)
 
@@ -156,7 +157,7 @@ def check_no_stop_codons(seq: str) -> PredicateResult:
     codon are flagged as violations.
     """
     if len(seq) < 3:
-        return PredicateResult("NoStopCodons", True, details="Sequence too short")
+        return PredicateResult("NoStopCodons", True, verdict=Verdict.PASS, details="Sequence too short")
     last_codon_start = len(seq) - 3
     violations = []
     for i in range(0, last_codon_start, 3):  # skip the last codon
@@ -164,8 +165,8 @@ def check_no_stop_codons(seq: str) -> PredicateResult:
         if codon in ("TAA", "TAG", "TGA"):
             violations.append(i)
     if violations:
-        return PredicateResult("NoStopCodons", False, details="Internal stop codons found", positions=violations)
-    return PredicateResult("NoStopCodons", True, details="No internal stop codons")
+        return PredicateResult("NoStopCodons", False, verdict=Verdict.FAIL, details="Internal stop codons found", positions=violations)
+    return PredicateResult("NoStopCodons", True, verdict=Verdict.PASS, details="No internal stop codons")
 
 
 def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> PredicateResult:
@@ -176,28 +177,28 @@ def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: floa
         if seq[i:i+2] == "GT":
             gt_positions.append(i)
     if not gt_positions:
-        return PredicateResult("NoCrypticSplice", True, verdict=SpliceVerdict.PASS,
+        return PredicateResult("NoCrypticSplice", True, verdict=Verdict.PASS,
                                details="No GT dinucleotides found")
     max_score = 0.0
     worst_pos = -1
-    worst_verdict = SpliceVerdict.PASS
+    worst_verdict = Verdict.PASS
     for pos in gt_positions:
         context_start = max(0, pos - 3)
         context_end = min(len(seq), pos + 6)
         context = seq[context_start:context_end]
         score = maxent_score(context)
         if score < low_thresh:
-            v = SpliceVerdict.PASS
+            v = Verdict.PASS
         elif score < high_thresh:
-            v = SpliceVerdict.UNCERTAIN
+            v = Verdict.UNCERTAIN
         else:
-            v = SpliceVerdict.FAIL
+            v = Verdict.FAIL
         if score > max_score:
             max_score = score
             worst_pos = pos
             worst_verdict = v
 
-    passed = worst_verdict != SpliceVerdict.FAIL
+    passed = worst_verdict != Verdict.FAIL
     return PredicateResult("NoCrypticSplice", passed, verdict=worst_verdict,
                            details=f"Worst splice score {max_score:.2f} at pos {worst_pos}",
                            positions=[worst_pos] if worst_pos >= 0 else [])
@@ -218,10 +219,10 @@ def check_no_cpg_island(seq: str, window: int = 200, threshold: float = 0.6) -> 
             worst_ratio = obs_exp
             worst_start = start
     if worst_ratio > threshold:
-        return PredicateResult("NoCpGIsland", False,
+        return PredicateResult("NoCpGIsland", False, verdict=Verdict.FAIL,
                                details=f"CpG island at pos {worst_start}, Obs/Exp={worst_ratio:.3f} > {threshold}",
                                positions=[worst_start])
-    return PredicateResult("NoCpGIsland", True,
+    return PredicateResult("NoCpGIsland", True, verdict=Verdict.PASS,
                            details=f"Worst CpG Obs/Exp ratio {worst_ratio:.3f} <= {threshold}")
 
 
@@ -238,10 +239,10 @@ def check_no_restriction_site(seq: str, enzymes: List[str]) -> PredicateResult:
             violations.append(pos)
             pos = seq.find(site, pos + 1)
     if violations:
-        return PredicateResult("NoRestrictionSite", False,
+        return PredicateResult("NoRestrictionSite", False, verdict=Verdict.FAIL,
                                details=f"Restriction sites found at {violations}",
                                positions=violations)
-    return PredicateResult("NoRestrictionSite", True, details="No restriction sites found")
+    return PredicateResult("NoRestrictionSite", True, verdict=Verdict.PASS, details="No restriction sites found")
 
 
 def check_no_gt_dinucleotide(seq: str) -> PredicateResult:
@@ -251,10 +252,10 @@ def check_no_gt_dinucleotide(seq: str) -> PredicateResult:
     """
     positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
     if positions:
-        return PredicateResult("NoGTDinucleotide", False,
+        return PredicateResult("NoGTDinucleotide", False, verdict=Verdict.FAIL,
                                details=f"GT dinucleotides at {positions}",
                                positions=positions)
-    return PredicateResult("NoGTDinucleotide", True, details="No GT dinucleotides found")
+    return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS, details="No GT dinucleotides found")
 
 
 def check_no_avoidable_gt(seq: str) -> PredicateResult:
@@ -273,7 +274,7 @@ def check_no_avoidable_gt(seq: str) -> PredicateResult:
     """
     gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
     if not gt_positions:
-        return PredicateResult("NoGTDinucleotide", True, details="No GT dinucleotides found")
+        return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS, details="No GT dinucleotides found")
 
     avoidable_positions = []
     unavoidable_positions = []
@@ -371,11 +372,11 @@ def check_no_avoidable_gt(seq: str) -> PredicateResult:
                 unavoidable_positions.append(pos)
 
     if avoidable_positions:
-        return PredicateResult("NoGTDinucleotide", False,
+        return PredicateResult("NoGTDinucleotide", False, verdict=Verdict.FAIL,
                                details=(f"Avoidable GT dinucleotides at {avoidable_positions}; "
                                         f"unavoidable at {unavoidable_positions}"),
                                positions=avoidable_positions)
-    return PredicateResult("NoGTDinucleotide", True,
+    return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS,
                            details=(f"All {len(unavoidable_positions)} GT dinucleotides are "
                                     f"unavoidable (no synonymous substitution can remove them)"),
                            positions=unavoidable_positions)
@@ -384,7 +385,7 @@ def check_no_avoidable_gt(seq: str) -> PredicateResult:
 def check_valid_coding_seq(seq: str) -> PredicateResult:
     """Predicate 6: Valid coding sequence (length divisible by 3, all valid codons)."""
     if len(seq) % 3 != 0:
-        return PredicateResult("ValidCodingSeq", False,
+        return PredicateResult("ValidCodingSeq", False, verdict=Verdict.FAIL,
                                details=f"Sequence length {len(seq)} not divisible by 3")
     invalid = []
     for i in range(0, len(seq), 3):
@@ -392,16 +393,16 @@ def check_valid_coding_seq(seq: str) -> PredicateResult:
         if codon not in CODON_TABLE:
             invalid.append((i, codon))
     if invalid:
-        return PredicateResult("ValidCodingSeq", False,
+        return PredicateResult("ValidCodingSeq", False, verdict=Verdict.FAIL,
                                details=f"Invalid codons: {invalid}")
-    return PredicateResult("ValidCodingSeq", True, details="All codons valid")
+    return PredicateResult("ValidCodingSeq", True, verdict=Verdict.PASS, details="All codons valid")
 
 
 def check_conservation_score(original_aa: str, new_aa: str, min_score: int = 0) -> PredicateResult:
     """Predicate 7: BLOSUM62 conservation score for amino acid substitution."""
     score = BLOSUM62.get((original_aa, new_aa), -10)
     passed = score >= min_score
-    return PredicateResult("ConservationScore", passed,
+    return PredicateResult("ConservationScore", passed, verdict=Verdict.PASS if passed else SpliceVerdict.FAIL,
                            details=f"BLOSUM62({original_aa},{new_aa})={score}, min={min_score}")
 
 
@@ -409,7 +410,7 @@ def check_codon_optimality(codon: str, species_cai: Dict[str, float], min_cai: f
     """Predicate 8: Codon optimality (CAI score above threshold)."""
     cai = species_cai.get(codon, 0.0)
     passed = cai >= min_cai
-    return PredicateResult("CodonOptimality", passed,
+    return PredicateResult("CodonOptimality", passed, verdict=Verdict.PASS if passed else SpliceVerdict.FAIL,
                            details=f"CAI({codon})={cai:.4f}, min={min_cai}")
 
 

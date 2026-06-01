@@ -16,7 +16,7 @@ inductive Nucleotide where
   | C : Nucleotide
   | G : Nucleotide
   | T : Nucleotide
-  deriving DecidableEq, Repr, BEq
+  deriving DecidableEq, Repr, BEq, Inhabited
 
 abbrev Sequence := List Nucleotide
 

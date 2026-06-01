@@ -19,7 +19,11 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 from .types import Verdict, TypeCheckResult, Certificate, combined_verdict
-from .type_system import registry
+try:
+    from .type_system import registry
+except ImportError:
+    # Fallback: registry not available in type_system
+    registry = None
 from .exceptions import CertificateGenerationError, CertificateVerificationError
 
 logger = logging.getLogger(__name__)

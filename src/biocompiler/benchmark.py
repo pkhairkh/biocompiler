@@ -11,7 +11,10 @@ Provides:
 import time
 from typing import Dict, List, Tuple
 
-from .optimizer import BioOptimizer
+try:
+    from .optimizer import BioOptimizer
+except ImportError:
+    from .optimization import BioOptimizer
 from .type_system import (
     CODON_TABLE,
     CertLevel,

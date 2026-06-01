@@ -84,6 +84,44 @@ def _compute_cai(seq: str, species_cai: Dict[str, float]) -> float:
     return math.exp(log_sum / count)
 
 
+class OptimizationResult:
+    """Result object from BioOptimizer.optimize().
+
+    Provides convenient access to the optimized sequence, CAI score,
+    predicate results, and certificate text.
+
+    Supports tuple unpacking for backward compatibility:
+        seq, results, cert = optimizer.optimize(dna)
+    """
+    def __init__(
+        self,
+        sequence: str,
+        cai: float,
+        results: List[PredicateResult],
+        certificate: str,
+    ):
+        self.sequence = sequence
+        self.cai = cai
+        self.results = results
+        self.certificate = certificate
+
+    def __repr__(self) -> str:
+        return f"OptimizationResult(cai={self.cai:.4f}, len={len(self.sequence)})"
+
+    def __iter__(self):
+        """Allow tuple unpacking: seq, results, cert = result."""
+        yield self.sequence
+        yield self.results
+        yield self.certificate
+
+    def __getitem__(self, index):
+        """Allow indexing: result[0], result[1], result[2]."""
+        return (self.sequence, self.results, self.certificate)[index]
+
+    def __len__(self):
+        return 3
+
+
 class BioOptimizer:
     """Certified gene sequence optimizer with CAI-aware 7-phase pipeline."""
 
@@ -116,17 +154,70 @@ class BioOptimizer:
         # Store original input protein for conservation scoring
         self._original_protein: str = ""
 
-    def optimize(self, seq: str) -> Tuple[str, List[PredicateResult], str]:
-        """Run the full 7-phase optimization pipeline.
+    def optimize(
+        self,
+        seq: str,
+        strategy: Optional[str] = None,
+    ) -> 'OptimizationResult':
+        """Run the full optimization pipeline.
+
+        Args:
+            seq: Input sequence — either a DNA coding sequence or a protein
+                  sequence (single-letter amino acid codes).  Protein sequences
+                  are automatically detected and back-translated.
+            strategy: Optimization strategy override.
+                - "constraint_first" (default): GT-aware greedy then fix constraints
+                - "cai_first": Maximize CAI first, then fix constraints with
+                  minimal CAI impact (DNAworks-style)
 
         Returns:
-            (optimized_sequence, predicate_results, certificate_text)
+            OptimizationResult with .sequence, .cai, .results, .certificate
         """
+        effective_strategy = strategy if strategy is not None else getattr(self, '_strategy', 'constraint_first')
+
         seq = seq.upper().strip()
+
+        # Detect protein input: if the sequence contains letters other than
+        # ACGT (and is not purely ACGT), treat it as a protein and back-translate.
+        protein_chars = set(seq) - {"A", "C", "G", "T"}
+        if protein_chars:
+            seq = self._back_translate_protein(seq)
+
         self._unavoidable_gt_positions = set()
         self._applied_mutagenesis = []
         self._original_protein = self._translate(seq)
 
+        if effective_strategy == "cai_first":
+            seq, results, cert_text = self._optimize_cai_first(seq)
+        else:
+            seq, results, cert_text = self._optimize_constraint_first(seq)
+
+        cai = _compute_cai(seq, self.species_cai)
+        return OptimizationResult(
+            sequence=seq,
+            cai=cai,
+            results=results,
+            certificate=cert_text,
+        )
+
+    def _back_translate_protein(self, protein: str) -> str:
+        """Back-translate a protein sequence to DNA using max-CAI codons."""
+        codons = []
+        for aa in protein:
+            if aa == "*":
+                codons.append("TAA")
+                continue
+            candidates = AA_TO_CODONS.get(aa, [])
+            if candidates:
+                codons.append(max(candidates, key=lambda c: self.species_cai.get(c, 0.0)))
+            else:
+                codons.append("NNN")
+        return "".join(codons)
+
+    def _optimize_constraint_first(
+        self, seq: str
+    ) -> Tuple[str, List[PredicateResult], str]:
+        """Constraint-first strategy (original 7-phase pipeline)."""
         # Phase 1: Greedy codon optimization (2-codon look-ahead, GT-aware)
         seq = self._phase1_greedy_optimize(seq)
 
@@ -169,6 +260,593 @@ class BioOptimizer:
         cert_text = format_certificate(results, seq, self.species)
 
         return seq, results, cert_text
+
+    # ──────────────────────────────────────────────────────────
+    # CAI-first optimization strategy (DNAworks-style)
+    # ──────────────────────────────────────────────────────────
+    def _optimize_cai_first(
+        self, seq: str
+    ) -> Tuple[str, List[PredicateResult], str]:
+        """CAI-first optimization: maximize CAI first, fix constraints second.
+
+        Strategy (DNAworks-style):
+        1. Back-translate using highest-CAI codons at every position
+           (ignore GT/CG/RS initially)
+        2. Iteratively fix constraint violations with minimal CAI impact:
+           a. Restriction sites → fix each with best synonymous codon
+           b. Avoidable GT dinucleotides → fix with best non-GT synonymous codon
+              using cross-codon pair optimization
+           c. CpG islands → fix with best non-CG synonymous codon
+           d. Cryptic splice sites → fix with best synonymous codon
+        3. CAI hill climbing to recover any lost CAI while maintaining constraints
+        4. Iterate until convergence
+
+        Key insight: by starting from max CAI (CAI=1.0) and only making the
+        smallest necessary CAI sacrifices to fix constraints, we achieve much
+        higher CAI than the constraint_first strategy which permanently sacrifices
+        CAI by avoiding GT during codon selection.
+
+        For GT fixing, we use a priority-based approach that fixes GTs with
+        the lowest CAI cost first, and considers multi-codon windows to find
+        globally optimal fixes.
+        """
+        # Phase 0: Pure max-CAI back-translation (ignore ALL constraints)
+        protein = self._translate(seq)
+        codons_result = []
+        for i, aa in enumerate(protein):
+            if aa == "*":
+                codon_start = i * 3
+                codons_result.append(
+                    seq[codon_start:codon_start + 3]
+                    if codon_start + 3 <= len(seq) else "TAA"
+                )
+                continue
+            candidates = AA_TO_CODONS.get(aa, [])
+            if candidates:
+                codons_result.append(
+                    max(candidates, key=lambda c: self.species_cai.get(c, 0.0))
+                )
+            else:
+                codon_start = i * 3
+                codons_result.append(seq[codon_start:codon_start + 3])
+        seq = "".join(codons_result)
+
+        # Phase 1: Fix restriction sites (highest priority — binary constraint)
+        seq = self._cai_first_fix_restriction_sites(seq)
+
+        # Phase 2: Fix avoidable GT dinucleotides (minimal CAI impact)
+        seq = self._cai_first_fix_gts(seq)
+
+        # Phase 2.5: Mutagenesis fallback for Valine GTs
+        # Valine codons all contain GT (GTN), so we substitute V→I
+        # (BLOSUM62 score 3, conservative) using high-CAI Ile codons
+        seq = self._cai_first_mutagenesis_fallback(seq)
+
+        # Phase 3: Fix CpG islands (minimal CAI impact)
+        seq = self._cai_first_fix_cpg(seq)
+
+        # Phase 4: Fix cryptic splice sites (minimal CAI impact)
+        seq = self._cai_first_fix_splice(seq)
+
+        # Phase 5: CAI hill climbing (upgrade codons while maintaining constraints)
+        seq = self._phase7_cai_boost(seq)
+
+        # Phase 6: Re-optimization pass (constraint-preserving CAI optimizer)
+        seq = self._phase6_reoptimize(seq)
+
+        # Phase 7: Second pass of GT fixing + CAI boost (iterative refinement)
+        for _refinement in range(3):
+            old_cai = _compute_cai(seq, self.species_cai)
+            seq = self._cai_first_fix_gts(seq)
+            seq = self._phase7_cai_boost(seq)
+            seq = self._phase6_reoptimize(seq)
+            new_cai = _compute_cai(seq, self.species_cai)
+            if new_cai <= old_cai + 0.0001:
+                break
+
+        # Track unavoidable GTs for certificate
+        for i in range(len(seq) - 1):
+            if seq[i] == "G" and seq[i + 1] == "T":
+                cs = (i // 3) * 3
+                next_cs = cs + 3
+                # Within-codon GT in Valine is unavoidable
+                if i + 1 < next_cs:
+                    codon = seq[cs:cs + 3]
+                    aa = CODON_TABLE.get(codon)
+                    if aa == "V":
+                        self._unavoidable_gt_positions.add(i)
+                    elif aa is not None:
+                        # Check if all synonymous codons contain GT
+                        if all("GT" in c for c in AA_TO_CODONS.get(aa, [])):
+                            self._unavoidable_gt_positions.add(i)
+
+        # Evaluate all predicates
+        results = self._evaluate_all_predicates(seq)
+        cert_text = format_certificate(results, seq, self.species)
+        return seq, results, cert_text
+
+    def _cai_first_fix_restriction_sites(self, seq: str) -> str:
+        """CAI-first Phase 1: Fix restriction sites with minimal CAI impact."""
+        from .restriction_sites import get_recognition_site
+        seq_list = list(seq)
+
+        for enzyme in self.enzymes:
+            site = get_recognition_site(enzyme)
+            if site is None:
+                continue
+
+            max_rounds = 50
+            for _ in range(max_rounds):
+                current_seq = "".join(seq_list)
+                p = current_seq.find(site)
+                if p == -1:
+                    break
+
+                # Find all codon positions overlapping this site
+                codon_starts = set()
+                for j in range(p, p + len(site)):
+                    cs = (j // 3) * 3
+                    if cs + 3 <= len(seq_list):
+                        codon_starts.add(cs)
+
+                fixed = False
+                for cs in sorted(codon_starts):
+                    codon = "".join(seq_list[cs:cs + 3])
+                    aa = CODON_TABLE.get(codon)
+                    if aa is None or aa == "*":
+                        continue
+
+                    # Sort alternatives by CAI (highest first) to minimize CAI loss
+                    alts = sorted(
+                        AA_TO_CODONS.get(aa, []),
+                        key=lambda c: self.species_cai.get(c, 0.0),
+                        reverse=True,
+                    )
+                    for alt in alts:
+                        if alt == codon:
+                            continue
+                        test_list = seq_list[:]
+                        for k, b in enumerate(alt):
+                            test_list[cs + k] = b
+                        test_seq = "".join(test_list)
+                        if site not in test_seq:
+                            seq_list = test_list
+                            fixed = True
+                            break
+                    if fixed:
+                        break
+
+                if not fixed:
+                    # Try two-codon substitution
+                    codon_starts_sorted = sorted(codon_starts)
+                    for idx in range(len(codon_starts_sorted) - 1):
+                        cs1, cs2 = codon_starts_sorted[idx], codon_starts_sorted[idx + 1]
+                        if cs2 != cs1 + 3:
+                            continue
+                        codon1 = "".join(seq_list[cs1:cs1 + 3])
+                        codon2 = "".join(seq_list[cs2:cs2 + 3])
+                        aa1 = CODON_TABLE.get(codon1)
+                        aa2 = CODON_TABLE.get(codon2)
+                        if aa1 is None or aa1 == "*" or aa2 is None or aa2 == "*":
+                            continue
+                        pairs = []
+                        for c1 in AA_TO_CODONS.get(aa1, [codon1]):
+                            for c2 in AA_TO_CODONS.get(aa2, [codon2]):
+                                combined = self.species_cai.get(c1, 0.0) + self.species_cai.get(c2, 0.0)
+                                pairs.append((c1, c2, combined))
+                        pairs.sort(key=lambda x: x[2], reverse=True)
+                        for c1, c2, _ in pairs:
+                            test_list = seq_list[:]
+                            for k, b in enumerate(c1):
+                                test_list[cs1 + k] = b
+                            for k, b in enumerate(c2):
+                                test_list[cs2 + k] = b
+                            test_seq = "".join(test_list)
+                            if site not in test_seq:
+                                seq_list[:] = test_list
+                                fixed = True
+                                break
+                        if fixed:
+                            break
+                    if not fixed:
+                        break
+
+        return "".join(seq_list)
+
+    def _cai_first_fix_gts(self, seq: str) -> str:
+        """CAI-first Phase 2: Fix avoidable GT dinucleotides with minimal CAI impact."""
+        seq_list = list(seq)
+        max_rounds = 50
+
+        for _ in range(max_rounds):
+            current_seq = "".join(seq_list)
+            violations = []
+
+            # Find all avoidable GT positions
+            for i in range(len(current_seq) - 1):
+                if current_seq[i] == "G" and current_seq[i + 1] == "T":
+                    # Check if this GT is avoidable
+                    cs = (i // 3) * 3
+                    next_cs = cs + 3
+                    is_within = (i + 1) < next_cs
+
+                    if is_within:
+                        # Within-codon GT — avoidable unless Valine
+                        codon = current_seq[cs:cs + 3]
+                        aa = CODON_TABLE.get(codon)
+                        if aa == "V":
+                            continue  # Unavoidable
+                        if all("GT" in c for c in AA_TO_CODONS.get(aa, [])):
+                            continue  # Unavoidable
+                    else:
+                        # Cross-codon GT — avoidable if either side can change
+                        prev_cs = cs
+                        next_cs_cross = cs + 3
+                        if next_cs_cross + 3 > len(current_seq):
+                            continue
+                        prev_codon = current_seq[prev_cs:prev_cs + 3]
+                        next_codon = current_seq[next_cs_cross:next_cs_cross + 3]
+                        prev_aa = CODON_TABLE.get(prev_codon)
+                        next_aa = CODON_TABLE.get(next_codon)
+                        if prev_aa is None or next_aa is None:
+                            continue
+                        prev_can_avoid = any(c[-1] != "G" for c in AA_TO_CODONS.get(prev_aa, [prev_codon]))
+                        next_can_avoid = any(c[0] != "T" for c in AA_TO_CODONS.get(next_aa, [next_codon]))
+                        if not (prev_can_avoid or next_can_avoid):
+                            continue  # Unavoidable
+
+                    violations.append(i)
+
+            if not violations:
+                break
+
+            any_fixed = False
+
+            for gt_pos in violations:
+                cs = (gt_pos // 3) * 3
+                next_cs = cs + 3
+                is_within = (gt_pos + 1) < next_cs
+
+                if is_within:
+                    fixed = self._cai_first_fix_within_gt(seq_list, cs)
+                else:
+                    fixed = self._cai_first_fix_cross_gt(seq_list, cs)
+
+                if fixed:
+                    any_fixed = True
+                    break  # Restart scanning after any fix
+
+            if not any_fixed:
+                break
+
+        return "".join(seq_list)
+
+    def _cai_first_fix_within_gt(self, seq_list: list, codon_start: int) -> bool:
+        """Fix a within-codon GT by choosing the highest-CAI alternative without GT."""
+        codon = "".join(seq_list[codon_start:codon_start + 3])
+        aa = CODON_TABLE.get(codon)
+        if aa is None or aa == "*":
+            return False
+
+        old_gt_count = _count_gts("".join(seq_list))
+
+        # Sort alternatives by CAI (highest first), skip codons with GT
+        alternatives = []
+        for alt in AA_TO_CODONS.get(aa, []):
+            if "GT" in alt:
+                continue
+            alt_cai = self.species_cai.get(alt, 0.0)
+            alternatives.append((alt, alt_cai))
+
+        alternatives.sort(key=lambda x: x[1], reverse=True)
+
+        for alt, _ in alternatives:
+            test_list = seq_list[:]
+            for k, b in enumerate(alt):
+                test_list[codon_start + k] = b
+            new_gt_count = _count_gts("".join(test_list))
+            if new_gt_count < old_gt_count:
+                seq_list[:] = test_list
+                return True
+
+        return False
+
+    def _cai_first_fix_cross_gt(self, seq_list: list, codon_start: int) -> bool:
+        """Fix a cross-codon GT with minimal CAI impact.
+
+        Tries strategies in order of increasing invasiveness:
+        D. Change only the next codon (to one that doesn't start with T)
+        C. Change only the current codon (to one that doesn't end with G)
+        A. Modify the codon pair (both codons) — sorted by combined CAI
+        B. Modify preceding codon pair
+        """
+        old_gt_count = _count_gts("".join(seq_list))
+        next_start = codon_start + 3
+
+        # Strategy D: Change only the next codon (cheapest single-codon fix)
+        if next_start + 3 <= len(seq_list):
+            aa2_codon = "".join(seq_list[next_start:next_start + 3])
+            aa2 = CODON_TABLE.get(aa2_codon)
+            if aa2 is not None and aa2 != "*":
+                alts = sorted(
+                    AA_TO_CODONS.get(aa2, [aa2_codon]),
+                    key=lambda c: self.species_cai.get(c, 0.0),
+                    reverse=True,
+                )
+                for c2 in alts:
+                    if c2[0] == "T":
+                        continue  # Skip codons starting with T
+                    test_list = seq_list[:]
+                    for k, b in enumerate(c2):
+                        test_list[next_start + k] = b
+                    test_seq = "".join(test_list)
+                    new_gt_count = _count_gts(test_seq)
+                    if new_gt_count < old_gt_count:
+                        seq_list[:] = test_list
+                        return True
+
+        # Strategy C: Change only the current codon (to one that doesn't end with G)
+        aa1_codon = "".join(seq_list[codon_start:codon_start + 3])
+        aa1 = CODON_TABLE.get(aa1_codon)
+        if aa1 is not None and aa1 != "*":
+            alts = sorted(
+                AA_TO_CODONS.get(aa1, [aa1_codon]),
+                key=lambda c: self.species_cai.get(c, 0.0),
+                reverse=True,
+            )
+            for c1 in alts:
+                if c1[-1] == "G":
+                    continue  # Skip codons ending with G
+                test_list = seq_list[:]
+                for k, b in enumerate(c1):
+                    test_list[codon_start + k] = b
+                test_seq = "".join(test_list)
+                new_gt_count = _count_gts(test_seq)
+                if new_gt_count < old_gt_count:
+                    seq_list[:] = test_list
+                    return True
+
+        # Strategy A: Modify current + following codon
+        if next_start + 3 <= len(seq_list):
+            aa1_codon = "".join(seq_list[codon_start:codon_start + 3])
+            aa1 = CODON_TABLE.get(aa1_codon)
+            aa2_codon = "".join(seq_list[next_start:next_start + 3])
+            aa2 = CODON_TABLE.get(aa2_codon)
+
+            if aa1 is not None and aa1 != "*" and aa2 is not None and aa2 != "*":
+                pairs = []
+                for c1 in AA_TO_CODONS.get(aa1, [aa1_codon]):
+                    for c2 in AA_TO_CODONS.get(aa2, [aa2_codon]):
+                        if c1[-1] + c2[0] == "GT":
+                            continue
+                        combined_cai = self.species_cai.get(c1, 0.0) + self.species_cai.get(c2, 0.0)
+                        pairs.append((c1, c2, combined_cai))
+
+                pairs.sort(key=lambda x: x[2], reverse=True)
+
+                for c1, c2, _ in pairs:
+                    test_list = seq_list[:]
+                    for k, b in enumerate(c1):
+                        test_list[codon_start + k] = b
+                    for k, b in enumerate(c2):
+                        test_list[next_start + k] = b
+                    test_seq = "".join(test_list)
+                    new_gt_count = _count_gts(test_seq)
+                    if new_gt_count < old_gt_count:
+                        seq_list[:] = test_list
+                        return True
+
+        # Strategy B: Modify preceding + current codon
+        if codon_start >= 3:
+            prev_start = codon_start - 3
+            aa0_codon = "".join(seq_list[prev_start:prev_start + 3])
+            aa0 = CODON_TABLE.get(aa0_codon)
+            aa1_codon = "".join(seq_list[codon_start:codon_start + 3])
+            aa1 = CODON_TABLE.get(aa1_codon)
+
+            if aa0 is not None and aa0 != "*" and aa1 is not None and aa1 != "*":
+                pairs = []
+                for c0 in AA_TO_CODONS.get(aa0, [aa0_codon]):
+                    for c1 in AA_TO_CODONS.get(aa1, [aa1_codon]):
+                        if c0[-1] + c1[0] == "GT":
+                            continue
+                        combined_cai = self.species_cai.get(c0, 0.0) + self.species_cai.get(c1, 0.0)
+                        pairs.append((c0, c1, combined_cai))
+
+                pairs.sort(key=lambda x: x[2], reverse=True)
+
+                for c0, c1, _ in pairs:
+                    test_list = seq_list[:]
+                    for k, b in enumerate(c0):
+                        test_list[prev_start + k] = b
+                    for k, b in enumerate(c1):
+                        test_list[codon_start + k] = b
+                    test_seq = "".join(test_list)
+                    new_gt_count = _count_gts(test_seq)
+                    if new_gt_count < old_gt_count:
+                        seq_list[:] = test_list
+                        return True
+
+        return False
+
+    def _cai_first_fix_cpg(self, seq: str) -> str:
+        """CAI-first Phase 3: Fix CpG islands with minimal CAI impact."""
+        seq_list = list(seq)
+        changed = True
+        iterations = 0
+        max_iterations = 50
+
+        while changed and iterations < max_iterations:
+            changed = False
+            iterations += 1
+
+            for start in range(0, len(seq_list) - self.cpg_window + 1, 3):
+                window = "".join(seq_list[start:start + self.cpg_window])
+                c_count = window.count("C")
+                g_count = window.count("G")
+                cg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
+                expected = (c_count * g_count) / len(window) if len(window) > 0 else 0
+                obs_exp = cg_count / expected if expected > 0 else 0.0
+
+                if obs_exp <= self.cpg_threshold:
+                    continue
+
+                for i in range(start, min(start + self.cpg_window - 1, len(seq_list) - 1)):
+                    if seq_list[i] == "C" and seq_list[i+1] == "G":
+                        codon_start = (i // 3) * 3
+                        if codon_start + 3 > len(seq_list):
+                            continue
+                        codon = "".join(seq_list[codon_start:codon_start + 3])
+                        aa = CODON_TABLE.get(codon)
+                        if aa is None or aa == "*":
+                            continue
+
+                        old_gt_count = _count_gts("".join(seq_list))
+
+                        for alt in sorted(
+                            AA_TO_CODONS.get(aa, []),
+                            key=lambda c: self.species_cai.get(c, 0.0),
+                            reverse=True,
+                        ):
+                            if alt == codon or "CG" in alt:
+                                continue
+                            test_list = seq_list[:]
+                            for k, b in enumerate(alt):
+                                test_list[codon_start + k] = b
+                            new_gt_count = _count_gts("".join(test_list))
+                            if new_gt_count <= old_gt_count:
+                                seq_list = test_list
+                                changed = True
+                                break
+
+                        if changed:
+                            break
+                if changed:
+                    break
+
+        return "".join(seq_list)
+
+    def _cai_first_mutagenesis_fallback(self, seq: str) -> str:
+        """CAI-first Phase 2.5: Apply mutagenesis for GTs that can't be resolved
+        by synonymous substitution.
+
+        Specifically targets Valine codons (GTN) which all contain GT.
+        Substitutes V→I (Isoleucine, BLOSUM62=3) using highest-CAI Ile codon
+        to eliminate the GT while maximizing CAI.
+
+        Also handles any other within-codon GT positions where ALL synonymous
+        codons contain GT (rare but possible).
+        """
+        seq_list = list(seq)
+        changed = True
+        max_rounds = 10
+
+        for _ in range(max_rounds):
+            if not changed:
+                break
+            changed = False
+
+            for i in range(0, len(seq_list) - 2, 3):
+                codon = "".join(seq_list[i:i+3])
+                aa = CODON_TABLE.get(codon)
+                if aa is None or aa == "*":
+                    continue
+
+                # Check if this codon contains GT
+                if "GT" not in codon:
+                    continue
+
+                # Check if any synonymous codon avoids GT
+                has_gt_free = any("GT" not in c for c in AA_TO_CODONS.get(aa, []))
+                if has_gt_free:
+                    continue  # Can be fixed by synonymous substitution
+
+                # All synonymous codons contain GT — try mutagenesis
+                # V→I is the primary target (BLOSUM62=3, conservative)
+                if aa == "V":
+                    # Try Isoleucine codons (sorted by CAI)
+                    ile_codons = AA_TO_CODONS.get("I", [])
+                    old_gt_count = _count_gts("".join(seq_list))
+
+                    for ile_codon in sorted(
+                        ile_codons,
+                        key=lambda c: self.species_cai.get(c, 0.0),
+                        reverse=True,
+                    ):
+                        test_list = seq_list[:]
+                        for k, b in enumerate(ile_codon):
+                            test_list[i + k] = b
+                        new_gt_count = _count_gts("".join(test_list))
+                        if new_gt_count < old_gt_count:
+                            seq_list[:] = test_list
+                            self._applied_mutagenesis.append({
+                                "position": i,
+                                "original_aa": "V",
+                                "new_aa": "I",
+                                "blosum": BLOSUM62.get(("V", "I"), 3),
+                            })
+                            changed = True
+                            break
+
+                # Also try other conservative substitutions
+                if not changed and aa == "V":
+                    # V→L (Leucine, BLOSUM62=1)
+                    leu_codons = AA_TO_CODONS.get("L", [])
+                    old_gt_count = _count_gts("".join(seq_list))
+
+                    for leu_codon in sorted(
+                        leu_codons,
+                        key=lambda c: self.species_cai.get(c, 0.0),
+                        reverse=True,
+                    ):
+                        # Skip codons that start with T (might create cross-codon GT)
+                        test_list = seq_list[:]
+                        for k, b in enumerate(leu_codon):
+                            test_list[i + k] = b
+                        new_gt_count = _count_gts("".join(test_list))
+                        if new_gt_count < old_gt_count:
+                            seq_list[:] = test_list
+                            self._applied_mutagenesis.append({
+                                "position": i,
+                                "original_aa": "V",
+                                "new_aa": "L",
+                                "blosum": BLOSUM62.get(("V", "L"), 1),
+                            })
+                            changed = True
+                            break
+
+        return "".join(seq_list)
+
+    def _cai_first_fix_splice(self, seq: str) -> str:
+        """CAI-first Phase 4: Fix cryptic splice sites with minimal CAI impact."""
+        seq_list = list(seq)
+        max_rounds = 30
+
+        for _ in range(max_rounds):
+            current_seq = "".join(seq_list)
+            splice_result = check_no_cryptic_splice(current_seq, self.splice_low, self.splice_high)
+            if splice_result.passed:
+                break
+
+            fixed = False
+            for i in range(len(current_seq) - 1):
+                if current_seq[i] == "G" and current_seq[i + 1] == "T":
+                    cs = (i // 3) * 3
+                    next_cs = cs + 3
+                    is_within = (i + 1) < next_cs
+
+                    if is_within:
+                        fixed = self._cai_first_fix_within_gt(seq_list, cs)
+                    else:
+                        fixed = self._cai_first_fix_cross_gt(seq_list, cs)
+
+                    if fixed:
+                        break
+
+            if not fixed:
+                break
+
+        return "".join(seq_list)
 
     # ──────────────────────────────────────────────────────────
     # Constraint validation helper

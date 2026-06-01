@@ -1,2 +1,3 @@
 [console_scripts]
 biocompiler = biocompiler.cli:main
+biocompiler-verify = biocompiler.standalone_verifier:main

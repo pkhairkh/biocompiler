@@ -16,21 +16,52 @@ namespace BioCompiler
     given the previous codon's last base (for cross-codon GT avoidance). -/
 def CodonSelector := AminoAcid → Base → Codon
 
+/-- Helper: recursive GT-aware optimization that threads the previous codon's
+    last base through, avoiding the need for index bounds proofs in mapIdx. -/
+def GTAwareOptimizeAux (codons : List Codon) (sel : CodonSelector) (prevLast : Base) : List Codon :=
+  match codons with
+  | [] => []
+  | c :: cs =>
+    let aa := translateCodon c
+    if aa = AminoAcid.Stop then c :: GTAwareOptimizeAux cs sel c.trd
+    else sel aa prevLast :: GTAwareOptimizeAux cs sel c.trd
+
 /-- Phase 1 picks the highest-CAI synonymous codon that is GT-free
     and doesn't create cross-codon GT with the previous codon. -/
 def GTAwareOptimize (codons : List Codon) (sel : CodonSelector) : List Codon :=
-  codons.mapIdx fun i c =>
-    let aa := translateCodon c
-    let prevLast := if i = 0 then Base.A else (codons.get ⟨i - 1, by sorry⟩).trd
-    if aa = AminoAcid.Stop then c  -- keep stop codons as-is
-    else sel aa prevLast
+  GTAwareOptimizeAux codons sel Base.A
+
+/-- Helper: GTAwareOptimizeAux preserves the amino acid sequence -/
+private theorem gtaux_preserves_translation
+    (codons : List Codon) (sel : CodonSelector) (prevLast : Base)
+    (hSyn : ∀ aa prev, translateCodon (sel aa prev) = aa) :
+    (GTAwareOptimizeAux codons sel prevLast).map translateCodon = codons.map translateCodon := by
+  induction codons generalizing prevLast with
+  | nil => rfl
+  | cons c cs ih =>
+    show (if translateCodon c = AminoAcid.Stop then
+            c :: GTAwareOptimizeAux cs sel c.trd
+          else
+            sel (translateCodon c) prevLast :: GTAwareOptimizeAux cs sel c.trd).map translateCodon =
+          translateCodon c :: (cs.map translateCodon)
+    split
+    · next h =>
+      show translateCodon c :: (GTAwareOptimizeAux cs sel c.trd).map translateCodon =
+           translateCodon c :: cs.map translateCodon
+      exact congrArg (translateCodon c :: ·) (ih c.trd)
+    · next h =>
+      show translateCodon (sel (translateCodon c) prevLast) ::
+            (GTAwareOptimizeAux cs sel c.trd).map translateCodon =
+           translateCodon c :: cs.map translateCodon
+      rw [hSyn (translateCodon c) prevLast]
+      exact congrArg (translateCodon c :: ·) (ih c.trd)
 
 /-- Phase 1 preserves the amino acid sequence (if selector returns synonymous codons) -/
 theorem phase1_preserves_translation
     (codons : List Codon) (sel : CodonSelector)
     (hSyn : ∀ aa prev, translateCodon (sel aa prev) = aa) :
-    (GTAwareOptimize codons sel).map translateCodon = codons.map translateCodon := by
-  sorry  -- requires mapIdx properties
+    (GTAwareOptimize codons sel).map translateCodon = codons.map translateCodon :=
+  gtaux_preserves_translation codons sel Base.A hSyn
 
 -- ────────────────────────────────────────────────────────────
 -- Phase 2: Restriction Site Removal
@@ -41,17 +72,27 @@ theorem phase1_preserves_translation
 def RemoveRestrictionSites (codons : List Codon)
     (forbidden : List Codon) (sel : CodonSelector) : List Codon :=
   codons.map fun c =>
-    if forbidden.contains c then
+    if h : forbidden.contains c then
       let aa := translateCodon c
       sel aa Base.A  -- pick best synonymous codon
     else c
+
+/-- Helper: synonymous substitution at one codon preserves translation -/
+private theorem restrict_subst_preserves (c : Codon) (forbidden : List Codon) (sel : CodonSelector)
+    (hSyn : ∀ aa prev, translateCodon (sel aa prev) = aa) :
+    translateCodon (if h : forbidden.contains c then sel (translateCodon c) Base.A else c) =
+      translateCodon c := by
+  split
+  · next h => exact hSyn (translateCodon c) Base.A
+  · next h => rfl
 
 theorem phase2_preserves_translation
     (codons : List Codon) (forbidden : List Codon) (sel : CodonSelector)
     (hSyn : ∀ aa prev, translateCodon (sel aa prev) = aa) :
     (RemoveRestrictionSites codons forbidden sel).map translateCodon =
       codons.map translateCodon := by
-  sorry
+  simp only [RemoveRestrictionSites, List.map_map]
+  exact List.map_congr_left (fun c _ => restrict_subst_preserves c forbidden sel hSyn)
 
 -- ────────────────────────────────────────────────────────────
 -- Phase 3: Cross-Codon Constraint Resolution
@@ -92,7 +133,10 @@ theorem mutagenesis_success_blosum
     ConservationScore blosum62 minBLOSUM [origAA] [newAA] := by
   constructor
   · simp
-  · intro i hi; simp at hi; subst hi; exact hblosum
+  · intro p hp
+    simp at hp
+    subst hp
+    exact hblosum
 
 -- ────────────────────────────────────────────────────────────
 -- Phase 5: CpG Island Avoidance
@@ -101,17 +145,27 @@ theorem mutagenesis_success_blosum
 /-- Replace CG-containing codons with synonymous alternatives -/
 def AvoidCpG (codons : List Codon) (sel : CodonSelector) : List Codon :=
   codons.map fun c =>
-    if codonHasCG c then
+    if h : codonHasCG c then
       let aa := translateCodon c
       sel aa Base.A
     else c
+
+/-- Helper: CpG-avoidance substitution at one codon preserves translation -/
+private theorem cpg_subst_preserves (c : Codon) (sel : CodonSelector)
+    (hSyn : ∀ aa prev, translateCodon (sel aa prev) = aa) :
+    translateCodon (if h : codonHasCG c then sel (translateCodon c) Base.A else c) =
+      translateCodon c := by
+  split
+  · next h => exact hSyn (translateCodon c) Base.A
+  · next h => rfl
 
 /-- Phase 5 preserves the amino acid sequence -/
 theorem phase5_preserves_translation
     (codons : List Codon) (sel : CodonSelector)
     (hSyn : ∀ aa prev, translateCodon (sel aa prev) = aa) :
     (AvoidCpG codons sel).map translateCodon = codons.map translateCodon := by
-  sorry
+  simp only [AvoidCpG, List.map_map]
+  exact List.map_congr_left (fun c _ => cpg_subst_preserves c sel hSyn)
 
 -- ────────────────────────────────────────────────────────────
 -- End-to-End Pipeline Correctness
@@ -133,6 +187,9 @@ theorem pipeline_preserves_protein
     (hSyn : ∀ aa prev, translateCodon (sel aa prev) = aa) :
     (OptimizePipeline codons sel forbidden).map translateCodon =
       codons.map translateCodon := by
-  sorry
+  simp only [OptimizePipeline]
+  rw [phase5_preserves_translation _ sel hSyn]
+  rw [phase2_preserves_translation _ forbidden sel hSyn]
+  exact phase1_preserves_translation codons sel hSyn
 
 end BioCompiler

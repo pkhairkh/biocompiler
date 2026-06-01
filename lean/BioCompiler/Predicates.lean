@@ -86,21 +86,18 @@ theorem classifySplice_monotone (score low1 low2 high : Float)
 /-- Predicate 1: NoStopCodons — No stop codons except possibly the last. -/
 def NoStopCodons (codons : List Codon) : Prop :=
   codons.length ≥ 1 ∧
-  ∀ i : Nat, i < codons.length - 1 →
-    translateCodon (codons.get ⟨i, by sorry⟩) ≠ AminoAcid.Stop
+  ∀ c ∈ codons.dropLast, translateCodon c ≠ AminoAcid.Stop
 
 /-- Predicate 2: NoCrypticSplice (dual-threshold).
     No codon with a GT dinucleotide has a MaxEntScan score >= high threshold. -/
 def NoCrypticSplice (codons : List Codon)
     (scoreFn : Codon → Float) (low high : Float) : Prop :=
-  ∀ i : Nat, i < codons.length →
-    codonHasGT (codons.get ⟨i, by sorry⟩) →
-    classifySplice (scoreFn (codons.get ⟨i, by sorry⟩)) low high ≠ SpliceVerdict.FAIL
+  ∀ c ∈ codons, codonHasGT c →
+    classifySplice (scoreFn c) low high ≠ SpliceVerdict.FAIL
 
 /-- Predicate 3: NoCpGIsland — No codon contains a CG dinucleotide. -/
 def NoCpGIsland (codons : List Codon) : Prop :=
-  ∀ i : Nat, i < codons.length →
-    ¬ codonHasCG (codons.get ⟨i, by sorry⟩)
+  ∀ c ∈ codons, ¬ codonHasCG c
 
 /-- Predicate 4: NoRestrictionSite — No codon matches a forbidden pattern. -/
 def NoRestrictionSite (codons : List Codon) (forbidden : List Codon) : Prop :=
@@ -108,30 +105,26 @@ def NoRestrictionSite (codons : List Codon) (forbidden : List Codon) : Prop :=
 
 /-- Predicate 5: NoGTDinucleotide — No within-codon GT, no cross-codon GT. -/
 def NoGTDinucleotide (codons : List Codon) : Prop :=
-  (∀ i : Nat, i < codons.length → ¬ codonHasGT (codons.get ⟨i, by sorry⟩)) ∧
-  (∀ i : Nat, i + 1 < codons.length →
-    ¬ crossCodonGT (codons.get ⟨i, by sorry⟩) (codons.get ⟨i+1, by sorry⟩))
+  (∀ c ∈ codons, ¬ codonHasGT c) ∧
+  ∀ p ∈ codons.zip codons.tail, ¬ crossCodonGT p.1 p.2
 
-/-- Predicate 6: ValidCodingSeq — All codons translate to standard amino acids. -/
+/-- Predicate 6: ValidCodingSeq — All codons translate to standard amino acids
+    (the last codon may be a stop codon). -/
 def ValidCodingSeq (codons : List Codon) : Prop :=
-  ∀ i : Nat, i < codons.length →
-    translateCodon (codons.get ⟨i, by sorry⟩) ≠ AminoAcid.Stop ∨
-    i = codons.length - 1
+  ∀ c ∈ codons.dropLast, translateCodon c ≠ AminoAcid.Stop
 
 /-- Predicate 7: ConservationScore — BLOSUM62 substitution quality. -/
 def ConservationScore (blosum62 : AminoAcid → AminoAcid → Int)
     (minBLOSUM : Int)
     (original optimized : List AminoAcid) : Prop :=
   original.length = optimized.length ∧
-  ∀ i : Nat, i < original.length →
-    blosum62 (original.get ⟨i, by sorry⟩) (optimized.get ⟨i, by sorry⟩) ≥ minBLOSUM
+  ∀ p ∈ original.zip optimized, blosum62 p.1 p.2 ≥ minBLOSUM
 
 /-- Predicate 8: CodonOptimality — CAI quality threshold. -/
 def CodonOptimality (caiWeights : Codon → Float)
     (minCAI : Float)
     (codons : List Codon) : Prop :=
-  ∀ i : Nat, i < codons.length →
-    caiWeights (codons.get ⟨i, by sorry⟩) ≥ minCAI
+  ∀ c ∈ codons, caiWeights c ≥ minCAI
 
 -- ────────────────────────────────────────────────────────────
 -- Key Theorems about Predicate Composition
@@ -144,9 +137,9 @@ theorem noGT_subsumes_crypticSplice_FAIL (codons : List Codon)
     (scoreFn : Codon → Float) (low high : Float)
     (hGT : NoGTDinucleotide codons) :
     NoCrypticSplice codons scoreFn low high := by
-  intro i hi hHasGT
+  intro c hc hHasGT
   exfalso
-  exact hGT.1 i hi hHasGT
+  exact hGT.1 c hc hHasGT
 
 /-- THEOREM 2: ValidCodingSeq implies NoStopCodons (modulo last codon). -/
 theorem validCoding_implies_noInternalStops (codons : List Codon)
@@ -155,23 +148,17 @@ theorem validCoding_implies_noInternalStops (codons : List Codon)
     NoStopCodons codons := by
   constructor
   · exact hLen
-  · intro i hi
-    have h := hValid i (by omega)
-    cases h with
-    | inl hne => exact hne
-    | inr heq => omega
+  · exact hValid
 
 /-- THEOREM 3: ConservationScore with minBLOSUM = 0 means all substitutions
     are at least neutral (non-negative BLOSUM62 score). -/
 theorem conservation_nonnegative
     (blosum62 : AminoAcid → AminoAcid → Int)
     (orig opt : List AminoAcid)
-    (h : ConservationScore blosum62 0 orig opt) :
-    ∀ i : Nat, i < orig.length →
-      blosum62 (orig.get ⟨i, by sorry⟩) (opt.get ⟨i, by sorry⟩) ≥ 0 :=
-  by
-  intro i hi
-  exact h.2 i hi
+    (h : ConservationScore blosum62 0 orig opt)
+    (p : AminoAcid × AminoAcid) (hp : p ∈ orig.zip opt) :
+    blosum62 p.1 p.2 ≥ 0 :=
+  h.2 p hp
 
 /-- THEOREM 4: Dual-threshold monotonicity.
     PASS at strict threshold implies PASS at permissive threshold. -/

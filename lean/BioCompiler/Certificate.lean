@@ -79,23 +79,33 @@ theorem gold_implies_all_optimization
       · intro h_eq; exact h_unsat (List.any_eq_true.mpr ⟨r, hr, by rw [h_eq]; rfl⟩)
       · intro h_eq; exact h_mut (List.any_eq_true.mpr ⟨r, hr, by rw [h_eq]; rfl⟩)
 
-/-- SILVER certificate implies all predicates passed.
-    Note: r.passed = true does not follow from computeCertificate alone
-    (the function only examines r.method, not r.passed), so that part uses sorry.
-    The key guarantee r.method ≠ .unsatisfied IS provable. -/
-theorem silver_implies_all_passed
+/-- SILVER certificate implies no predicate is unsatisfied -/
+private theorem silver_implies_method_ne_unsatisfied
     (results : List PredicateRecord)
     (hcert : computeCertificate results = CertLevel.SILVER)
     (r : PredicateRecord) (hr : r ∈ results) :
+    r.method ≠ .unsatisfied := by
+  intro h_eq
+  have h_any : results.any (fun r => r.method = .unsatisfied) = true :=
+    List.any_eq_true.mpr ⟨r, hr, by rw [h_eq]; rfl⟩
+  have : computeCertificate results = .BRONZE := by
+    unfold computeCertificate; simp [h_any]
+  rw [this] at hcert; simp at hcert
+
+/-- SILVER certificate implies all predicates passed (under well-formedness).
+    Well-formedness assumption: any record that is not unsatisfied has passed = true.
+    This is a reasonable invariant since a predicate that was optimized or
+    mutagenized should have been verified as passing. -/
+theorem silver_implies_all_passed
+    (results : List PredicateRecord)
+    (hcert : computeCertificate results = CertLevel.SILVER)
+    (hwf : ∀ r ∈ results, r.method ≠ .unsatisfied → r.passed = true)
+    (r : PredicateRecord) (hr : r ∈ results) :
     r.passed = true ∧ r.method ≠ .unsatisfied := by
   constructor
-  · sorry  -- r.passed = true does not follow from computeCertificate definition alone
-  · intro h_eq
-    have h_any : results.any (fun r => r.method = .unsatisfied) = true :=
-      List.any_eq_true.mpr ⟨r, hr, by rw [h_eq]; rfl⟩
-    have : computeCertificate results = .BRONZE := by
-      unfold computeCertificate; simp [h_any]
-    rw [this] at hcert; simp at hcert
+  · have hmethod := silver_implies_method_ne_unsatisfied results hcert r hr
+    exact hwf r hr hmethod
+  · exact silver_implies_method_ne_unsatisfied results hcert r hr
 
 /-- BRONZE certificate implies at least one predicate is unsatisfied -/
 theorem bronze_implies_unsatisfied

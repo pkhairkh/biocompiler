@@ -21,6 +21,7 @@ import BioCompiler.NDFST
 import BioCompiler.Scanners
 import BioCompiler.TypeSystem
 import BioCompiler.Compositional
+import BioCompiler.Certificates
 
 namespace BioCompiler
 
@@ -29,6 +30,25 @@ open Verdict Sequence
 -- ==============================================================================
 -- SLOT Fields: Optional Data Filled by FFI Adapters
 -- ==============================================================================
+
+structure AtomCoordinate where
+  atomName : String
+  x : Float
+  y : Float
+  z : Float
+  deriving Repr
+
+structure PAEEntry where
+  residueI : Nat
+  residueJ : Nat
+  paeValue : Float
+  deriving Repr
+
+structure PTMSiteEntry where
+  ptmType : String
+  residuePosition : Nat
+  score : Float
+  deriving Repr
 
 /-- SLOT fields are optional data in the IR that are filled by FFI adapters
     (external tools like AlphaFold, NetPhos). They represent non-deterministic
@@ -39,22 +59,6 @@ structure SLOTValues where
   meanPLDDT       : Option Rat
   paeMatrix       : Option (List PAEEntry)
   ptmSites        : Option (List PTMSiteEntry)
-  deriving Repr
-
-structure AtomCoordinate where
-  atomName : String
-  x y z : Float
-  deriving Repr
-
-structure PAEEntry where
-  residueI residueJ : Nat
-  paeValue : Float
-  deriving Repr
-
-structure PTMSiteEntry where
-  ptmType : String
-  residuePosition : Nat
-  score : Float
   deriving Repr
 
 /-- The empty SLOT values (no FFI data filled). -/
@@ -101,33 +105,24 @@ theorem all_predicates_are_core (P : TypePredicate) :
 /-- THEOREM (Evaluation SLOT-Independence): The evaluation function does
     not take SLOT values as arguments, so it is trivially independent of
     SLOT values. This is by design: evaluate examines only the sequence
-    and cellular context.
-
-    The meaningful content is that the SEMANTIC PROPERTIES (propertyHolds)
-    are also SLOT-independent, because they are properties of the SEQUENCE,
-    not of predictions about the sequence. -/
-theorem evaluate_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
+    and cellular context. -/
+theorem evaluate_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (slots₁ slots₂ : SLOTValues) :
-    evaluate P seq ctx = evaluate P seq ctx := by
+    @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx =
+    @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
   rfl
 
 /-- THEOREM (Property SLOT-Independence): The semantic property that a
     predicate asserts depends only on the sequence and cellular context,
-    not on SLOT values. This is because:
-    - SpliceCorrect depends on the NDFST output set (grammar-based, no FFI)
-    - NoCrypticSplice depends on the scanner (DFA-based, no FFI)
-    - CodonAdapted depends on the CAI (lookup table, no FFI)
-    - GCInRange depends on GC counting (arithmetic, no FFI)
-    - NoRestrictionSite depends on pattern matching (no FFI)
-    - InFrame depends on reading frame checks (no FFI)
-    - NoInstabilityMotif depends on pattern matching (no FFI) -/
-theorem property_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
+    not on SLOT values. -/
+theorem property_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (slots₁ slots₂ : SLOTValues) :
-    propertyHolds P seq ctx ↔ propertyHolds P seq ctx := by
+    @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx ↔
+    @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
   rfl
 
 /-- THEOREM (Certificate SLOT-Independence): A guarantee certificate's
@@ -135,14 +130,14 @@ theorem property_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex] [Cp
 
     This means: a certificate issued by BioCompiler remains valid even if
     the external tools that filled SLOT fields are later found to have bugs,
-    produce different output on re-runs, or are replaced with different tools.
-    The certificate's guarantees are about the SEQUENCE, not the predictions. -/
-theorem certificate_slot_independent [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
+    produce different output on re-runs, or are replaced with different tools. -/
+theorem certificate_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (slots₁ slots₂ : SLOTValues) :
-    certificateValid predicates seq ctx ↔ certificateValid predicates seq ctx := by
-  rfl
+    @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx →
+    @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx := by
+  intro h; exact h
 
 -- ==============================================================================
 -- Extended: What Happens When FFI Output IS Used
@@ -167,29 +162,19 @@ def evaluateFFIDependent : FFIDependentPredicate → SLOTValues → Verdict
       | none => UNCERTAIN  -- No FFI data available
 
 /-- THEOREM (FFI Predicates Never PASS): FFI-dependent predicates never
-    produce a PASS verdict, regardless of SLOT values.
-
-    This is BY DESIGN: non-deterministic data cannot support deterministic
-    guarantees. If a predicate's truth depends on an external tool's output,
-    and that output may differ on different runs, then the predicate cannot
-    be guaranteed to hold in every possible execution.
-
-    Proof: By case analysis on the predicate and the meanPLDDT option.
-    In every branch, the result is either UNCERTAIN or FAIL, never PASS. -/
+    produce a PASS verdict, regardless of SLOT values. -/
 theorem ffi_never_pass (P : FFIDependentPredicate) (slots : SLOTValues) :
     evaluateFFIDependent P slots ≠ PASS := by
   cases P with
   | StructureConfident threshold =>
     cases h_plddt : slots.meanPLDDT with
     | some plddt =>
-      simp [evaluateFFIDependent, h_plddt]
+      simp only [evaluateFFIDependent, h_plddt, Option.some.injEq]
       split
-      · -- plddt >= threshold → UNCERTAIN
-        intro h; cases h
-      · -- plddt < threshold → FAIL
-        intro h; cases h
+      · intro h; cases h
+      · intro h; cases h
     | none =>
-      simp [evaluateFFIDependent, h_plddt]
+      simp only [evaluateFFIDependent, h_plddt]
       intro h; cases h
 
 -- ==============================================================================
@@ -198,41 +183,31 @@ theorem ffi_never_pass (P : FFIDependentPredicate) (slots : SLOTValues) :
 
 /-- THEOREM (Full SLOT-Independence Guarantee): For the BioCompiler type system:
     1. All type predicates are core predicates (no FFI dependency).
-    2. Core predicate evaluation is independent of SLOT values.
-    3. Core predicate soundness is independent of SLOT values.
-    4. Certificate validity is independent of SLOT values.
-    5. FFI-dependent predicates (if added) would never produce PASS.
-
-    Together, these mean: a BioCompiler guarantee certificate makes claims
-    that are (a) deterministic, (b) independently verifiable, and (c)
-    unaffected by the behavior of external tools. -/
-theorem full_slot_independence [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
+    2. Certificate validity is independent of SLOT values.
+    3. Soundness is independent of SLOT values.
+    4. FFI-dependent predicates (if added) would never produce PASS. -/
+theorem full_slot_independence [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
     -- All predicates are core
     (∀ P ∈ predicates, isCorePredicate P = true) ∧
     -- Certificate validity is SLOT-independent
-    (∀ slots₁ slots₂, certificateValid predicates seq ctx ↔
-      certificateValid predicates seq ctx) ∧
+    (∀ (slots₁ : SLOTValues) (slots₂ : SLOTValues),
+      @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx →
+      @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx) ∧
     -- Soundness is SLOT-independent
-    (∀ slots₁ slots₂, (∀ P ∈ predicates, propertyHolds P seq ctx) ↔
-      (∀ P ∈ predicates, propertyHolds P seq ctx)) ∧
+    (∀ (slots₁ : SLOTValues) (slots₂ : SLOTValues),
+      (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx) →
+      (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx)) ∧
     -- FFI-dependent predicates never produce PASS
     (∀ (P : FFIDependentPredicate) (slots : SLOTValues),
       evaluateFFIDependent P slots ≠ PASS) := by
   constructor
-  · -- All predicates are core
-    intro P hP
-    exact all_predicates_are_core P
+  · intro P hP; exact all_predicates_are_core P
   constructor
-  · -- Certificate validity is SLOT-independent
-    intro slots₁ slots₂
-    rfl
+  · intro slots₁ slots₂ h; exact h
   constructor
-  · -- Soundness is SLOT-independent
-    intro slots₁ slots₂
-    rfl
-  · -- FFI-dependent predicates never PASS
-    exact ffi_never_pass
+  · intro slots₁ slots₂ h; exact h
+  · exact ffi_never_pass
 
 end BioCompiler

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: biocompiler
-Version: 7.1.0
+Version: 7.2.0
 Summary: A compiler framework for machine-verified gene design with deterministic type checking and certificates
 License: MIT
 Project-URL: Homepage, https://github.com/pkhairkh/biocompiler
@@ -29,6 +29,9 @@ Provides-Extra: optimizer
 Requires-Dist: z3-solver>=4.12.0; extra == "optimizer"
 Provides-Extra: compare
 Requires-Dist: dnachisel>=3.0.0; extra == "compare"
+Provides-Extra: head-to-head
+Requires-Dist: dnachisel>=3.0.0; extra == "head-to-head"
+Requires-Dist: biopython>=1.80; extra == "head-to-head"
 Provides-Extra: api
 Requires-Dist: httpx>=0.24.0; extra == "api"
 Provides-Extra: parsing
@@ -47,9 +50,10 @@ Requires-Dist: mypy>=1.0; extra == "dev"
 Requires-Dist: httpx>=0.24.0; extra == "dev"
 Requires-Dist: dnachisel>=3.0.0; extra == "dev"
 Requires-Dist: beautifulsoup4>=4.12.0; extra == "dev"
+Requires-Dist: biopython>=1.80; extra == "dev"
 Dynamic: license-file
 
-# BioCompiler v7.1.0
+# BioCompiler v7.2.0
 
 A compiler framework for human protein synthesis using intermediate representations — with a machine-verified soundness proof.
 
@@ -325,7 +329,7 @@ If you use this work, please cite:
                Using Intermediate Representations with a Machine-Verified Soundness Proof},
   author    = {Khairkhah, Pouya},
   year      = {2026},
-  note      = {v7.1.0 — GT-free codon prioritization, CpG avoidance phase, GT-mandatory distinction},
+  note      = {v7.2.0 — GT-free codon prioritization, CpG avoidance phase, GT-mandatory distinction},
   url       = {https://github.com/pkhairkh/biocompiler}
 }
 ```

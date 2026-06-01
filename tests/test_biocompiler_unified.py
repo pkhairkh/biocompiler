@@ -650,7 +650,7 @@ class TestNoCpGIsland:
 
     def test_cpg_island_custom_window(self):
         """Custom window size and threshold."""
-        result = evaluate_no_cpg_island("ATGC" * 100, window_size=50, threshold=0.7)
+        result = evaluate_no_cpg_island("ATGC" * 100, window=50, threshold=0.7)
         assert result.verdict in (Verdict.PASS, Verdict.FAIL)
 
 

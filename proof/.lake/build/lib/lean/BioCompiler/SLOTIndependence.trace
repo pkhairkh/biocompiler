@@ -1,0 +1,85 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["fb6b5ca32edaaa21.olean"],
+  "m": false,
+  "i": "4f64e478c6262f3e.ilean",
+  "c": "f21cf2a5be715fd9.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/z/my-project/biocompiler/proof/.lake/build/lib/lean /home/z/.elan/toolchains/leanprover--lean4---v4.30.0/bin/lean -DautoImplicit=false /home/z/my-project/biocompiler/proof/BioCompiler/SLOTIndependence.lean -o /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/SLOTIndependence.olean -i /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/SLOTIndependence.ilean -c /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/SLOTIndependence.c --setup /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/SLOTIndependence.setup.json --json",
+   "level": "trace"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:112:5: unused variable `slots₁`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:112:12: unused variable `slots₂`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:123:5: unused variable `slots₁`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:123:12: unused variable `slots₂`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:137:5: unused variable `slots₁`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:137:12: unused variable `slots₂`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:172:48: This simp argument is unused:\n  Option.some.injEq\n\nHint: Omit it from the simp argument list.\n  simp only [evaluateFFIDependent, h_plddt,̵ ̵O̵p̵t̵i̵o̵n̵.̵s̵o̵m̵e̵.̵i̵n̵j̵E̵q̵]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:195:8: unused variable `slots₁`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:195:30: unused variable `slots₂`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:199:8: unused variable `slots₁`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "BioCompiler/SLOTIndependence.lean:199:30: unused variable `slots₂`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"}],
+ "inputs":
+ [["BioCompiler.SLOTIndependence:deps",
+   [["deps",
+     [["BioCompiler/BioCompiler:extraDep",
+       [["@BioCompiler:extraDep", "00000000000006bb"]]],
+      ["imports",
+       [["BioCompiler.ThreeValued transitive imports (legacy)",
+         "00000000000006bb"],
+        ["BioCompiler.ThreeValued:importAllArts", "86584844b3a43f4b"],
+        ["BioCompiler.Sequence transitive imports (legacy)",
+         "00000000000006bb"],
+        ["BioCompiler.Sequence:importAllArts", "0296985af1483811"],
+        ["BioCompiler.NDFST transitive imports (legacy)", "e9a07f1bb4174e26"],
+        ["BioCompiler.NDFST:importAllArts", "6d62662314c8790c"],
+        ["BioCompiler.Scanners transitive imports (legacy)",
+         "e9a07f1bb4174e26"],
+        ["BioCompiler.Scanners:importAllArts", "c208e93f584adf71"],
+        ["BioCompiler.TypeSystem transitive imports (legacy)",
+         "6000da43e9da94aa"],
+        ["BioCompiler.TypeSystem:importAllArts", "fcbfce3ff15d40f9"],
+        ["BioCompiler.Compositional transitive imports (legacy)",
+         "4517682d96431616"],
+        ["BioCompiler.Compositional:importAllArts", "852522377f7319a5"],
+        ["BioCompiler.Certificates transitive imports (legacy)",
+         "777e0729834b586d"],
+        ["BioCompiler.Certificates:importAllArts", "f1deaaa03229a442"]]]]],
+    ["libs",
+     [["import dynlibs", "00000000000006bb"],
+      ["package external libraries", "00000000000006bb"],
+      ["module dynlibs", "00000000000006bb"],
+      ["module plugins", "00000000000006bb"]]]]],
+  ["Lean 4.30.0, commit d024af099ca4bf2c86f649261ebf59565dc8c622",
+   "2f4703bb19086252"],
+  ["/home/z/my-project/biocompiler/proof/BioCompiler/SLOTIndependence.lean",
+   "dee8e8647fb2b701"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: BioCompiler.SLOTIndependence", "296e60200937995b"],
+  ["Package.id?: (some BioCompiler)", "143d9b3ae216737d"],
+  ["Module.leanArgs: #[-DautoImplicit=false]", "83bf8aa7a6e9844b"]],
+ "depHash": "dc5f709c310aa2be"}

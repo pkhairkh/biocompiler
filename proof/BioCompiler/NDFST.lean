@@ -1,6 +1,7 @@
 /-
   BioCompiler.NDFST — Non-Deterministic Finite-State Transducer Semantics
   PROOF STATUS: All theorems fully proved, 0 sorry, 0 axioms.
+  Includes: ndfstRun_sound, ndfstRun_complete (via ConsumesInput), ndfstStep_membership.
   Reference: DOC-03 (SDD) §3.2, DOC-10 (Deterministic Methods) §6
 -/
 
@@ -56,21 +57,21 @@ inductive ConsumesInput : NDFST State → List State → Sequence → Sequence �
 -- Helper Lemmas
 -- ==============================================================================
 
-private theorem list_getLast_append_singleton [Inhabited α] (l : List α) (a : α) (h : l ≠ []) :
+private theorem list_getLast_append_singleton {α : Type} [Inhabited α] (l : List α) (a : α) (h : l ≠ []) :
     (l ++ [a]).getLast! = a := by
-  induction l with
+  cases l with
   | nil => exact absurd rfl h
-  | cons hd tl ih =>
-    simp [List.getLast!]
-    split
-    · intro h_tl; exact ih h_tl
-    · rfl
+  | cons hd tl =>
+    simp only [List.cons_append, List.getLast!]
+    have hne : tl ++ [a] ≠ [] := by simp
+    rw [List.getLast_cons hne]
+    exact List.getLast_concat
 
-lemma ndfstRun_append_singleton (ndfst : NDFST State) (l : Sequence) (x : Nucleotide) :
+theorem ndfstRun_append_singleton (ndfst : NDFST State) (l : Sequence) (x : Nucleotide) :
     ndfstRun ndfst (l ++ [x]) = ndfstStep ndfst (ndfstRun ndfst l) x := by
   simp [ndfstRun, List.foldl_append, List.foldl_cons, List.foldl_nil]
 
-lemma ndfstStep_membership (ndfst : NDFST State) (runResult : List (State × Sequence))
+theorem ndfstStep_membership (ndfst : NDFST State) (runResult : List (State × Sequence))
     (state : State) (output : Sequence) (nextState : State) (chunk : Sequence)
     (symbol : Nucleotide)
     (h_mem : (state, output) ∈ runResult)
@@ -88,10 +89,53 @@ lemma ndfstStep_membership (ndfst : NDFST State) (runResult : List (State × Seq
 -- NDFST Run Soundness
 -- ==============================================================================
 
-theorem ConsumesInput.path_ne (h : ConsumesInput ndfst path acc consumed) : path ≠ [] := by
+theorem ConsumesInput.path_ne {ndfst : NDFST State} {path : List State} {acc consumed : Sequence}
+    (h : ConsumesInput ndfst path acc consumed) : path ≠ [] := by
   cases h with
   | base => simp
-  | step _ _ _ _ _ _ _ _ _ => simp
+  | step => simp
+
+-- ==============================================================================
+-- NDFST Run Soundness (generalized)
+-- ==============================================================================
+
+private theorem ndfstRun_sound_general (ndfst : NDFST State) :
+    ∀ (current : List (State × Sequence)) (remaining : Sequence),
+      (∀ (s : State) (o : Sequence), (s, o) ∈ current →
+        ∃ (path : List State) (consumed : Sequence),
+          ConsumesInput ndfst path o consumed ∧ path.getLast! = s) →
+      ∀ (state : State) (output : Sequence),
+        (state, output) ∈ remaining.foldl (ndfstStep ndfst) current →
+          ∃ (path : List State) (consumed : Sequence),
+            ConsumesInput ndfst path output consumed ∧ path.getLast! = state := by
+  intro current remaining h_current state output h_mem
+  induction remaining generalizing current state output with
+  | nil =>
+    simp only [List.foldl_nil] at h_mem
+    exact h_current state output h_mem
+  | cons hd tl ih =>
+    simp only [List.foldl_cons] at h_mem
+    apply ih (ndfstStep ndfst current hd)
+    · intro s o h_step
+      simp only [ndfstStep, List.mem_flatMap] at h_step
+      obtain ⟨prev, h_prev, h_map⟩ := h_step
+      simp only [List.mem_map] at h_map
+      obtain ⟨trans, h_trans, h_eq⟩ := h_map
+      have h_fst : trans.1 = s := congrArg Prod.fst h_eq
+      have h_snd : prev.2 ++ trans.2 = o := congrArg Prod.snd h_eq
+      subst h_fst
+      subst h_snd
+      have h_prev_path := h_current prev.1 prev.2 h_prev
+      obtain ⟨path, consumed, h_valid, h_final⟩ := h_prev_path
+      refine ⟨path ++ [trans.1], consumed ++ [hd], ?_, ?_⟩
+      · exact ConsumesInput.step ndfst path consumed prev.2 hd trans.1 trans.2
+          h_valid (by rw [h_final]; exact h_trans)
+      · exact list_getLast_append_singleton path trans.1 (ConsumesInput.path_ne h_valid)
+    · exact h_mem
+
+-- ==============================================================================
+-- NDFST Run Soundness
+-- ==============================================================================
 
 theorem ndfstRun_sound (ndfst : NDFST State) (input : Sequence) :
     ∀ (state : State) (output : Sequence),
@@ -100,31 +144,39 @@ theorem ndfstRun_sound (ndfst : NDFST State) (input : Sequence) :
           ConsumesInput ndfst path output consumed ∧
           path.getLast! = state := by
   intro state output h_mem
-  induction input with
-  | nil =>
-    simp [ndfstRun, List.foldl_nil] at h_mem
-    cases h_mem
-    use [ndfst.initial], []
-    constructor
-    · exact ConsumesInput.base ndfst
-    · simp
-  | cons symbol rest ih =>
-    simp [ndfstRun, List.foldl_cons] at h_mem
-    have h_in_step : (state, output) ∈ ndfstStep ndfst
-        (ndfstRun ndfst rest) symbol := h_mem
-    simp [ndfstStep, List.flatMap, List.map] at h_in_step
-    obtain ⟨(prevState, prevOutput), h_prev_mem, h_trans_map⟩ := h_in_step
-    simp at h_trans_map
-    obtain ⟨(nextState, chunk), h_trans, h_eq⟩ := h_trans_map
-    simp at h_eq
-    cases h_eq
-    have h_path := ih prevState prevOutput h_prev_mem
-    obtain ⟨path, consumed, h_valid, h_final⟩ := h_path
-    use path ++ [state], consumed ++ [symbol]
-    constructor
-    · exact ConsumesInput.step ndfst path consumed prevOutput symbol state chunk
-        h_valid (by rw [h_final]; exact h_trans)
-    · exact list_getLast_append_singleton path state (ConsumesInput.path_ne h_valid)
+  apply ndfstRun_sound_general ndfst [(ndfst.initial, [])] input _ state output h_mem
+  intro s o h_mem_init
+  simp only [List.mem_singleton] at h_mem_init
+  cases h_mem_init
+  refine ⟨[ndfst.initial], [], ?_, ?_⟩
+  · exact ConsumesInput.base ndfst
+  · simp
+
+-- ==============================================================================
+-- NDFST Run Completeness (generalized)
+-- ==============================================================================
+
+private theorem ndfstRun_complete_general (ndfst : NDFST State) :
+    ∀ (path : List State) (output : Sequence) (consumed : Sequence),
+      ConsumesInput ndfst path output consumed →
+        ∀ (input : Sequence), consumed = input →
+          (path.getLast!, output) ∈ ndfstRun ndfst input := by
+  intro path output consumed h_valid
+  induction h_valid with
+  | base =>
+    intro input h_eq
+    simp [← h_eq, ndfstRun, List.foldl_nil]
+  | step =>
+    rename_i path1 consumed1 accOutput1 symbol1 nextState1 chunk1 h_prev h_trans ih
+    intro input h_eq
+    rw [← h_eq, ndfstRun_append_singleton]
+    have h_in : (path1.getLast!, accOutput1) ∈ ndfstRun ndfst consumed1 :=
+      ih consumed1 rfl
+    have h_last : (path1 ++ [nextState1]).getLast! = nextState1 :=
+      list_getLast_append_singleton path1 nextState1 (ConsumesInput.path_ne h_prev)
+    rw [h_last]
+    exact ndfstStep_membership ndfst (ndfstRun ndfst consumed1) path1.getLast! accOutput1
+      nextState1 chunk1 symbol1 h_in h_trans
 
 -- ==============================================================================
 -- NDFST Run Completeness
@@ -135,19 +187,8 @@ theorem ndfstRun_complete (ndfst : NDFST State) (input : Sequence) :
       ConsumesInput ndfst path output consumed →
         consumed = input →
         (path.getLast!, output) ∈ ndfstRun ndfst input := by
-  intro path output consumed h_valid
-  induction h_valid with
-  | base =>
-    intro h_eq
-    simp [← h_eq, ndfstRun, List.foldl_nil]
-  | step ndfst prev_path prev_consumed prev_acc symbol next_state chunk
-         h_prev_valid h_trans ih =>
-    intro h_eq
-    rw [← h_eq]
-    rw [ndfstRun_append_singleton]
-    exact ndfstStep_membership ndfst (ndfstRun ndfst prev_consumed)
-            prev_path.getLast! prev_acc next_state chunk symbol
-            (ih rfl) h_trans
+  intro path output consumed h_valid h_eq
+  exact ndfstRun_complete_general ndfst path output consumed h_valid input h_eq
 
 -- ==============================================================================
 -- Determinism
@@ -178,6 +219,7 @@ structure SpliceIsoform where
 
 class SplicingNDFST (State : Type) [DecidableEq State] [Inhabited State] where
   ndfst : NDFST State
+  isValidSpliceIsoform : CellularContext → Sequence → SpliceIsoform → Prop
   output_is_valid :
     ∀ (ctx : CellularContext) (preMRNA : Sequence) (output : Sequence),
       output ∈ ndfstOutputSet ndfst preMRNA →
@@ -186,6 +228,5 @@ class SplicingNDFST (State : Type) [DecidableEq State] [Inhabited State] where
     ∀ (ctx : CellularContext) (preMRNA : Sequence) (isoform : SpliceIsoform),
       isValidSpliceIsoform ctx preMRNA isoform →
         isoform.sequence ∈ ndfstOutputSet ndfst preMRNA
-  isValidSpliceIsoform : CellularContext → Sequence → SpliceIsoform → Prop
 
 end BioCompiler

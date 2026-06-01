@@ -1,4 +1,4 @@
-# BioCompiler v7.1.0
+# BioCompiler v7.2.0
 
 A compiler framework for human protein synthesis using intermediate representations — with a machine-verified soundness proof.
 
@@ -274,7 +274,7 @@ If you use this work, please cite:
                Using Intermediate Representations with a Machine-Verified Soundness Proof},
   author    = {Khairkhah, Pouya},
   year      = {2026},
-  note      = {v7.1.0 — GT-free codon prioritization, CpG avoidance phase, GT-mandatory distinction},
+  note      = {v7.2.0 — GT-free codon prioritization, CpG avoidance phase, GT-mandatory distinction},
   url       = {https://github.com/pkhairkh/biocompiler}
 }
 ```

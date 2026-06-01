@@ -20,6 +20,11 @@ mypy>=1.0
 httpx>=0.24.0
 dnachisel>=3.0.0
 beautifulsoup4>=4.12.0
+biopython>=1.80
+
+[head-to-head]
+dnachisel>=3.0.0
+biopython>=1.80
 
 [jupyter]
 ipython>=8.0

@@ -135,6 +135,7 @@ CHO_CAI: Dict[str, float] = compute_cai_weights(CHO_CODON_USAGE)
 SPECIES: Dict[str, Dict[str, float]] = {
     "ecoli": ECOLI_CAI,
     "human": HUMAN_CAI,
+    "Homo_sapiens": HUMAN_CAI,  # Alias for human
     "yeast": YEAST_CAI,
     "cho": CHO_CAI,
 }

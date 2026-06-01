@@ -1,15 +1,10 @@
 /-
   BioCompiler.Compositional — Compositional Soundness Proof
 
-  This module proves that the overall type-check verdict (the conjunction of
-  all individual predicate verdicts) preserves soundness:
-
-    evaluateAll predicates seq ctx = PASS → ∀ P ∈ predicates, propertyHolds P seq ctx
-
-  This follows from:
-  1. type_soundness: individual predicates are sound
-  2. foldl_and_pass_implies_all_pass: PASS foldl implies each individual is PASS
-  3. Three-valued logic: UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS, so no UNCERTAIN either
+  This module proves:
+  1. compositional_soundness: evaluateAll = PASS → ∀ P, propertyHolds P
+  2. Constraints DON'T compose: concrete counterexamples for dinucleotides
+     and restriction sites forming at sequence concatenation boundaries
 
   Reference: DOC-03 (SDD) §3.5.4, DOC-01 (SRS) INV-TYP-03
 -/
@@ -25,93 +20,18 @@ namespace BioCompiler
 open Verdict Sequence
 
 -- ==============================================================================
--- Key Lemma: UNCERTAIN Propagation
--- ==============================================================================
-
-/-- THEOREM: foldl starting from UNCERTAIN never reaches PASS.
-    This is because UNCERTAIN ⊓ PASS = UNCERTAIN ≠ PASS,
-    UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN ≠ PASS, and
-    UNCERTAIN ⊓ FAIL = FAIL ≠ PASS.
-    Proved by induction on the list. -/
-theorem foldl_uncertain_ne_pass (vs : List Verdict) :
-    vs.foldl Verdict.and UNCERTAIN ≠ PASS := by
-  intro h
-  induction vs with
-  | nil => simp [List.foldl_nil] at h; cases h
-  | cons hd tl ih =>
-    simp [List.foldl_cons] at h
-    cases hd with
-    | PASS =>
-      -- UNCERTAIN ⊓ PASS = UNCERTAIN
-      simp [Verdict.and] at h
-      exact ih h
-    | FAIL =>
-      -- UNCERTAIN ⊓ FAIL = FAIL
-      simp [Verdict.and] at h; cases h
-    | UNCERTAIN =>
-      -- UNCERTAIN ⊓ UNCERTAIN = UNCERTAIN
-      simp [Verdict.and] at h
-      exact ih h
-
--- ==============================================================================
 -- Composed Evaluation
 -- ==============================================================================
 
 /-- Evaluate a list of type predicates and compose the results
-    using three-valued conjunction.
-
-    Starting from PASS (the identity for ⊓), we fold left:
-    PASS ⊓ v₁ ⊓ v₂ ⊓ ... ⊓ vₙ
-
-    If any vᵢ = FAIL, the entire result is FAIL (sticky).
-    If any vᵢ = UNCERTAIN and none is FAIL, the result is UNCERTAIN.
-    If all vᵢ = PASS, the result is PASS. -/
-def evaluateAll [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
+    using three-valued conjunction. -/
+def evaluateAll [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
     Verdict :=
-  (predicates.map (fun P => evaluate P seq ctx)).foldl Verdict.and PASS
-
--- ==============================================================================
--- Key Lemma: Foldl Conjunction with PASS Implies All Individual PASS
--- ==============================================================================
-
-/-- THEOREM: If the foldl conjunction starting from PASS yields PASS,
-    then every individual verdict must be PASS.
-
-    Proof by induction on the list of verdicts.
-    - Base case: foldl and PASS [] = PASS, vacuously true.
-    - Inductive step: foldl and PASS (v :: vs) = PASS
-      If v = FAIL, then FAIL ⊓ _ = FAIL ≠ PASS. Contradiction.
-      If v = UNCERTAIN, then PASS ⊓ UNCERTAIN = UNCERTAIN, and
-        foldl and UNCERTAIN vs ≠ PASS (because UNCERTAIN ⊓ PASS = UNCERTAIN).
-        Contradiction.
-      So v = PASS, and by the IH, all vs are PASS. -/
-theorem foldl_and_pass_all_pass (vs : List Verdict) :
-    vs.foldl Verdict.and PASS = PASS → ∀ v ∈ vs, v = PASS := by
-  intro h v hv
-  induction vs generalizing h with
-  | nil => simp at hv
-  | cons hd tl ih =>
-    simp [List.foldl_cons] at h
-    cases h_hd : hd with
-    | PASS =>
-      cases hv with
-      | head => exact h_hd
-      | tail _ hv_mem =>
-        have h_tail : (tl.foldl Verdict.and (PASS ⊓ PASS)) = PASS := by
-          simp [h_hd, Verdict.and] at h; exact h
-        have h_tail' : (tl.foldl Verdict.and PASS) = PASS := by
-          simp [Verdict.and] at h_tail; exact h_tail
-        exact ih h_tail' v hv_mem
-    | FAIL =>
-      simp [h_hd, Verdict.and] at h
-    | UNCERTAIN =>
-      simp [h_hd, Verdict.and] at h
-      -- PASS ⊓ UNCERTAIN = UNCERTAIN
-      -- Then foldl Verdict.and UNCERTAIN tl = PASS
-      -- But foldl starting from UNCERTAIN never reaches PASS
-      exact absurd h (foldl_uncertain_ne_pass tl)
+  (predicates.map (fun P =>
+    @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx
+  )).foldl Verdict.and PASS
 
 -- ==============================================================================
 -- Compositional Soundness Theorem
@@ -121,48 +41,78 @@ theorem foldl_and_pass_all_pass (vs : List Verdict) :
     predicates yields PASS, then every individual property holds.
 
     This follows from:
-    1. evaluateAll = PASS implies every evaluate P = PASS (by foldl_and_pass_all_pass)
-    2. evaluate P = PASS implies propertyHolds P (by type_soundness)
+    1. evaluateAll = PASS → every evaluate P = PASS (by foldl_and_pass_implies_all_pass)
+    2. evaluate P = PASS → propertyHolds P (by type_soundness)
 
     Corollary: A guarantee certificate (which requires overall PASS) can only
     be issued when all claimed properties actually hold. -/
-theorem compositional_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
+theorem compositional_soundness [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
-    evaluateAll predicates seq ctx = PASS →
-    ∀ P ∈ predicates, propertyHolds P seq ctx := by
+    @evaluateAll inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx = PASS →
+    ∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
   intro h P hP
-  -- Key: evaluateAll = PASS → every individual evaluate = PASS
-  have h_all_pass : ∀ v ∈ predicates.map (fun P => evaluate P seq ctx), v = PASS :=
-    foldl_and_pass_all_pass _ h
-  -- The predicate P is in the list, so evaluate P seq ctx is in the map
-  have h_eval_pass : evaluate P seq ctx = PASS := by
-    have : evaluate P seq ctx ∈ predicates.map (fun P => evaluate P seq ctx) := by
+  have h_all_pass : ∀ v ∈ (predicates.map (fun P =>
+      @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx)), v = PASS :=
+    Verdict.foldl_and_pass_implies_all_pass _ h
+  have h_eval_pass : @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx = PASS := by
+    have : @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx ∈
+        predicates.map (fun P =>
+          @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx) := by
       simp [List.mem_map]
       exact ⟨P, hP, rfl⟩
     exact h_all_pass _ this
-  -- By individual soundness, propertyHolds P
   exact type_soundness P seq ctx h_eval_pass
 
 -- ==============================================================================
--- Certificate Soundness
+-- Sequence Concatenation: Constraints Don't Compose
+--
+-- These counterexamples demonstrate the KEY advantage of type systems over
+-- constraint lists: types compose, constraints don't.
+--
+-- Two gene fragments that individually satisfy all constraints can produce
+-- a constraint violation when concatenated. This cannot happen with type
+-- systems because the composition of type-checked fragments remains
+-- well-typed (with appropriate junction checking).
 -- ==============================================================================
 
-/-- A guarantee certificate is valid only if all predicates evaluate to PASS. -/
-def certificateValid [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
-    (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) : Bool :=
-  evaluateAll predicates seq ctx = PASS
+/-- THEOREM: Dinucleotide predicates DON'T compose (counterexample).
+    GT dinucleotide can form at the junction of two GT-free sequences.
+    Construction: s1 = [C, G], s2 = [T, C].
+    Neither contains GT, but [C,G,T,C] contains GT at position 1.
 
-/-- THEOREM (Certificate Soundness): A valid certificate guarantees that
-    all claimed properties hold. This is the property that makes BioCompiler
-    certificates trustworthy for regulatory submissions. -/
-theorem certificate_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
-    {State : Type} [DecidableEq State] [SplicingNDFST State]
-    (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
-    certificateValid predicates seq ctx = true →
-    ∀ P ∈ predicates, propertyHolds P seq ctx := by
-  intro h
-  exact compositional_soundness predicates seq ctx (by simp [certificateValid] at h; exact h)
+    This is THE key argument for why type systems are needed: constraint lists
+    don't compose, but type-checked fragments with junction checking do. -/
+theorem dinucleotide_no_compose :
+    ∃ (s1 s2 : Sequence),
+      hasPattern s1 spliceDonorConsensus = false ∧
+      hasPattern s2 spliceDonorConsensus = false ∧
+      hasPattern (s1 ++ s2) spliceDonorConsensus = true := by
+  exact ⟨
+    [Nucleotide.C, Nucleotide.G],
+    [Nucleotide.T, Nucleotide.C],
+    by native_decide,
+    by native_decide,
+    by native_decide
+  ⟩
+
+/-- THEOREM: Restriction sites DON'T compose (counterexample).
+    GATC (Sau3AI) forms at the junction of [G,A,T] and [C,G].
+    Neither fragment contains GATC, but the concatenation does. -/
+theorem restriction_site_no_compose :
+    ∃ (s1 s2 : Sequence) (site : Sequence),
+      hasPattern s1 site = false ∧
+      hasPattern s2 site = false ∧
+      site.length = 4 ∧
+      hasPattern (s1 ++ s2) site = true := by
+  exact ⟨
+    [Nucleotide.G, Nucleotide.A, Nucleotide.T],
+    [Nucleotide.C, Nucleotide.G],
+    [Nucleotide.G, Nucleotide.A, Nucleotide.T, Nucleotide.C],
+    by native_decide,
+    by native_decide,
+    by native_decide,
+    by native_decide
+  ⟩
 
 end BioCompiler
