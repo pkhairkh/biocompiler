@@ -11,3 +11,4 @@ lean/.lake/config/
 
 # OS files
 .DS_Store
+.venv/
