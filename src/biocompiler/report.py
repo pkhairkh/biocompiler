@@ -26,6 +26,7 @@ from .scanner import gc_content, scan_sequence
 from .translation import translate, compute_cai
 from .splicing import compute_splice_isoforms
 from .constants import CODON_TABLE, AA_TO_CODONS
+from .engine_base import BaseEngineResult
 from . import __version__
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ def generate_report(
     tokens: Optional[list[Token]] = None,
     isoforms: Optional[list[SpliceIsoform]] = None,
     optimization_result: Optional[dict] = None,
+    engine_results: Optional[list[BaseEngineResult]] = None,
 ) -> str:
     """
     Generate a self-contained interactive HTML report.
@@ -55,6 +57,7 @@ def generate_report(
     - Splice isoform table
     - Certificate details (if available)
     - Token scan results table
+    - Engine analysis results (if provided via engine_results)
 
     Args:
         sequence: DNA sequence
@@ -66,6 +69,10 @@ def generate_report(
         tokens: Optional scan tokens
         isoforms: Optional splice isoforms
         optimization_result: Optional optimization result dict
+        engine_results: Optional list of BaseEngineResult objects from
+            analysis engines (ESMFold, FoldX, CamSol, Immunogenicity, etc.)
+            Uses unified field names (primary_score, classification) for
+            display.
 
     Returns:
         Self-contained HTML string
@@ -106,6 +113,7 @@ def generate_report(
         gc_window_data=gc_window_data,
         codon_usage_data=codon_usage_data,
         optimization_result=optimization_result,
+        engine_results=engine_results or [],
     )
 
     return report_html
@@ -174,6 +182,7 @@ def _build_html(
     gc_window_data: list[tuple[int, float]],
     codon_usage_data: dict[str, dict[str, float]],
     optimization_result: Optional[dict],
+    engine_results: list[BaseEngineResult] = None,
 ) -> str:
     """Build the complete HTML report."""
 
@@ -301,6 +310,39 @@ def _build_html(
                     <div class="stat-label">Failed</div>
                 </div>
             </div>
+        </section>"""
+
+    # Engine analysis section (using unified BaseEngineResult fields)
+    engine_section = ""
+    if engine_results:
+        engine_rows = ""
+        for r in engine_results:
+            status_class = "pass" if r.success else "fail"
+            status_text = "PASS" if r.success else "FAIL"
+            score_label = r.primary_score_label or "Score"
+            engine_label = r.engine_name or "Unknown"
+            error_html = f'<div class="violation">{html.escape(r.error)}</div>' if r.error else ""
+            engine_rows += f"""
+                <tr class="{status_class}">
+                    <td><span class="badge {status_class}">{status_text}</span></td>
+                    <td>{html.escape(engine_label)}</td>
+                    <td>{html.escape(score_label)}</td>
+                    <td>{r.primary_score:.4f}</td>
+                    <td>{html.escape(r.classification)}</td>
+                    <td>{r.execution_time_s:.3f}s</td>
+                    <td>{error_html}</td>
+                </tr>"""
+        engine_section = f"""
+        <section class="section">
+            <h2>Engine Analysis Results</h2>
+            <table>
+                <thead>
+                    <tr><th>Status</th><th>Engine</th><th>Metric</th><th>Score</th><th>Classification</th><th>Time</th><th>Details</th></tr>
+                </thead>
+                <tbody>
+                    {engine_rows}
+                </tbody>
+            </table>
         </section>"""
 
     # Build full HTML
@@ -759,6 +801,8 @@ body.dark-mode .tooltip::after {{
 </section>
 
 {opt_section}
+
+{engine_section}
 
 <!-- Predicate Results -->
 <section class="section">

@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, HYDROPATHY
+from .engine_base import BaseEngineResult, EngineTimer, validate_protein_sequence
 
 logger = logging.getLogger(__name__)
 
@@ -44,20 +45,63 @@ _BLOSUM_INDEX = list("ARNDCQEGHILKMFPSTWYV")
 # ────────────────────────────────────────────────────────────
 
 @dataclass
-class DesignResult:
-    """Result of a protein design run."""
+class DesignResult(BaseEngineResult):
+    """Result of a protein design run.
 
-    original_protein: str
-    designed_protein: str
-    mutations: list[dict]             # all mutations applied
-    stability_change: float           # ΔΔG (kcal/mol, negative = stabilizing)
-    solubility_change: float          # ΔCamSol score
-    immunogenicity_change: float      # Δimmunogenicity (negative = deimmunized)
-    cai: float | None                 # CAI of designed sequence (if DNA available)
-    iterations: int
-    constraints_satisfied: list[str]  # names of satisfied constraints
-    constraints_violated: list[str]   # names of violated constraints
-    success: bool
+    Inherits from BaseEngineResult for unified API compatibility.
+    Domain-specific fields are preserved for backward compatibility.
+
+    Unified field mapping:
+      sequence → designed_protein
+      primary_score → stability_change
+      classification → 'design_success' | 'design_partial' | 'design_failed'
+      engine_name → 'protein_design'
+      primary_score_label → 'ddg'
+    """
+
+    # Override base class required fields with defaults for keyword-arg compat
+    sequence: str = ""
+    primary_score: float = 0.0
+    classification: str = ""
+    success: bool = False
+    error: str | None = None
+    execution_time_s: float = 0.0
+    engine_name: str = "protein_design"
+    primary_score_label: str = "ddg"
+
+    # Domain-specific fields (backward-compatible)
+    original_protein: str = ""
+    designed_protein: str = ""
+    mutations: list[dict] = field(default_factory=list)  # all mutations applied
+    stability_change: float = 0.0           # ΔΔG (kcal/mol, negative = stabilizing)
+    solubility_change: float = 0.0          # ΔCamSol score
+    immunogenicity_change: float = 0.0      # Δimmunogenicity (negative = deimmunized)
+    cai: float | None = None                # CAI of designed sequence (if DNA available)
+    iterations: int = 0
+    constraints_satisfied: list[str] = field(default_factory=list)  # names of satisfied constraints
+    constraints_violated: list[str] = field(default_factory=list)   # names of violated constraints
+
+    def __post_init__(self):
+        # Sync unified base fields from domain-specific fields
+        if not self.sequence and self.designed_protein:
+            object.__setattr__(self, 'sequence', self.designed_protein)
+        if self.primary_score == 0.0 and self.stability_change != 0.0:
+            object.__setattr__(self, 'primary_score', self.stability_change)
+        elif self.stability_change == 0.0 and self.primary_score != 0.0:
+            object.__setattr__(self, 'stability_change', self.primary_score)
+        if not self.classification:
+            if not self.constraints_violated:
+                label = "design_success"
+            elif self.success:
+                label = "design_partial"
+            else:
+                label = "design_failed"
+            object.__setattr__(self, 'classification', label)
+
+    @property
+    def designed_sequence(self) -> str:
+        """Unified API alias for designed_protein."""
+        return self.designed_protein
 
 
 @dataclass
@@ -499,8 +543,13 @@ def design_thermostable(
     Returns:
         DesignResult with all mutations and metrics.
     """
+    protein = validate_protein_sequence(protein, "protein_design")
+
     if constraints is None:
         constraints = DesignConstraints()
+
+    _timer = EngineTimer()
+    _timer.__enter__()
 
     current = list(protein)
     total_ddg = 0.0
@@ -677,6 +726,8 @@ def design_thermostable(
         designed, constraints, current_stab, final_sol, final_imm,
     )
 
+    _timer.__exit__(None, None, None)
+
     return DesignResult(
         original_protein=protein,
         designed_protein=designed,
@@ -689,6 +740,7 @@ def design_thermostable(
         constraints_satisfied=satisfied,
         constraints_violated=violated,
         success=current_stab <= target_stability,
+        execution_time_s=round(_timer.elapsed, 4),
     )
 
 
@@ -716,8 +768,13 @@ def design_soluble(
     Returns:
         DesignResult with all mutations and metrics.
     """
+    protein = validate_protein_sequence(protein, "protein_design")
+
     if constraints is None:
         constraints = DesignConstraints()
+
+    _timer = EngineTimer()
+    _timer.__enter__()
 
     current = list(protein)
     base_stab = _base_stability(protein)
@@ -796,6 +853,8 @@ def design_soluble(
         designed, constraints, current_stab, final_sol, final_imm,
     )
 
+    _timer.__exit__(None, None, None)
+
     return DesignResult(
         original_protein=protein,
         designed_protein=designed,
@@ -808,6 +867,7 @@ def design_soluble(
         constraints_satisfied=satisfied,
         constraints_violated=violated,
         success=final_sol >= min_solubility,
+        execution_time_s=round(_timer.elapsed, 4),
     )
 
 
@@ -838,8 +898,13 @@ def design_low_immunogenicity(
     Returns:
         DesignResult with all mutations and metrics.
     """
+    protein = validate_protein_sequence(protein, "protein_design")
+
     if constraints is None:
         constraints = DesignConstraints()
+
+    _timer = EngineTimer()
+    _timer.__enter__()
 
     current = list(protein)
     base_stab = _base_stability(protein)
@@ -926,6 +991,8 @@ def design_low_immunogenicity(
         designed, constraints, current_stab, final_sol, final_imm,
     )
 
+    _timer.__exit__(None, None, None)
+
     return DesignResult(
         original_protein=protein,
         designed_protein=designed,
@@ -938,6 +1005,7 @@ def design_low_immunogenicity(
         constraints_satisfied=satisfied,
         constraints_violated=violated,
         success=final_imm <= max_immunogenicity,
+        execution_time_s=round(_timer.elapsed, 4),
     )
 
 
@@ -964,10 +1032,15 @@ def design_multi_objective(
     Returns:
         DesignResult with all mutations and metrics.
     """
+    protein = validate_protein_sequence(protein, "protein_design")
+
     if constraints is None:
         constraints = DesignConstraints()
     if weights is None:
         weights = {"stability": 0.4, "solubility": 0.3, "immunogenicity": 0.3}
+
+    _timer = EngineTimer()
+    _timer.__enter__()
 
     current = list(protein)
     base_stab = _base_stability(protein)
@@ -1069,6 +1142,8 @@ def design_multi_objective(
         designed, constraints, current_stab, final_sol, final_imm,
     )
 
+    _timer.__exit__(None, None, None)
+
     return DesignResult(
         original_protein=protein,
         designed_protein=designed,
@@ -1081,4 +1156,5 @@ def design_multi_objective(
         constraints_satisfied=satisfied,
         constraints_violated=violated,
         success=len(violated) == 0,
+        execution_time_s=round(_timer.elapsed, 4),
     )

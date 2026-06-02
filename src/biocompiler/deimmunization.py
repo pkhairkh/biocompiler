@@ -27,7 +27,12 @@ import math
 from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS
-from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+from .engine_base import (
+    BaseEngineResult,
+    EngineTimer,
+    MutationResult,
+    validate_protein_sequence,
+)
 from .exceptions import ImmunogenicityError
 from .immunogenicity import (
     predict_mhc_i_binding,
@@ -82,25 +87,94 @@ _DEFAULT_MHC_ALLELES: dict[str, list[str]] = {
 # ────────────────────────────────────────────────────────────
 
 @dataclass
-class DeimmunizationResult:
-    """Result of a deimmunization optimization run."""
+class DeimmunizationResult(BaseEngineResult):
+    """Result of a deimmunization optimization run.
 
-    original_protein: str
-    optimized_protein: str
-    mutations_applied: list[dict]  # [{position, wildtype, mutant, epitope_removed, ddg, blosum62}]
-    original_immunogenicity: float  # immunogenicity score before
-    optimized_immunogenicity: float  # immunogenicity score after
-    original_t_cell_epitopes: int
-    optimized_t_cell_epitopes: int
-    stability_preserved: bool  # True if sum of all ddG < threshold
-    iterations: int
-    success: bool  # True if target_score was reached
-    method: str  # algorithm name
-    execution_time_s: float = 0.0  # wall-clock time
+    Inherits from BaseEngineResult for unified API compatibility.
+    Domain-specific fields are preserved for backward compatibility.
+
+    Unified field mapping:
+      sequence → optimized_protein
+      primary_score → optimized_immunogenicity
+      classification → 'deimmunized' | 'partially_deimmunized' | 'failed'
+      engine_name → 'deimmunization'
+      primary_score_label → 'immunogenicity_score'
+    """
+
+    # Override base class required fields with defaults for keyword-arg compat
+    sequence: str = ""
+    primary_score: float = 0.0
+    classification: str = ""
+    success: bool = False
+    error: str | None = None
+    execution_time_s: float = 0.0
+    engine_name: str = "deimmunization"
+    primary_score_label: str = "immunogenicity_score"
+
+    # Domain-specific fields (backward-compatible)
+    original_protein: str = ""
+    optimized_protein: str = ""
+    mutations_applied: list[dict] = field(default_factory=list)  # [{position, wildtype, mutant, epitope_removed, ddg, blosum62}]
+    original_immunogenicity: float = 0.0  # immunogenicity score before
+    optimized_immunogenicity: float = 0.0  # immunogenicity score after
+    original_t_cell_epitopes: int = 0
+    optimized_t_cell_epitopes: int = 0
+    stability_preserved: bool = False  # True if sum of all ddG < threshold
+    iterations: int = 0
+    method: str = "iterative_epitope_disruption"  # algorithm name
+
+    def __post_init__(self):
+        # Sync unified base fields from domain-specific fields
+        if not self.sequence and self.optimized_protein:
+            object.__setattr__(self, 'sequence', self.optimized_protein)
+        if self.primary_score == 0.0 and self.optimized_immunogenicity != 0.0:
+            object.__setattr__(self, 'primary_score', self.optimized_immunogenicity)
+        elif self.optimized_immunogenicity == 0.0 and self.primary_score != 0.0:
+            object.__setattr__(self, 'optimized_immunogenicity', self.primary_score)
+        if not self.classification:
+            if self.success:
+                label = "deimmunized"
+            elif self.optimized_immunogenicity < self.original_immunogenicity:
+                label = "partially_deimmunized"
+            else:
+                label = "failed"
+            object.__setattr__(self, 'classification', label)
+
+    @property
+    def immunogenicity_score(self) -> float:
+        """Unified API alias for optimized_immunogenicity."""
+        return self.optimized_immunogenicity
+
+    @property
+    def mutations(self) -> list[dict]:
+        """Unified API alias for mutations_applied."""
+        return self.mutations_applied
 
 
-# Backward-compatible alias — prefer MutationResult from engine_base.
-EpitopeMutation = MutationResult
+@dataclass
+class EpitopeMutation(MutationResult):
+    """Deimmunization-specific mutation result, compatible with MutationResult.
+
+    Subclass of MutationResult with deimmunization-appropriate defaults.
+    Use to_mutation_result() to convert to a plain MutationResult.
+    """
+    score_type: str = "immunogenicity"
+    engine: str = "deimmunization"
+    recommendation: str = "deimmunizing"
+
+    def to_mutation_result(self) -> MutationResult:
+        """Convert to a plain MutationResult."""
+        return MutationResult(
+            position=self.position,
+            original=self.original,
+            mutant=self.mutant,
+            delta_score=self.delta_score,
+            score_type=self.score_type,
+            engine=self.engine,
+            recommendation=self.recommendation,
+            description=self.description,
+            details=self.details,
+        )
 
 
 # ────────────────────────────────────────────────────────────
@@ -484,12 +558,11 @@ def find_epitope_disrupting_mutations(
                         best_score = sc
                         best_peptide = pep
 
-            mutations.append(MutationResult(
+            mutations.append(EpitopeMutation(
                 position=pos,
                 original=wildtype,
                 mutant=mutant,
-                score=round(binding_reduction, 4),
-                engine="deimmunization",
+                delta_score=round(binding_reduction, 4),
                 description=f"Disrupts epitope {best_peptide} at position {pos}",
                 details={
                     "epitope_disrupted": best_peptide,

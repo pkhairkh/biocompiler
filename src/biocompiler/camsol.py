@@ -1,5 +1,5 @@
 """
-BioCompiler CamSol Solubility Module v7.5.0
+BioCompiler CamSol Solubility Module v7.6.0
 =============================================
 CamSol-inspired solubility prediction algorithm in pure Python.
 
@@ -22,7 +22,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, STANDARD_AAS
-from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+from .engine_base import (
+    BaseEngineResult,
+    BatchResult,
+    EngineTimer,
+    MutationResult,
+    validate_protein_sequence,
+)
 from .exceptions import CamSolError
 
 # ── Attempt to import shared defaults; provide local fallbacks ──
@@ -46,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 
 __all__ = [
+    "CamSolResult",
     "SolubilityResult",
     "compute_intrinsic_solubility",
     "compute_solubility",
@@ -66,7 +73,7 @@ __all__ = [
 # In-memory cache
 # ────────────────────────────────────────────────────────────
 
-_cache: dict[tuple[str, int, int], SolubilityResult] = {}
+_cache: dict[tuple[str, int, int], CamSolResult] = {}
 
 
 def clear_cache() -> None:
@@ -202,37 +209,84 @@ _MIN_AGGREGATION_REGION_LENGTH = 3
 # ────────────────────────────────────────────────────────────
 
 @dataclass
-class SolubilityResult:
+class CamSolResult(BaseEngineResult):
     """Result of CamSol solubility prediction.
 
-    Attributes:
-        protein: Input protein sequence (1-letter codes).
-        intrinsic_score: CamSol intrinsic solubility score (-3 to +3, >0 = soluble).
-        structural_score: Structure-corrected score (if PDB available), else None.
-        overall_score: Final solubility score (structural if available, else intrinsic).
-        per_residue_scores: Contribution of each residue to solubility.
-        aggregation_prone_regions: List of (start, end, avg_score) tuples for
-            regions below the aggregation threshold.
-        solubility_class: One of "highly_soluble", "soluble",
-            "marginally_soluble", "insoluble".
-        recommendations: Actionable suggestions for improving solubility.
-        method: "camsol_intrinsic" or "camsol_structural".
+    Inherits unified fields from BaseEngineResult:
+        sequence: Input protein sequence (1-letter codes).
+            (Alias: protein)
+        primary_score: Final solubility score.
+            (Alias: overall_score, score)
+        classification: Solubility category.
+            (Alias: solubility_class)
         success: Whether the computation completed without errors.
         error: Error message if the computation failed.
         execution_time_s: Wall-clock time for the computation in seconds.
+        engine_name: Always "camsol".
+        primary_score_label: Always "solubility".
+
+    CamSol-specific attributes:
+        intrinsic_score: CamSol intrinsic solubility score (-3 to +3, >0 = soluble).
+        structural_score: Structure-corrected score (if PDB available), else None.
+        per_residue_scores: Contribution of each residue to solubility.
+        aggregation_prone_regions: List of (start, end, avg_score) tuples for
+            regions below the aggregation threshold.
+        recommendations: Actionable suggestions for improving solubility.
+        mutations: List of suggested solubility-improving mutations.
+            (Alias: solubility_mutations)
+        method: "camsol_intrinsic" or "camsol_structural".
     """
-    protein: str
-    intrinsic_score: float
-    structural_score: float | None
-    overall_score: float
-    per_residue_scores: list[float]
-    aggregation_prone_regions: list[tuple[int, int, float]]
-    solubility_class: str
-    recommendations: list[str]
+    # Override base class defaults for CamSol
+    engine_name: str = "camsol"
+    primary_score_label: str = "solubility"
+
+    # CamSol-specific fields
+    intrinsic_score: float = 0.0
+    structural_score: float | None = None
+    per_residue_scores: list[float] = field(default_factory=list)
+    aggregation_prone_regions: list[tuple[int, int, float]] = field(default_factory=list)
+    recommendations: list[str] = field(default_factory=list)
+    mutations: list[MutationResult] = field(default_factory=list)
     method: str = "camsol_intrinsic"
-    success: bool = True
-    error: str | None = None
-    execution_time_s: float = 0.0
+
+    # ── Backward-compatible property aliases ──
+
+    @property
+    def protein(self) -> str:
+        """Alias for sequence (backward compatibility)."""
+        return self.sequence
+
+    @protein.setter
+    def protein(self, value: str) -> None:
+        self.sequence = value
+
+    @property
+    def overall_score(self) -> float:
+        """Alias for primary_score (backward compatibility)."""
+        return self.primary_score
+
+    @overall_score.setter
+    def overall_score(self, value: float) -> None:
+        self.primary_score = value
+
+    @property
+    def score(self) -> float:
+        """Alias for primary_score (unified API)."""
+        return self.primary_score
+
+    @property
+    def solubility_class(self) -> str:
+        """Alias for classification (backward compatibility)."""
+        return self.classification
+
+    @solubility_class.setter
+    def solubility_class(self, value: str) -> None:
+        self.classification = value
+
+    @property
+    def solubility_mutations(self) -> list[MutationResult]:
+        """Alias for mutations (backward compatibility)."""
+        return self.mutations
 
 
 # ────────────────────────────────────────────────────────────
@@ -244,7 +298,7 @@ def compute_intrinsic_solubility(
     window: int = _DEFAULT_WINDOW,
     smoothing: int = _DEFAULT_SMOOTHING,
     organism: str = "Homo_sapiens",
-) -> SolubilityResult:
+) -> CamSolResult:
     """Compute CamSol intrinsic solubility score from protein sequence.
 
     The intrinsic solubility is computed as a weighted combination of
@@ -338,17 +392,19 @@ def compute_intrinsic_solubility(
         solubility_class = classify_solubility(intrinsic_score)
 
         # Step 7: Generate recommendations
-        result = SolubilityResult(
-            protein=protein,
+        result = CamSolResult(
+            sequence=protein,
+            primary_score=round(intrinsic_score, 4),
+            classification=solubility_class,
+            success=True,
             intrinsic_score=round(intrinsic_score, 4),
             structural_score=None,
-            overall_score=round(intrinsic_score, 4),
             per_residue_scores=[round(s, 4) for s in double_smoothed],
             aggregation_prone_regions=[
                 (start, end, round(avg, 4)) for start, end, avg in agg_regions
             ],
-            solubility_class=solubility_class,
             recommendations=[],  # filled below
+            mutations=[],
             method="camsol_intrinsic",
         )
         result.recommendations = generate_solubility_recommendations(result)
@@ -374,7 +430,7 @@ def compute_structural_solubility(
     protein: str,
     pdb_string: str,
     organism: str = "Homo_sapiens",
-) -> SolubilityResult:
+) -> CamSolResult:
     """Compute structure-corrected CamSol solubility score.
 
     Starts with the intrinsic solubility score and applies structure-based
@@ -474,17 +530,19 @@ def compute_structural_solubility(
 
         solubility_class = classify_solubility(structural_score)
 
-        result = SolubilityResult(
-            protein=protein,
+        result = CamSolResult(
+            sequence=protein,
+            primary_score=round(structural_score, 4),
+            classification=solubility_class,
+            success=True,
             intrinsic_score=intrinsic.intrinsic_score,
             structural_score=round(structural_score, 4),
-            overall_score=round(structural_score, 4),
             per_residue_scores=[round(s, 4) for s in corrected_smooth],
             aggregation_prone_regions=[
                 (start, end, round(avg, 4)) for start, end, avg in agg_regions
             ],
-            solubility_class=solubility_class,
             recommendations=[],
+            mutations=[],
             method="camsol_structural",
         )
         result.recommendations = generate_solubility_recommendations(result)
@@ -508,7 +566,7 @@ def compute_solubility(
     pdb_string: str | None = None,
     organism: str = "Homo_sapiens",
     **kwargs: object,
-) -> SolubilityResult:
+) -> CamSolResult:
     """Unified solubility computation interface.
 
     Calls compute_structural_solubility if PDB data is provided,
@@ -540,7 +598,7 @@ def compute_solubility_batch(
     smoothing: int = _DEFAULT_SMOOTHING,
     max_workers: int | None = None,
     organism: str = "Homo_sapiens",
-) -> list[SolubilityResult]:
+) -> BatchResult[CamSolResult]:
     """Compute intrinsic solubility for multiple sequences in parallel.
 
     Uses a thread pool for concurrent computation. Each sequence is
@@ -557,11 +615,11 @@ def compute_solubility_batch(
             (default "Homo_sapiens").
 
     Returns:
-        List of SolubilityResult objects, one per input sequence, in the
-        same order as the input.
+        BatchResult[CamSolResult] containing results for each input
+        sequence in the same order as the input.
     """
     if not sequences:
-        return []
+        return BatchResult[CamSolResult]()
 
     if max_workers is None:
         max_workers = min(len(sequences), _DEFAULT_BATCH_SIZE)
@@ -572,60 +630,68 @@ def compute_solubility_batch(
         max_workers,
     )
 
-    results: dict[int, SolubilityResult] = {}
+    results: dict[int, CamSolResult] = {}
 
-    def _compute_one(idx: int, seq: str) -> tuple[int, SolubilityResult]:
+    def _compute_one(idx: int, seq: str) -> tuple[int, CamSolResult]:
         try:
             result = compute_intrinsic_solubility(seq, window=window, smoothing=smoothing, organism=organism)
             return (idx, result)
         except CamSolError as exc:
-            error_result = SolubilityResult(
-                protein=seq,
-                intrinsic_score=0.0,
-                structural_score=None,
-                overall_score=0.0,
-                per_residue_scores=[],
-                aggregation_prone_regions=[],
-                solubility_class="insoluble",
-                recommendations=[],
-                method="camsol_intrinsic",
+            error_result = CamSolResult(
+                sequence=seq,
+                primary_score=0.0,
+                classification="insoluble",
                 success=False,
                 error=str(exc),
+                intrinsic_score=0.0,
+                structural_score=None,
+                per_residue_scores=[],
+                aggregation_prone_regions=[],
+                recommendations=[],
+                mutations=[],
+                method="camsol_intrinsic",
             )
             return (idx, error_result)
         except Exception as exc:
-            error_result = SolubilityResult(
-                protein=seq,
-                intrinsic_score=0.0,
-                structural_score=None,
-                overall_score=0.0,
-                per_residue_scores=[],
-                aggregation_prone_regions=[],
-                solubility_class="insoluble",
-                recommendations=[],
-                method="camsol_intrinsic",
+            error_result = CamSolResult(
+                sequence=seq,
+                primary_score=0.0,
+                classification="insoluble",
                 success=False,
                 error=f"Unexpected error: {exc}",
+                intrinsic_score=0.0,
+                structural_score=None,
+                per_residue_scores=[],
+                aggregation_prone_regions=[],
+                recommendations=[],
+                mutations=[],
+                method="camsol_intrinsic",
             )
             return (idx, error_result)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_compute_one, i, seq): i
-            for i, seq in enumerate(sequences)
-        }
-        for future in as_completed(futures):
-            idx, result = future.result()
-            results[idx] = result
+    with EngineTimer() as batch_timer:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_compute_one, i, seq): i
+                for i, seq in enumerate(sequences)
+            }
+            for future in as_completed(futures):
+                idx, result = future.result()
+                results[idx] = result
 
     ordered = [results[i] for i in range(len(sequences))]
+    batch = BatchResult[CamSolResult](
+        results=ordered,
+        total_time_s=round(batch_timer.elapsed, 4),
+    )
+
     logger.info(
         "CamSol batch: completed %d sequences (%d successful, %d failed)",
         len(sequences),
-        sum(1 for r in ordered if r.success),
-        sum(1 for r in ordered if not r.success),
+        batch.successful,
+        batch.failed,
     )
-    return ordered
+    return batch
 
 
 def find_solubility_mutations(
@@ -704,8 +770,10 @@ def find_solubility_mutations(
                     position=pos,
                     original=wildtype,
                     mutant=mutant,
-                    score=round(delta, 4),
+                    delta_score=round(delta, 4),
+                    score_type="solubility",
                     engine="camsol",
+                    recommendation="solubility_improving",
                     description=(
                         f"{wildtype}{pos+1}{mutant}: delta_solubility={round(delta, 4):.4f}"
                     ),
@@ -746,7 +814,7 @@ def classify_solubility(score: float) -> str:
         return "insoluble"
 
 
-def generate_solubility_recommendations(result: SolubilityResult) -> list[str]:
+def generate_solubility_recommendations(result: CamSolResult) -> list[str]:
     """Generate actionable recommendations for improving protein solubility.
 
     Based on aggregation-prone regions and overall score, suggests:
@@ -1230,3 +1298,11 @@ def _parse_disulfide_bonds(pdb_string: str) -> set[int]:
                 continue
 
     return residues
+
+
+# ────────────────────────────────────────────────────────────
+# Backward-compatibility alias
+# ────────────────────────────────────────────────────────────
+
+# Deprecated: use CamSolResult instead. Kept for backward compatibility.
+SolubilityResult = CamSolResult

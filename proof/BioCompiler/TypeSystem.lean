@@ -8,19 +8,21 @@
 
   "Well-typed genes don't go wrong." — after Milner, 1978
 
-  PROOF STRATEGY:
-  - Arithmetic predicates (CodonAdapted, GCInRange, InFrame): PASS condition = property.
-    Proved via ite_fail_imp (contrapositive: ¬condition → FAIL = PASS, contradiction).
-  - Scanner predicates (NoCrypticSplice, NoRestrictionSite, NoInstabilityMotif, NoCpGIsland):
-    PASS → scanner = false → contrapositive of completeness → no match exists.
-  - NoCrypticSplice uses dual-threshold (PASS/UNCERTAIN/FAIL):
-    FAIL if cryptic site found, UNCERTAIN if borderline site found, PASS otherwise.
-    PASS guarantee: all sites have score < uncertainLoThreshold.
-  - NDFST predicate (SpliceCorrect): PASS → singleton output set → ctx matches.
+  PREDICATE ARCHITECTURE (32 constructors):
+  - Core (13): fully evaluable from sequence + context, can return PASS/FAIL/UNCERTAIN
+    SpliceCorrect, NoCrypticSplice, CodonAdapted, GCInRange, NoRestrictionSite,
+    InFrame, NoInstabilityMotif, NoCpGIsland, NoGTDinucleotide, NoStopCodons,
+    ValidCodingSeq, CodonOptimality, NoCrypticPromoter
+  - SLOT-dependent (19): require external tools/FFI, evaluate ALWAYS returns UNCERTAIN
+    ConservationScore, NoUnexpectedTMDomain, mRNASecondaryStructure,
+    CoTranslationalFolding, StructureConfidence, NoMisfoldingRisk,
+    CorrectFoldTopology, NoUnexpectedInteraction, StableFolding,
+    NoDestabilizingMutation, DisulfideBondIntegrity, HydrophobicCoreQuality,
+    SolubleExpression, NoAggregationProneRegion, ChargeComposition,
+    NoLongHydrophobicStretch, LowImmunogenicity, NoStrongTCellEpitope,
+    NoDominantBCellEpitope, PopulationCoverageSafe
 
-  SORRY STATUS: 0 remaining. All proofs are sorry-free, including ndfstRun_complete
-  (proved via ConsumesInput in NDFST.lean). NoCpGIsland added as 8th predicate.
-  Dual-threshold NoCrypticSplice with PASS/UNCERTAIN/FAIL support.
+  SORRY STATUS: 0 remaining. All proofs are sorry-free.
 
   REFERENCE: DOC-03 (SDD) §3.5, DOC-10 (Deterministic Methods) §4
 -/
@@ -35,10 +37,11 @@ namespace BioCompiler
 open Verdict Sequence
 
 -- ==============================================================================
--- Type Predicates
+-- Type Predicates (32 constructors: 13 core + 19 SLOT-dependent)
 -- ==============================================================================
 
 inductive TypePredicate where
+  -- Core predicates (fully evaluable from sequence + context)
   | SpliceCorrect (cellType : String) : TypePredicate
   | NoCrypticSplice : TypePredicate
   | CodonAdapted (organism : String) (threshold : Rat) : TypePredicate
@@ -47,7 +50,74 @@ inductive TypePredicate where
   | InFrame (readingFrame : Nat) (exonBoundaries : List Nat) : TypePredicate
   | NoInstabilityMotif : TypePredicate
   | NoCpGIsland : TypePredicate
+  | NoGTDinucleotide : TypePredicate
+  | NoStopCodons : TypePredicate
+  | ValidCodingSeq : TypePredicate
+  | CodonOptimality (organism : String) (threshold : Rat) : TypePredicate
+  | NoCrypticPromoter (organism : String) (threshold : Rat) : TypePredicate
+  -- SLOT-dependent predicates (evaluate ALWAYS returns UNCERTAIN)
+  | ConservationScore (minScore : Int) : TypePredicate
+  | NoUnexpectedTMDomain (isCytosolic : Bool) (threshold : Rat) : TypePredicate
+  | mRNASecondaryStructure (dgThreshold : Rat) : TypePredicate
+  | CoTranslationalFolding (organism : String) : TypePredicate
+  | StructureConfidence (threshold : Rat) : TypePredicate
+  | NoMisfoldingRisk : TypePredicate
+  | CorrectFoldTopology : TypePredicate
+  | NoUnexpectedInteraction : TypePredicate
+  | StableFolding (ddgThreshold : Rat) : TypePredicate
+  | NoDestabilizingMutation (maxDDG : Rat) : TypePredicate
+  | DisulfideBondIntegrity : TypePredicate
+  | HydrophobicCoreQuality (threshold : Rat) : TypePredicate
+  | SolubleExpression (minScore : Rat) : TypePredicate
+  | NoAggregationProneRegion : TypePredicate
+  | ChargeComposition (pILo pIHi : Rat) : TypePredicate
+  | NoLongHydrophobicStretch (maxLen : Nat) : TypePredicate
+  | LowImmunogenicity (maxScore : Rat) : TypePredicate
+  | NoStrongTCellEpitope (ic50Threshold : Rat) : TypePredicate
+  | NoDominantBCellEpitope (scoreThreshold : Rat) : TypePredicate
+  | PopulationCoverageSafe (maxCoverage : Rat) : TypePredicate
   deriving Repr
+
+-- ==============================================================================
+-- SLOT Classification
+-- ==============================================================================
+
+/-- Classify a type predicate as SLOT-dependent (true) or core (false).
+    SLOT-dependent predicates rely on FFI output and cannot produce PASS. -/
+def isSLOT : TypePredicate → Bool
+  | TypePredicate.SpliceCorrect _ => false
+  | TypePredicate.NoCrypticSplice => false
+  | TypePredicate.CodonAdapted _ _ => false
+  | TypePredicate.GCInRange _ _ => false
+  | TypePredicate.NoRestrictionSite _ => false
+  | TypePredicate.InFrame _ _ => false
+  | TypePredicate.NoInstabilityMotif => false
+  | TypePredicate.NoCpGIsland => false
+  | TypePredicate.NoGTDinucleotide => false
+  | TypePredicate.NoStopCodons => false
+  | TypePredicate.ValidCodingSeq => false
+  | TypePredicate.CodonOptimality _ _ => false
+  | TypePredicate.NoCrypticPromoter _ _ => false
+  | TypePredicate.ConservationScore _ => true
+  | TypePredicate.NoUnexpectedTMDomain _ _ => true
+  | TypePredicate.mRNASecondaryStructure _ => true
+  | TypePredicate.CoTranslationalFolding _ => true
+  | TypePredicate.StructureConfidence _ => true
+  | TypePredicate.NoMisfoldingRisk => true
+  | TypePredicate.CorrectFoldTopology => true
+  | TypePredicate.NoUnexpectedInteraction => true
+  | TypePredicate.StableFolding _ => true
+  | TypePredicate.NoDestabilizingMutation _ => true
+  | TypePredicate.DisulfideBondIntegrity => true
+  | TypePredicate.HydrophobicCoreQuality _ => true
+  | TypePredicate.SolubleExpression _ => true
+  | TypePredicate.NoAggregationProneRegion => true
+  | TypePredicate.ChargeComposition _ _ => true
+  | TypePredicate.NoLongHydrophobicStretch _ => true
+  | TypePredicate.LowImmunogenicity _ => true
+  | TypePredicate.NoStrongTCellEpitope _ => true
+  | TypePredicate.NoDominantBCellEpitope _ => true
+  | TypePredicate.PopulationCoverageSafe _ => true
 
 -- ==============================================================================
 -- Auxiliary Lemmas for Proof Engineering
@@ -124,8 +194,10 @@ theorem Rat.not_lt_iff_le (a b : Rat) : ¬(a < b) ↔ b ≤ a := by
 -- ==============================================================================
 
 def evaluate [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
+    [PromoterScanner] [TMDomainScanner] [mRNAStructureOracle] [CoTranslationalFoldingOracle]
     {State : Type} [DecidableEq State] [Inhabited State] [SplicingNDFST State] :
     TypePredicate → Sequence → CellularContext → Verdict
+  -- Core predicates
   | TypePredicate.SpliceCorrect cellType, seq, ctx =>
       if ctx.cellType != cellType then UNCERTAIN
       else
@@ -157,11 +229,51 @@ def evaluate [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
   | TypePredicate.NoCpGIsland, seq, _ =>
       if CpGIslandScanner.hasCpGIsland seq = true then FAIL else PASS
 
+  | TypePredicate.NoGTDinucleotide, seq, _ =>
+      if hasPattern seq spliceDonorConsensus = true then FAIL else PASS
+
+  | TypePredicate.NoStopCodons, seq, _ =>
+      if hasPrematureStop seq 0 = true then FAIL else PASS
+
+  | TypePredicate.ValidCodingSeq, seq, _ =>
+      if isValidCodingSeq seq = true then PASS else FAIL
+
+  | TypePredicate.CodonOptimality org threshold, seq, _ =>
+      if CodonAdaptationIndex.computeCAI seq org ≥ threshold then PASS else FAIL
+
+  | TypePredicate.NoCrypticPromoter organism threshold, seq, _ =>
+      if PromoterScanner.hasCrypticPromoter seq organism threshold = true then FAIL
+      else if PromoterScanner.hasBorderlinePromoter seq organism threshold = true then UNCERTAIN
+      else PASS
+
+  -- SLOT-dependent predicates: evaluate ALWAYS returns UNCERTAIN
+  | TypePredicate.ConservationScore _, _, _ => UNCERTAIN
+  | TypePredicate.NoUnexpectedTMDomain _ _, _, _ => UNCERTAIN
+  | TypePredicate.mRNASecondaryStructure _, _, _ => UNCERTAIN
+  | TypePredicate.CoTranslationalFolding _, _, _ => UNCERTAIN
+  | TypePredicate.StructureConfidence _, _, _ => UNCERTAIN
+  | TypePredicate.NoMisfoldingRisk, _, _ => UNCERTAIN
+  | TypePredicate.CorrectFoldTopology, _, _ => UNCERTAIN
+  | TypePredicate.NoUnexpectedInteraction, _, _ => UNCERTAIN
+  | TypePredicate.StableFolding _, _, _ => UNCERTAIN
+  | TypePredicate.NoDestabilizingMutation _, _, _ => UNCERTAIN
+  | TypePredicate.DisulfideBondIntegrity, _, _ => UNCERTAIN
+  | TypePredicate.HydrophobicCoreQuality _, _, _ => UNCERTAIN
+  | TypePredicate.SolubleExpression _, _, _ => UNCERTAIN
+  | TypePredicate.NoAggregationProneRegion, _, _ => UNCERTAIN
+  | TypePredicate.ChargeComposition _ _, _, _ => UNCERTAIN
+  | TypePredicate.NoLongHydrophobicStretch _, _, _ => UNCERTAIN
+  | TypePredicate.LowImmunogenicity _, _, _ => UNCERTAIN
+  | TypePredicate.NoStrongTCellEpitope _, _, _ => UNCERTAIN
+  | TypePredicate.NoDominantBCellEpitope _, _, _ => UNCERTAIN
+  | TypePredicate.PopulationCoverageSafe _, _, _ => UNCERTAIN
+
 -- ==============================================================================
 -- Property Semantics
 -- ==============================================================================
 
 def propertyHolds [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
+    [PromoterScanner] [TMDomainScanner] [mRNAStructureOracle] [CoTranslationalFoldingOracle]
     {State : Type} [DecidableEq State] [Inhabited State] [SplicingNDFST State] :
     TypePredicate → Sequence → CellularContext → Prop
   | TypePredicate.SpliceCorrect cellType, seq, ctx =>
@@ -195,34 +307,65 @@ def propertyHolds [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
             cpgCount = (List.zipWith (· == ·) window (window.drop 1)).count true ∧
             (cpgCount : Rat) * window.length <
               cpgIslandObsExpThreshold * (window.count Nucleotide.C) * (window.count Nucleotide.G))
+  | TypePredicate.NoGTDinucleotide, seq, _ =>
+      ∀ (pos : Nat), pos + spliceDonorConsensus.length ≤ seq.length →
+        (seq.drop pos).take spliceDonorConsensus.length ≠ spliceDonorConsensus
+  | TypePredicate.NoStopCodons, seq, _ =>
+      hasPrematureStop seq 0 = false
+  | TypePredicate.ValidCodingSeq, seq, _ =>
+      isValidCodingSeq seq = true
+  | TypePredicate.CodonOptimality org threshold, seq, _ =>
+      CodonAdaptationIndex.computeCAI seq org ≥ threshold
+  | TypePredicate.NoCrypticPromoter organism threshold, seq, _ =>
+      ∀ (pm : PromoterMatch), pm.organism = organism →
+        pm.score ≥ threshold * 8 / 10 → False
+  -- SLOT-dependent predicates: propertyHolds is True (vacuously) since evaluate
+  -- never returns PASS
+  | TypePredicate.ConservationScore _, _, _ => True
+  | TypePredicate.NoUnexpectedTMDomain _ _, _, _ => True
+  | TypePredicate.mRNASecondaryStructure _, _, _ => True
+  | TypePredicate.CoTranslationalFolding _, _, _ => True
+  | TypePredicate.StructureConfidence _, _, _ => True
+  | TypePredicate.NoMisfoldingRisk, _, _ => True
+  | TypePredicate.CorrectFoldTopology, _, _ => True
+  | TypePredicate.NoUnexpectedInteraction, _, _ => True
+  | TypePredicate.StableFolding _, _, _ => True
+  | TypePredicate.NoDestabilizingMutation _, _, _ => True
+  | TypePredicate.DisulfideBondIntegrity, _, _ => True
+  | TypePredicate.HydrophobicCoreQuality _, _, _ => True
+  | TypePredicate.SolubleExpression _, _, _ => True
+  | TypePredicate.NoAggregationProneRegion, _, _ => True
+  | TypePredicate.ChargeComposition _ _, _, _ => True
+  | TypePredicate.NoLongHydrophobicStretch _, _, _ => True
+  | TypePredicate.LowImmunogenicity _, _, _ => True
+  | TypePredicate.NoStrongTCellEpitope _, _, _ => True
+  | TypePredicate.NoDominantBCellEpitope _, _, _ => True
+  | TypePredicate.PopulationCoverageSafe _, _, _ => True
 
 -- ==============================================================================
 -- Soundness Theorem
 -- ==============================================================================
 
 theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
+    [PromoterScanner] [TMDomainScanner] [mRNAStructureOracle] [CoTranslationalFoldingOracle]
     {State : Type} [DecidableEq State] [Inhabited State] [SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) :
-    @evaluate _ _ _ State _ _ _ P seq ctx = PASS →
-    @propertyHolds _ _ _ State _ _ _ P seq ctx := by
+    @evaluate _ _ _ _ _ _ _ State _ _ _ P seq ctx = PASS →
+    @propertyHolds _ _ _ _ _ _ _ State _ _ _ P seq ctx := by
   intro h_pass
   cases P with
 
   | SpliceCorrect cellType =>
     simp only [evaluate] at h_pass
-    -- Case-split on the Bool condition
     cases h_cond : (ctx.cellType != cellType) with
     | true =>
-      -- If ctx.cellType != cellType, evaluate returns UNCERTAIN ≠ PASS
       simp [h_cond] at h_pass
     | false =>
-      -- ctx.cellType = cellType (from ¬(ctx.cellType != cellType))
       have h_cell_eq : ctx.cellType = cellType := by
         have : ¬(ctx.cellType != cellType) := by
           intro h; rw [h] at h_cond; cases h_cond
         exact string_eq_of_not_ne _ _ this
       simp [h_cond] at h_pass
-      -- h_pass now concerns only the match on ndfstUniqueOutputSet
       have h_list_len : (ndfstUniqueOutputSet (SplicingNDFST.ndfst : NDFST State) seq).length = 1 := by
         cases h_list : ndfstUniqueOutputSet (SplicingNDFST.ndfst : NDFST State) seq with
         | nil => simp [h_list] at h_pass
@@ -327,5 +470,99 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
       have h_gc_ge := Rat.not_lt_iff_le _ _ |>.mp h_gc_not_lt
       have h_absurd := CpGIslandScanner.scanner_completeness seq pos h_pos h_gc_ge h_false
       exact h_absurd.elim
+
+  | NoGTDinucleotide =>
+    simp only [evaluate] at h_pass
+    have h_not_true : hasPattern seq spliceDonorConsensus ≠ true := by
+      intro h; rw [if_pos h] at h_pass; cases h_pass
+    have h_false : hasPattern seq spliceDonorConsensus = false :=
+      (bool_ne_true_iff_false _).mp h_not_true
+    simp only [propertyHolds]
+    intro pos h_pos h_match
+    have h_has := hasPattern_complete seq spliceDonorConsensus pos h_pos h_match
+    rw [h_false] at h_has
+    cases h_has
+
+  | NoStopCodons =>
+    simp only [evaluate] at h_pass
+    have h_not_true : hasPrematureStop seq 0 ≠ true := by
+      intro h; rw [if_pos h] at h_pass; cases h_pass
+    have h_false : hasPrematureStop seq 0 = false :=
+      (bool_ne_true_iff_false _).mp h_not_true
+    simp only [propertyHolds]
+    exact h_false
+
+  | ValidCodingSeq =>
+    simp only [evaluate, propertyHolds] at *
+    exact ite_fail_imp h_pass
+
+  | CodonOptimality organism threshold =>
+    simp only [evaluate, propertyHolds] at *
+    exact ite_fail_imp h_pass
+
+  | NoCrypticPromoter organism threshold =>
+    simp only [evaluate] at h_pass
+    have h_not_cryptic : PromoterScanner.hasCrypticPromoter seq organism threshold ≠ true := by
+      intro h; rw [if_pos h] at h_pass; cases h_pass
+    have h_false_cryptic : PromoterScanner.hasCrypticPromoter seq organism threshold = false :=
+      (bool_ne_true_iff_false _).mp h_not_cryptic
+    have h_not_borderline : PromoterScanner.hasBorderlinePromoter seq organism threshold ≠ true := by
+      intro h
+      have : (if PromoterScanner.hasCrypticPromoter seq organism threshold = true then FAIL
+              else if PromoterScanner.hasBorderlinePromoter seq organism threshold = true then UNCERTAIN
+              else PASS) = UNCERTAIN := by
+        rw [if_neg h_not_cryptic, if_pos h]
+      rw [this] at h_pass; cases h_pass
+    have h_false_borderline : PromoterScanner.hasBorderlinePromoter seq organism threshold = false :=
+      (bool_ne_true_iff_false _).mp h_not_borderline
+    simp only [propertyHolds]
+    intro pm h_org h_ge
+    by_cases h_above : pm.score ≥ threshold
+    · have h_absurd := PromoterScanner.scanner_completeness seq organism threshold pm h_org h_above h_false_cryptic
+      exact h_absurd
+    · have h_absurd := PromoterScanner.borderline_completeness seq organism threshold pm h_org h_ge h_above h_false_borderline
+      exact h_absurd
+
+  -- SLOT-dependent predicates: evaluate returns UNCERTAIN ≠ PASS, so vacuously true
+  | ConservationScore _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoUnexpectedTMDomain _ _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | mRNASecondaryStructure _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | CoTranslationalFolding _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | StructureConfidence _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoMisfoldingRisk =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | CorrectFoldTopology =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoUnexpectedInteraction =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | StableFolding _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoDestabilizingMutation _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | DisulfideBondIntegrity =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | HydrophobicCoreQuality _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | SolubleExpression _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoAggregationProneRegion =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | ChargeComposition _ _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoLongHydrophobicStretch _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | LowImmunogenicity _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoStrongTCellEpitope _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | NoDominantBCellEpitope _ =>
+    simp only [evaluate] at h_pass; cases h_pass
+  | PopulationCoverageSafe _ =>
+    simp only [evaluate] at h_pass; cases h_pass
 
 end BioCompiler

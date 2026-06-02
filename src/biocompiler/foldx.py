@@ -1,5 +1,5 @@
 """
-BioCompiler FoldX Stability Analysis Module v7.5.0
+BioCompiler FoldX Stability Analysis Module v7.6.0
 ====================================================
 Provides both online (FoldX CLI wrapper) and offline (empirical scoring)
 modes for protein stability analysis, mutation scanning, and stabilization.
@@ -53,7 +53,13 @@ import time
 from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS, HYDROPHOBIC_AAS
-from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+from .engine_base import (
+    BaseEngineResult,
+    BatchResult,
+    EngineTimer,
+    MutationResult,
+    validate_protein_sequence,
+)
 from .exceptions import BioCompilerError
 
 try:
@@ -94,6 +100,7 @@ __all__ = [
     "identify_hotspot_regions",
     "FoldXResult",
     "MutationResult",
+    "BatchResult",
     "FoldXError",
     "StabilityLandscape",
     "ConservationScore",
@@ -133,12 +140,19 @@ _VOLUME_SCALE = 100.0
 # Data Classes
 # ────────────────────────────────────────────────────────────
 
-@dataclass
-class FoldXResult:
+class FoldXResult(BaseEngineResult):
     """Result of a FoldX stability analysis run.
 
-    Attributes:
-        protein: The protein sequence analyzed.
+    Inherits from :class:`BaseEngineResult` to provide unified API fields:
+      - ``sequence``: protein sequence (also accessible as ``protein``)
+      - ``primary_score``: main metric in kcal/mol (alias: ``ddg``)
+      - ``classification``: categorical label (alias: ``stability_class``)
+      - ``mutations``: list of suggested mutations (alias: ``stabilizing_mutations``)
+      - ``engine_name``: ``"foldx"``
+      - ``primary_score_label``: ``"ΔΔG"``
+
+    Backward-compatible attributes:
+        protein: The protein sequence analyzed (alias for sequence).
         pdb_string: PDB file content (if available).
         stability_kcal: Total stability ΔG in kcal/mol (negative = stable).
         ddg_kcal: ΔΔG relative to reference (if mutation analysis).
@@ -162,38 +176,147 @@ class FoldXResult:
         method: Analysis method used ("foldx_cli", "empirical", "hybrid").
         success: Whether the analysis completed successfully.
         error: Error message if analysis failed.
+        mutations: List of MutationResult from mutation scanning.
     """
-    protein: str
-    pdb_string: str | None
-    stability_kcal: float
-    ddg_kcal: float | None
-    interaction_energy: float | None
-    backbone_hbond: float | None
-    sidechain_hbond: float | None
-    van_der_waals: float | None
-    electrostatics: float | None
-    solvation: float | None
-    van_der_waals_clashes: float | None
-    entropy_sidechain: float | None
-    entropy_mainchain: float | None
-    torsional_clash: float | None
-    backbone_clash: float | None
-    helix_dipole: float | None
-    disulfide: float | None
-    electrostatic_kon: float | None
-    partial_covalent: float | None
-    energy_ionisation: float | None
-    execution_time_s: float = 0.0
-    method: str = ""
-    success: bool = True
-    error: str | None = None
+
+    ENGINE_NAME: str = "foldx"
+    PRIMARY_SCORE_LABEL: str = "ΔΔG"
+
+    def __init__(
+        self,
+        protein: str = "",
+        pdb_string: str | None = None,
+        stability_kcal: float = 0.0,
+        ddg_kcal: float | None = None,
+        interaction_energy: float | None = None,
+        backbone_hbond: float | None = None,
+        sidechain_hbond: float | None = None,
+        van_der_waals: float | None = None,
+        electrostatics: float | None = None,
+        solvation: float | None = None,
+        van_der_waals_clashes: float | None = None,
+        entropy_sidechain: float | None = None,
+        entropy_mainchain: float | None = None,
+        torsional_clash: float | None = None,
+        backbone_clash: float | None = None,
+        helix_dipole: float | None = None,
+        disulfide: float | None = None,
+        electrostatic_kon: float | None = None,
+        partial_covalent: float | None = None,
+        energy_ionisation: float | None = None,
+        execution_time_s: float = 0.0,
+        method: str = "",
+        success: bool = True,
+        error: str | None = None,
+        # Unified API fields — auto-derived from FoldX-specific values if
+        # not provided explicitly.
+        primary_score: float | None = None,
+        classification: str = "",
+        mutations: list[MutationResult] | None = None,
+    ):
+        # Derive unified fields from FoldX-specific ones
+        ps = primary_score if primary_score is not None else stability_kcal
+        cls_name = (
+            classification
+            if classification
+            else _classify_stability(stability_kcal, success)
+        )
+        super().__init__(
+            sequence=protein,
+            primary_score=ps,
+            classification=cls_name,
+            success=success,
+            error=error,
+            execution_time_s=execution_time_s,
+            engine_name=self.ENGINE_NAME,
+            primary_score_label=self.PRIMARY_SCORE_LABEL,
+        )
+        # FoldX-specific attributes
+        self.protein = protein
+        self.pdb_string = pdb_string
+        self.stability_kcal = stability_kcal
+        self.ddg_kcal = ddg_kcal
+        self.interaction_energy = interaction_energy
+        self.backbone_hbond = backbone_hbond
+        self.sidechain_hbond = sidechain_hbond
+        self.van_der_waals = van_der_waals
+        self.electrostatics = electrostatics
+        self.solvation = solvation
+        self.van_der_waals_clashes = van_der_waals_clashes
+        self.entropy_sidechain = entropy_sidechain
+        self.entropy_mainchain = entropy_mainchain
+        self.torsional_clash = torsional_clash
+        self.backbone_clash = backbone_clash
+        self.helix_dipole = helix_dipole
+        self.disulfide = disulfide
+        self.electrostatic_kon = electrostatic_kon
+        self.partial_covalent = partial_covalent
+        self.energy_ionisation = energy_ionisation
+        self.method = method
+        self.mutations: list[MutationResult] = (
+            mutations if mutations is not None else []
+        )
+
+    # ── Property aliases for unified API ─────────────────────
+
+    @property
+    def ddg(self) -> float:
+        """Alias for ``primary_score`` (ΔΔG in kcal/mol)."""
+        return self.primary_score
+
+    @property
+    def stability_class(self) -> str:
+        """Alias for ``classification``."""
+        return self.classification
+
+    @property
+    def stabilizing_mutations(self) -> list[MutationResult]:
+        """Alias for ``mutations``."""
+        return self.mutations
+
+    def __repr__(self) -> str:
+        prot = self.protein[:20] + "..." if len(self.protein) > 20 else self.protein
+        return (
+            f"FoldXResult(protein='{prot}', stability_kcal={self.stability_kcal}, "
+            f"ddg_kcal={self.ddg_kcal}, classification='{self.classification}', "
+            f"method='{self.method}', success={self.success})"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FoldXResult):
+            return NotImplemented
+        return self.__dict__ == other.__dict__
+
+
+def _classify_stability(stability_kcal: float, success: bool = True) -> str:
+    """Classify a stability score into a categorical label.
+
+    Categories based on typical globular protein stability ranges:
+      - very_stable:    ΔG < -10 kcal/mol
+      - stable:         -10 ≤ ΔG < -5 kcal/mol
+      - marginally_stable: -5 ≤ ΔG < 0 kcal/mol
+      - unstable:       ΔG ≥ 0 kcal/mol
+      - failed:         analysis did not succeed
+    """
+    if not success:
+        return "failed"
+    if stability_kcal < -10.0:
+        return "very_stable"
+    elif stability_kcal < -5.0:
+        return "stable"
+    elif stability_kcal < 0.0:
+        return "marginally_stable"
+    else:
+        return "unstable"
 
 
 # Note: MutationResult is now imported from engine_base.
-# The unified MutationResult has fields: position, original, mutant, score,
-# engine, description, details.  The 'score' field uses the convention
-# higher = better improvement (i.e. score = -ddg_kcal).  FoldX-specific
-# flags (stabilizing, neutral, destabilizing) are stored in details dict.
+# The unified MutationResult has fields: position, original, mutant,
+# delta_score, score_type, engine, recommendation, description, details.
+# The 'delta_score' (alias: 'score') field uses the convention
+# higher = better improvement (i.e. delta_score = -ddg_kcal).
+# FoldX-specific flags (stabilizing, neutral, destabilizing) are stored
+# in details dict.  score_type is 'ddg' for FoldX mutations.
 
 
 @dataclass
@@ -744,8 +867,14 @@ def run_foldx_mutation(
                     position=pos_0idx,
                     original=wt,
                     mutant=mt,
-                    score=-ddg,  # higher = better improvement
+                    delta_score=-ddg,  # higher = better improvement
+                    score_type="ddg",
                     engine="foldx",
+                    recommendation=(
+                        "stabilizing" if is_stabilizing
+                        else "deimmunizing" if is_destabilizing
+                        else ""
+                    ),
                     description=(
                         "Stabilizing" if is_stabilizing
                         else "Destabilizing" if is_destabilizing
@@ -979,7 +1108,7 @@ def run_stability_batch(
     *,
     organism: str = "Homo_sapiens",
     **kwargs,
-) -> list[FoldXResult]:
+) -> BatchResult[FoldXResult]:
     """Run empirical stability analysis on multiple sequences in parallel.
 
     Uses ``concurrent.futures.ThreadPoolExecutor`` to process sequences
@@ -997,8 +1126,9 @@ def run_stability_batch(
             :func:`empirical_stability`.
 
     Returns:
-        List of :class:`FoldXResult` objects, one per input sequence,
-        in the same order as *sequences*.
+        :class:`BatchResult` of :class:`FoldXResult` objects, one per
+        input sequence, in the same order as *sequences*.  Access the
+        list of results via the ``.results`` attribute.
     """
     if batch_size is None:
         batch_size = DEFAULT_BATCH_SIZE
@@ -1026,12 +1156,22 @@ def run_stability_batch(
         if r is None:
             results[i] = _make_failed_result("empirical", "Batch processing error")
 
+    # Collect error messages from failed results
+    errors = [r.error for r in results if r.error]
+    total_time = sum(r.execution_time_s for r in results)
+
+    batch = BatchResult[FoldXResult](
+        results=results,
+        errors=errors,
+        total_time_s=round(total_time, 4),
+    )
+
     logger.info(
         "Stability batch complete: %d/%d succeeded",
-        sum(1 for r in results if r.success),
-        len(results),
+        batch.successful,
+        batch.total,
     )
-    return results
+    return batch
 
 
 # ────────────────────────────────────────────────────────────
@@ -1776,8 +1916,14 @@ def _empirical_mutation_scan(
                 position=pos,
                 original=wt,
                 mutant=mt,
-                score=-round(ddg, 2),  # higher = better improvement
+                delta_score=-round(ddg, 2),  # higher = better improvement
+                score_type="ddg",
                 engine="foldx",
+                recommendation=(
+                    "stabilizing" if is_stabilizing
+                    else "deimmunizing" if is_destabilizing
+                    else ""
+                ),
                 description=(
                     "Stabilizing" if is_stabilizing
                     else "Destabilizing" if is_destabilizing

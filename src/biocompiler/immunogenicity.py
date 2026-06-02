@@ -33,8 +33,17 @@ import math
 import time
 from dataclasses import dataclass, field
 
+from typing import List, Optional
+
 from .constants import BLOSUM62, DEFAULT_MHC_PEPTIDE_LENGTH, HYDROPATHY, STANDARD_AAS
-from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+
+from .engine_base import (
+    BaseEngineResult,
+    BatchResult,
+    EngineTimer,
+    MutationResult,
+    validate_protein_sequence,
+)
 from .exceptions import ImmunogenicityError
 
 __all__ = [
@@ -2141,22 +2150,115 @@ def predict_b_cell_epitopes(
 
 
 @dataclass
-class ImmunogenicityResult:
-    """Result of immunogenicity scoring for a protein sequence."""
+class ImmunogenicityResult(BaseEngineResult):
+    """Result of immunogenicity scoring for a protein sequence.
 
-    protein: str
-    overall_score: float  # 0 (not immunogenic) to 1 (highly immunogenic)
-    immunogenicity_class: str  # "low", "moderate", "high"
-    t_cell_score: float  # T-cell epitope contribution
-    b_cell_score: float  # B-cell epitope contribution
-    t_cell_epitopes: list[dict]  # predicted T-cell epitopes
-    b_cell_epitopes: list[dict]  # predicted B-cell epitopes
-    deimmunization_candidates: list[MutationResult]  # suggested mutations
-    # EngineResult protocol fields
+    Inherits from :class:`BaseEngineResult` for unified API access.
+    Domain-specific field aliases are preserved as properties for
+    backward compatibility.
+
+    Unified fields (from BaseEngineResult):
+      - sequence: protein sequence (alias: protein)
+      - primary_score: overall immunogenicity score (alias: immunogenicity_score, overall_score)
+      - classification: risk category (alias: risk_class, immunogenicity_class)
+      - mutations: deimmunization suggestions (alias: deimmunization_mutations, deimmunization_candidates)
+      - engine_name: "immunogenicity"
+      - primary_score_label: "immunogenicity"
+
+    Engine-specific fields:
+      - t_cell_score: T-cell epitope contribution
+      - b_cell_score: B-cell epitope contribution
+      - t_cell_epitopes: predicted T-cell epitopes
+      - b_cell_epitopes: predicted B-cell epitopes
+    """
+
+    # Engine-specific fields
+    t_cell_score: float = 0.0  # T-cell epitope contribution
+    b_cell_score: float = 0.0  # B-cell epitope contribution
+    t_cell_epitopes: List[dict] = field(default_factory=list)  # predicted T-cell epitopes
+    b_cell_epitopes: List[dict] = field(default_factory=list)  # predicted B-cell epitopes
+
+    # Override BaseEngineResult fields with defaults for convenience
     success: bool = True
-    error: str | None = None
+    error: Optional[str] = None
     execution_time_s: float = 0.0
-    method: str = "immunogenicity_pssm"
+    engine_name: str = "immunogenicity"
+    primary_score_label: str = "immunogenicity"
+    mutations: List[MutationResult] = field(default_factory=list)
+
+    # ---- Backward-compatible property aliases ----
+
+    @property
+    def protein(self) -> str:
+        """Alias for sequence (backward compat)."""
+        return self.sequence
+
+    @protein.setter
+    def protein(self, value: str) -> None:
+        self.sequence = value
+
+    @property
+    def overall_score(self) -> float:
+        """Alias for primary_score (backward compat)."""
+        return self.primary_score
+
+    @overall_score.setter
+    def overall_score(self, value: float) -> None:
+        self.primary_score = value
+
+    @property
+    def immunogenicity_score(self) -> float:
+        """Alias for primary_score."""
+        return self.primary_score
+
+    @immunogenicity_score.setter
+    def immunogenicity_score(self, value: float) -> None:
+        self.primary_score = value
+
+    @property
+    def immunogenicity_class(self) -> str:
+        """Alias for classification (backward compat)."""
+        return self.classification
+
+    @immunogenicity_class.setter
+    def immunogenicity_class(self, value: str) -> None:
+        self.classification = value
+
+    @property
+    def risk_class(self) -> str:
+        """Alias for classification."""
+        return self.classification
+
+    @risk_class.setter
+    def risk_class(self, value: str) -> None:
+        self.classification = value
+
+    @property
+    def deimmunization_candidates(self) -> List[MutationResult]:
+        """Alias for mutations (backward compat)."""
+        return self.mutations
+
+    @deimmunization_candidates.setter
+    def deimmunization_candidates(self, value: List[MutationResult]) -> None:
+        self.mutations = value
+
+    @property
+    def deimmunization_mutations(self) -> List[MutationResult]:
+        """Alias for mutations."""
+        return self.mutations
+
+    @deimmunization_mutations.setter
+    def deimmunization_mutations(self, value: List[MutationResult]) -> None:
+        self.mutations = value
+
+    @property
+    def method(self) -> str:
+        """Alias for engine_name (backward compat)."""
+        return self.engine_name
+
+    @method.setter
+    def method(self, value: str) -> None:
+        self.engine_name = value
 
 
 def compute_immunogenicity(
@@ -2197,14 +2299,9 @@ def compute_immunogenicity(
         protein = _validate_protein(protein)
     except ImmunogenicityError as exc:
         return ImmunogenicityResult(
-            protein=protein,
-            overall_score=0.0,
-            immunogenicity_class="low",
-            t_cell_score=0.0,
-            b_cell_score=0.0,
-            t_cell_epitopes=[],
-            b_cell_epitopes=[],
-            deimmunization_candidates=[],
+            sequence=protein if protein else "",
+            primary_score=0.0,
+            classification="low",
             success=False,
             error=str(exc),
         )
@@ -2247,16 +2344,15 @@ def compute_immunogenicity(
         deimm_candidates = find_deimmunization_mutations(protein)
 
         return ImmunogenicityResult(
-            protein=protein,
-            overall_score=round(overall_score, 4),
-            immunogenicity_class=immuno_class,
+            sequence=protein,
+            primary_score=round(overall_score, 4),
+            classification=immuno_class,
             t_cell_score=round(t_cell_score, 4),
             b_cell_score=round(b_cell_score, 4),
             t_cell_epitopes=t_epitopes,
             b_cell_epitopes=b_epitopes_converted,
-            deimmunization_candidates=deimm_candidates,
+            mutations=deimm_candidates,
             execution_time_s=round(timer.elapsed, 4),
-            method="immunogenicity_pssm",
         )
 
 
@@ -2371,8 +2467,10 @@ def find_deimmunization_mutations(
                             position=pos,
                             original=wildtype,
                             mutant=mutant,
-                            score=round(-score_change, 4),  # positive = improvement
+                            delta_score=round(-score_change, 4),  # positive = improvement
+                            score_type="immunogenicity",
                             engine="immunogenicity",
+                            recommendation="deimmunizing",
                             description=(
                                 f"{wildtype}{pos+1}{mutant}: reduces {allele} "
                                 f"binding by {abs(score_change):.4f}"
@@ -2387,8 +2485,8 @@ def find_deimmunization_mutations(
                         )
                     )
 
-    # Sort by largest improvement (highest score), then by BLOSUM62
-    candidates.sort(key=lambda c: (-c.score, -c.details.get("blosum62", 0)))
+    # Sort by largest improvement (highest delta_score), then by BLOSUM62
+    candidates.sort(key=lambda c: (-c.delta_score, -c.details.get("blosum62", 0)))
 
     # Limit to top candidates
     return candidates[:200]
@@ -2403,7 +2501,7 @@ def compute_immunogenicity_batch(
     sequences: list[str],
     max_workers: int | None = None,
     **kwargs,
-) -> list[ImmunogenicityResult]:
+) -> BatchResult[ImmunogenicityResult]:
     """Compute immunogenicity scores for multiple sequences in parallel.
 
     Uses ``concurrent.futures.ThreadPoolExecutor`` for parallelism.
@@ -2418,42 +2516,46 @@ def compute_immunogenicity_batch(
 
     Returns
     -------
-    list[ImmunogenicityResult]
-        One result per input sequence, in the same order.
+    BatchResult[ImmunogenicityResult]
+        Batch result containing one result per input sequence, in the same order.
     """
     logger.info("compute_immunogenicity_batch: processing %d sequences", len(sequences))
 
     results: list[ImmunogenicityResult] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_idx = {
-            executor.submit(compute_immunogenicity, seq, **kwargs): i
-            for i, seq in enumerate(sequences)
-        }
-        result_map: dict[int, ImmunogenicityResult] = {}
-        for future in concurrent.futures.as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                result_map[idx] = future.result()
-            except Exception as exc:
-                result_map[idx] = ImmunogenicityResult(
-                    protein=sequences[idx],
-                    overall_score=0.0,
-                    immunogenicity_class="low",
-                    t_cell_score=0.0,
-                    b_cell_score=0.0,
-                    t_cell_epitopes=[],
-                    b_cell_epitopes=[],
-                    deimmunization_candidates=[],
-                    success=False,
-                    error=str(exc),
-                )
+    errors: list[str] = []
 
-        for i in range(len(sequences)):
-            results.append(result_map[i])
+    with EngineTimer() as batch_timer:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {
+                executor.submit(compute_immunogenicity, seq, **kwargs): i
+                for i, seq in enumerate(sequences)
+            }
+            result_map: dict[int, ImmunogenicityResult] = {}
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result_map[idx] = future.result()
+                except Exception as exc:
+                    result_map[idx] = ImmunogenicityResult(
+                        sequence=sequences[idx] if sequences[idx] else "",
+                        primary_score=0.0,
+                        classification="low",
+                        success=False,
+                        error=str(exc),
+                    )
+                    errors.append(f"sequence {idx}: {exc}")
+
+            for i in range(len(sequences)):
+                results.append(result_map[i])
 
     logger.info(
         "compute_immunogenicity_batch: completed %d/%d successfully",
         sum(1 for r in results if r.success),
         len(results),
     )
-    return results
+
+    return BatchResult[ImmunogenicityResult](
+        results=results,
+        errors=errors,
+        total_time_s=round(batch_timer.elapsed, 4),
+    )

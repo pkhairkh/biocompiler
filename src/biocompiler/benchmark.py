@@ -1,5 +1,5 @@
 """
-BioCompiler Benchmark Module v7.0.0
+BioCompiler Benchmark Module v7.6.0
 =====================================
 Built-in benchmark sequences, performance measurement, comprehensive
 benchmarking, ablation studies, and head-to-head tool comparisons for
@@ -61,6 +61,7 @@ from .translation import translate, compute_cai
 from .scanner import gc_content
 from .constants import AA_TO_CODONS, RESTRICTION_ENZYMES, reverse_complement
 from .restriction_sites import get_recognition_site
+from .engine_base import BatchResult, EngineTimer, BaseEngineResult
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +181,9 @@ def run_benchmark(
             )
 
             # Measure optimization time
-            t0 = time.perf_counter()
-            optimized, pred_results, cert_text = opt.optimize(gene_seq)
-            t1 = time.perf_counter()
-            elapsed = t1 - t0
+            with EngineTimer() as _bench_timer:
+                optimized, pred_results, cert_text = opt.optimize(gene_seq)
+            elapsed = _bench_timer.elapsed
 
             species_cai = SPECIES.get(species, SPECIES["ecoli"])
 
@@ -406,20 +406,66 @@ class BenchmarkResult:
     execution_time_ms: float = 0.0
 
 
-@dataclass
-class BenchmarkReport:
-    """Complete benchmark report."""
-    timestamp: str
-    version: str
-    total_tests: int
-    passed: int
-    failed: int
-    results: list = field(default_factory=list)
-    summary: dict = field(default_factory=dict)
+class BenchmarkReport(BatchResult[BenchmarkResult]):
+    """Complete benchmark report — extends BatchResult with metadata.
+
+    Inherits from BatchResult[BenchmarkResult] providing:
+      - results: list of BenchmarkResult objects
+      - errors: list of error strings
+      - total_time_s: total benchmark execution time
+      - successful / failed: counts (successful aliases as 'passed')
+
+    Additional fields:
+      - timestamp: when the benchmark was run
+      - version: BioCompiler version used
+      - summary: per-gene and per-test summary statistics
+    """
+
+    def __init__(
+        self,
+        timestamp: str = "",
+        version: str = "",
+        total_tests: int = 0,
+        passed: int = 0,
+        failed: int = 0,
+        results: list | None = None,
+        errors: list | None = None,
+        total_time_s: float = 0.0,
+        summary: dict | None = None,
+    ):
+        super().__init__(
+            results=results or [],
+            errors=errors or [],
+            total_time_s=total_time_s,
+            successful=passed,
+            failed=failed,
+        )
+        self.timestamp = timestamp
+        self.version = version
+        self._total_tests = total_tests
+        self._summary = summary or {}
+
+    @property
+    def total_tests(self) -> int:
+        """Total tests — stored value or len(results) if larger."""
+        return max(self._total_tests, self.total)
+
+    @property
+    def passed(self) -> int:
+        """Alias for BatchResult.successful — backward compat."""
+        return self.successful
 
     @property
     def pass_rate(self) -> float:
-        return self.passed / max(self.total_tests, 1)
+        return self.successful / max(self.total, 1)
+
+    @property
+    def summary(self) -> dict:
+        return self._summary
+
+    @summary.setter
+    def summary(self, value: dict):
+        self._summary = value
 
 
 def run_structured_benchmarks(
@@ -446,59 +492,68 @@ def run_structured_benchmarks(
         organism = gene_data["organism"]
 
         # Translation benchmark
-        t0 = time.perf_counter()
+        _timer = EngineTimer()
+        _timer.__enter__()
         coding_seq = "".join(seq[start:end] for start, end in exons)
         protein = translate(coding_seq)
         protein_len = len(protein.rstrip("*"))
         expected_len = gene_data["known_protein_length"]
         passed = abs(protein_len - expected_len) <= 10
+        _timer.__exit__(None, None, None)
         results.append(BenchmarkResult(
             gene_name=gene_name, test_name="translation_length",
             passed=passed, expected=f"protein_length={expected_len}",
             actual=f"protein_length={protein_len}",
-            execution_time_ms=(time.perf_counter() - t0) * 1000,
+            execution_time_ms=round(_timer.elapsed * 1000, 4),
         ))
 
         # GC content benchmark
-        t0 = time.perf_counter()
+        _timer = EngineTimer()
+        _timer.__enter__()
         gc = gc_content(seq)
         gc_lo, gc_hi = gene_data["expected_gc_range"]
         passed = gc_lo <= gc <= gc_hi
+        _timer.__exit__(None, None, None)
         results.append(BenchmarkResult(
             gene_name=gene_name, test_name="gc_content_range",
             passed=passed, expected=f"GC in [{gc_lo}, {gc_hi}]",
             actual=f"GC = {gc:.4f}",
-            execution_time_ms=(time.perf_counter() - t0) * 1000,
+            execution_time_ms=round(_timer.elapsed * 1000, 4),
         ))
 
         # CAI benchmark
-        t0 = time.perf_counter()
+        _timer = EngineTimer()
+        _timer.__enter__()
         cai = compute_cai(coding_seq, organism)
         cai_lo, cai_hi = gene_data["expected_cai_range"]
         passed = cai_lo <= cai <= cai_hi
+        _timer.__exit__(None, None, None)
         results.append(BenchmarkResult(
             gene_name=gene_name, test_name="cai_range",
             passed=passed, expected=f"CAI in [{cai_lo}, {cai_hi}]",
             actual=f"CAI = {cai:.4f}",
-            execution_time_ms=(time.perf_counter() - t0) * 1000,
+            execution_time_ms=round(_timer.elapsed * 1000, 4),
         ))
 
         # Type predicates benchmark
-        t0 = time.perf_counter()
+        _timer = EngineTimer()
+        _timer.__enter__()
         try:
             type_results = evaluate_all_predicates(
                 seq=seq, known_exon_boundaries=exons, organism=organism,
             )
             n_pass = sum(1 for r in type_results if r.verdict.value in ("PASS", "LIKELY_PASS"))
             passed = n_pass >= 4
+            _timer.__exit__(None, None, None)
             results.append(BenchmarkResult(
                 gene_name=gene_name, test_name="type_predicates",
                 passed=passed, expected=">=4 predicates PASS",
                 actual=f"PASS={n_pass}, total={len(type_results)}",
                 details="; ".join(f"{r.predicate}={r.verdict.value}" for r in type_results),
-                execution_time_ms=(time.perf_counter() - t0) * 1000,
+                execution_time_ms=round(_timer.elapsed * 1000, 4),
             ))
         except Exception as e:
+            _timer.__exit__(None, None, None)
             results.append(BenchmarkResult(
                 gene_name=gene_name, test_name="type_predicates",
                 passed=False, expected="Predicates evaluated",
@@ -1488,7 +1543,10 @@ def is_dna_chisel_available() -> bool:
 
 @dataclass
 class ToolResult:
-    """Result from a single tool's optimization run."""
+    """Result from a single tool's optimization run.
+
+    Accepts BaseEngineResult objects via from_engine_result() class method.
+    """
     tool_name: str
     sequence: str
     protein: str
@@ -1500,18 +1558,84 @@ class ToolResult:
     error: str | None = None
     extra: dict | None = None
 
+    @classmethod
+    def from_engine_result(cls, result: BaseEngineResult, tool_name: str = "") -> "ToolResult":
+        """Create a ToolResult from a unified BaseEngineResult.
 
-@dataclass
-class HeadToHeadReport:
-    """Complete head-to-head comparison report across all tools and genes."""
-    timestamp: str
-    tools_compared: list[str]
-    gene_results: list = field(default_factory=list)
-    summary: dict = field(default_factory=dict)
+        Args:
+            result: A BaseEngineResult from any analysis engine
+            tool_name: Override tool name (defaults to result.engine_name)
+
+        Returns:
+            ToolResult populated from the unified result fields
+        """
+        name = tool_name or result.engine_name or "unknown"
+        return cls(
+            tool_name=name,
+            sequence=result.sequence,
+            protein=result.sequence,
+            cai=result.primary_score if result.primary_score_label == "cai" else 0.0,
+            gc_content=0.0,
+            restriction_site_count=0,
+            execution_time_s=result.execution_time_s,
+            success=result.success,
+            error=result.error,
+            extra={
+                "primary_score": result.primary_score,
+                "classification": result.classification,
+                "engine_name": result.engine_name,
+                "primary_score_label": result.primary_score_label,
+            },
+        )
+
+
+class HeadToHeadReport(BatchResult[ToolResult]):
+    """Complete head-to-head comparison report — extends BatchResult with metadata.
+
+    Inherits from BatchResult[ToolResult] providing:
+      - results: list of ToolResult objects
+      - errors: list of error strings
+      - total_time_s: total execution time
+      - successful / failed: counts
+
+    Additional fields:
+      - timestamp: when the comparison was run
+      - tools_compared: list of tool names compared
+      - gene_results: list of per-gene comparison dicts
+      - summary: aggregate summary statistics
+    """
+
+    def __init__(
+        self,
+        timestamp: str = "",
+        tools_compared: list | None = None,
+        gene_results: list | None = None,
+        summary: dict | None = None,
+        results: list | None = None,
+        errors: list | None = None,
+        total_time_s: float = 0.0,
+    ):
+        super().__init__(
+            results=results or [],
+            errors=errors or [],
+            total_time_s=total_time_s,
+        )
+        self.timestamp = timestamp
+        self.tools_compared = tools_compared or []
+        self.gene_results = gene_results or []
+        self._summary = summary or {}
 
     @property
     def total_genes(self) -> int:
         return len(self.gene_results)
+
+    @property
+    def summary(self) -> dict:
+        return self._summary
+
+    @summary.setter
+    def summary(self, value: dict):
+        self._summary = value
 
 
 # ─── Tool Comparison Helper Functions ─────────────────────────────────

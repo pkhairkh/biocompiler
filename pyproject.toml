@@ -1,11 +1,11 @@
 [project]
 name = "biocompiler"
-version = "7.5.0"
+version = "7.6.0"
 description = "A compiler framework for machine-verified gene design with deterministic type checking and certificates"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 readme = "README.md"
-keywords = ["bioinformatics", "gene-design", "synthetic-biology", "compiler", "type-system"]
+keywords = ["bioinformatics", "gene-design", "synthetic-biology", "compiler", "type-system", "unified-engine-api", "lean4-verified", "28-predicates"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",

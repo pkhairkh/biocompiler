@@ -13,14 +13,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-lean_object* l_List_replicateTR___redArg(lean_object*, lean_object*);
 lean_object* l_Nat_cast___at___00Dyadic_toRat_spec__0(lean_object*);
 lean_object* l_Rat_div(lean_object*, lean_object*);
-uint8_t lp_BioCompiler_BioCompiler_Sequence_matchesAt(lean_object*, lean_object*, lean_object*);
-lean_object* l_Rat_ofScientific(lean_object*, uint8_t, lean_object*);
-uint8_t lp_BioCompiler_BioCompiler_Sequence_containsPattern(lean_object*, lean_object*);
+lean_object* l_List_replicateTR___redArg(lean_object*, lean_object*);
 lean_object* lean_nat_to_int(lean_object*);
-lean_object* l_String_quote(lean_object*);
 lean_object* l_Nat_reprFast(lean_object*);
 lean_object* lean_string_length(lean_object*);
 uint8_t lean_nat_dec_eq(lean_object*, lean_object*);
@@ -28,7 +24,14 @@ lean_object* l_Int_repr(lean_object*);
 lean_object* lean_string_append(lean_object*, lean_object*);
 uint8_t lean_int_dec_lt(lean_object*, lean_object*);
 lean_object* l_Repr_addAppParen(lean_object*, lean_object*);
+uint8_t lp_BioCompiler_BioCompiler_Sequence_matchesAt(lean_object*, lean_object*, lean_object*);
+lean_object* l_Rat_ofScientific(lean_object*, uint8_t, lean_object*);
+uint8_t lp_BioCompiler_BioCompiler_Sequence_containsPattern(lean_object*, lean_object*);
+lean_object* l_String_quote(lean_object*);
 lean_object* lp_BioCompiler_BioCompiler_instBEqNucleotide_beq___boxed(lean_object*, lean_object*);
+lean_object* l_List_lengthTR___redArg(lean_object*);
+lean_object* lean_nat_mod(lean_object*, lean_object*);
+uint8_t lp_BioCompiler_BioCompiler_Sequence_hasPrematureStop(lean_object*, lean_object*);
 lean_object* lean_nat_add(lean_object*, lean_object*);
 lean_object* l_List_drop___redArg(lean_object*, lean_object*);
 lean_object* lean_mk_empty_array_with_capacity(lean_object*);
@@ -36,10 +39,10 @@ lean_object* l___private_Init_Data_List_Impl_0__List_takeTR_go___redArg(lean_obj
 lean_object* lp_BioCompiler_List_countP_go___at___00BioCompiler_Sequence_gcContent_spec__0(lean_object*, lean_object*);
 lean_object* lp_BioCompiler_List_countP_go___at___00BioCompiler_Sequence_gcContent_spec__1(lean_object*, lean_object*);
 lean_object* l_Rat_add(lean_object*, lean_object*);
-lean_object* l_List_lengthTR___redArg(lean_object*);
 uint8_t l_Rat_instDecidableLe(lean_object*, lean_object*);
 lean_object* l___private_Init_Data_List_Impl_0__List_zipWithTR_go___redArg(lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Rat_mul(lean_object*, lean_object*);
+lean_object* l_Rat_neg(lean_object*);
 uint8_t l_List_any___redArg(lean_object*, lean_object*);
 lean_object* lean_nat_sub(lean_object*, lean_object*);
 lean_object* l_List_range(lean_object*);
@@ -169,6 +172,98 @@ static const lean_closure_object lp_BioCompiler_BioCompiler_hasCpGIslandConcrete
 static const lean_object* lp_BioCompiler_BioCompiler_hasCpGIslandConcrete___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_hasCpGIslandConcrete___closed__0_value;
 LEAN_EXPORT uint8_t lp_BioCompiler_BioCompiler_hasCpGIslandConcrete(lean_object*);
 LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_hasCpGIslandConcrete___boxed(lean_object*);
+LEAN_EXPORT uint8_t lp_BioCompiler_BioCompiler_isValidCodingSeq(lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_isValidCodingSeq___boxed(lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_blosum62Score(lean_object*, lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_blosum62Score___boxed(lean_object*, lean_object*);
+static const lean_string_object lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = 0, .m_other = 0, .m_tag = 249}, .m_size = 9, .m_capacity = 9, .m_length = 8, .m_data = "organism"};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__0_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__1_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*1 + 0, .m_other = 1, .m_tag = 3}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__0_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__1 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__1_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__2_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*2 + 0, .m_other = 2, .m_tag = 5}, .m_objs = {((lean_object*)(((size_t)(0) << 1) | 1)),((lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__1_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__2 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__2_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__3_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*2 + 0, .m_other = 2, .m_tag = 5}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__2_value),((lean_object*)&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__4_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__3 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__3_value;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg(lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr(lean_object*, lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___boxed(lean_object*, lean_object*);
+static const lean_closure_object lp_BioCompiler_BioCompiler_instReprPromoterMatch___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_closure_object) + sizeof(void*)*0, .m_other = 0, .m_tag = 245}, .m_fun = (void*)lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___boxed, .m_arity = 2, .m_num_fixed = 0, .m_objs = {} };
+static const lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch___closed__0_value;
+LEAN_EXPORT const lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprPromoterMatch___closed__0_value;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_promoterThreshold___closed__0_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_promoterThreshold___closed__0;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_promoterThreshold___closed__1_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_promoterThreshold___closed__1;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_promoterThreshold;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__0_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__0;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__1_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__1;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_promoterUncertainThreshold;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*2 + 0, .m_other = 2, .m_tag = 5}, .m_objs = {((lean_object*)(((size_t)(0) << 1) | 1)),((lean_object*)&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__10_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__0_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__1_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*2 + 0, .m_other = 2, .m_tag = 5}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__0_value),((lean_object*)&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__4_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__1 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__1_value;
+static const lean_string_object lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__2_value = {.m_header = {.m_rc = 0, .m_cs_sz = 0, .m_other = 0, .m_tag = 249}, .m_size = 11, .m_capacity = 11, .m_length = 10, .m_data = "windowSize"};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__2 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__2_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__3_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*1 + 0, .m_other = 1, .m_tag = 3}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__2_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__3 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__3_value;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__4_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__4;
+static const lean_string_object lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__5_value = {.m_header = {.m_rc = 0, .m_cs_sz = 0, .m_other = 0, .m_tag = 249}, .m_size = 14, .m_capacity = 14, .m_length = 13, .m_data = "hydroFraction"};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__5 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__5_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__6_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*1 + 0, .m_other = 1, .m_tag = 3}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__5_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__6 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__6_value;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg(lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr(lean_object*, lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___boxed(lean_object*, lean_object*);
+static const lean_closure_object lp_BioCompiler_BioCompiler_instReprTMDomainMatch___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_closure_object) + sizeof(void*)*0, .m_other = 0, .m_tag = 245}, .m_fun = (void*)lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___boxed, .m_arity = 2, .m_num_fixed = 0, .m_objs = {} };
+static const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch___closed__0_value;
+LEAN_EXPORT const lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprTMDomainMatch___closed__0_value;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__0_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__0;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__1_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__1;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_tmDomainThreshold;
+static const lean_string_object lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = 0, .m_other = 0, .m_tag = 249}, .m_size = 7, .m_capacity = 7, .m_length = 6, .m_data = "deltaG"};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__0_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__1_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*1 + 0, .m_other = 1, .m_tag = 3}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__0_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__1 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__1_value;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__2_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__2;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg(lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr(lean_object*, lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___boxed(lean_object*, lean_object*);
+static const lean_closure_object lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_closure_object) + sizeof(void*)*0, .m_other = 0, .m_tag = 245}, .m_fun = (void*)lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___boxed, .m_arity = 2, .m_num_fixed = 0, .m_objs = {} };
+static const lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch___closed__0_value;
+LEAN_EXPORT const lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch___closed__0_value;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__0_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__0;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__1_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__1;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_mrnaStructureThreshold;
+static const lean_string_object lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = 0, .m_other = 0, .m_tag = 249}, .m_size = 14, .m_capacity = 14, .m_length = 13, .m_data = "codonPosition"};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__0_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__1_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*1 + 0, .m_other = 1, .m_tag = 3}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__0_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__1 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__1_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__2_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*2 + 0, .m_other = 2, .m_tag = 5}, .m_objs = {((lean_object*)(((size_t)(0) << 1) | 1)),((lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__1_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__2 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__2_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__3_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*2 + 0, .m_other = 2, .m_tag = 5}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__2_value),((lean_object*)&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__4_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__3 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__3_value;
+static const lean_string_object lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__4_value = {.m_header = {.m_rc = 0, .m_cs_sz = 0, .m_other = 0, .m_tag = 249}, .m_size = 15, .m_capacity = 15, .m_length = 14, .m_data = "disruptionType"};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__4 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__4_value;
+static const lean_ctor_object lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__5_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_ctor_object) + sizeof(void*)*1 + 0, .m_other = 1, .m_tag = 3}, .m_objs = {((lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__4_value)}};
+static const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__5 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__5_value;
+static lean_once_cell_t lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__6_once = LEAN_ONCE_CELL_INITIALIZER;
+static lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__6;
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg(lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr(lean_object*, lean_object*);
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___boxed(lean_object*, lean_object*);
+static const lean_closure_object lp_BioCompiler_BioCompiler_instReprFoldingDisruption___closed__0_value = {.m_header = {.m_rc = 0, .m_cs_sz = sizeof(lean_closure_object) + sizeof(void*)*0, .m_other = 0, .m_tag = 245}, .m_fun = (void*)lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___boxed, .m_arity = 2, .m_num_fixed = 0, .m_objs = {} };
+static const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption___closed__0 = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption___closed__0_value;
+LEAN_EXPORT const lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption = (const lean_object*)&lp_BioCompiler_BioCompiler_instReprFoldingDisruption___closed__0_value;
 LEAN_EXPORT uint8_t lp_BioCompiler_BioCompiler_hasPattern(lean_object* v_seq_1_, lean_object* v_pattern_2_){
 _start:
 {
@@ -858,6 +953,956 @@ v_r_313_ = lean_box(v_res_312_);
 return v_r_313_;
 }
 }
+LEAN_EXPORT uint8_t lp_BioCompiler_BioCompiler_isValidCodingSeq(lean_object* v_seq_314_){
+_start:
+{
+lean_object* v___x_315_; lean_object* v___x_316_; lean_object* v___x_317_; lean_object* v___x_318_; uint8_t v___x_319_; 
+v___x_315_ = l_List_lengthTR___redArg(v_seq_314_);
+v___x_316_ = lean_unsigned_to_nat(3u);
+v___x_317_ = lean_nat_mod(v___x_315_, v___x_316_);
+lean_dec(v___x_315_);
+v___x_318_ = lean_unsigned_to_nat(0u);
+v___x_319_ = lean_nat_dec_eq(v___x_317_, v___x_318_);
+lean_dec(v___x_317_);
+if (v___x_319_ == 0)
+{
+lean_dec(v_seq_314_);
+return v___x_319_;
+}
+else
+{
+uint8_t v___x_320_; 
+v___x_320_ = lp_BioCompiler_BioCompiler_Sequence_hasPrematureStop(v_seq_314_, v___x_318_);
+if (v___x_320_ == 0)
+{
+return v___x_319_;
+}
+else
+{
+uint8_t v___x_321_; 
+v___x_321_ = 0;
+return v___x_321_;
+}
+}
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_isValidCodingSeq___boxed(lean_object* v_seq_322_){
+_start:
+{
+uint8_t v_res_323_; lean_object* v_r_324_; 
+v_res_323_ = lp_BioCompiler_BioCompiler_isValidCodingSeq(v_seq_322_);
+v_r_324_ = lean_box(v_res_323_);
+return v_r_324_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_blosum62Score(lean_object* v_aa1_325_, lean_object* v_aa2_326_){
+_start:
+{
+lean_object* v___x_327_; 
+v___x_327_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22);
+return v___x_327_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_blosum62Score___boxed(lean_object* v_aa1_328_, lean_object* v_aa2_329_){
+_start:
+{
+lean_object* v_res_330_; 
+v_res_330_ = lp_BioCompiler_BioCompiler_blosum62Score(v_aa1_328_, v_aa2_329_);
+lean_dec_ref(v_aa2_329_);
+lean_dec_ref(v_aa1_328_);
+return v_res_330_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg(lean_object* v_x_340_){
+_start:
+{
+lean_object* v_organism_341_; lean_object* v_position_342_; lean_object* v_score_343_; lean_object* v___x_344_; lean_object* v___x_345_; lean_object* v_num_346_; lean_object* v_den_347_; lean_object* v___x_349_; uint8_t v_isShared_350_; uint8_t v_isSharedCheck_408_; 
+v_organism_341_ = lean_ctor_get(v_x_340_, 0);
+lean_inc_ref(v_organism_341_);
+v_position_342_ = lean_ctor_get(v_x_340_, 1);
+lean_inc(v_position_342_);
+v_score_343_ = lean_ctor_get(v_x_340_, 2);
+lean_inc_ref(v_score_343_);
+lean_dec_ref(v_x_340_);
+v___x_344_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__4));
+v___x_345_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg___closed__3));
+v_num_346_ = lean_ctor_get(v_score_343_, 0);
+v_den_347_ = lean_ctor_get(v_score_343_, 1);
+v_isSharedCheck_408_ = !lean_is_exclusive(v_score_343_);
+if (v_isSharedCheck_408_ == 0)
+{
+v___x_349_ = v_score_343_;
+v_isShared_350_ = v_isSharedCheck_408_;
+goto v_resetjp_348_;
+}
+else
+{
+lean_inc(v_den_347_);
+lean_inc(v_num_346_);
+lean_dec(v_score_343_);
+v___x_349_ = lean_box(0);
+v_isShared_350_ = v_isSharedCheck_408_;
+goto v_resetjp_348_;
+}
+v_resetjp_348_:
+{
+lean_object* v___x_351_; lean_object* v___x_352_; lean_object* v___x_353_; lean_object* v___x_355_; 
+v___x_351_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6);
+v___x_352_ = l_String_quote(v_organism_341_);
+v___x_353_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_353_, 0, v___x_352_);
+if (v_isShared_350_ == 0)
+{
+lean_ctor_set_tag(v___x_349_, 4);
+lean_ctor_set(v___x_349_, 1, v___x_353_);
+lean_ctor_set(v___x_349_, 0, v___x_351_);
+v___x_355_ = v___x_349_;
+goto v_reusejp_354_;
+}
+else
+{
+lean_object* v_reuseFailAlloc_407_; 
+v_reuseFailAlloc_407_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v_reuseFailAlloc_407_, 0, v___x_351_);
+lean_ctor_set(v_reuseFailAlloc_407_, 1, v___x_353_);
+v___x_355_ = v_reuseFailAlloc_407_;
+goto v_reusejp_354_;
+}
+v_reusejp_354_:
+{
+uint8_t v___x_356_; lean_object* v___x_357_; lean_object* v___x_358_; lean_object* v___x_359_; lean_object* v___x_360_; lean_object* v___x_361_; lean_object* v___x_362_; lean_object* v___x_363_; lean_object* v___x_364_; lean_object* v___x_365_; lean_object* v___x_366_; lean_object* v___x_367_; lean_object* v___x_368_; lean_object* v___x_369_; lean_object* v___x_370_; lean_object* v___x_371_; lean_object* v___x_372_; lean_object* v___x_373_; lean_object* v___x_374_; lean_object* v___x_375_; lean_object* v___x_376_; lean_object* v___y_378_; lean_object* v___x_389_; uint8_t v___x_390_; 
+v___x_356_ = 0;
+v___x_357_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_357_, 0, v___x_355_);
+lean_ctor_set_uint8(v___x_357_, sizeof(void*)*1, v___x_356_);
+v___x_358_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_358_, 0, v___x_345_);
+lean_ctor_set(v___x_358_, 1, v___x_357_);
+v___x_359_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__8));
+v___x_360_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_360_, 0, v___x_358_);
+lean_ctor_set(v___x_360_, 1, v___x_359_);
+v___x_361_ = lean_box(1);
+v___x_362_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_362_, 0, v___x_360_);
+lean_ctor_set(v___x_362_, 1, v___x_361_);
+v___x_363_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__10));
+v___x_364_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_364_, 0, v___x_362_);
+lean_ctor_set(v___x_364_, 1, v___x_363_);
+v___x_365_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_365_, 0, v___x_364_);
+lean_ctor_set(v___x_365_, 1, v___x_344_);
+v___x_366_ = l_Nat_reprFast(v_position_342_);
+v___x_367_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_367_, 0, v___x_366_);
+v___x_368_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_368_, 0, v___x_351_);
+lean_ctor_set(v___x_368_, 1, v___x_367_);
+v___x_369_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_369_, 0, v___x_368_);
+lean_ctor_set_uint8(v___x_369_, sizeof(void*)*1, v___x_356_);
+v___x_370_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_370_, 0, v___x_365_);
+lean_ctor_set(v___x_370_, 1, v___x_369_);
+v___x_371_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_371_, 0, v___x_370_);
+lean_ctor_set(v___x_371_, 1, v___x_359_);
+v___x_372_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_372_, 0, v___x_371_);
+lean_ctor_set(v___x_372_, 1, v___x_361_);
+v___x_373_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__13));
+v___x_374_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_374_, 0, v___x_372_);
+lean_ctor_set(v___x_374_, 1, v___x_373_);
+v___x_375_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_375_, 0, v___x_374_);
+lean_ctor_set(v___x_375_, 1, v___x_344_);
+v___x_376_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__14, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__14_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__14);
+v___x_389_ = lean_unsigned_to_nat(1u);
+v___x_390_ = lean_nat_dec_eq(v_den_347_, v___x_389_);
+if (v___x_390_ == 0)
+{
+lean_object* v___x_391_; lean_object* v___x_392_; lean_object* v___x_393_; lean_object* v___x_394_; lean_object* v___x_395_; lean_object* v___x_396_; lean_object* v___x_397_; lean_object* v___x_398_; 
+v___x_391_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__20));
+v___x_392_ = l_Int_repr(v_num_346_);
+lean_dec(v_num_346_);
+v___x_393_ = lean_string_append(v___x_391_, v___x_392_);
+lean_dec_ref(v___x_392_);
+v___x_394_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__21));
+v___x_395_ = lean_string_append(v___x_393_, v___x_394_);
+v___x_396_ = l_Nat_reprFast(v_den_347_);
+v___x_397_ = lean_string_append(v___x_395_, v___x_396_);
+lean_dec_ref(v___x_396_);
+v___x_398_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_398_, 0, v___x_397_);
+v___y_378_ = v___x_398_;
+goto v___jp_377_;
+}
+else
+{
+lean_object* v___x_399_; lean_object* v___x_400_; uint8_t v___x_401_; 
+lean_dec(v_den_347_);
+v___x_399_ = lean_unsigned_to_nat(0u);
+v___x_400_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22);
+v___x_401_ = lean_int_dec_lt(v_num_346_, v___x_400_);
+if (v___x_401_ == 0)
+{
+lean_object* v___x_402_; lean_object* v___x_403_; 
+v___x_402_ = l_Int_repr(v_num_346_);
+lean_dec(v_num_346_);
+v___x_403_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_403_, 0, v___x_402_);
+v___y_378_ = v___x_403_;
+goto v___jp_377_;
+}
+else
+{
+lean_object* v___x_404_; lean_object* v___x_405_; lean_object* v___x_406_; 
+v___x_404_ = l_Int_repr(v_num_346_);
+lean_dec(v_num_346_);
+v___x_405_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_405_, 0, v___x_404_);
+v___x_406_ = l_Repr_addAppParen(v___x_405_, v___x_399_);
+v___y_378_ = v___x_406_;
+goto v___jp_377_;
+}
+}
+v___jp_377_:
+{
+lean_object* v___x_379_; lean_object* v___x_380_; lean_object* v___x_381_; lean_object* v___x_382_; lean_object* v___x_383_; lean_object* v___x_384_; lean_object* v___x_385_; lean_object* v___x_386_; lean_object* v___x_387_; lean_object* v___x_388_; 
+v___x_379_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_379_, 0, v___x_376_);
+lean_ctor_set(v___x_379_, 1, v___y_378_);
+v___x_380_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_380_, 0, v___x_379_);
+lean_ctor_set_uint8(v___x_380_, sizeof(void*)*1, v___x_356_);
+v___x_381_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_381_, 0, v___x_375_);
+lean_ctor_set(v___x_381_, 1, v___x_380_);
+v___x_382_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17);
+v___x_383_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__18));
+v___x_384_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_384_, 0, v___x_383_);
+lean_ctor_set(v___x_384_, 1, v___x_381_);
+v___x_385_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__19));
+v___x_386_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_386_, 0, v___x_384_);
+lean_ctor_set(v___x_386_, 1, v___x_385_);
+v___x_387_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_387_, 0, v___x_382_);
+lean_ctor_set(v___x_387_, 1, v___x_386_);
+v___x_388_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_388_, 0, v___x_387_);
+lean_ctor_set_uint8(v___x_388_, sizeof(void*)*1, v___x_356_);
+return v___x_388_;
+}
+}
+}
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr(lean_object* v_x_409_, lean_object* v_prec_410_){
+_start:
+{
+lean_object* v___x_411_; 
+v___x_411_ = lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___redArg(v_x_409_);
+return v___x_411_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr___boxed(lean_object* v_x_412_, lean_object* v_prec_413_){
+_start:
+{
+lean_object* v_res_414_; 
+v_res_414_ = lp_BioCompiler_BioCompiler_instReprPromoterMatch_repr(v_x_412_, v_prec_413_);
+lean_dec(v_prec_413_);
+return v_res_414_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_promoterThreshold___closed__0(void){
+_start:
+{
+lean_object* v___x_417_; lean_object* v___x_418_; 
+v___x_417_ = lean_unsigned_to_nat(7u);
+v___x_418_ = l_Nat_cast___at___00Dyadic_toRat_spec__0(v___x_417_);
+return v___x_418_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_promoterThreshold___closed__1(void){
+_start:
+{
+lean_object* v___x_419_; lean_object* v___x_420_; lean_object* v___x_421_; 
+v___x_419_ = lean_obj_once(&lp_BioCompiler_BioCompiler_cpgIslandGCThreshold___closed__1, &lp_BioCompiler_BioCompiler_cpgIslandGCThreshold___closed__1_once, _init_lp_BioCompiler_BioCompiler_cpgIslandGCThreshold___closed__1);
+v___x_420_ = lean_obj_once(&lp_BioCompiler_BioCompiler_promoterThreshold___closed__0, &lp_BioCompiler_BioCompiler_promoterThreshold___closed__0_once, _init_lp_BioCompiler_BioCompiler_promoterThreshold___closed__0);
+v___x_421_ = l_Rat_div(v___x_420_, v___x_419_);
+return v___x_421_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_promoterThreshold(void){
+_start:
+{
+lean_object* v___x_422_; 
+v___x_422_ = lean_obj_once(&lp_BioCompiler_BioCompiler_promoterThreshold___closed__1, &lp_BioCompiler_BioCompiler_promoterThreshold___closed__1_once, _init_lp_BioCompiler_BioCompiler_promoterThreshold___closed__1);
+return v___x_422_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__0(void){
+_start:
+{
+lean_object* v___x_423_; lean_object* v___x_424_; 
+v___x_423_ = lean_unsigned_to_nat(56u);
+v___x_424_ = l_Nat_cast___at___00Dyadic_toRat_spec__0(v___x_423_);
+return v___x_424_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__1(void){
+_start:
+{
+lean_object* v___x_425_; lean_object* v___x_426_; lean_object* v___x_427_; 
+v___x_425_ = lean_obj_once(&lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold___closed__1, &lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold___closed__1_once, _init_lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold___closed__1);
+v___x_426_ = lean_obj_once(&lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__0, &lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__0_once, _init_lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__0);
+v___x_427_ = l_Rat_div(v___x_426_, v___x_425_);
+return v___x_427_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_promoterUncertainThreshold(void){
+_start:
+{
+lean_object* v___x_428_; 
+v___x_428_ = lean_obj_once(&lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__1, &lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__1_once, _init_lp_BioCompiler_BioCompiler_promoterUncertainThreshold___closed__1);
+return v___x_428_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__4(void){
+_start:
+{
+lean_object* v___x_438_; lean_object* v___x_439_; 
+v___x_438_ = lean_unsigned_to_nat(14u);
+v___x_439_ = lean_nat_to_int(v___x_438_);
+return v___x_439_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7(void){
+_start:
+{
+lean_object* v___x_443_; lean_object* v___x_444_; 
+v___x_443_ = lean_unsigned_to_nat(17u);
+v___x_444_ = lean_nat_to_int(v___x_443_);
+return v___x_444_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg(lean_object* v_x_445_){
+_start:
+{
+lean_object* v_position_446_; lean_object* v_windowSize_447_; lean_object* v_hydroFraction_448_; lean_object* v___x_449_; lean_object* v___x_450_; lean_object* v_num_451_; lean_object* v_den_452_; lean_object* v___x_454_; uint8_t v_isShared_455_; uint8_t v_isSharedCheck_514_; 
+v_position_446_ = lean_ctor_get(v_x_445_, 0);
+lean_inc(v_position_446_);
+v_windowSize_447_ = lean_ctor_get(v_x_445_, 1);
+lean_inc(v_windowSize_447_);
+v_hydroFraction_448_ = lean_ctor_get(v_x_445_, 2);
+lean_inc_ref(v_hydroFraction_448_);
+lean_dec_ref(v_x_445_);
+v___x_449_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__4));
+v___x_450_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__1));
+v_num_451_ = lean_ctor_get(v_hydroFraction_448_, 0);
+v_den_452_ = lean_ctor_get(v_hydroFraction_448_, 1);
+v_isSharedCheck_514_ = !lean_is_exclusive(v_hydroFraction_448_);
+if (v_isSharedCheck_514_ == 0)
+{
+v___x_454_ = v_hydroFraction_448_;
+v_isShared_455_ = v_isSharedCheck_514_;
+goto v_resetjp_453_;
+}
+else
+{
+lean_inc(v_den_452_);
+lean_inc(v_num_451_);
+lean_dec(v_hydroFraction_448_);
+v___x_454_ = lean_box(0);
+v_isShared_455_ = v_isSharedCheck_514_;
+goto v_resetjp_453_;
+}
+v_resetjp_453_:
+{
+lean_object* v___x_456_; lean_object* v___x_457_; lean_object* v___x_458_; lean_object* v___x_460_; 
+v___x_456_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6);
+v___x_457_ = l_Nat_reprFast(v_position_446_);
+v___x_458_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_458_, 0, v___x_457_);
+if (v_isShared_455_ == 0)
+{
+lean_ctor_set_tag(v___x_454_, 4);
+lean_ctor_set(v___x_454_, 1, v___x_458_);
+lean_ctor_set(v___x_454_, 0, v___x_456_);
+v___x_460_ = v___x_454_;
+goto v_reusejp_459_;
+}
+else
+{
+lean_object* v_reuseFailAlloc_513_; 
+v_reuseFailAlloc_513_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v_reuseFailAlloc_513_, 0, v___x_456_);
+lean_ctor_set(v_reuseFailAlloc_513_, 1, v___x_458_);
+v___x_460_ = v_reuseFailAlloc_513_;
+goto v_reusejp_459_;
+}
+v_reusejp_459_:
+{
+uint8_t v___x_461_; lean_object* v___x_462_; lean_object* v___x_463_; lean_object* v___x_464_; lean_object* v___x_465_; lean_object* v___x_466_; lean_object* v___x_467_; lean_object* v___x_468_; lean_object* v___x_469_; lean_object* v___x_470_; lean_object* v___x_471_; lean_object* v___x_472_; lean_object* v___x_473_; lean_object* v___x_474_; lean_object* v___x_475_; lean_object* v___x_476_; lean_object* v___x_477_; lean_object* v___x_478_; lean_object* v___x_479_; lean_object* v___x_480_; lean_object* v___x_481_; lean_object* v___x_482_; lean_object* v___y_484_; lean_object* v___x_495_; uint8_t v___x_496_; 
+v___x_461_ = 0;
+v___x_462_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_462_, 0, v___x_460_);
+lean_ctor_set_uint8(v___x_462_, sizeof(void*)*1, v___x_461_);
+v___x_463_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_463_, 0, v___x_450_);
+lean_ctor_set(v___x_463_, 1, v___x_462_);
+v___x_464_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__8));
+v___x_465_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_465_, 0, v___x_463_);
+lean_ctor_set(v___x_465_, 1, v___x_464_);
+v___x_466_ = lean_box(1);
+v___x_467_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_467_, 0, v___x_465_);
+lean_ctor_set(v___x_467_, 1, v___x_466_);
+v___x_468_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__3));
+v___x_469_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_469_, 0, v___x_467_);
+lean_ctor_set(v___x_469_, 1, v___x_468_);
+v___x_470_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_470_, 0, v___x_469_);
+lean_ctor_set(v___x_470_, 1, v___x_449_);
+v___x_471_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__4, &lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__4_once, _init_lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__4);
+v___x_472_ = l_Nat_reprFast(v_windowSize_447_);
+v___x_473_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_473_, 0, v___x_472_);
+v___x_474_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_474_, 0, v___x_471_);
+lean_ctor_set(v___x_474_, 1, v___x_473_);
+v___x_475_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_475_, 0, v___x_474_);
+lean_ctor_set_uint8(v___x_475_, sizeof(void*)*1, v___x_461_);
+v___x_476_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_476_, 0, v___x_470_);
+lean_ctor_set(v___x_476_, 1, v___x_475_);
+v___x_477_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_477_, 0, v___x_476_);
+lean_ctor_set(v___x_477_, 1, v___x_464_);
+v___x_478_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_478_, 0, v___x_477_);
+lean_ctor_set(v___x_478_, 1, v___x_466_);
+v___x_479_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__6));
+v___x_480_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_480_, 0, v___x_478_);
+lean_ctor_set(v___x_480_, 1, v___x_479_);
+v___x_481_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_481_, 0, v___x_480_);
+lean_ctor_set(v___x_481_, 1, v___x_449_);
+v___x_482_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7, &lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7_once, _init_lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7);
+v___x_495_ = lean_unsigned_to_nat(1u);
+v___x_496_ = lean_nat_dec_eq(v_den_452_, v___x_495_);
+if (v___x_496_ == 0)
+{
+lean_object* v___x_497_; lean_object* v___x_498_; lean_object* v___x_499_; lean_object* v___x_500_; lean_object* v___x_501_; lean_object* v___x_502_; lean_object* v___x_503_; lean_object* v___x_504_; 
+v___x_497_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__20));
+v___x_498_ = l_Int_repr(v_num_451_);
+lean_dec(v_num_451_);
+v___x_499_ = lean_string_append(v___x_497_, v___x_498_);
+lean_dec_ref(v___x_498_);
+v___x_500_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__21));
+v___x_501_ = lean_string_append(v___x_499_, v___x_500_);
+v___x_502_ = l_Nat_reprFast(v_den_452_);
+v___x_503_ = lean_string_append(v___x_501_, v___x_502_);
+lean_dec_ref(v___x_502_);
+v___x_504_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_504_, 0, v___x_503_);
+v___y_484_ = v___x_504_;
+goto v___jp_483_;
+}
+else
+{
+lean_object* v___x_505_; lean_object* v___x_506_; uint8_t v___x_507_; 
+lean_dec(v_den_452_);
+v___x_505_ = lean_unsigned_to_nat(0u);
+v___x_506_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22);
+v___x_507_ = lean_int_dec_lt(v_num_451_, v___x_506_);
+if (v___x_507_ == 0)
+{
+lean_object* v___x_508_; lean_object* v___x_509_; 
+v___x_508_ = l_Int_repr(v_num_451_);
+lean_dec(v_num_451_);
+v___x_509_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_509_, 0, v___x_508_);
+v___y_484_ = v___x_509_;
+goto v___jp_483_;
+}
+else
+{
+lean_object* v___x_510_; lean_object* v___x_511_; lean_object* v___x_512_; 
+v___x_510_ = l_Int_repr(v_num_451_);
+lean_dec(v_num_451_);
+v___x_511_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_511_, 0, v___x_510_);
+v___x_512_ = l_Repr_addAppParen(v___x_511_, v___x_505_);
+v___y_484_ = v___x_512_;
+goto v___jp_483_;
+}
+}
+v___jp_483_:
+{
+lean_object* v___x_485_; lean_object* v___x_486_; lean_object* v___x_487_; lean_object* v___x_488_; lean_object* v___x_489_; lean_object* v___x_490_; lean_object* v___x_491_; lean_object* v___x_492_; lean_object* v___x_493_; lean_object* v___x_494_; 
+v___x_485_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_485_, 0, v___x_482_);
+lean_ctor_set(v___x_485_, 1, v___y_484_);
+v___x_486_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_486_, 0, v___x_485_);
+lean_ctor_set_uint8(v___x_486_, sizeof(void*)*1, v___x_461_);
+v___x_487_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_487_, 0, v___x_481_);
+lean_ctor_set(v___x_487_, 1, v___x_486_);
+v___x_488_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17);
+v___x_489_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__18));
+v___x_490_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_490_, 0, v___x_489_);
+lean_ctor_set(v___x_490_, 1, v___x_487_);
+v___x_491_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__19));
+v___x_492_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_492_, 0, v___x_490_);
+lean_ctor_set(v___x_492_, 1, v___x_491_);
+v___x_493_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_493_, 0, v___x_488_);
+lean_ctor_set(v___x_493_, 1, v___x_492_);
+v___x_494_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_494_, 0, v___x_493_);
+lean_ctor_set_uint8(v___x_494_, sizeof(void*)*1, v___x_461_);
+return v___x_494_;
+}
+}
+}
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr(lean_object* v_x_515_, lean_object* v_prec_516_){
+_start:
+{
+lean_object* v___x_517_; 
+v___x_517_ = lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg(v_x_515_);
+return v___x_517_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___boxed(lean_object* v_x_518_, lean_object* v_prec_519_){
+_start:
+{
+lean_object* v_res_520_; 
+v_res_520_ = lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr(v_x_518_, v_prec_519_);
+lean_dec(v_prec_519_);
+return v_res_520_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__0(void){
+_start:
+{
+lean_object* v___x_523_; lean_object* v___x_524_; 
+v___x_523_ = lean_unsigned_to_nat(68u);
+v___x_524_ = l_Nat_cast___at___00Dyadic_toRat_spec__0(v___x_523_);
+return v___x_524_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__1(void){
+_start:
+{
+lean_object* v___x_525_; lean_object* v___x_526_; lean_object* v___x_527_; 
+v___x_525_ = lean_obj_once(&lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold___closed__1, &lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold___closed__1_once, _init_lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold___closed__1);
+v___x_526_ = lean_obj_once(&lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__0, &lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__0_once, _init_lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__0);
+v___x_527_ = l_Rat_div(v___x_526_, v___x_525_);
+return v___x_527_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_tmDomainThreshold(void){
+_start:
+{
+lean_object* v___x_528_; 
+v___x_528_ = lean_obj_once(&lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__1, &lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__1_once, _init_lp_BioCompiler_BioCompiler_tmDomainThreshold___closed__1);
+return v___x_528_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__2(void){
+_start:
+{
+lean_object* v___x_532_; lean_object* v___x_533_; 
+v___x_532_ = lean_unsigned_to_nat(10u);
+v___x_533_ = lean_nat_to_int(v___x_532_);
+return v___x_533_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg(lean_object* v_x_534_){
+_start:
+{
+lean_object* v_deltaG_535_; lean_object* v_position_536_; lean_object* v___x_538_; uint8_t v_isShared_539_; uint8_t v_isSharedCheck_597_; 
+v_deltaG_535_ = lean_ctor_get(v_x_534_, 1);
+v_position_536_ = lean_ctor_get(v_x_534_, 0);
+v_isSharedCheck_597_ = !lean_is_exclusive(v_x_534_);
+if (v_isSharedCheck_597_ == 0)
+{
+v___x_538_ = v_x_534_;
+v_isShared_539_ = v_isSharedCheck_597_;
+goto v_resetjp_537_;
+}
+else
+{
+lean_inc(v_deltaG_535_);
+lean_inc(v_position_536_);
+lean_dec(v_x_534_);
+v___x_538_ = lean_box(0);
+v_isShared_539_ = v_isSharedCheck_597_;
+goto v_resetjp_537_;
+}
+v_resetjp_537_:
+{
+lean_object* v_num_540_; lean_object* v_den_541_; lean_object* v___x_543_; uint8_t v_isShared_544_; uint8_t v_isSharedCheck_596_; 
+v_num_540_ = lean_ctor_get(v_deltaG_535_, 0);
+v_den_541_ = lean_ctor_get(v_deltaG_535_, 1);
+v_isSharedCheck_596_ = !lean_is_exclusive(v_deltaG_535_);
+if (v_isSharedCheck_596_ == 0)
+{
+v___x_543_ = v_deltaG_535_;
+v_isShared_544_ = v_isSharedCheck_596_;
+goto v_resetjp_542_;
+}
+else
+{
+lean_inc(v_den_541_);
+lean_inc(v_num_540_);
+lean_dec(v_deltaG_535_);
+v___x_543_ = lean_box(0);
+v_isShared_544_ = v_isSharedCheck_596_;
+goto v_resetjp_542_;
+}
+v_resetjp_542_:
+{
+lean_object* v___x_545_; lean_object* v___x_546_; lean_object* v___x_547_; lean_object* v___x_548_; lean_object* v___x_549_; lean_object* v___x_551_; 
+v___x_545_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__4));
+v___x_546_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__1));
+v___x_547_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__6);
+v___x_548_ = l_Nat_reprFast(v_position_536_);
+v___x_549_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_549_, 0, v___x_548_);
+if (v_isShared_544_ == 0)
+{
+lean_ctor_set_tag(v___x_543_, 4);
+lean_ctor_set(v___x_543_, 1, v___x_549_);
+lean_ctor_set(v___x_543_, 0, v___x_547_);
+v___x_551_ = v___x_543_;
+goto v_reusejp_550_;
+}
+else
+{
+lean_object* v_reuseFailAlloc_595_; 
+v_reuseFailAlloc_595_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v_reuseFailAlloc_595_, 0, v___x_547_);
+lean_ctor_set(v_reuseFailAlloc_595_, 1, v___x_549_);
+v___x_551_ = v_reuseFailAlloc_595_;
+goto v_reusejp_550_;
+}
+v_reusejp_550_:
+{
+uint8_t v___x_552_; lean_object* v___x_553_; lean_object* v___x_555_; 
+v___x_552_ = 0;
+v___x_553_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_553_, 0, v___x_551_);
+lean_ctor_set_uint8(v___x_553_, sizeof(void*)*1, v___x_552_);
+if (v_isShared_539_ == 0)
+{
+lean_ctor_set_tag(v___x_538_, 5);
+lean_ctor_set(v___x_538_, 1, v___x_553_);
+lean_ctor_set(v___x_538_, 0, v___x_546_);
+v___x_555_ = v___x_538_;
+goto v_reusejp_554_;
+}
+else
+{
+lean_object* v_reuseFailAlloc_594_; 
+v_reuseFailAlloc_594_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v_reuseFailAlloc_594_, 0, v___x_546_);
+lean_ctor_set(v_reuseFailAlloc_594_, 1, v___x_553_);
+v___x_555_ = v_reuseFailAlloc_594_;
+goto v_reusejp_554_;
+}
+v_reusejp_554_:
+{
+lean_object* v___x_556_; lean_object* v___x_557_; lean_object* v___x_558_; lean_object* v___x_559_; lean_object* v___x_560_; lean_object* v___x_561_; lean_object* v___x_562_; lean_object* v___x_563_; lean_object* v___y_565_; lean_object* v___x_576_; uint8_t v___x_577_; 
+v___x_556_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__8));
+v___x_557_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_557_, 0, v___x_555_);
+lean_ctor_set(v___x_557_, 1, v___x_556_);
+v___x_558_ = lean_box(1);
+v___x_559_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_559_, 0, v___x_557_);
+lean_ctor_set(v___x_559_, 1, v___x_558_);
+v___x_560_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__1));
+v___x_561_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_561_, 0, v___x_559_);
+lean_ctor_set(v___x_561_, 1, v___x_560_);
+v___x_562_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_562_, 0, v___x_561_);
+lean_ctor_set(v___x_562_, 1, v___x_545_);
+v___x_563_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__2, &lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__2_once, _init_lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg___closed__2);
+v___x_576_ = lean_unsigned_to_nat(1u);
+v___x_577_ = lean_nat_dec_eq(v_den_541_, v___x_576_);
+if (v___x_577_ == 0)
+{
+lean_object* v___x_578_; lean_object* v___x_579_; lean_object* v___x_580_; lean_object* v___x_581_; lean_object* v___x_582_; lean_object* v___x_583_; lean_object* v___x_584_; lean_object* v___x_585_; 
+v___x_578_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__20));
+v___x_579_ = l_Int_repr(v_num_540_);
+lean_dec(v_num_540_);
+v___x_580_ = lean_string_append(v___x_578_, v___x_579_);
+lean_dec_ref(v___x_579_);
+v___x_581_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__21));
+v___x_582_ = lean_string_append(v___x_580_, v___x_581_);
+v___x_583_ = l_Nat_reprFast(v_den_541_);
+v___x_584_ = lean_string_append(v___x_582_, v___x_583_);
+lean_dec_ref(v___x_583_);
+v___x_585_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_585_, 0, v___x_584_);
+v___y_565_ = v___x_585_;
+goto v___jp_564_;
+}
+else
+{
+lean_object* v___x_586_; lean_object* v___x_587_; uint8_t v___x_588_; 
+lean_dec(v_den_541_);
+v___x_586_ = lean_unsigned_to_nat(0u);
+v___x_587_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__22);
+v___x_588_ = lean_int_dec_lt(v_num_540_, v___x_587_);
+if (v___x_588_ == 0)
+{
+lean_object* v___x_589_; lean_object* v___x_590_; 
+v___x_589_ = l_Int_repr(v_num_540_);
+lean_dec(v_num_540_);
+v___x_590_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_590_, 0, v___x_589_);
+v___y_565_ = v___x_590_;
+goto v___jp_564_;
+}
+else
+{
+lean_object* v___x_591_; lean_object* v___x_592_; lean_object* v___x_593_; 
+v___x_591_ = l_Int_repr(v_num_540_);
+lean_dec(v_num_540_);
+v___x_592_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_592_, 0, v___x_591_);
+v___x_593_ = l_Repr_addAppParen(v___x_592_, v___x_586_);
+v___y_565_ = v___x_593_;
+goto v___jp_564_;
+}
+}
+v___jp_564_:
+{
+lean_object* v___x_566_; lean_object* v___x_567_; lean_object* v___x_568_; lean_object* v___x_569_; lean_object* v___x_570_; lean_object* v___x_571_; lean_object* v___x_572_; lean_object* v___x_573_; lean_object* v___x_574_; lean_object* v___x_575_; 
+v___x_566_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_566_, 0, v___x_563_);
+lean_ctor_set(v___x_566_, 1, v___y_565_);
+v___x_567_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_567_, 0, v___x_566_);
+lean_ctor_set_uint8(v___x_567_, sizeof(void*)*1, v___x_552_);
+v___x_568_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_568_, 0, v___x_562_);
+lean_ctor_set(v___x_568_, 1, v___x_567_);
+v___x_569_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17);
+v___x_570_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__18));
+v___x_571_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_571_, 0, v___x_570_);
+lean_ctor_set(v___x_571_, 1, v___x_568_);
+v___x_572_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__19));
+v___x_573_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_573_, 0, v___x_571_);
+lean_ctor_set(v___x_573_, 1, v___x_572_);
+v___x_574_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_574_, 0, v___x_569_);
+lean_ctor_set(v___x_574_, 1, v___x_573_);
+v___x_575_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_575_, 0, v___x_574_);
+lean_ctor_set_uint8(v___x_575_, sizeof(void*)*1, v___x_552_);
+return v___x_575_;
+}
+}
+}
+}
+}
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr(lean_object* v_x_598_, lean_object* v_prec_599_){
+_start:
+{
+lean_object* v___x_600_; 
+v___x_600_ = lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___redArg(v_x_598_);
+return v___x_600_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr___boxed(lean_object* v_x_601_, lean_object* v_prec_602_){
+_start:
+{
+lean_object* v_res_603_; 
+v_res_603_ = lp_BioCompiler_BioCompiler_instReprStructureStabilityMatch_repr(v_x_601_, v_prec_602_);
+lean_dec(v_prec_602_);
+return v_res_603_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__0(void){
+_start:
+{
+lean_object* v___x_606_; lean_object* v___x_607_; 
+v___x_606_ = lean_unsigned_to_nat(15u);
+v___x_607_ = l_Nat_cast___at___00Dyadic_toRat_spec__0(v___x_606_);
+return v___x_607_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__1(void){
+_start:
+{
+lean_object* v___x_608_; lean_object* v___x_609_; 
+v___x_608_ = lean_obj_once(&lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__0, &lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__0_once, _init_lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__0);
+v___x_609_ = l_Rat_neg(v___x_608_);
+return v___x_609_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_mrnaStructureThreshold(void){
+_start:
+{
+lean_object* v___x_610_; 
+v___x_610_ = lean_obj_once(&lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__1, &lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__1_once, _init_lp_BioCompiler_BioCompiler_mrnaStructureThreshold___closed__1);
+return v___x_610_;
+}
+}
+static lean_object* _init_lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__6(void){
+_start:
+{
+lean_object* v___x_623_; lean_object* v___x_624_; 
+v___x_623_ = lean_unsigned_to_nat(18u);
+v___x_624_ = lean_nat_to_int(v___x_623_);
+return v___x_624_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg(lean_object* v_x_625_){
+_start:
+{
+lean_object* v_codonPosition_626_; lean_object* v_disruptionType_627_; lean_object* v___x_629_; uint8_t v_isShared_630_; uint8_t v_isSharedCheck_662_; 
+v_codonPosition_626_ = lean_ctor_get(v_x_625_, 0);
+v_disruptionType_627_ = lean_ctor_get(v_x_625_, 1);
+v_isSharedCheck_662_ = !lean_is_exclusive(v_x_625_);
+if (v_isSharedCheck_662_ == 0)
+{
+v___x_629_ = v_x_625_;
+v_isShared_630_ = v_isSharedCheck_662_;
+goto v_resetjp_628_;
+}
+else
+{
+lean_inc(v_disruptionType_627_);
+lean_inc(v_codonPosition_626_);
+lean_dec(v_x_625_);
+v___x_629_ = lean_box(0);
+v_isShared_630_ = v_isSharedCheck_662_;
+goto v_resetjp_628_;
+}
+v_resetjp_628_:
+{
+lean_object* v___x_631_; lean_object* v___x_632_; lean_object* v___x_633_; lean_object* v___x_634_; lean_object* v___x_635_; lean_object* v___x_637_; 
+v___x_631_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__4));
+v___x_632_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__3));
+v___x_633_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7, &lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7_once, _init_lp_BioCompiler_BioCompiler_instReprTMDomainMatch_repr___redArg___closed__7);
+v___x_634_ = l_Nat_reprFast(v_codonPosition_626_);
+v___x_635_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_635_, 0, v___x_634_);
+if (v_isShared_630_ == 0)
+{
+lean_ctor_set_tag(v___x_629_, 4);
+lean_ctor_set(v___x_629_, 1, v___x_635_);
+lean_ctor_set(v___x_629_, 0, v___x_633_);
+v___x_637_ = v___x_629_;
+goto v_reusejp_636_;
+}
+else
+{
+lean_object* v_reuseFailAlloc_661_; 
+v_reuseFailAlloc_661_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v_reuseFailAlloc_661_, 0, v___x_633_);
+lean_ctor_set(v_reuseFailAlloc_661_, 1, v___x_635_);
+v___x_637_ = v_reuseFailAlloc_661_;
+goto v_reusejp_636_;
+}
+v_reusejp_636_:
+{
+uint8_t v___x_638_; lean_object* v___x_639_; lean_object* v___x_640_; lean_object* v___x_641_; lean_object* v___x_642_; lean_object* v___x_643_; lean_object* v___x_644_; lean_object* v___x_645_; lean_object* v___x_646_; lean_object* v___x_647_; lean_object* v___x_648_; lean_object* v___x_649_; lean_object* v___x_650_; lean_object* v___x_651_; lean_object* v___x_652_; lean_object* v___x_653_; lean_object* v___x_654_; lean_object* v___x_655_; lean_object* v___x_656_; lean_object* v___x_657_; lean_object* v___x_658_; lean_object* v___x_659_; lean_object* v___x_660_; 
+v___x_638_ = 0;
+v___x_639_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_639_, 0, v___x_637_);
+lean_ctor_set_uint8(v___x_639_, sizeof(void*)*1, v___x_638_);
+v___x_640_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_640_, 0, v___x_632_);
+lean_ctor_set(v___x_640_, 1, v___x_639_);
+v___x_641_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__8));
+v___x_642_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_642_, 0, v___x_640_);
+lean_ctor_set(v___x_642_, 1, v___x_641_);
+v___x_643_ = lean_box(1);
+v___x_644_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_644_, 0, v___x_642_);
+lean_ctor_set(v___x_644_, 1, v___x_643_);
+v___x_645_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__5));
+v___x_646_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_646_, 0, v___x_644_);
+lean_ctor_set(v___x_646_, 1, v___x_645_);
+v___x_647_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_647_, 0, v___x_646_);
+lean_ctor_set(v___x_647_, 1, v___x_631_);
+v___x_648_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__6, &lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__6_once, _init_lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg___closed__6);
+v___x_649_ = l_String_quote(v_disruptionType_627_);
+v___x_650_ = lean_alloc_ctor(3, 1, 0);
+lean_ctor_set(v___x_650_, 0, v___x_649_);
+v___x_651_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_651_, 0, v___x_648_);
+lean_ctor_set(v___x_651_, 1, v___x_650_);
+v___x_652_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_652_, 0, v___x_651_);
+lean_ctor_set_uint8(v___x_652_, sizeof(void*)*1, v___x_638_);
+v___x_653_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_653_, 0, v___x_647_);
+lean_ctor_set(v___x_653_, 1, v___x_652_);
+v___x_654_ = lean_obj_once(&lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17, &lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17_once, _init_lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__17);
+v___x_655_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__18));
+v___x_656_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_656_, 0, v___x_655_);
+lean_ctor_set(v___x_656_, 1, v___x_653_);
+v___x_657_ = ((lean_object*)(lp_BioCompiler_BioCompiler_instReprSpliceSiteMatch_repr___redArg___closed__19));
+v___x_658_ = lean_alloc_ctor(5, 2, 0);
+lean_ctor_set(v___x_658_, 0, v___x_656_);
+lean_ctor_set(v___x_658_, 1, v___x_657_);
+v___x_659_ = lean_alloc_ctor(4, 2, 0);
+lean_ctor_set(v___x_659_, 0, v___x_654_);
+lean_ctor_set(v___x_659_, 1, v___x_658_);
+v___x_660_ = lean_alloc_ctor(6, 1, 1);
+lean_ctor_set(v___x_660_, 0, v___x_659_);
+lean_ctor_set_uint8(v___x_660_, sizeof(void*)*1, v___x_638_);
+return v___x_660_;
+}
+}
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr(lean_object* v_x_663_, lean_object* v_prec_664_){
+_start:
+{
+lean_object* v___x_665_; 
+v___x_665_ = lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___redArg(v_x_663_);
+return v___x_665_;
+}
+}
+LEAN_EXPORT lean_object* lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr___boxed(lean_object* v_x_666_, lean_object* v_prec_667_){
+_start:
+{
+lean_object* v_res_668_; 
+v_res_668_ = lp_BioCompiler_BioCompiler_instReprFoldingDisruption_repr(v_x_666_, v_prec_667_);
+lean_dec(v_prec_667_);
+return v_res_668_;
+}
+}
 lean_object* initialize_Init(uint8_t builtin);
 lean_object* initialize_Init(uint8_t builtin);
 lean_object* initialize_BioCompiler_BioCompiler_Sequence(uint8_t builtin);
@@ -889,6 +1934,14 @@ lp_BioCompiler_BioCompiler_cpgIslandGCThreshold = _init_lp_BioCompiler_BioCompil
 lean_mark_persistent(lp_BioCompiler_BioCompiler_cpgIslandGCThreshold);
 lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold = _init_lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold();
 lean_mark_persistent(lp_BioCompiler_BioCompiler_cpgIslandObsExpThreshold);
+lp_BioCompiler_BioCompiler_promoterThreshold = _init_lp_BioCompiler_BioCompiler_promoterThreshold();
+lean_mark_persistent(lp_BioCompiler_BioCompiler_promoterThreshold);
+lp_BioCompiler_BioCompiler_promoterUncertainThreshold = _init_lp_BioCompiler_BioCompiler_promoterUncertainThreshold();
+lean_mark_persistent(lp_BioCompiler_BioCompiler_promoterUncertainThreshold);
+lp_BioCompiler_BioCompiler_tmDomainThreshold = _init_lp_BioCompiler_BioCompiler_tmDomainThreshold();
+lean_mark_persistent(lp_BioCompiler_BioCompiler_tmDomainThreshold);
+lp_BioCompiler_BioCompiler_mrnaStructureThreshold = _init_lp_BioCompiler_BioCompiler_mrnaStructureThreshold();
+lean_mark_persistent(lp_BioCompiler_BioCompiler_mrnaStructureThreshold);
 return lean_io_result_mk_ok(lean_box(0));
 }
 #ifdef __cplusplus

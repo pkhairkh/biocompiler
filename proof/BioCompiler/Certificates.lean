@@ -26,9 +26,11 @@ open Verdict Sequence
     of all claimed predicates yields PASS. This is the formal definition that
     ties the type system to the certificate mechanism. -/
 def certificateValid [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) : Prop :=
-  @evaluateAll inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx = PASS
+  @evaluateAll inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+    State inst_dec inst_inhab inst_ndfst predicates seq ctx = PASS
 
 -- ==============================================================================
 -- Certificate Soundness Theorem
@@ -40,12 +42,15 @@ def certificateValid [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptati
     Proof: certificateValid ↔ evaluateAll = PASS (by definition),
     then compositional_soundness gives ∀ P ∈ predicates, propertyHolds P. -/
 theorem certificate_soundness [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
-    @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx →
-    ∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
+    @certificateValid inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst predicates seq ctx →
+    ∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst P seq ctx := by
   intro h_cert P hP
-  exact @compositional_soundness inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst
-    predicates seq ctx h_cert P hP
+  exact @compositional_soundness inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+    State inst_dec inst_inhab inst_ndfst predicates seq ctx h_cert P hP
 
 end BioCompiler

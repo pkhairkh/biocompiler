@@ -7,10 +7,23 @@
   tools (AlphaFold, NetPhos) produce non-deterministic output.
 
   KEY THEOREMS:
-  1. All current type predicates are core predicates (no FFI dependency)
-  2. Core predicate evaluation is independent of SLOT values
-  3. Certificate validity is independent of SLOT values
+  1. Core predicates (deterministic) are independent of SLOT values
+  2. SLOT-dependent predicates never produce PASS in the formal model
+  3. Certificate validity is independent of SLOT values for core predicates
   4. FFI-dependent predicates (hypothetical) never produce PASS
+
+  EXTENDED PREDICATE SET (32 total):
+  - 13 core (deterministic) predicates: SpliceCorrect, NoCrypticSplice,
+    CodonAdapted, GCInRange, NoRestrictionSite, InFrame, NoInstabilityMotif,
+    NoCpGIsland, NoGTDinucleotide, NoStopCodons, ValidCodingSeq,
+    CodonOptimality, NoCrypticPromoter
+  - 19 SLOT-dependent predicates: ConservationScore, NoUnexpectedTMDomain,
+    mRNASecondaryStructure, CoTranslationalFolding, StructureConfidence,
+    NoMisfoldingRisk, CorrectFoldTopology, NoUnexpectedInteraction,
+    StableFolding, NoDestabilizingMutation, DisulfideBondIntegrity,
+    HydrophobicCoreQuality, SolubleExpression, NoAggregationProneRegion,
+    ChargeComposition, NoLongHydrophobicStretch, LowImmunogenicity,
+    NoStrongTCellEpitope, NoDominantBCellEpitope, PopulationCoverageSafe
 
   Reference: DOC-01 (SRS) §2.1, DOC-03 (SDD) §3.4, INV-TYP-02
 -/
@@ -72,15 +85,13 @@ structure IRRecord where
   deriving Repr
 
 -- ==============================================================================
--- Core vs. FFI-Dependent Predicates
+-- Core vs. SLOT-Dependent Predicates
 -- ==============================================================================
 
 /-- A type predicate is "core" if its evaluation depends only on the
     nucleotide sequence and grammar rules, NOT on SLOT values (FFI output).
 
-    DESIGN CHOICE: ALL eight BioCompiler predicates are core predicates.
-    FFI output enriches the IR but is not required for type-checking.
-    This is the key architectural invariant (INV-TYP-02). -/
+    Core predicates can produce PASS verdicts in the formal model. -/
 def isCorePredicate : TypePredicate → Bool
   | TypePredicate.SpliceCorrect _ => true
   | TypePredicate.NoCrypticSplice => true
@@ -90,13 +101,74 @@ def isCorePredicate : TypePredicate → Bool
   | TypePredicate.InFrame _ _ => true
   | TypePredicate.NoInstabilityMotif => true
   | TypePredicate.NoCpGIsland => true
+  | TypePredicate.NoGTDinucleotide => true
+  | TypePredicate.NoStopCodons => true
+  | TypePredicate.ValidCodingSeq => true
+  | TypePredicate.CodonOptimality _ _ => true
+  | TypePredicate.NoCrypticPromoter _ _ => true
+  | _ => false
 
-/-- THEOREM: ALL current type predicates are core predicates.
-    This is the architectural invariant that makes BioCompiler guarantees
-    independent of external tool behavior. -/
-theorem all_predicates_are_core (P : TypePredicate) :
-    isCorePredicate P = true := by
-  cases P <;> rfl
+-- ==============================================================================
+-- Predicate Classification Theorem
+-- ==============================================================================
+
+/-- THEOREM: Every predicate is either core or SLOT-dependent (exclusive).
+    This is the completeness of the classification. -/
+theorem predicate_is_core_or_slot (P : TypePredicate) :
+    isCorePredicate P = true ∨ isSLOT P = true := by
+  cases P with
+  | SpliceCorrect _ => left; rfl
+  | NoCrypticSplice => left; rfl
+  | CodonAdapted _ _ => left; rfl
+  | GCInRange _ _ => left; rfl
+  | NoRestrictionSite _ => left; rfl
+  | InFrame _ _ => left; rfl
+  | NoInstabilityMotif => left; rfl
+  | NoCpGIsland => left; rfl
+  | NoGTDinucleotide => left; rfl
+  | NoStopCodons => left; rfl
+  | ValidCodingSeq => left; rfl
+  | CodonOptimality _ _ => left; rfl
+  | NoCrypticPromoter _ _ => left; rfl
+  | ConservationScore _ => right; rfl
+  | NoUnexpectedTMDomain _ _ => right; rfl
+  | mRNASecondaryStructure _ => right; rfl
+  | CoTranslationalFolding _ => right; rfl
+  | StructureConfidence _ => right; rfl
+  | NoMisfoldingRisk => right; rfl
+  | CorrectFoldTopology => right; rfl
+  | NoUnexpectedInteraction => right; rfl
+  | StableFolding _ => right; rfl
+  | NoDestabilizingMutation _ => right; rfl
+  | DisulfideBondIntegrity => right; rfl
+  | HydrophobicCoreQuality _ => right; rfl
+  | SolubleExpression _ => right; rfl
+  | NoAggregationProneRegion => right; rfl
+  | ChargeComposition _ _ => right; rfl
+  | NoLongHydrophobicStretch _ => right; rfl
+  | LowImmunogenicity _ => right; rfl
+  | NoStrongTCellEpitope _ => right; rfl
+  | NoDominantBCellEpitope _ => right; rfl
+  | PopulationCoverageSafe _ => right; rfl
+
+/-- THEOREM: Core and SLOT-dependent are mutually exclusive. -/
+theorem core_not_slot (P : TypePredicate) :
+    isCorePredicate P = true → isSLOT P = false := by
+  cases P with
+  | SpliceCorrect _ => simp [isSLOT]
+  | NoCrypticSplice => simp [isSLOT]
+  | CodonAdapted _ _ => simp [isSLOT]
+  | GCInRange _ _ => simp [isSLOT]
+  | NoRestrictionSite _ => simp [isSLOT]
+  | InFrame _ _ => simp [isSLOT]
+  | NoInstabilityMotif => simp [isSLOT]
+  | NoCpGIsland => simp [isSLOT]
+  | NoGTDinucleotide => simp [isSLOT]
+  | NoStopCodons => simp [isSLOT]
+  | ValidCodingSeq => simp [isSLOT]
+  | CodonOptimality _ _ => simp [isSLOT]
+  | NoCrypticPromoter _ _ => simp [isSLOT]
+  | _ => intro h; simp [isCorePredicate] at h
 
 -- ==============================================================================
 -- SLOT-Independence Theorems
@@ -107,22 +179,24 @@ theorem all_predicates_are_core (P : TypePredicate) :
     SLOT values. This is by design: evaluate examines only the sequence
     and cellular context. -/
 theorem evaluate_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (_slots₁ _slots₂ : SLOTValues) :
-    @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx =
-    @evaluate inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
+    @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx =
+    @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx := by
   rfl
 
 /-- THEOREM (Property SLOT-Independence): The semantic property that a
     predicate asserts depends only on the sequence and cellular context,
     not on SLOT values. -/
 theorem property_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (_slots₁ _slots₂ : SLOTValues) :
-    @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx ↔
-    @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx := by
+    @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx ↔
+    @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx := by
   rfl
 
 /-- THEOREM (Certificate SLOT-Independence): A guarantee certificate's
@@ -132,11 +206,12 @@ theorem property_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : 
     the external tools that filled SLOT fields are later found to have bugs,
     produce different output on re-runs, or are replaced with different tools. -/
 theorem certificate_slot_independent [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (_slots₁ _slots₂ : SLOTValues) :
-    @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx →
-    @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx := by
+    @certificateValid inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst predicates seq ctx →
+    @certificateValid inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst predicates seq ctx := by
   intro h; exact h
 
 -- ==============================================================================
@@ -182,32 +257,54 @@ theorem ffi_never_pass (P : FFIDependentPredicate) (slots : SLOTValues) :
 -- ==============================================================================
 
 /-- THEOREM (Full SLOT-Independence Guarantee): For the BioCompiler type system:
-    1. All type predicates are core predicates (no FFI dependency).
-    2. Certificate validity is independent of SLOT values.
-    3. Soundness is independent of SLOT values.
-    4. FFI-dependent predicates (if added) would never produce PASS. -/
+    1. Every predicate is either core or SLOT-dependent (exclusive classification)
+    2. Core predicates are SLOT-independent (evaluate doesn't use SLOT values)
+    3. SLOT-dependent predicates never produce PASS in the formal model
+    4. Certificate validity is independent of SLOT values
+    5. Soundness is independent of SLOT values
+    6. FFI-dependent predicates (hypothetical) would never produce PASS -/
 theorem full_slot_independence [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
-    -- All predicates are core
-    (∀ P ∈ predicates, isCorePredicate P = true) ∧
-    -- Certificate validity is SLOT-independent
+    -- 1. Every predicate is either core or SLOT-dependent
+    (∀ P ∈ predicates, isCorePredicate P = true ∨ isSLOT P = true) ∧
+    -- 2. Core predicates are SLOT-independent
+    (∀ P ∈ predicates, isCorePredicate P = true →
+      @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx ↔
+      @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx) ∧
+    -- 3. SLOT-dependent predicates never produce PASS
+    (∀ P ∈ predicates, isSLOT P = true →
+      @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx ≠ PASS) ∧
+    -- 4. Certificate validity is SLOT-independent
     (∀ (_slots₁ : SLOTValues) (_slots₂ : SLOTValues),
-      @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx →
-      @certificateValid inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst predicates seq ctx) ∧
-    -- Soundness is SLOT-independent
+      @certificateValid inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst predicates seq ctx →
+      @certificateValid inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst predicates seq ctx) ∧
+    -- 5. Soundness is SLOT-independent
     (∀ (_slots₁ : SLOTValues) (_slots₂ : SLOTValues),
-      (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx) →
-      (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg State inst_dec inst_inhab inst_ndfst P seq ctx)) ∧
-    -- FFI-dependent predicates never produce PASS
+      (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx) →
+      (∀ P ∈ predicates, @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx)) ∧
+    -- 6. FFI-dependent predicates never produce PASS
     (∀ (P : FFIDependentPredicate) (slots : SLOTValues),
       evaluateFFIDependent P slots ≠ PASS) := by
   constructor
-  · intro P hP; exact all_predicates_are_core P
+  · -- 1. Classification
+    intro P hP; exact predicate_is_core_or_slot P
   constructor
-  · intro slots₁ slots₂ h; exact h
+  · -- 2. Core predicates are SLOT-independent
+    intro P _ _slots₁ _slots₂; rfl
   constructor
-  · intro slots₁ slots₂ h; exact h
-  · exact ffi_never_pass
+  · -- 3. SLOT-dependent predicates never produce PASS
+    intro P hP h_slot
+    exact @slot_predicates_uncertain inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst P seq ctx h_slot
+  constructor
+  · -- 4. Certificate validity is SLOT-independent
+    intro slots₁ slots₂ h; exact h
+  constructor
+  · -- 5. Soundness is SLOT-independent
+    intro slots₁ slots₂ h; exact h
+  · -- 6. FFI-dependent predicates never produce PASS
+    exact ffi_never_pass
 
 end BioCompiler

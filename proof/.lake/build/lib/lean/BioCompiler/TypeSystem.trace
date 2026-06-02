@@ -1,14 +1,17 @@
 {"synthetic": false,
  "schemaVersion": "2025-09-10",
  "outputs":
- {"o": ["bd4065cc11e00442.olean"],
+ {"o": ["0ad247c02fa76784.olean"],
   "m": false,
-  "i": "ed6f2b15c3ecc127.ilean",
-  "c": "f3024006857ca2eb.c"},
+  "i": "69ec42c22320872d.ilean",
+  "c": "612a3671c05286de.c"},
  "log":
  [{"message":
    ".> LEAN_PATH=/home/z/my-project/biocompiler/proof/.lake/build/lib/lean /home/z/.elan/toolchains/leanprover--lean4---v4.30.0/bin/lean -DautoImplicit=false /home/z/my-project/biocompiler/proof/BioCompiler/TypeSystem.lean -o /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/TypeSystem.olean -i /home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/TypeSystem.ilean -c /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/TypeSystem.c --setup /home/z/my-project/biocompiler/proof/.lake/build/ir/BioCompiler/TypeSystem.setup.json --json",
-   "level": "trace"}],
+   "level": "trace"},
+  {"message":
+   "BioCompiler/TypeSystem.lean:319:56: unused variable `seq`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"}],
  "inputs":
  [["BioCompiler.TypeSystem:deps",
    [["deps",
@@ -17,7 +20,7 @@
       ["imports",
        [["BioCompiler.ThreeValued transitive imports (legacy)",
          "00000000000006bb"],
-        ["BioCompiler.ThreeValued:importAllArts", "86584844b3a43f4b"],
+        ["BioCompiler.ThreeValued:importAllArts", "e84394d9ed42ce44"],
         ["BioCompiler.Sequence transitive imports (legacy)",
          "00000000000006bb"],
         ["BioCompiler.Sequence:importAllArts", "0296985af1483811"],
@@ -25,7 +28,7 @@
         ["BioCompiler.NDFST:importAllArts", "f920b497a40bb281"],
         ["BioCompiler.Scanners transitive imports (legacy)",
          "e9a07f1bb4174e26"],
-        ["BioCompiler.Scanners:importAllArts", "c208e93f584adf71"]]]]],
+        ["BioCompiler.Scanners:importAllArts", "5db68a86961de5c7"]]]]],
     ["libs",
      [["import dynlibs", "00000000000006bb"],
       ["package external libraries", "00000000000006bb"],
@@ -34,10 +37,10 @@
   ["Lean 4.30.0, commit d024af099ca4bf2c86f649261ebf59565dc8c622",
    "2f4703bb19086252"],
   ["/home/z/my-project/biocompiler/proof/BioCompiler/TypeSystem.lean",
-   "94c5ee351033c368"],
+   "33ed6d80d0114fa7"],
   ["options", "00000000000006bb"],
   ["isModule: false", "feefd2a0d3a1847e"],
   ["Module.name: BioCompiler.TypeSystem", "2ae5ee8daaa80e31"],
   ["Package.id?: (some BioCompiler)", "143d9b3ae216737d"],
   ["Module.leanArgs: #[-DautoImplicit=false]", "83bf8aa7a6e9844b"]],
- "depHash": "d54974b022b092b2"}
+ "depHash": "fe5e89c93b5ea134"}

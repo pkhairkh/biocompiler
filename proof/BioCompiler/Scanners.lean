@@ -274,7 +274,164 @@ class SpliceSiteScanner where
 /-- Codon usage table: maps each codon to its relative adaptiveness value. -/
 class CodonAdaptationIndex where
   computeCAI : Sequence → String → Rat
+  computeMinCodonCAI : Sequence → String → Rat
   cai_deterministic (seq : Sequence) (org : String) :
     computeCAI seq org = computeCAI seq org
+  min_cai_deterministic (seq : Sequence) (org : String) :
+    computeMinCodonCAI seq org = computeMinCodonCAI seq org
+
+-- ==============================================================================
+-- Valid Coding Sequence Scanner
+-- ==============================================================================
+
+/-- Check if a sequence is a valid coding sequence:
+    length divisible by 3 and no internal stop codons. -/
+def isValidCodingSeq (seq : Sequence) : Bool :=
+  seq.length % 3 = 0 && !hasPrematureStop seq 0
+
+-- NOTE: Soundness for ValidCodingSeq follows from the concrete definitions
+-- of hasPrematureStop (proved in Sequence.lean) and modular arithmetic.
+
+-- ==============================================================================
+-- Conservation Score (BLOSUM62) Oracle
+-- ==============================================================================
+
+/-- BLOSUM62 substitution score for an amino acid pair.
+    Placeholder: actual scores depend on the 20×20 BLOSUM62 matrix.
+    Soundness proof only requires that evaluate condition = propertyHolds condition. -/
+def blosum62Score (aa1 aa2 : String) : Int := 0
+
+-- ==============================================================================
+-- Cryptic Promoter Scanner
+-- ==============================================================================
+
+/-- Promoter match: organism, position, and consensus match score. -/
+structure PromoterMatch where
+  organism : String
+  position : Nat
+  score    : Rat
+  deriving Repr
+
+/-- Threshold for cryptic promoter detection. -/
+def promoterThreshold : Rat := 7 / 10  -- 0.70
+
+/-- Lower threshold for borderline (uncertain) promoter sites. -/
+def promoterUncertainThreshold : Rat := 56 / 100  -- 0.56 (= 0.70 × 0.8)
+
+/-- Abstract interface for a cryptic promoter scanner. -/
+class PromoterScanner where
+  hasCrypticPromoter : Sequence → String → Rat → Bool
+  hasBorderlinePromoter : Sequence → String → Rat → Bool
+  scanner_completeness :
+    ∀ (seq : Sequence) (organism : String) (threshold : Rat) (pm : PromoterMatch),
+      pm.organism = organism →
+      pm.score ≥ threshold →
+      hasCrypticPromoter seq organism threshold = false → False
+  scanner_soundness :
+    ∀ (seq : Sequence) (organism : String) (threshold : Rat),
+      hasCrypticPromoter seq organism threshold = true →
+        ∃ (pm : PromoterMatch), pm.organism = organism ∧ pm.score ≥ threshold
+  borderline_completeness :
+    ∀ (seq : Sequence) (organism : String) (threshold : Rat) (pm : PromoterMatch),
+      pm.organism = organism →
+      pm.score ≥ threshold * 8 / 10 →
+      ¬(pm.score ≥ threshold) →
+      hasBorderlinePromoter seq organism threshold = false → False
+
+-- ==============================================================================
+-- Transmembrane Domain Scanner
+-- ==============================================================================
+
+/-- TM domain match: position, window, and hydrophobic fraction. -/
+structure TMDomainMatch where
+  position      : Nat
+  windowSize    : Nat
+  hydroFraction : Rat
+  deriving Repr
+
+/-- Default TM domain hydrophobic fraction threshold. -/
+def tmDomainThreshold : Rat := 68 / 100  -- 0.68
+
+/-- Abstract interface for a transmembrane domain scanner.
+    Dual-threshold: FAIL if hydrophobic fraction ≥ threshold,
+    UNCERTAIN if ≥ threshold × 0.85. -/
+class TMDomainScanner where
+  hasTMDomain : Sequence → Bool → Rat → Bool
+  hasBorderlineTMDomain : Sequence → Bool → Rat → Bool
+  scanner_completeness :
+    ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat) (tm : TMDomainMatch),
+      isCytosolic = true →
+      tm.hydroFraction ≥ threshold →
+      hasTMDomain seq isCytosolic threshold = false → False
+  scanner_soundness :
+    ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat),
+      hasTMDomain seq isCytosolic threshold = true →
+        ∃ (tm : TMDomainMatch), tm.hydroFraction ≥ threshold
+  borderline_completeness :
+    ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat) (tm : TMDomainMatch),
+      isCytosolic = true →
+      tm.hydroFraction ≥ threshold * 85 / 100 →
+      ¬(tm.hydroFraction ≥ threshold) →
+      hasBorderlineTMDomain seq isCytosolic threshold = false → False
+
+-- ==============================================================================
+-- mRNA Secondary Structure Oracle
+-- ==============================================================================
+
+/-- Structure stability estimate: position and ΔG. -/
+structure StructureStabilityMatch where
+  position : Nat
+  deltaG   : Rat
+  deriving Repr
+
+/-- Default ΔG threshold for strong mRNA secondary structure (kcal/mol). -/
+def mrnaStructureThreshold : Rat := -15
+
+/-- Abstract interface for mRNA secondary structure analysis.
+    Dual-threshold: FAIL if ΔG ≤ threshold (very stable structure),
+    UNCERTAIN if ΔG ≤ threshold × 0.7. -/
+class mRNAStructureOracle where
+  hasStrongStructure : Sequence → Rat → Bool
+  hasBorderlineStructure : Sequence → Rat → Bool
+  oracle_completeness :
+    ∀ (seq : Sequence) (threshold : Rat) (sm : StructureStabilityMatch),
+      sm.deltaG ≤ threshold →
+      hasStrongStructure seq threshold = false → False
+  oracle_soundness :
+    ∀ (seq : Sequence) (threshold : Rat),
+      hasStrongStructure seq threshold = true →
+        ∃ (sm : StructureStabilityMatch), sm.deltaG ≤ threshold
+  borderline_completeness :
+    ∀ (seq : Sequence) (threshold : Rat) (sm : StructureStabilityMatch),
+      sm.deltaG ≤ threshold * 7 / 10 →
+      ¬(sm.deltaG ≤ threshold) →
+      hasBorderlineStructure seq threshold = false → False
+
+-- ==============================================================================
+-- Co-Translational Folding Oracle
+-- ==============================================================================
+
+/-- Folding disruption: codon position and disruption type. -/
+structure FoldingDisruption where
+  codonPosition : Nat
+  disruptionType : String
+  deriving Repr
+
+/-- Abstract interface for co-translational folding analysis. -/
+class CoTranslationalFoldingOracle where
+  hasFoldingDisruption : Sequence → String → Bool
+  hasBorderlineFolding : Sequence → String → Bool
+  oracle_completeness :
+    ∀ (seq : Sequence) (organism : String) (fd : FoldingDisruption),
+      fd.disruptionType = "speed_disruption" →
+      hasFoldingDisruption seq organism = false → False
+  oracle_soundness :
+    ∀ (seq : Sequence) (organism : String),
+      hasFoldingDisruption seq organism = true →
+        ∃ (fd : FoldingDisruption), True
+  borderline_completeness :
+    ∀ (seq : Sequence) (organism : String) (fd : FoldingDisruption),
+      fd.disruptionType = "borderline_ramp" →
+      hasBorderlineFolding seq organism = false → False
 
 end BioCompiler

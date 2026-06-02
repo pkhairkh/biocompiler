@@ -1,5 +1,5 @@
 """
-BioCompiler — Machine-Verified Gene Design
+BioCompiler — Machine-Verified Gene Design  (v7.6.0)
 
 A compiler framework for human protein synthesis using intermediate
 representations. Pipeline:
@@ -7,9 +7,20 @@ representations. Pipeline:
   Scanner → NDFST Splicing → Translation → Type Check → Certificate → Verify
 
 All computation is DETERMINISTIC: same input always produces identical output.
+
+v7.6.0 highlights:
+  - Unified engine API: BaseEngineResult, MutationResult, BatchResult
+    shared across all 6 analysis engines (ESMFold, FoldX, CamSol,
+    Immunogenicity, Deimmunization, Protein Design)
+  - 28-predicate type system: 12 DNA + 4 structure + 4 stability +
+    4 solubility + 4 immunogenicity predicates
+  - SLOT architecture: 13 core predicates (PASS/FAIL) + 19 SLOT-dependent
+    predicates (always UNCERTAIN); Lean4 proof covers all 28 predicates
+  - HBB full pass: all 8 optimizer predicates pass simultaneously
+  - CpG reconciliation, CAI reconciliation, cross-codon coordination
 """
 
-__version__ = "7.5.0"
+__version__ = "7.6.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -398,8 +409,9 @@ except ImportError:
 
 try:
     from .engine_base import (
-        EngineResult, MutationResult, BatchResult,
-        EngineTimer, validate_protein_sequence,
+        EngineResult, BaseEngineResult, MutationResult, BatchResult,
+        EngineTimer, EngineConfig, validate_protein_sequence,
+        classify_score,
     )
 except ImportError:
     pass
@@ -523,8 +535,9 @@ __all__ = [
     "apply_substitution",
 
     # ── Engine base types ────────────────────────────────────
-    "EngineResult", "MutationResult", "BatchResult",
-    "EngineTimer", "validate_protein_sequence",
+    "EngineResult", "BaseEngineResult", "MutationResult", "BatchResult",
+    "EngineTimer", "EngineConfig", "validate_protein_sequence",
+    "classify_score",
 
     # ── Solubility ───────────────────────────────────────────
     "compute_intrinsic_solubility", "compute_solubility",

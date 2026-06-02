@@ -47,7 +47,7 @@ def not : Verdict → Verdict
 
 -- Discrimination
 private theorem FAIL_ne_PASS : FAIL ≠ PASS := by intro h; cases h
-private theorem UNCERTAIN_ne_PASS : UNCERTAIN ≠ PASS := by intro h; cases h
+theorem UNCERTAIN_ne_PASS : UNCERTAIN ≠ PASS := by intro h; cases h
 
 -- Verdict.and init hd = PASS ↔ init = PASS ∧ hd = PASS
 theorem and_eq_PASS_iff {init hd : Verdict} :

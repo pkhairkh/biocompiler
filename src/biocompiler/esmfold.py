@@ -36,7 +36,13 @@ from threading import Semaphore
 from typing import Any, Callable, Dict, Optional
 
 from .constants import CODON_TABLE, AA_TO_CODONS, DEFAULT_ENGINE_TIMEOUT
-from .engine_base import validate_protein_sequence, EngineTimer
+from .engine_base import (
+    BaseEngineResult,
+    BatchResult,
+    EngineTimer,
+    classify_score,
+    validate_protein_sequence,
+)
 try:
     from .exceptions import ESMFoldError
 except ImportError:
@@ -127,35 +133,148 @@ _PDB_ATOM_RE = re.compile(
 # ==============================================================================
 
 @dataclass
-class ESMFoldResult:
+class ESMFoldResult(BaseEngineResult):
     """Result of an ESMFold protein structure prediction.
 
-    Attributes:
-        pdb_string:       Predicted structure in PDB format.
+    Inherits unified fields from :class:`BaseEngineResult`:
+      - sequence:       input protein sequence (alias: ``protein``)
+      - primary_score:  mean pLDDT score (aliases: ``plddt``, ``mean_plddt``)
+      - classification: confidence category (alias: ``confidence_class``)
+      - success, error, execution_time_s, engine_name, primary_score_label
+
+    ESMFold-specific attributes:
         plddt_scores:     Per-residue pLDDT confidence scores (0-100).
-        mean_plddt:       Average pLDDT across all residues.
         pae_matrix:       Predicted Aligned Error matrix (residue×residue).
                           None when the API does not return PAE.
-        protein:          Input protein sequence (single-letter codes).
+                          (alias: ``pae``)
+        pdb_string:       Predicted structure in PDB format.
         model_name:       ESMFold model identifier (e.g. "esmfold_v1").
-        execution_time_s: Wall-clock time for the prediction in seconds.
-        success:          Whether prediction completed without error.
-        error:            Error message if success is False, else None.
         method:           How the prediction was obtained — ``"esmfold_api"``
                           for the remote ESM Atlas API, ``"esmfold_local"``
                           for the locally-installed esm package.
+
+    Backward compatibility:
+        The constructor accepts both unified names (``sequence``,
+        ``primary_score``, ``classification``) and legacy aliases
+        (``protein``, ``mean_plddt``, ``plddt``, ``confidence_class``).
+        Legacy names are mapped to unified fields automatically.
     """
 
-    pdb_string: str
-    plddt_scores: list[float]
-    mean_plddt: float
-    pae_matrix: list[list[float]] | None
-    protein: str
-    model_name: str
-    execution_time_s: float = 0.0
+    # --- Override base class defaults for ESMFold ---
+    sequence: str = ""
+    primary_score: float = 0.0
+    classification: str = ""
     success: bool = True
-    error: str | None = None
+    error: Optional[str] = None
+    execution_time_s: float = 0.0
+    engine_name: str = "esmfold"
+    primary_score_label: str = "pLDDT"
+
+    # --- ESMFold-specific fields ---
+    plddt_scores: list[float] = field(default_factory=list)
+    pae_matrix: list[list[float]] | None = None
+    pdb_string: str = ""
+    model_name: str = "esmfold_v1"
     method: str = "esmfold_api"
+
+    def __init__(
+        self,
+        # Unified API fields (from BaseEngineResult)
+        sequence: str = "",
+        primary_score: float = 0.0,
+        classification: str = "",
+        success: bool = True,
+        error: str | None = None,
+        execution_time_s: float = 0.0,
+        engine_name: str = "esmfold",
+        primary_score_label: str = "pLDDT",
+        # ESMFold-specific fields
+        plddt_scores: list[float] | None = None,
+        pae_matrix: list[list[float]] | None = None,
+        pdb_string: str = "",
+        model_name: str = "esmfold_v1",
+        method: str = "esmfold_api",
+        # Backward-compat constructor aliases
+        protein: str | None = None,
+        mean_plddt: float | None = None,
+        plddt: float | None = None,
+        confidence_class: str | None = None,
+    ) -> None:
+        # Resolve backward-compat aliases to unified fields
+        if protein is not None and not sequence:
+            sequence = protein
+        if mean_plddt is not None and primary_score == 0.0:
+            primary_score = mean_plddt
+        if plddt is not None and primary_score == 0.0:
+            primary_score = plddt
+        if confidence_class is not None and not classification:
+            classification = confidence_class
+
+        # Auto-compute classification if not provided and score is available
+        if not classification and primary_score > 0:
+            classification = classify_plddt(primary_score)
+
+        # Set all fields
+        self.sequence = sequence
+        self.primary_score = primary_score
+        self.classification = classification
+        self.success = success
+        self.error = error
+        self.execution_time_s = execution_time_s
+        self.engine_name = engine_name
+        self.primary_score_label = primary_score_label
+        self.plddt_scores = plddt_scores if plddt_scores is not None else []
+        self.pae_matrix = pae_matrix
+        self.pdb_string = pdb_string
+        self.model_name = model_name
+        self.method = method
+
+    # --- Property aliases for backward compatibility ---
+
+    @property
+    def protein(self) -> str:
+        """Alias for :attr:`sequence` (backward compatibility)."""
+        return self.sequence
+
+    @protein.setter
+    def protein(self, value: str) -> None:
+        self.sequence = value
+
+    @property
+    def mean_plddt(self) -> float:
+        """Alias for :attr:`primary_score` (backward compatibility)."""
+        return self.primary_score
+
+    @mean_plddt.setter
+    def mean_plddt(self, value: float) -> None:
+        self.primary_score = value
+
+    @property
+    def plddt(self) -> float:
+        """Alias for :attr:`primary_score` (unified API)."""
+        return self.primary_score
+
+    @plddt.setter
+    def plddt(self, value: float) -> None:
+        self.primary_score = value
+
+    @property
+    def confidence_class(self) -> str:
+        """Alias for :attr:`classification` (unified API)."""
+        return self.classification
+
+    @confidence_class.setter
+    def confidence_class(self, value: str) -> None:
+        self.classification = value
+
+    @property
+    def pae(self) -> list[list[float]] | None:
+        """Alias for :attr:`pae_matrix`."""
+        return self.pae_matrix
+
+    @pae.setter
+    def pae(self, value: list[list[float]] | None) -> None:
+        self.pae_matrix = value
 
 
 # ==============================================================================
@@ -557,15 +676,31 @@ def _dihedral_angle(
 # pLDDT classification
 # ==============================================================================
 
+# pLDDT classification thresholds for use with classify_score()
+# NOTE: classify_score uses >= comparison, but the original classify_plddt
+# uses strict >.  We add a tiny epsilon to thresholds to emulate strict >
+# behaviour for all practical pLDDT values (0-100, typically 2 decimal places).
+_EPS = 1e-9
+
+_PLDDT_THRESHOLDS: list[tuple[float, str]] = [
+    (90 + _EPS, "Very high (experimental)"),
+    (70 + _EPS, "Confident"),
+    (50 + _EPS, "Low confidence"),
+]
+
+
 def classify_plddt(mean_plddt: float) -> str:
     """Classify a mean pLDDT score into a confidence category.
 
     Thresholds follow the AlphaFold / ESMFold convention:
 
-        > 90 : "Very high (experimental)"
+        >= 90 : "Very high (experimental)"
         70-90: "Confident"
         50-70: "Low confidence"
         < 50 : "Very low"
+
+    Delegates to :func:`engine_base.classify_score` for unified
+    classification logic.
 
     Args:
         mean_plddt: Average per-residue pLDDT score (0-100).
@@ -573,14 +708,11 @@ def classify_plddt(mean_plddt: float) -> str:
     Returns:
         Human-readable confidence classification string.
     """
-    if mean_plddt > 90:
-        return "Very high (experimental)"
-    elif mean_plddt > 70:
-        return "Confident"
-    elif mean_plddt > 50:
-        return "Low confidence"
-    else:
-        return "Very low"
+    return classify_score(
+        mean_plddt,
+        thresholds=_PLDDT_THRESHOLDS,
+        fallback="Very low",
+    )
 
 
 # ==============================================================================
@@ -866,7 +998,7 @@ def predict_structure_batch(
     use_api: bool = True,
     api_url: str = DEFAULT_API_URL,
     timeout: float = DEFAULT_TIMEOUT,
-) -> list[ESMFoldResult]:
+) -> BatchResult[ESMFoldResult]:
     """Predict structures for multiple proteins concurrently.
 
     Uses a :class:`ThreadPoolExecutor` with a semaphore for rate
@@ -884,61 +1016,67 @@ def predict_structure_batch(
         timeout:       Per-protein request timeout in seconds.
 
     Returns:
-        List of ESMFoldResult objects, one per input sequence, in the
-        same order as *sequences*.
+        :class:`BatchResult` [ESMFoldResult] containing per-protein
+        results in the same order as *sequences*, along with aggregate
+        timing and success/failure counts.
     """
     workers = max_workers if max_workers is not None else max_concurrent
     semaphore = Semaphore(max_concurrent)
     results: dict[int, ESMFoldResult] = {}
 
-    def _predict_with_semaphore(idx: int, protein: str) -> tuple[int, ESMFoldResult]:
-        with semaphore:
-            try:
-                result = predict_structure(
-                    protein,
-                    use_api=use_api,
-                    api_url=api_url,
-                    timeout=timeout,
-                )
-            except ESMFoldError as exc:
-                result = ESMFoldResult(
-                    pdb_string="",
-                    plddt_scores=[],
-                    mean_plddt=0.0,
-                    pae_matrix=None,
-                    protein=protein,
-                    model_name="esmfold_v1",
-                    execution_time_s=0.0,
-                    success=False,
-                    error=str(exc),
-                    method="esmfold_api",
-                )
-            except Exception as exc:
-                result = ESMFoldResult(
-                    pdb_string="",
-                    plddt_scores=[],
-                    mean_plddt=0.0,
-                    pae_matrix=None,
-                    protein=protein,
-                    model_name="esmfold_v1",
-                    execution_time_s=0.0,
-                    success=False,
-                    error=f"Unexpected error: {exc}",
-                    method="esmfold_api",
-                )
-            return idx, result
+    with EngineTimer() as batch_timer:
+        def _predict_with_semaphore(idx: int, protein: str) -> tuple[int, ESMFoldResult]:
+            with semaphore:
+                try:
+                    result = predict_structure(
+                        protein,
+                        use_api=use_api,
+                        api_url=api_url,
+                        timeout=timeout,
+                    )
+                except ESMFoldError as exc:
+                    result = ESMFoldResult(
+                        pdb_string="",
+                        plddt_scores=[],
+                        mean_plddt=0.0,
+                        pae_matrix=None,
+                        protein=protein,
+                        model_name="esmfold_v1",
+                        execution_time_s=0.0,
+                        success=False,
+                        error=str(exc),
+                        method="esmfold_api",
+                    )
+                except Exception as exc:
+                    result = ESMFoldResult(
+                        pdb_string="",
+                        plddt_scores=[],
+                        mean_plddt=0.0,
+                        pae_matrix=None,
+                        protein=protein,
+                        model_name="esmfold_v1",
+                        execution_time_s=0.0,
+                        success=False,
+                        error=f"Unexpected error: {exc}",
+                        method="esmfold_api",
+                    )
+                return idx, result
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_predict_with_semaphore, i, prot): i
-            for i, prot in enumerate(sequences)
-        }
-        for future in as_completed(futures):
-            idx, result = future.result()
-            results[idx] = result
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_predict_with_semaphore, i, prot): i
+                for i, prot in enumerate(sequences)
+            }
+            for future in as_completed(futures):
+                idx, result = future.result()
+                results[idx] = result
 
-    # Preserve input order
-    return [results[i] for i in range(len(sequences))]
+    # Preserve input order and wrap in BatchResult
+    result_list = [results[i] for i in range(len(sequences))]
+    return BatchResult(
+        results=result_list,
+        total_time_s=round(batch_timer.elapsed, 4),
+    )
 
 
 # ==============================================================================
@@ -1234,15 +1372,15 @@ def predict_batch(
             )
 
         # Delegate to predict_structure_batch for the core predictions.
-        esmfold_results = predict_structure_batch(
+        batch_result = predict_structure_batch(
             sequences=request.proteins,
             max_concurrent=request.max_concurrent,
         )
 
-        # Convert list[ESMFoldResult] → list[dict] for BatchStructureResult.
+        # Convert BatchResult[ESMFoldResult] → list[dict] for BatchStructureResult.
         results: list[dict] = []
         cancel = False
-        for idx, (name, ef_result) in enumerate(zip(names, esmfold_results)):
+        for idx, (name, ef_result) in enumerate(zip(names, batch_result.results)):
             result_dict: dict = {
                 "name": name,
                 "status": "success" if ef_result.success else "error",
