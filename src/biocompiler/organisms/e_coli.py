@@ -92,3 +92,32 @@ for _codon, (_aa, _frac, _freq, _count) in E_COLI_CODON_USAGE.items():
         _AA_CODONS.setdefault(_aa, []).append((_codon, _freq))
 for _aa, _codons in _AA_CODONS.items():
     E_COLI_PREFERRED_CODONS[_aa] = max(_codons, key=lambda x: x[1])[0]
+
+# ────────────────────────────────────────────────────────────
+# Legacy per-thousand codon usage (migrated from species.py)
+# Different source dataset from E_COLI_CODON_USAGE above.
+# Kept for backward compatibility with the species.py API.
+# ────────────────────────────────────────────────────────────
+ECOLI_CODON_USAGE: dict[str, float] = {
+    "TTT": 17.6, "TTC": 20.3,
+    "TTA": 7.6, "TTG": 11.0, "CTT": 10.5, "CTC": 10.5, "CTA": 3.9, "CTG": 51.0,
+    "ATT": 29.8, "ATC": 25.1, "ATA": 4.2,
+    "ATG": 27.0,
+    "GTT": 18.3, "GTC": 15.0, "GTA": 10.8, "GTG": 27.8,
+    "TCT": 8.5, "TCC": 8.5, "TCA": 7.3, "TCG": 4.3, "AGT": 9.6, "AGC": 15.4,
+    "CCT": 7.0, "CCC": 5.5, "CCA": 8.4, "CCG": 23.2,
+    "ACT": 12.9, "ACC": 25.7, "ACA": 7.1, "ACG": 6.3,
+    "GCT": 18.5, "GCC": 27.1, "GCA": 20.2, "GCG": 7.4,
+    "TAT": 16.3, "TAC": 14.9,
+    "CAT": 13.5, "CAC": 9.8,
+    "CAA": 14.6, "CAG": 29.0,
+    "AAT": 17.1, "AAC": 21.3,
+    "AAA": 33.5, "AAG": 24.1,
+    "GAT": 31.0, "GAC": 21.4,
+    "GAA": 39.2, "GAG": 19.6,
+    "TGT": 5.1, "TGC": 5.5,
+    "TGG": 12.9,
+    "CGT": 20.0, "CGC": 21.5, "CGA": 3.5, "CGG": 5.4, "AGA": 2.1, "AGG": 1.2,
+    "GGT": 24.5, "GGC": 28.6, "GGA": 8.0, "GGG": 6.8,
+    "TAA": 2.0, "TAG": 0.3, "TGA": 1.1,
+}

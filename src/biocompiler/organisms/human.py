@@ -96,3 +96,33 @@ for _codon, (_aa, _frac, _freq, _count) in HUMAN_CODON_USAGE.items():
 
 for _aa, _codons in _AA_CODONS.items():
     HUMAN_PREFERRED_CODONS[_aa] = max(_codons, key=lambda x: x[1])[0]
+
+# ────────────────────────────────────────────────────────────
+# Legacy per-thousand codon usage (migrated from species.py)
+# Different source dataset from HUMAN_CODON_USAGE above.
+# Named HUMAN_CODON_USAGE_SIMPLE to avoid clash with the
+# richer tuple-format HUMAN_CODON_USAGE.
+# ────────────────────────────────────────────────────────────
+HUMAN_CODON_USAGE_SIMPLE: dict[str, float] = {
+    "TTT": 17.2, "TTC": 20.8,
+    "TTA": 7.4, "TTG": 12.9, "CTT": 13.0, "CTC": 19.4, "CTA": 7.5, "CTG": 39.4,
+    "ATT": 16.0, "ATC": 21.0, "ATA": 7.1,
+    "ATG": 22.3,
+    "GTT": 11.0, "GTC": 14.5, "GTA": 7.1, "GTG": 28.5,
+    "TCT": 14.9, "TCC": 17.4, "TCA": 11.7, "TCG": 4.5, "AGT": 12.0, "AGC": 19.3,
+    "CCT": 17.3, "CCC": 19.7, "CCA": 16.7, "CCG": 7.0,
+    "ACT": 12.9, "ACC": 18.6, "ACA": 14.8, "ACG": 6.2,
+    "GCT": 18.4, "GCC": 27.7, "GCA": 15.8, "GCG": 7.4,
+    "TAT": 15.4, "TAC": 15.6,
+    "CAT": 10.5, "CAC": 15.0,
+    "CAA": 11.8, "CAG": 34.3,
+    "AAT": 16.8, "AAC": 19.5,
+    "AAA": 24.1, "AAG": 32.1,
+    "GAT": 21.5, "GAC": 25.4,
+    "GAA": 28.8, "GAG": 39.8,
+    "TGT": 10.2, "TGC": 12.4,
+    "TGG": 13.4,
+    "CGT": 4.5, "CGC": 10.4, "CGA": 6.1, "CGG": 11.3, "AGA": 11.7, "AGG": 12.0,
+    "GGT": 10.8, "GGC": 22.2, "GGA": 16.4, "GGG": 16.5,
+    "TAA": 1.5, "TAG": 0.7, "TGA": 1.3,
+}

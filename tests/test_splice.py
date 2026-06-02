@@ -1,7 +1,7 @@
 """Test BioCompiler Splice Site Scoring — MaxEntScan scoring and dual-threshold classification."""
 
 import pytest
-from biocompiler.splice import maxent_score, score_splice_sites
+from biocompiler.splicing import maxent_score, score_splice_sites
 from biocompiler.type_system import SpliceVerdict
 
 

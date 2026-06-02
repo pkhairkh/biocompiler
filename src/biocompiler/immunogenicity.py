@@ -1,11 +1,28 @@
-"""Immunogenicity scoring module for BioCompiler.
+"""Immunogenicity scoring, MHC binding prediction, and B-cell epitope prediction.
 
-Provides T-cell and B-cell epitope prediction, combined immunogenicity
-scoring, and deimmunization mutation suggestions for therapeutic protein
-engineering.
+This module consolidates three formerly separate modules:
+
+* **MHC binding** (formerly ``mhc_binding.py``): Predicts peptide-MHC
+  binding affinity using position-specific scoring matrices (PSSMs) derived
+  from known binding motifs in the Immune Epitope Database (IEDB).
+* **B-cell epitope prediction** (formerly ``epitope.py``): Linear and
+  conformational B-cell epitope prediction using multiple classical scales
+  and methods (Kolaskar-Tongaonkar, Parker hydrophilicity, Chou-Fasman
+  beta-turn, Emini surface accessibility, BepiPred-like composite, and
+  conformational epitope prediction from PDB structure).
+* **Immunogenicity scoring** (original ``immunogenicity.py``): Combined
+  T-cell / B-cell immunogenicity scoring and deimmunization mutation
+  suggestions.
 
 All predictions are sequence-based heuristics and do not replace
 experimental validation or structure-based tools such as NetMHCpan.
+
+References
+----------
+- Kolaskar & Tongaonkar, FEBS Lett 1990; 276:172-174
+- Parker et al., Biochemistry 1986; 25:5424-5432
+- Chou & Fasman, Biochemistry 1974; 13:222-245
+- Emini et al., J Virol 1985; 55:836-839
 """
 from __future__ import annotations
 
@@ -13,141 +30,909 @@ import logging
 import math
 from dataclasses import dataclass, field
 
+from .constants import BLOSUM62, HYDROPATHY
+
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
 # Amino-acid constants
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
 
 _STANDARD_AA = set("ACDEFGHIKLMNPQRSTVWY")
 
-# ---------------------------------------------------------------------------
-# Antigenicity propensity (Kolaskar-Tongaonkar, 1990)
-# ---------------------------------------------------------------------------
+AMINO_ACIDS: list[str] = list("ACDEFGHIKLMNPQRSTVWY")
+_AA_INDEX: dict[str, int] = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
 
-ANTIGENICITY_PROPENSITY: dict[str, float] = {
-    "C": 1.06, "W": 1.19, "M": 1.34, "H": 1.24, "Y": 0.88,
-    "F": 1.31, "Q": 0.93, "L": 1.34, "I": 1.31, "P": 0.49,
-    "V": 1.14, "D": 1.01, "T": 0.77, "A": 0.87, "N": 0.82,
-    "G": 0.48, "S": 0.64, "E": 1.01, "K": 1.01, "R": 0.95,
-}
+# ═══════════════════════════════════════════════════════════════════════════
+# MHC allele defaults and population coverage
+# ═══════════════════════════════════════════════════════════════════════════
 
-# ---------------------------------------------------------------------------
-# Kyte-Doolittle hydrophobicity (simplified lookup for scoring)
-# ---------------------------------------------------------------------------
-
-_HYDROPHOBICITY: dict[str, float] = {
-    "A":  1.8, "C":  2.5, "D": -3.5, "E": -3.5, "F":  2.8,
-    "G": -0.4, "H": -3.2, "I":  4.5, "K": -3.9, "L":  3.8,
-    "M":  1.9, "N": -3.5, "P": -1.6, "Q": -3.5, "R": -4.5,
-    "S": -0.8, "T": -0.7, "V":  4.2, "W": -0.9, "Y": -1.3,
-}
-
-# ---------------------------------------------------------------------------
-# MHC-I position-specific preferences
-# ---------------------------------------------------------------------------
-
-MHC_I_PREFERENCES: dict[str, dict[int, dict[str, float]]] = {
-    "HLA-A*02:01": {
-        2: {"L": 1.0, "M": 0.9, "I": 0.85, "V": 0.8, "A": 0.3, "T": 0.2},
-        9: {"V": 1.0, "L": 0.9, "I": 0.85, "A": 0.7, "T": 0.3, "S": 0.2},
-    },
-    "HLA-A*24:02": {
-        2: {"Y": 1.0, "F": 0.9, "W": 0.8, "L": 0.3, "I": 0.2},
-        9: {"F": 1.0, "L": 0.85, "I": 0.8, "Y": 0.5, "W": 0.4},
-    },
-    "HLA-B*07:02": {
-        2: {"P": 1.0, "A": 0.8, "S": 0.3, "T": 0.2},
-        9: {"L": 1.0, "I": 0.85, "V": 0.8, "A": 0.4, "M": 0.3},
-    },
-}
-
-# ---------------------------------------------------------------------------
-# MHC-II position-specific preferences
-# ---------------------------------------------------------------------------
-
-MHC_II_PREFERENCES: dict[str, dict[int, dict[str, float]]] = {
-    "HLA-DRB1*01:01": {
-        1: {"W": 1.0, "F": 0.95, "Y": 0.9, "L": 0.85, "I": 0.8, "V": 0.5, "M": 0.6},
-        4: {"A": 1.0, "S": 0.9, "T": 0.85, "G": 0.5, "N": 0.4},
-        6: {"W": 1.0, "F": 0.9, "Y": 0.85, "L": 0.8, "I": 0.75, "V": 0.5, "M": 0.6},
-        9: {"W": 1.0, "F": 0.95, "Y": 0.9, "L": 0.85, "I": 0.8, "V": 0.5, "M": 0.6},
-    },
-    "HLA-DRB1*04:01": {
-        1: {"Y": 1.0, "F": 0.95, "W": 0.9, "L": 0.5, "I": 0.4},
-        4: {"D": 1.0, "E": 0.9, "N": 0.5, "Q": 0.4},
-        6: {"S": 1.0, "T": 0.9, "A": 0.5, "G": 0.4},
-        9: {"W": 1.0, "F": 0.95, "Y": 0.9, "L": 0.85, "I": 0.8, "V": 0.5, "M": 0.6},
-    },
-}
-
-# ---------------------------------------------------------------------------
-# BLOSUM62 substitution matrix (20x20)
-# ---------------------------------------------------------------------------
-
-BLOSUM62: dict[str, dict[str, int]] = {
-    "A": {"A":  4, "R": -1, "N": -2, "D": -2, "C":  0, "Q": -1, "E": -1, "G":  0, "H": -2, "I": -1, "L": -1, "K": -1, "M":  1, "F": -2, "P": -1, "S":  1, "T":  0, "W": -3, "Y": -2, "V":  0},
-    "R": {"A": -1, "R":  5, "N":  0, "D": -2, "C": -3, "Q":  1, "E":  0, "G": -2, "H":  0, "I": -3, "L": -2, "K":  2, "M": -1, "F": -3, "P": -2, "S": -1, "T": -1, "W": -3, "Y": -2, "V": -3},
-    "N": {"A": -2, "R":  0, "N":  6, "D":  1, "C": -3, "Q":  0, "E":  0, "G":  0, "H":  1, "I": -3, "L": -3, "K":  0, "M": -2, "F": -3, "P": -2, "S":  1, "T":  0, "W": -4, "Y": -2, "V": -3},
-    "D": {"A": -2, "R": -2, "N":  1, "D":  6, "C": -3, "Q":  0, "E":  2, "G": -1, "H": -1, "I": -3, "L": -4, "K": -1, "M": -3, "F": -3, "P": -1, "S":  0, "T": -1, "W": -4, "Y": -3, "V": -3},
-    "C": {"A":  0, "R": -3, "N": -3, "D": -3, "C":  9, "Q": -3, "E": -4, "G": -3, "H": -3, "I": -1, "L": -1, "K": -3, "M": -1, "F": -2, "P": -3, "S": -1, "T": -1, "W": -2, "Y": -2, "V": -1},
-    "Q": {"A": -1, "R":  1, "N":  0, "D":  0, "C": -3, "Q":  5, "E":  2, "G": -2, "H":  0, "I": -3, "L": -2, "K":  1, "M":  0, "F": -3, "P": -1, "S":  0, "T": -1, "W": -2, "Y": -1, "V": -2},
-    "E": {"A": -1, "R":  0, "N":  0, "D":  2, "C": -4, "Q":  2, "E":  5, "G": -2, "H":  0, "I": -3, "L": -3, "K":  1, "M": -2, "F": -3, "P": -1, "S":  0, "T": -1, "W": -3, "Y": -2, "V": -2},
-    "G": {"A":  0, "R": -2, "N":  0, "D": -1, "C": -3, "Q": -2, "E": -2, "G":  6, "H": -2, "I": -4, "L": -4, "K": -2, "M": -3, "F": -3, "P": -2, "S":  0, "T": -2, "W": -2, "Y": -3, "V": -3},
-    "H": {"A": -2, "R":  0, "N":  1, "D": -1, "C": -3, "Q":  0, "E":  0, "G": -2, "H":  8, "I": -3, "L": -3, "K": -1, "M": -2, "F": -1, "P": -2, "S": -1, "T": -2, "W": -2, "Y":  2, "V": -3},
-    "I": {"A": -1, "R": -3, "N": -3, "D": -3, "C": -1, "Q": -3, "E": -3, "G": -4, "H": -3, "I":  4, "L":  2, "K": -3, "M":  1, "F":  0, "P": -3, "S": -2, "T": -1, "W": -3, "Y": -1, "V":  3},
-    "L": {"A": -1, "R": -2, "N": -3, "D": -4, "C": -1, "Q": -2, "E": -3, "G": -4, "H": -3, "I":  2, "L":  4, "K": -2, "M":  2, "F":  0, "P": -3, "S": -2, "T": -1, "W": -2, "Y": -1, "V":  1},
-    "K": {"A": -1, "R":  2, "N":  0, "D": -1, "C": -3, "Q":  1, "E":  1, "G": -2, "H": -1, "I": -3, "L": -2, "K":  5, "M": -1, "F": -3, "P": -1, "S":  0, "T": -1, "W": -3, "Y": -2, "V": -2},
-    "M": {"A":  1, "R": -1, "N": -2, "D": -3, "C": -1, "Q":  0, "E": -2, "G": -3, "H": -2, "I":  1, "L":  2, "K": -1, "M":  5, "F":  0, "P": -2, "S": -1, "T": -1, "W": -1, "Y": -1, "V":  1},
-    "F": {"A": -2, "R": -3, "N": -3, "D": -3, "C": -2, "Q": -3, "E": -3, "G": -3, "H": -1, "I":  0, "L":  0, "K": -3, "M":  0, "F":  6, "P": -4, "S": -2, "T": -2, "W":  1, "Y":  3, "V": -1},
-    "P": {"A": -1, "R": -2, "N": -2, "D": -1, "C": -3, "Q": -1, "E": -1, "G": -2, "H": -2, "I": -3, "L": -3, "K": -1, "M": -2, "F": -4, "P":  7, "S": -1, "T": -1, "W": -4, "Y": -3, "V": -2},
-    "S": {"A":  1, "R": -1, "N":  1, "D":  0, "C": -1, "Q":  0, "E":  0, "G":  0, "H": -1, "I": -2, "L": -2, "K":  0, "M": -1, "F": -2, "P": -1, "S":  4, "T":  1, "W": -3, "Y": -2, "V": -2},
-    "T": {"A":  0, "R": -1, "N":  0, "D": -1, "C": -1, "Q": -1, "E": -1, "G": -2, "H": -2, "I": -1, "L": -1, "K": -1, "M": -1, "F": -2, "P": -1, "S":  1, "T":  5, "W": -2, "Y": -2, "V":  0},
-    "W": {"A": -3, "R": -3, "N": -4, "D": -4, "C": -2, "Q": -2, "E": -3, "G": -2, "H": -2, "I": -3, "L": -2, "K": -3, "M": -1, "F":  1, "P": -4, "S": -3, "T": -2, "W": 11, "Y":  2, "V": -3},
-    "Y": {"A": -2, "R": -2, "N": -2, "D": -3, "C": -2, "Q": -1, "E": -2, "G": -3, "H":  2, "I": -1, "L": -1, "K": -2, "M": -1, "F":  3, "P": -3, "S": -2, "T": -2, "W":  2, "Y":  7, "V": -1},
-    "V": {"A":  0, "R": -3, "N": -3, "D": -3, "C": -1, "Q": -2, "E": -2, "G": -3, "H": -3, "I":  3, "L":  1, "K": -2, "M":  1, "F": -1, "P": -2, "S": -2, "T":  0, "W": -3, "Y": -1, "V":  4},
-}
-
-# ---------------------------------------------------------------------------
-# Default MHC alleles
-# ---------------------------------------------------------------------------
-
-_DEFAULT_MHC_I_ALLELES = [
+DEFAULT_MHC_I_ALLELES: list[str] = [
     "HLA-A*02:01",
+    "HLA-A*01:01",
+    "HLA-A*03:01",
     "HLA-A*24:02",
     "HLA-B*07:02",
+    "HLA-B*08:01",
 ]
 
-_DEFAULT_MHC_II_ALLELES = [
+DEFAULT_MHC_II_ALLELES: list[str] = [
     "HLA-DRB1*01:01",
     "HLA-DRB1*04:01",
+    "HLA-DRB1*07:01",
 ]
 
-_DEFAULT_MHC_ALLELES = _DEFAULT_MHC_I_ALLELES + _DEFAULT_MHC_II_ALLELES
+POPULATION_COVERAGE: dict[str, dict[str, float]] = {
+    "HLA-A*02:01": {
+        "Caucasian": 28.0,
+        "Asian": 10.0,
+        "African": 5.0,
+        "Hispanic": 18.0,
+    },
+    "HLA-A*01:01": {
+        "Caucasian": 16.0,
+        "Asian": 2.0,
+        "African": 3.0,
+        "Hispanic": 8.0,
+    },
+    "HLA-A*03:01": {
+        "Caucasian": 14.0,
+        "Asian": 3.0,
+        "African": 4.0,
+        "Hispanic": 7.0,
+    },
+    "HLA-A*24:02": {
+        "Caucasian": 10.0,
+        "Asian": 15.0,
+        "African": 3.0,
+        "Hispanic": 12.0,
+    },
+    "HLA-B*07:02": {
+        "Caucasian": 12.0,
+        "Asian": 4.0,
+        "African": 6.0,
+        "Hispanic": 6.0,
+    },
+    "HLA-B*08:01": {
+        "Caucasian": 10.0,
+        "Asian": 1.0,
+        "African": 3.0,
+        "Hispanic": 4.0,
+    },
+    "HLA-DRB1*01:01": {
+        "Caucasian": 10.0,
+        "Asian": 5.0,
+        "African": 4.0,
+        "Hispanic": 6.0,
+    },
+    "HLA-DRB1*04:01": {
+        "Caucasian": 15.0,
+        "Asian": 8.0,
+        "African": 3.0,
+        "Hispanic": 12.0,
+    },
+    "HLA-DRB1*07:01": {
+        "Caucasian": 17.0,
+        "Asian": 6.0,
+        "African": 8.0,
+        "Hispanic": 10.0,
+    },
+}
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
+# Private backward-compat aliases
+_DEFAULT_MHC_I_ALLELES = DEFAULT_MHC_I_ALLELES
+_DEFAULT_MHC_II_ALLELES = DEFAULT_MHC_II_ALLELES
+_DEFAULT_MHC_ALLELES = DEFAULT_MHC_I_ALLELES + DEFAULT_MHC_II_ALLELES
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MHC binding: PSSM construction
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _make_pssm_row(
+    preferred: dict[str, float] | None = None,
+    disfavored: dict[str, float] | None = None,
+    default: float = 1.0,
+) -> dict[str, float]:
+    """Build a single PSSM position row.
+
+    Parameters
+    ----------
+    preferred : dict mapping AA -> score for preferred residues
+    disfavored : dict mapping AA -> score for disfavored residues
+    default : score for residues not mentioned in *preferred* or *disfavored*
+    """
+    row: dict[str, float] = {aa: default for aa in AMINO_ACIDS}
+    if preferred:
+        for aa, score in preferred.items():
+            if aa in row:
+                row[aa] = score
+    if disfavored:
+        for aa, score in disfavored.items():
+            if aa in row:
+                row[aa] = score
+    return row
+
+
+def _build_mhc_i_pssms() -> dict[str, list[dict[str, float]]]:
+    """Construct PSSMs for common MHC-I alleles."""
+
+    pssms: dict[str, list[dict[str, float]]] = {}
+
+    # --- HLA-A*02:01 ---
+    pssms["HLA-A*02:01"] = [
+        _make_pssm_row(
+            preferred={"L": 1.2, "M": 1.2, "I": 1.2, "V": 1.2, "A": 1.1, "F": 1.1},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.5, "R": 0.5},
+        ),
+        _make_pssm_row(
+            preferred={"L": 2.0, "M": 2.0, "I": 1.8, "V": 1.8},
+            disfavored={"D": 0.3, "E": 0.3, "K": 0.3, "R": 0.3, "P": 0.4},
+            default=0.8,
+        ),
+        _make_pssm_row(
+            preferred={"L": 1.1, "V": 1.1, "A": 1.1},
+            disfavored={"P": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"K": 1.1, "R": 1.1},
+            disfavored={"P": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"A": 1.1, "V": 1.1, "I": 1.1},
+            disfavored={"P": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"V": 1.1, "I": 1.1, "L": 1.1},
+            disfavored={"P": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"L": 1.1, "I": 1.1, "V": 1.1},
+            disfavored={"P": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"A": 1.1, "V": 1.1, "L": 1.1},
+            disfavored={"P": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"V": 1.5, "L": 1.5, "I": 1.3, "A": 1.2},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.4, "R": 0.4, "P": 0.4},
+            default=0.8,
+        ),
+    ]
+
+    # --- HLA-A*01:01 ---
+    pssms["HLA-A*01:01"] = [
+        _make_pssm_row(
+            preferred={"A": 1.1, "S": 1.1},
+            disfavored={"W": 0.5, "R": 0.5},
+        ),
+        _make_pssm_row(
+            preferred={"T": 1.8, "S": 1.6, "D": 1.5, "E": 1.5},
+            disfavored={"L": 0.4, "I": 0.4, "V": 0.5, "F": 0.4},
+            default=0.8,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"Y": 1.8, "F": 1.6},
+            disfavored={"K": 0.4, "R": 0.4, "D": 0.5, "E": 0.5},
+            default=0.8,
+        ),
+    ]
+
+    # --- HLA-A*03:01 ---
+    pssms["HLA-A*03:01"] = [
+        _make_pssm_row(
+            preferred={"A": 1.1, "S": 1.1},
+        ),
+        _make_pssm_row(
+            preferred={"V": 1.8, "I": 1.8, "L": 1.6, "M": 1.6},
+            disfavored={"D": 0.4, "E": 0.4, "N": 0.5, "Q": 0.5},
+            default=0.8,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 2.0, "R": 1.8, "H": 1.4},
+            disfavored={"D": 0.3, "E": 0.3, "S": 0.5, "T": 0.5},
+            default=0.7,
+        ),
+    ]
+
+    # --- HLA-A*24:02 ---
+    pssms["HLA-A*24:02"] = [
+        _make_pssm_row(
+            preferred={"Y": 1.2, "F": 1.1},
+        ),
+        _make_pssm_row(
+            preferred={"Y": 2.0, "F": 2.0, "W": 1.8},
+            disfavored={"D": 0.3, "E": 0.3, "K": 0.3, "R": 0.3, "P": 0.4},
+            default=0.7,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"F": 1.5, "L": 1.5, "I": 1.3},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.4, "R": 0.4},
+            default=0.8,
+        ),
+    ]
+
+    # --- HLA-B*07:02 ---
+    pssms["HLA-B*07:02"] = [
+        _make_pssm_row(
+            preferred={"A": 1.1, "P": 1.1},
+        ),
+        _make_pssm_row(
+            preferred={"P": 2.0, "A": 1.8},
+            disfavored={"D": 0.3, "E": 0.3, "K": 0.3, "R": 0.3, "W": 0.4},
+            default=0.7,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.5, "I": 1.5, "V": 1.3},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.4, "R": 0.4},
+            default=0.8,
+        ),
+    ]
+
+    # --- HLA-B*08:01 ---
+    pssms["HLA-B*08:01"] = [
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.8, "R": 1.8},
+            disfavored={"D": 0.3, "E": 0.3, "P": 0.4, "G": 0.5},
+            default=0.8,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.5, "I": 1.3, "V": 1.3},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.5},
+            default=0.8,
+        ),
+    ]
+
+    return pssms
+
+
+def _build_mhc_ii_pssms() -> dict[str, list[dict[str, float]]]:
+    """Construct PSSMs for common MHC-II alleles (core 9-mer)."""
+
+    pssms: dict[str, list[dict[str, float]]] = {}
+
+    # --- HLA-DRB1*01:01 ---
+    pssms["HLA-DRB1*01:01"] = [
+        _make_pssm_row(
+            preferred={"F": 1.8, "Y": 1.7, "W": 1.6, "L": 1.5, "I": 1.4, "V": 1.4, "M": 1.3},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.5, "R": 0.5},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.6, "S": 1.4, "T": 1.4, "N": 1.3, "G": 1.2},
+            disfavored={"W": 0.5, "F": 0.6, "Y": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.5, "I": 1.4, "V": 1.4, "M": 1.3, "F": 1.3},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.5},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.3, "R": 1.3, "N": 1.2, "Q": 1.2, "E": 1.1, "D": 1.1},
+        ),
+    ]
+
+    # --- HLA-DRB1*04:01 ---
+    pssms["HLA-DRB1*04:01"] = [
+        _make_pssm_row(
+            preferred={"F": 1.8, "Y": 1.7, "W": 1.6, "L": 1.3},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.5, "R": 0.5},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"D": 1.8, "E": 1.6},
+            disfavored={"K": 0.4, "R": 0.4, "W": 0.5},
+            default=0.8,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.6, "S": 1.4, "G": 1.3, "N": 1.2},
+            disfavored={"W": 0.5, "F": 0.6, "Y": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.4, "I": 1.3, "V": 1.3, "F": 1.3},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.5},
+            default=0.9,
+        ),
+    ]
+
+    # --- HLA-DRB1*07:01 ---
+    pssms["HLA-DRB1*07:01"] = [
+        _make_pssm_row(
+            preferred={"F": 1.6, "Y": 1.5, "L": 1.4, "I": 1.3, "V": 1.3},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.5, "R": 0.5},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.4, "S": 1.3, "T": 1.3, "N": 1.2},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.4, "I": 1.3, "V": 1.3, "F": 1.3},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.5},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.3, "R": 1.3, "N": 1.2, "Q": 1.2},
+        ),
+    ]
+
+    return pssms
+
+
+MHC_I_PSSM: dict[str, list[dict[str, float]]] = _build_mhc_i_pssms()
+MHC_II_PSSM: dict[str, list[dict[str, float]]] = _build_mhc_ii_pssms()
+
+# Backward compatibility: derive MHC_I_PREFERENCES / MHC_II_PREFERENCES
+# from the PSSMs so that ``allele in MHC_I_PREFERENCES`` still works.
+# Deprecated: use MHC_I_PSSM / MHC_II_PSSM instead.
+MHC_I_PREFERENCES: dict[str, dict[int, dict[str, float]]] = {
+    allele: {i: row for i, row in enumerate(pssm, 1)}
+    for allele, pssm in MHC_I_PSSM.items()
+}
+MHC_II_PREFERENCES: dict[str, dict[int, dict[str, float]]] = {
+    allele: {i: row for i, row in enumerate(pssm, 1)}
+    for allele, pssm in MHC_II_PSSM.items()
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MHC binding: data classes
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 @dataclass
-class ImmunogenicityResult:
-    """Result of immunogenicity scoring for a protein sequence."""
+class MHCBindingResult:
+    """Result of a single peptide-MHC binding prediction."""
+
+    allele: str
+    peptide: str
+    start_position: int
+    end_position: int
+    binding_score: float  # 0 to 1, 1 = strong binder
+    ic50_nm: float | None  # estimated IC50 in nM, if computable
+    binding_class: str  # "strong_binder" | "moderate_binder" | "weak_binder" | "non_binder"
+    anchor_residues: dict[int, str]  # position -> AA at anchor positions
+    anchor_scores: dict[int, float]  # position -> binding contribution
+
+    @property
+    def score(self) -> float:
+        """Alias for ``binding_score`` for backward compatibility."""
+        return self.binding_score
+
+    @property
+    def position(self) -> int:
+        """Alias for ``start_position`` for backward compatibility."""
+        return self.start_position
+
+
+@dataclass
+class MHCPredictionResult:
+    """Aggregated MHC binding prediction for a protein."""
 
     protein: str
-    overall_score: float  # 0 (not immunogenic) to 1 (highly immunogenic)
-    immunogenicity_class: str  # "low", "moderate", "high"
-    t_cell_score: float  # T-cell epitope contribution
-    b_cell_score: float  # B-cell epitope contribution
-    t_cell_epitopes: list[dict]  # predicted T-cell epitopes
-    b_cell_epitopes: list[dict]  # predicted B-cell epitopes
-    deimmunization_candidates: list[dict]  # suggested mutations
-    method: str = "sequence_based"
+    mhc_i_results: list[MHCBindingResult]
+    mhc_ii_results: list[MHCBindingResult]
+    strong_binders: int
+    weak_binders: int
+    non_binders: int
+    binding_profile: dict[str, float]  # allele -> max binding score
+
+    @property
+    def predictions(self) -> list[MHCBindingResult]:
+        """All predictions combined (MHC-I + MHC-II)."""
+        return self.mhc_i_results + self.mhc_ii_results
+
+    @property
+    def class_i_results(self) -> list[MHCBindingResult]:
+        """Alias for ``mhc_i_results`` for backward compatibility."""
+        return self.mhc_i_results
+
+    @property
+    def class_ii_results(self) -> list[MHCBindingResult]:
+        """Alias for ``mhc_ii_results`` for backward compatibility."""
+        return self.mhc_ii_results
+
+    @property
+    def binders(self) -> list[MHCBindingResult]:
+        """All results classified as strong or moderate binders."""
+        return [
+            r for r in self.predictions
+            if r.binding_class in ("strong_binder", "moderate_binder")
+        ]
+
+    @property
+    def binding_rate(self) -> float:
+        """Fraction of peptides that are binders (strong or moderate)."""
+        total = len(self.predictions)
+        if total == 0:
+            return 0.0
+        return len(self.binders) / total
+
+    @property
+    def population_coverage(self) -> float:
+        """Estimated population coverage based on binding profile.
+
+        Uses the fraction of alleles that have at least one strong
+        or moderate binder (IC50 < 500 nM, i.e. binding_score > 0.5),
+        weighted by population frequency.
+        """
+        if not self.binding_profile:
+            return 0.0
+        total_coverage = 0.0
+        for allele, max_score in self.binding_profile.items():
+            if max_score > 0.5:
+                cov = POPULATION_COVERAGE.get(allele, {})
+                freq = cov.get("Caucasian", 0.0)
+                total_coverage += freq / 100.0
+        return min(1.0, total_coverage)
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# MHC binding: utility functions
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def score_peptide_pssm(
+    peptide: str,
+    pssm: list[dict[str, float]] | str,
+) -> float:
+    """Compute binding score from a PSSM.
+
+    Uses the geometric mean of position-specific scores and normalises
+    to the [0, 1] range.
+
+    Parameters
+    ----------
+    peptide : str
+        Amino-acid sequence of the peptide (must equal PSSM length).
+    pssm : list[dict[str, float]] or str
+        Position-specific scoring matrix, one dict per position.
+        Alternatively, an allele name string (e.g. ``"HLA-A*02:01"``)
+        which will be looked up in :data:`MHC_I_PSSM` and
+        :data:`MHC_II_PSSM`.
+
+    Returns
+    -------
+    float
+        Normalised binding score in [0, 1].
+    """
+    if isinstance(pssm, str):
+        allele = pssm
+        lookup = MHC_I_PSSM.get(allele) or MHC_II_PSSM.get(allele)
+        if lookup is None:
+            logger.debug("No PSSM for allele %s — returning 0.0", allele)
+            return 0.0
+        pssm = lookup
+
+    if len(peptide) != len(pssm):
+        logger.warning(
+            "Peptide length %d does not match PSSM length %d — returning 0.0",
+            len(peptide),
+            len(pssm),
+        )
+        return 0.0
+
+    scores: list[float] = []
+    for i, aa in enumerate(peptide):
+        aa_upper = aa.upper()
+        if aa_upper not in pssm[i]:
+            scores.append(0.3)
+        else:
+            scores.append(pssm[i][aa_upper])
+
+    log_sum = sum(math.log(max(s, 1e-10)) for s in scores)
+    geo_mean = math.exp(log_sum / len(scores))
+
+    max_scores: list[float] = []
+    min_scores: list[float] = []
+    for pos_dict in pssm:
+        vals = list(pos_dict.values())
+        max_scores.append(max(vals))
+        min_scores.append(min(vals))
+    max_log_sum = sum(math.log(max(s, 1e-10)) for s in max_scores)
+    max_geo_mean = math.exp(max_log_sum / len(max_scores))
+    min_log_sum = sum(math.log(max(s, 1e-10)) for s in min_scores)
+    min_geo_mean = math.exp(min_log_sum / len(min_scores))
+
+    if max_geo_mean <= min_geo_mean:
+        return 0.0
+
+    raw = (geo_mean - min_geo_mean) / (max_geo_mean - min_geo_mean)
+    raw = max(0.0, min(1.0, raw))
+
+    CONTRAST_POWER = 2.0
+    normalised = raw ** CONTRAST_POWER
+
+    return max(0.0, min(1.0, normalised))
+
+
+def binding_score_to_ic50(score: float) -> float:
+    """Map a binding score to an estimated IC50 (nM) using a log-linear mapping.
+
+    Parameters
+    ----------
+    score : float
+        Normalised binding score in [0, 1].
+
+    Returns
+    -------
+    float
+        Estimated IC50 in nM.
+
+    Notes
+    -----
+    Effective formula: IC50 = 10 ** (3.949 - 2.5 * score), calibrated so:
+      - score ~0.9 -> ~50 nM (strong)
+      - score ~0.5 -> ~500 nM (moderate)
+      - score ~0.1 -> ~5000 nM (weak)
+    """
+    clamped = max(0.0, min(1.0, score))
+    return 10.0 ** (3.949 - 2.5 * clamped)
+
+
+def classify_binding(ic50: float) -> str:
+    """Classify a peptide by its IC50 value.
+
+    Parameters
+    ----------
+    ic50 : float
+        IC50 in nM.
+
+    Returns
+    -------
+    str
+        One of ``"strong_binder"``, ``"moderate_binder"``,
+        ``"weak_binder"``, ``"non_binder"``.
+    """
+    if ic50 < 50:
+        return "strong_binder"
+    elif ic50 <= 500:
+        return "moderate_binder"
+    elif ic50 <= 5000:
+        return "weak_binder"
+    else:
+        return "non_binder"
+
+
+def _identify_anchor_positions(
+    peptide: str,
+    pssm: list[dict[str, float]],
+    threshold: float = 2.5,
+) -> tuple[dict[int, str], dict[int, float]]:
+    """Identify anchor residues in a peptide relative to a PSSM.
+
+    An anchor position is one where the position has high selectivity
+    (the ratio of max/min score in the PSSM row exceeds *threshold*).
+
+    Returns
+    -------
+    anchor_residues : dict[int, str]
+        Position index -> amino acid at that anchor position.
+    anchor_scores : dict[int, float]
+        Position index -> the PSSM score at that position.
+    """
+    anchor_residues: dict[int, str] = {}
+    anchor_scores: dict[int, float] = {}
+
+    for i, aa in enumerate(peptide):
+        aa_upper = aa.upper()
+        row = pssm[i]
+        row_values = list(row.values())
+        selectivity = max(row_values) / max(min(row_values), 1e-10)
+        if selectivity >= threshold:
+            score = row.get(aa_upper, 0.5)
+            anchor_residues[i] = aa_upper
+            anchor_scores[i] = score
+
+    return anchor_residues, anchor_scores
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MHC binding: prediction functions
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def predict_mhc_i_binding(
+    protein: str,
+    alleles: list[str] | None = None,
+    peptide_length: int = 9,
+) -> list[MHCBindingResult]:
+    """Predict MHC class I binding for overlapping peptides.
+
+    Parameters
+    ----------
+    protein : str
+        Full protein amino-acid sequence.
+    alleles : list[str] or None
+        MHC-I alleles to evaluate. Defaults to :data:`DEFAULT_MHC_I_ALLELES`.
+    peptide_length : int
+        Length of peptides to extract (default 9).
+
+    Returns
+    -------
+    list[MHCBindingResult]
+        Binding predictions for every peptide x allele combination.
+    """
+    if alleles is None:
+        alleles = DEFAULT_MHC_I_ALLELES
+
+    if not protein or peptide_length < 1:
+        return []
+
+    results: list[MHCBindingResult] = []
+
+    for allele in alleles:
+        pssm = MHC_I_PSSM.get(allele)
+        if pssm is None:
+            logger.debug("No PSSM for allele %s — skipping", allele)
+            continue
+
+        if len(pssm) != peptide_length:
+            logger.debug(
+                "PSSM length %d does not match peptide_length %d for %s — skipping",
+                len(pssm),
+                peptide_length,
+                allele,
+            )
+            continue
+
+        for start in range(len(protein) - peptide_length + 1):
+            peptide = protein[start : start + peptide_length]
+
+            if any(c.upper() not in _AA_INDEX for c in peptide):
+                continue
+
+            score = score_peptide_pssm(peptide, pssm)
+            ic50 = binding_score_to_ic50(score)
+            binding_class = classify_binding(ic50)
+            anchor_residues, anchor_scores = _identify_anchor_positions(peptide, pssm)
+
+            results.append(
+                MHCBindingResult(
+                    allele=allele,
+                    peptide=peptide,
+                    start_position=start,
+                    end_position=start + peptide_length - 1,
+                    binding_score=round(score, 6),
+                    ic50_nm=round(ic50, 2),
+                    binding_class=binding_class,
+                    anchor_residues=anchor_residues,
+                    anchor_scores={k: round(v, 4) for k, v in anchor_scores.items()},
+                )
+            )
+
+    logger.info(
+        "MHC-I prediction: %d results for %d alleles, protein length %d",
+        len(results),
+        len(alleles),
+        len(protein),
+    )
+    return results
+
+
+def predict_mhc_ii_binding(
+    protein: str,
+    alleles: list[str] | None = None,
+    peptide_length: int = 15,
+) -> list[MHCBindingResult]:
+    """Predict MHC class II binding for overlapping 15-mer peptides.
+
+    MHC-II binding is evaluated by scanning all possible 9-mer core
+    registers within each 15-mer peptide and keeping the best-scoring
+    core.
+
+    Parameters
+    ----------
+    protein : str
+        Full protein amino-acid sequence.
+    alleles : list[str] or None
+        MHC-II alleles to evaluate. Defaults to :data:`DEFAULT_MHC_II_ALLELES`.
+    peptide_length : int
+        Length of peptides to extract (default 15).
+
+    Returns
+    -------
+    list[MHCBindingResult]
+        Binding predictions for every peptide x allele combination.
+    """
+    if alleles is None:
+        alleles = DEFAULT_MHC_II_ALLELES
+
+    if not protein or peptide_length < 9:
+        return []
+
+    core_length = 9
+
+    results: list[MHCBindingResult] = []
+
+    for allele in alleles:
+        pssm = MHC_II_PSSM.get(allele)
+        if pssm is None:
+            logger.debug("No PSSM for allele %s — skipping", allele)
+            continue
+
+        if len(pssm) != core_length:
+            logger.debug(
+                "PSSM length %d != core length %d for %s — skipping",
+                len(pssm),
+                core_length,
+                allele,
+            )
+            continue
+
+        for start in range(len(protein) - peptide_length + 1):
+            peptide = protein[start : start + peptide_length]
+
+            if any(c.upper() not in _AA_INDEX for c in peptide):
+                continue
+
+            best_score = 0.0
+            best_core = peptide[:core_length]
+            best_core_offset = 0
+
+            for core_start in range(peptide_length - core_length + 1):
+                core = peptide[core_start : core_start + core_length]
+                score = score_peptide_pssm(core, pssm)
+                if score > best_score:
+                    best_score = score
+                    best_core = core
+                    best_core_offset = core_start
+
+            ic50 = binding_score_to_ic50(best_score)
+            binding_class = classify_binding(ic50)
+
+            anchor_residues, anchor_scores = _identify_anchor_positions(
+                best_core, pssm
+            )
+
+            adjusted_anchors: dict[int, str] = {
+                k + best_core_offset: v for k, v in anchor_residues.items()
+            }
+            adjusted_scores: dict[int, float] = {
+                k + best_core_offset: round(v, 4)
+                for k, v in anchor_scores.items()
+            }
+
+            results.append(
+                MHCBindingResult(
+                    allele=allele,
+                    peptide=peptide,
+                    start_position=start,
+                    end_position=start + peptide_length - 1,
+                    binding_score=round(best_score, 6),
+                    ic50_nm=round(ic50, 2),
+                    binding_class=binding_class,
+                    anchor_residues=adjusted_anchors,
+                    anchor_scores=adjusted_scores,
+                )
+            )
+
+    logger.info(
+        "MHC-II prediction: %d results for %d alleles, protein length %d",
+        len(results),
+        len(alleles),
+        len(protein),
+    )
+    return results
+
+
+def predict_all(
+    protein: str,
+    mhc_i_alleles: list[str] | None = None,
+    mhc_ii_alleles: list[str] | None = None,
+) -> MHCPredictionResult:
+    """Run both MHC-I and MHC-II predictions and aggregate results.
+
+    Parameters
+    ----------
+    protein : str
+        Full protein amino-acid sequence.
+    mhc_i_alleles : list[str] or None
+        MHC-I alleles (defaults to :data:`DEFAULT_MHC_I_ALLELES`).
+    mhc_ii_alleles : list[str] or None
+        MHC-II alleles (defaults to :data:`DEFAULT_MHC_II_ALLELES`).
+
+    Returns
+    -------
+    MHCPredictionResult
+        Aggregated binding prediction.
+    """
+    mhc_i_results = predict_mhc_i_binding(protein, alleles=mhc_i_alleles)
+    mhc_ii_results = predict_mhc_ii_binding(protein, alleles=mhc_ii_alleles)
+
+    all_results = mhc_i_results + mhc_ii_results
+
+    strong_binders = sum(
+        1 for r in all_results if r.binding_class == "strong_binder"
+    )
+    moderate_binders = sum(
+        1 for r in all_results if r.binding_class == "moderate_binder"
+    )
+    weak_binders = sum(
+        1 for r in all_results if r.binding_class == "weak_binder"
+    )
+    non_binders = sum(
+        1 for r in all_results if r.binding_class == "non_binder"
+    )
+
+    binding_profile: dict[str, float] = {}
+    for r in all_results:
+        if r.allele not in binding_profile or r.binding_score > binding_profile[r.allele]:
+            binding_profile[r.allele] = round(r.binding_score, 6)
+
+    result = MHCPredictionResult(
+        protein=protein,
+        mhc_i_results=mhc_i_results,
+        mhc_ii_results=mhc_ii_results,
+        strong_binders=strong_binders + moderate_binders,
+        weak_binders=weak_binders,
+        non_binders=non_binders,
+        binding_profile=binding_profile,
+    )
+
+    logger.info(
+        "predict_all: %d MHC-I, %d MHC-II results; "
+        "strong+moderate=%d, weak=%d, non=%d",
+        len(mhc_i_results),
+        len(mhc_ii_results),
+        result.strong_binders,
+        result.weak_binders,
+        result.non_binders,
+    )
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Helper functions
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _validate_protein(protein: str) -> str:
@@ -163,16 +948,6 @@ def _validate_protein(protein: str) -> str:
     return protein
 
 
-def _is_mhc_i_allele(allele: str) -> bool:
-    """Return True if *allele* is a recognised MHC class I allele."""
-    return allele in MHC_I_PREFERENCES
-
-
-def _is_mhc_ii_allele(allele: str) -> bool:
-    """Return True if *allele* is a recognised MHC class II allele."""
-    return allele in MHC_II_PREFERENCES
-
-
 def _peptide_hydrophobicity_score(peptide: str) -> float:
     """Score the hydrophobicity of a peptide core (0-1 range).
 
@@ -180,12 +955,10 @@ def _peptide_hydrophobicity_score(peptide: str) -> float:
     """
     if len(peptide) < 3:
         return 0.0
-    # Core excludes anchor positions
     core = peptide[1:-1]
     if not core:
         return 0.0
-    avg_hydro = sum(_HYDROPHOBICITY.get(aa, 0.0) for aa in core) / len(core)
-    # Normalise: typical range is roughly -4.5 to +4.5
+    avg_hydro = sum(HYDROPATHY.get(aa, 0.0) for aa in core) / len(core)
     normalised = (avg_hydro + 4.5) / 9.0
     return max(0.0, min(1.0, normalised))
 
@@ -200,93 +973,30 @@ def _peptide_charge_score(peptide: str) -> float:
     if len(peptide) == 0:
         return 0.0
     ratio = min(charged, neutral) / max(charged, neutral, 1)
-    # Perfect balance when charged ~ neutral
     return min(1.0, ratio * 1.5)
 
 
-# ---------------------------------------------------------------------------
+def _score_peptide_for_allele(peptide: str, allele: str) -> float:
+    """Score a peptide against an MHC allele using PSSM.
+
+    For MHC-I, the peptide must match the PSSM length.
+    For MHC-II, scans all 9-mer cores within the peptide.
+    """
+    if allele in MHC_I_PSSM:
+        return score_peptide_pssm(peptide, allele)
+    elif allele in MHC_II_PSSM:
+        best_score = 0.0
+        for offset in range(len(peptide) - 8):
+            core = peptide[offset : offset + 9]
+            s = score_peptide_pssm(core, allele)
+            best_score = max(best_score, s)
+        return best_score
+    return 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # T-cell epitope prediction
-# ---------------------------------------------------------------------------
-
-
-def _score_mhc_i_peptide(
-    peptide: str,
-    allele: str,
-) -> float:
-    """Score a 9-mer peptide against an MHC-I allele.
-
-    Combines anchor position preferences, hydrophobicity, and charge
-    balance into a single 0-1 binding score.
-    """
-    prefs = MHC_I_PREFERENCES.get(allele)
-    if prefs is None:
-        return 0.0
-    if len(peptide) != 9:
-        return 0.0
-
-    # Anchor contribution (weight 0.55)
-    anchor_score = 0.0
-    anchor_count = 0
-    for pos, aa_prefs in prefs.items():
-        if 1 <= pos <= len(peptide):
-            aa = peptide[pos - 1]
-            anchor_score += aa_prefs.get(aa, 0.0)
-            anchor_count += 1
-    if anchor_count > 0:
-        anchor_score /= anchor_count
-
-    # Hydrophobicity contribution (weight 0.25)
-    hydro_score = _peptide_hydrophobicity_score(peptide)
-
-    # Charge contribution (weight 0.20)
-    charge_score = _peptide_charge_score(peptide)
-
-    raw = 0.55 * anchor_score + 0.25 * hydro_score + 0.20 * charge_score
-    return max(0.0, min(1.0, raw))
-
-
-def _score_mhc_ii_peptide(
-    peptide: str,
-    allele: str,
-) -> float:
-    """Score a peptide (9-mer core) against an MHC-II allele.
-
-    MHC-II binding cores are typically 9 residues but the flanking
-    residues are variable.  We score the 9-residue core starting at
-    each possible offset and return the best score.
-    """
-    prefs = MHC_II_PREFERENCES.get(allele)
-    if prefs is None:
-        return 0.0
-
-    best = 0.0
-    for offset in range(len(peptide) - 8):
-        core = peptide[offset : offset + 9]
-        anchor_score = 0.0
-        anchor_count = 0
-        for pos, aa_prefs in prefs.items():
-            if 1 <= pos <= len(core):
-                aa = core[pos - 1]
-                anchor_score += aa_prefs.get(aa, 0.0)
-                anchor_count += 1
-        if anchor_count > 0:
-            anchor_score /= anchor_count
-        hydro_score = _peptide_hydrophobicity_score(core)
-        charge_score = _peptide_charge_score(core)
-        raw = 0.55 * anchor_score + 0.25 * hydro_score + 0.20 * charge_score
-        raw = max(0.0, min(1.0, raw))
-        if raw > best:
-            best = raw
-    return best
-
-
-def _binding_class(score: float) -> str:
-    """Classify a binding score."""
-    if score > 0.8:
-        return "strong_binder"
-    if score >= 0.5:
-        return "weak_binder"
-    return "non_binder"
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def predict_t_cell_epitopes(
@@ -296,7 +1006,7 @@ def predict_t_cell_epitopes(
 ) -> list[dict]:
     """Predict T-cell epitopes in a protein sequence.
 
-    Uses position-specific scoring for MHC-I (9-mers) and MHC-II
+    Uses PSSM-based scoring for MHC-I (9-mers) and MHC-II
     (15-mers with 9-mer core scanning) alleles.
 
     Parameters
@@ -304,8 +1014,8 @@ def predict_t_cell_epitopes(
     protein : str
         Amino-acid sequence (one-letter codes).
     mhc_alleles : list[str] | None
-        MHC alleles to evaluate.  Defaults to HLA-A*02:01,
-        HLA-A*24:02, HLA-B*07:02, HLA-DRB1*01:01.
+        MHC alleles to evaluate.  Defaults to all alleles in
+        :data:`DEFAULT_MHC_I_ALLELES` + :data:`DEFAULT_MHC_II_ALLELES`.
     peptide_length : int
         Length of the sliding window for MHC-I peptides (default 9).
         MHC-II peptides are always scanned as 15-mers internally.
@@ -317,62 +1027,894 @@ def predict_t_cell_epitopes(
         binding_class.
     """
     protein = _validate_protein(protein)
-    alleles = mhc_alleles if mhc_alleles is not None else _DEFAULT_MHC_ALLELES
+
+    if mhc_alleles is not None:
+        mhc_i_alleles = [a for a in mhc_alleles if a in MHC_I_PSSM]
+        mhc_ii_alleles = [a for a in mhc_alleles if a in MHC_II_PSSM]
+        unrecognised = set(mhc_alleles) - set(mhc_i_alleles) - set(mhc_ii_alleles)
+        for allele in unrecognised:
+            logger.warning("Unrecognised MHC allele: %s — skipping", allele)
+    else:
+        mhc_i_alleles = DEFAULT_MHC_I_ALLELES
+        mhc_ii_alleles = DEFAULT_MHC_II_ALLELES
 
     epitopes: list[dict] = []
 
-    for allele in alleles:
-        if _is_mhc_i_allele(allele):
-            # MHC-I: sliding window of *peptide_length* (default 9)
-            for i in range(len(protein) - peptide_length + 1):
-                pep = protein[i : i + peptide_length]
-                score = _score_mhc_i_peptide(pep, allele)
-                epitopes.append(
-                    {
-                        "start": i,
-                        "end": i + peptide_length,
-                        "peptide": pep,
-                        "score": round(score, 4),
-                        "allele": allele,
-                        "binding_class": _binding_class(score),
-                    }
-                )
-        elif _is_mhc_ii_allele(allele):
-            # MHC-II: 15-mer sliding window with 9-mer core scoring
-            mhc_ii_window = 15
-            for i in range(len(protein) - mhc_ii_window + 1):
-                pep = protein[i : i + mhc_ii_window]
-                score = _score_mhc_ii_peptide(pep, allele)
-                epitopes.append(
-                    {
-                        "start": i,
-                        "end": i + mhc_ii_window,
-                        "peptide": pep,
-                        "score": round(score, 4),
-                        "allele": allele,
-                        "binding_class": _binding_class(score),
-                    }
-                )
-        else:
-            logger.warning("Unrecognised MHC allele: %s — skipping", allele)
+    # MHC-I predictions
+    if mhc_i_alleles:
+        mhc_i_results = predict_mhc_i_binding(protein, mhc_i_alleles, peptide_length)
+        for r in mhc_i_results:
+            epitopes.append({
+                "start": r.start_position,
+                "end": r.end_position + 1,  # exclusive
+                "peptide": r.peptide,
+                "score": round(r.binding_score, 4),
+                "allele": r.allele,
+                "binding_class": r.binding_class,
+            })
 
-    # Sort by score descending
+    # MHC-II predictions
+    if mhc_ii_alleles:
+        mhc_ii_results = predict_mhc_ii_binding(protein, mhc_ii_alleles)
+        for r in mhc_ii_results:
+            epitopes.append({
+                "start": r.start_position,
+                "end": r.end_position + 1,  # exclusive
+                "peptide": r.peptide,
+                "score": round(r.binding_score, 4),
+                "allele": r.allele,
+                "binding_class": r.binding_class,
+            })
+
     epitopes.sort(key=lambda e: e["score"], reverse=True)
     return epitopes
 
 
-# ---------------------------------------------------------------------------
-# B-cell epitope prediction
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# B-cell epitope: amino acid scales
+# ═══════════════════════════════════════════════════════════════════════════
+
+ANTIGENICITY_SCALE: dict[str, float] = {
+    # Kolaskar-Tongaonkar antigenicity scale
+    "A": 1.064, "R": 1.008, "N": 0.873, "D": 1.026,
+    "C": 1.412, "E": 0.895, "Q": 1.091, "G": 0.842,
+    "H": 1.105, "I": 1.142, "L": 1.170, "K": 0.933,
+    "M": 1.207, "F": 1.279, "P": 0.658, "S": 0.772,
+    "T": 0.789, "W": 1.190, "Y": 1.161, "V": 1.132,
+}
+
+PARKER_SCALE: dict[str, float] = {
+    # Parker hydrophilicity scale (Parker et al. 1986)
+    "A": -1.01, "R": 1.40, "N": 0.81, "D": 1.21,
+    "C": -1.20, "E": 1.64, "Q": 0.96, "G": -0.16,
+    "H": 0.56, "I": -1.42, "L": -1.42, "K": 1.73,
+    "M": -1.27, "F": -1.42, "P": 0.26, "S": 0.52,
+    "T": -0.19, "W": -1.07, "Y": -0.31, "V": -1.07,
+}
+
+CHOU_FASMAN_TURN: dict[str, float] = {
+    # Chou-Fasman beta-turn propensity (Chou & Fasman 1974)
+    "A": 0.060, "R": 0.095, "N": 0.147, "D": 0.161,
+    "C": 0.108, "E": 0.056, "Q": 0.098, "G": 0.102,
+    "H": 0.140, "I": 0.043, "L": 0.053, "K": 0.101,
+    "M": 0.068, "F": 0.059, "P": 0.301, "S": 0.120,
+    "T": 0.086, "W": 0.077, "Y": 0.114, "V": 0.050,
+}
+
+EMINI_SCALE: dict[str, float] = {
+    # Emini surface probability scale (Emini et al. 1985)
+    "A": 0.510, "R": 1.008, "N": 0.849, "D": 0.628,
+    "C": 0.358, "E": 0.977, "Q": 0.993, "G": 0.471,
+    "H": 0.873, "I": 0.296, "L": 0.332, "K": 1.027,
+    "M": 0.411, "F": 0.328, "P": 0.709, "S": 0.643,
+    "T": 0.549, "W": 0.307, "Y": 0.361, "V": 0.265,
+}
+
+_FLEXIBILITY_SCALE: dict[str, float] = {
+    # Flexibility scale used by the BepiPred-like composite method
+    "A": 0.360, "R": 0.530, "N": 0.460, "D": 0.510,
+    "C": 0.350, "E": 0.500, "Q": 0.490, "G": 0.540,
+    "H": 0.320, "I": 0.460, "L": 0.370, "K": 0.470,
+    "M": 0.300, "F": 0.310, "P": 0.510, "S": 0.510,
+    "T": 0.440, "W": 0.310, "Y": 0.420, "V": 0.390,
+}
+
+ALL_SCALES: dict[str, dict[str, float]] = {
+    "kolaskar_tongaonkar": ANTIGENICITY_SCALE,
+    "parker_hydrophilicity": PARKER_SCALE,
+    "chou_fasman": CHOU_FASMAN_TURN,
+    "eea": EMINI_SCALE,
+    "bepipred_flexibility": _FLEXIBILITY_SCALE,
+}
+
+# 3-letter to 1-letter amino acid mapping (for PDB parsing)
+_THREE_TO_ONE: dict[str, str] = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D",
+    "CYS": "C", "GLN": "Q", "GLU": "E", "GLY": "G",
+    "HIS": "H", "ILE": "I", "LEU": "L", "LYS": "K",
+    "MET": "M", "PHE": "F", "PRO": "P", "SER": "S",
+    "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+}
+
+# Backward compatibility alias — deprecated, use ANTIGENICITY_SCALE
+ANTIGENICITY_PROPENSITY: dict[str, float] = ANTIGENICITY_SCALE
+
+# ═══════════════════════════════════════════════════════════════════════════
+# B-cell epitope: data classes
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class EpitopeRegion:
+    """A predicted B-cell epitope region."""
+
+    start: int          # 0-indexed start position
+    end: int            # exclusive end position
+    peptide: str
+    score: float        # 0 to 1
+    method: str         # "kolaskar_tongaonkar", "bepipred", "parker_hydrophilicity",
+                        # "chou_fasman", "eea", "consensus", "conformational"
+    is_linear: bool
+    properties: dict = field(default_factory=dict)
+
+
+@dataclass
+class EpitopePredictionResult:
+    """Combined B-cell epitope prediction result."""
+
+    protein: str
+    linear_epitopes: list[EpitopeRegion]
+    conformational_epitopes: list[EpitopeRegion]   # empty if no structure provided
+    per_residue_score: list[float]                  # combined epitope propensity per residue
+    epitope_coverage: float                         # fraction of residues in predicted epitopes
+    methods_used: list[str]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# B-cell epitope: internal helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _sliding_window_average(values: list[float], window: int) -> list[float]:
+    """Compute sliding window average of a list of values."""
+    n = len(values)
+    if n == 0 or window <= 0:
+        return []
+    half = window // 2
+    result: list[float] = []
+    for i in range(n):
+        start = max(0, i - half)
+        end = min(n, i + half + 1)
+        result.append(sum(values[start:end]) / (end - start))
+    return result
+
+
+def _normalize_01(scores: list[float]) -> list[float]:
+    """Min-max normalize a list of scores to [0, 1]."""
+    if not scores:
+        return []
+    min_s = min(scores)
+    max_s = max(scores)
+    if max_s - min_s > 1e-10:
+        return [(s - min_s) / (max_s - min_s) for s in scores]
+    return [0.5] * len(scores)
+
+
+def _find_regions(
+    norm_scores: list[float],
+    protein: str,
+    method: str,
+    threshold: float = 0.5,
+    min_length: int = 6,
+    is_linear: bool = True,
+    extra_props: dict | None = None,
+    raw_scores: list[float] | None = None,
+) -> list[EpitopeRegion]:
+    """Find contiguous regions where normalized scores exceed threshold.
+
+    Args:
+        norm_scores: Per-residue scores normalized to [0, 1].
+        protein: Amino acid sequence.
+        method: Method name for the EpitopeRegion.
+        threshold: Normalized score threshold.
+        min_length: Minimum region length in residues.
+        is_linear: Whether the epitope is linear.
+        extra_props: Additional properties to include.
+        raw_scores: Raw (un-normalized) scores for property recording.
+
+    Returns:
+        List of EpitopeRegion objects.
+    """
+    if not norm_scores:
+        return []
+
+    regions: list[EpitopeRegion] = []
+    in_region = False
+    region_start = 0
+
+    for i, s in enumerate(norm_scores):
+        if s >= threshold and not in_region:
+            in_region = True
+            region_start = i
+        elif s < threshold and in_region:
+            in_region = False
+            if i - region_start >= min_length:
+                _add_region(
+                    regions, norm_scores, raw_scores, protein,
+                    region_start, i, method, is_linear, extra_props,
+                )
+
+    if in_region:
+        i = len(norm_scores)
+        if i - region_start >= min_length:
+            _add_region(
+                regions, norm_scores, raw_scores, protein,
+                region_start, i, method, is_linear, extra_props,
+            )
+
+    return regions
+
+
+def _add_region(
+    regions: list[EpitopeRegion],
+    norm_scores: list[float],
+    raw_scores: list[float] | None,
+    protein: str,
+    start: int,
+    end: int,
+    method: str,
+    is_linear: bool,
+    extra_props: dict | None,
+) -> None:
+    """Append a single EpitopeRegion to the list."""
+    length = end - start
+    avg_score = sum(norm_scores[start:end]) / length
+    props: dict = {}
+    if raw_scores is not None:
+        props["raw_score_avg"] = round(sum(raw_scores[start:end]) / length, 4)
+    if extra_props:
+        props.update(extra_props)
+    regions.append(EpitopeRegion(
+        start=start,
+        end=end,
+        peptide=protein[start:end],
+        score=round(avg_score, 4),
+        method=method,
+        is_linear=is_linear,
+        properties=props,
+    ))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# B-cell epitope: prediction methods
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def predict_kolaskar_tongaonkar(
+    protein: str,
+    window: int = 7,
+    threshold: float = 1.0,
+) -> list[EpitopeRegion]:
+    """Predict B-cell epitopes using the Kolaskar-Tongaonkar antigenicity scale.
+
+    Kolaskar & Tongaonkar (1990) developed an antigenicity scale based on
+    the frequency of amino acids in known antigenic determinants. Regions
+    with higher antigenicity scores are more likely to be epitopes.
+
+    Args:
+        protein: Amino acid sequence (1-letter codes).
+        window: Sliding window size for averaging.
+        threshold: Antigenicity threshold (default 1.0).
+
+    Returns:
+        List of EpitopeRegion predictions.
+    """
+    if not protein:
+        return []
+
+    protein = protein.upper()
+
+    raw_scores = [ANTIGENICITY_SCALE.get(aa, 1.0) for aa in protein]
+    smoothed = _sliding_window_average(raw_scores, window)
+    norm_scores = _normalize_01(smoothed)
+
+    min_s = min(smoothed) if smoothed else 0.0
+    max_s = max(smoothed) if smoothed else 1.0
+    if max_s - min_s > 1e-10:
+        norm_threshold = (threshold - min_s) / (max_s - min_s)
+        norm_threshold = max(0.0, min(1.0, norm_threshold))
+    else:
+        norm_threshold = 0.5
+
+    return _find_regions(
+        norm_scores, protein, "kolaskar_tongaonkar",
+        threshold=norm_threshold,
+        min_length=6,
+        is_linear=True,
+        extra_props={"window": window, "threshold": threshold},
+        raw_scores=smoothed,
+    )
+
+
+def predict_parker_hydrophilicity(
+    protein: str,
+    window: int = 7,
+) -> list[EpitopeRegion]:
+    """Predict B-cell epitopes using the Parker hydrophilicity scale.
+
+    Parker et al. (1986) showed that hydrophilic regions of proteins
+    tend to be on the surface and are more likely to be B-cell epitopes.
+
+    Args:
+        protein: Amino acid sequence (1-letter codes).
+        window: Sliding window size for averaging.
+
+    Returns:
+        List of EpitopeRegion predictions for hydrophilic regions.
+    """
+    if not protein:
+        return []
+
+    protein = protein.upper()
+
+    raw_scores = [PARKER_SCALE.get(aa, 0.0) for aa in protein]
+    smoothed = _sliding_window_average(raw_scores, window)
+    norm_scores = _normalize_01(smoothed)
+
+    return _find_regions(
+        norm_scores, protein, "parker_hydrophilicity",
+        threshold=0.5,
+        min_length=6,
+        is_linear=True,
+        extra_props={"window": window, "threshold": "above_mean"},
+        raw_scores=smoothed,
+    )
+
+
+def predict_chou_fasman_beta_turn(
+    protein: str,
+    window: int = 7,
+) -> list[EpitopeRegion]:
+    """Predict B-cell epitopes using Chou-Fasman beta-turn propensity.
+
+    Chou & Fasman (1974) showed that beta-turns are often surface-exposed
+    and correspond to B-cell epitope regions.
+
+    Args:
+        protein: Amino acid sequence (1-letter codes).
+        window: Sliding window size for averaging.
+
+    Returns:
+        List of EpitopeRegion predictions for high turn-propensity regions.
+    """
+    if not protein:
+        return []
+
+    protein = protein.upper()
+
+    raw_scores = [CHOU_FASMAN_TURN.get(aa, 0.0) for aa in protein]
+    smoothed = _sliding_window_average(raw_scores, window)
+    norm_scores = _normalize_01(smoothed)
+
+    return _find_regions(
+        norm_scores, protein, "chou_fasman",
+        threshold=0.5,
+        min_length=6,
+        is_linear=True,
+        extra_props={"window": window, "threshold": "above_mean"},
+        raw_scores=smoothed,
+    )
+
+
+def predict_eea(
+    protein: str,
+) -> list[EpitopeRegion]:
+    """Predict B-cell epitopes using Emini surface accessibility (EEA).
+
+    Emini et al. (1985) developed a surface probability method based on
+    the statistical analysis of surface accessibility in protein structures.
+
+    Args:
+        protein: Amino acid sequence (1-letter codes).
+
+    Returns:
+        List of EpitopeRegion predictions for surface-accessible regions.
+    """
+    if not protein:
+        return []
+
+    protein = protein.upper()
+    n = len(protein)
+    window = 6
+    half = window // 2
+
+    raw_scores: list[float] = []
+    for i in range(n):
+        start = max(0, i - half)
+        end = min(n, i + half + 1)
+        log_sum = 0.0
+        count = 0
+        for j in range(start, end):
+            prob = EMINI_SCALE.get(protein[j], 0.5)
+            log_sum += math.log(max(prob, 1e-10))
+            count += 1
+        raw_scores.append(math.exp(log_sum / count) if count > 0 else 0.5)
+
+    norm_scores = _normalize_01(raw_scores)
+
+    min_s = min(raw_scores) if raw_scores else 0.0
+    max_s = max(raw_scores) if raw_scores else 1.0
+    if max_s >= 1.0 and max_s - min_s > 1e-10:
+        norm_threshold = (1.0 - min_s) / (max_s - min_s)
+        norm_threshold = max(0.0, min(1.0, norm_threshold))
+        raw_threshold = 1.0
+    else:
+        norm_threshold = 0.5
+        raw_threshold = round(
+            (max_s + min_s) / 2.0, 4
+        ) if raw_scores else 1.0
+
+    return _find_regions(
+        norm_scores, protein, "eea",
+        threshold=norm_threshold,
+        min_length=6,
+        is_linear=True,
+        extra_props={"window": window, "threshold": raw_threshold},
+        raw_scores=raw_scores,
+    )
+
+
+def predict_bepipred_like(
+    protein: str,
+    window: int = 9,
+) -> list[EpitopeRegion]:
+    """Predict B-cell epitopes using a simplified BepiPred-like composite method.
+
+    Combines three properties into a composite score:
+        Score = 0.4 * hydrophilicity + 0.3 * flexibility + 0.3 * surface_accessibility
+
+    Args:
+        protein: Amino acid sequence (1-letter codes).
+        window: Sliding window size for smoothing.
+
+    Returns:
+        List of EpitopeRegion predictions.
+    """
+    if not protein:
+        return []
+
+    protein = protein.upper()
+
+    hydro_raw = [PARKER_SCALE.get(aa, 0.0) for aa in protein]
+    flex_raw = [_FLEXIBILITY_SCALE.get(aa, 0.4) for aa in protein]
+    surf_raw = [EMINI_SCALE.get(aa, 0.5) for aa in protein]
+
+    hydro_smooth = _sliding_window_average(hydro_raw, window)
+    flex_smooth = _sliding_window_average(flex_raw, window)
+    surf_smooth = _sliding_window_average(surf_raw, window)
+
+    hydro_norm = _normalize_01(hydro_smooth)
+    flex_norm = _normalize_01(flex_smooth)
+    surf_norm = _normalize_01(surf_smooth)
+
+    composite: list[float] = [
+        0.4 * h + 0.3 * f + 0.3 * s
+        for h, f, s in zip(hydro_norm, flex_norm, surf_norm)
+    ]
+
+    regions: list[EpitopeRegion] = []
+    in_region = False
+    region_start = 0
+    min_length = 6
+
+    for i, s in enumerate(composite):
+        if s >= 0.5 and not in_region:
+            in_region = True
+            region_start = i
+        elif s < 0.5 and in_region:
+            in_region = False
+            if i - region_start >= min_length:
+                length = i - region_start
+                avg = sum(composite[region_start:i]) / length
+                h_avg = sum(hydro_norm[region_start:i]) / length
+                f_avg = sum(flex_norm[region_start:i]) / length
+                s_avg = sum(surf_norm[region_start:i]) / length
+                regions.append(EpitopeRegion(
+                    start=region_start,
+                    end=i,
+                    peptide=protein[region_start:i],
+                    score=round(avg, 4),
+                    method="bepipred",
+                    is_linear=True,
+                    properties={
+                        "hydrophilicity_avg": round(h_avg, 4),
+                        "flexibility_avg": round(f_avg, 4),
+                        "surface_avg": round(s_avg, 4),
+                        "window": window,
+                        "weights": {
+                            "hydrophilicity": 0.4,
+                            "flexibility": 0.3,
+                            "surface": 0.3,
+                        },
+                    },
+                ))
+
+    if in_region:
+        i = len(composite)
+        if i - region_start >= min_length:
+            length = i - region_start
+            avg = sum(composite[region_start:i]) / length
+            h_avg = sum(hydro_norm[region_start:i]) / length
+            f_avg = sum(flex_norm[region_start:i]) / length
+            s_avg = sum(surf_norm[region_start:i]) / length
+            regions.append(EpitopeRegion(
+                start=region_start,
+                end=i,
+                peptide=protein[region_start:i],
+                score=round(avg, 4),
+                method="bepipred",
+                is_linear=True,
+                properties={
+                    "hydrophilicity_avg": round(h_avg, 4),
+                    "flexibility_avg": round(f_avg, 4),
+                    "surface_avg": round(s_avg, 4),
+                    "window": window,
+                    "weights": {
+                        "hydrophilicity": 0.4,
+                        "flexibility": 0.3,
+                        "surface": 0.3,
+                    },
+                },
+            ))
+
+    return regions
+
+
+def predict_conformational_epitopes(
+    pdb_string: str,
+    distance_cutoff: float = 6.0,
+) -> list[EpitopeRegion]:
+    """Predict conformational B-cell epitopes from a PDB structure.
+
+    Identifies surface patches on the protein structure and scores them
+    by hydrophilicity, charge, and flexibility. Surface residues are
+    identified by having fewer than 15 C-alpha neighbors within 12 A.
+    Adjacent surface residues (within distance_cutoff in sequence) are
+    clustered into patches.
+
+    Args:
+        pdb_string: PDB file content as a string.
+        distance_cutoff: Maximum sequence gap to cluster adjacent surface
+                        residues into patches (default 6.0).
+
+    Returns:
+        List of EpitopeRegion predictions with is_linear=False.
+    """
+    if not pdb_string:
+        return []
+
+    ca_atoms: list[tuple[int, float, float, float, str]] = []
+
+    for line in pdb_string.splitlines():
+        line = line.rstrip()
+        if not line.startswith("ATOM"):
+            continue
+        if len(line) < 54:
+            continue
+        atom_name = line[12:16].strip()
+        if atom_name != "CA":
+            continue
+
+        try:
+            resnum = int(line[22:26].strip())
+            x = float(line[30:38].strip())
+            y = float(line[38:46].strip())
+            z = float(line[46:54].strip())
+        except (ValueError, IndexError):
+            continue
+
+        resname = line[17:20].strip() if len(line) >= 20 else ""
+        aa = _THREE_TO_ONE.get(resname, "X")
+        ca_atoms.append((resnum, x, y, z, aa))
+
+    if len(ca_atoms) < 3:
+        logger.warning(
+            "Too few C-alpha atoms (%d) in PDB for conformational epitope prediction",
+            len(ca_atoms),
+        )
+        return []
+
+    neighbor_cutoff = 12.0
+    max_neighbors = 15
+
+    surface_indices: set[int] = set()
+    for i, (_, xi, yi, zi, _) in enumerate(ca_atoms):
+        neighbors = 0
+        for j, (_, xj, yj, zj, _) in enumerate(ca_atoms):
+            if i == j:
+                continue
+            dist_sq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
+            if dist_sq <= neighbor_cutoff ** 2:
+                neighbors += 1
+                if neighbors >= max_neighbors:
+                    break
+        if neighbors < max_neighbors:
+            surface_indices.add(i)
+
+    if not surface_indices:
+        return []
+
+    sorted_surface = sorted(surface_indices)
+    patches: list[list[int]] = []
+    current_patch = [sorted_surface[0]]
+
+    for k in range(1, len(sorted_surface)):
+        if sorted_surface[k] - sorted_surface[k - 1] <= distance_cutoff:
+            current_patch.append(sorted_surface[k])
+        else:
+            if len(current_patch) >= 3:
+                patches.append(current_patch)
+            current_patch = [sorted_surface[k]]
+
+    if len(current_patch) >= 3:
+        patches.append(current_patch)
+
+    charged_aas = {"R", "K", "D", "E"}
+    flexible_aas = {"G", "P"}
+
+    epitopes: list[EpitopeRegion] = []
+
+    for patch in patches:
+        aas: list[str] = []
+        hydro_sum = 0.0
+        charge_count = 0
+        flex_count = 0
+
+        for idx in patch:
+            _, _, _, _, aa = ca_atoms[idx]
+            aas.append(aa)
+            hydro_sum += PARKER_SCALE.get(aa, 0.0)
+            if aa in charged_aas:
+                charge_count += 1
+            if aa in flexible_aas:
+                flex_count += 1
+
+        n_res = len(patch)
+        hydro_avg = hydro_sum / n_res
+        charge_frac = charge_count / n_res
+        flex_frac = flex_count / n_res
+
+        hydro_norm = max(0.0, min(1.0, (hydro_avg + 1.5) / 3.3))
+
+        score = 0.4 * hydro_norm + 0.3 * charge_frac + 0.3 * flex_frac
+
+        first_resnum = ca_atoms[patch[0]][0]
+        last_resnum = ca_atoms[patch[-1]][0]
+        start = first_resnum - 1
+        end = last_resnum
+
+        epitopes.append(EpitopeRegion(
+            start=start,
+            end=end,
+            peptide="".join(aas),
+            score=round(score, 4),
+            method="conformational",
+            is_linear=False,
+            properties={
+                "hydrophilicity_avg": round(hydro_avg, 4),
+                "charge_fraction": round(charge_frac, 4),
+                "flexibility_fraction": round(flex_frac, 4),
+                "surface_residue_count": n_res,
+                "pdb_residue_range": (first_resnum, last_resnum),
+            },
+        ))
+
+    return epitopes
+
+
+# Method dispatch
+_METHOD_MAP: dict[str, object] = {
+    "kolaskar_tongaonkar": predict_kolaskar_tongaonkar,
+    "parker_hydrophilicity": predict_parker_hydrophilicity,
+    "chou_fasman_beta_turn": predict_chou_fasman_beta_turn,
+    "eea": predict_eea,
+    "bepipred": predict_bepipred_like,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# B-cell epitope: combined prediction
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def predict_epitopes(
+    protein: str,
+    pdb_string: str | None = None,
+    methods: list[str] | None = None,
+) -> EpitopePredictionResult:
+    """Run multiple B-cell epitope prediction methods and combine results.
+
+    Default methods: kolaskar_tongaonkar, parker_hydrophilicity,
+    chou_fasman_beta_turn. If a PDB structure is provided,
+    conformational epitope prediction is also run.
+
+    Per-residue scores are computed as the average across all methods
+    that predict each residue as an epitope. Consensus epitope regions
+    are those predicted by >= 2 methods.
+
+    Args:
+        protein: Amino acid sequence (1-letter codes).
+        pdb_string: Optional PDB file content for conformational prediction.
+        methods: List of method names to use. Defaults to
+                 ["kolaskar_tongaonkar", "parker_hydrophilicity",
+                  "chou_fasman_beta_turn"].
+
+    Returns:
+        EpitopePredictionResult with combined predictions.
+    """
+    if not protein:
+        return EpitopePredictionResult(
+            protein="",
+            linear_epitopes=[],
+            conformational_epitopes=[],
+            per_residue_score=[],
+            epitope_coverage=0.0,
+            methods_used=[],
+        )
+
+    protein = protein.upper()
+    n = len(protein)
+
+    if methods is None:
+        methods = [
+            "kolaskar_tongaonkar",
+            "parker_hydrophilicity",
+            "chou_fasman_beta_turn",
+        ]
+
+    valid_methods = [m for m in methods if m in _METHOD_MAP]
+    if not valid_methods:
+        logger.warning("No valid methods specified for epitope prediction")
+        return EpitopePredictionResult(
+            protein=protein,
+            linear_epitopes=[],
+            conformational_epitopes=[],
+            per_residue_score=[0.0] * n,
+            epitope_coverage=0.0,
+            methods_used=[],
+        )
+
+    all_linear_epitopes: list[EpitopeRegion] = []
+    residue_method_count: list[int] = [0] * n
+    residue_score_sum: list[float] = [0.0] * n
+
+    for method_name in valid_methods:
+        func = _METHOD_MAP[method_name]
+        try:
+            epitopes = func(protein)  # type: ignore[operator]
+            all_linear_epitopes.extend(epitopes)
+
+            for ep in epitopes:
+                for pos in range(ep.start, ep.end):
+                    if 0 <= pos < n:
+                        residue_method_count[pos] += 1
+                        residue_score_sum[pos] += ep.score
+        except Exception as e:
+            logger.warning("Method %s failed: %s", method_name, e)
+
+    per_residue_score: list[float] = []
+    for i in range(n):
+        if residue_method_count[i] > 0:
+            per_residue_score.append(
+                residue_score_sum[i] / residue_method_count[i]
+            )
+        else:
+            per_residue_score.append(0.0)
+
+    consensus_epitopes: list[EpitopeRegion] = []
+    in_region = False
+    region_start = 0
+    min_consensus = 2
+    min_length = 6
+
+    for i in range(n):
+        if residue_method_count[i] >= min_consensus and not in_region:
+            in_region = True
+            region_start = i
+        elif residue_method_count[i] < min_consensus and in_region:
+            in_region = False
+            if i - region_start >= min_length:
+                length = i - region_start
+                avg_score = sum(per_residue_score[region_start:i]) / length
+                method_count_avg = sum(
+                    residue_method_count[region_start:i]
+                ) / length
+                consensus_epitopes.append(EpitopeRegion(
+                    start=region_start,
+                    end=i,
+                    peptide=protein[region_start:i],
+                    score=round(avg_score, 4),
+                    method="consensus",
+                    is_linear=True,
+                    properties={
+                        "method_count_avg": round(method_count_avg, 4),
+                        "contributing_methods": min_consensus,
+                    },
+                ))
+
+    if in_region:
+        i = n
+        if i - region_start >= min_length:
+            length = i - region_start
+            avg_score = sum(per_residue_score[region_start:i]) / length
+            method_count_avg = sum(
+                residue_method_count[region_start:i]
+            ) / length
+            consensus_epitopes.append(EpitopeRegion(
+                start=region_start,
+                end=i,
+                peptide=protein[region_start:i],
+                score=round(avg_score, 4),
+                method="consensus",
+                is_linear=True,
+                properties={
+                    "method_count_avg": round(method_count_avg, 4),
+                    "contributing_methods": min_consensus,
+                },
+            ))
+
+    final_linear = list(all_linear_epitopes) + consensus_epitopes
+
+    conformational_epitopes: list[EpitopeRegion] = []
+    if pdb_string:
+        try:
+            conformational_epitopes = predict_conformational_epitopes(pdb_string)
+        except Exception as e:
+            logger.warning("Conformational epitope prediction failed: %s", e)
+
+    epitope_residues: set[int] = set()
+    for ep in all_linear_epitopes:
+        for pos in range(ep.start, ep.end):
+            epitope_residues.add(pos)
+    for ep in consensus_epitopes:
+        for pos in range(ep.start, ep.end):
+            epitope_residues.add(pos)
+    for ep in conformational_epitopes:
+        for pos in range(ep.start, ep.end):
+            epitope_residues.add(pos)
+
+    coverage = len(epitope_residues) / n if n > 0 else 0.0
+
+    methods_used = list(valid_methods)
+    if pdb_string:
+        methods_used.append("conformational")
+    if consensus_epitopes:
+        methods_used.append("consensus")
+
+    return EpitopePredictionResult(
+        protein=protein,
+        linear_epitopes=final_linear,
+        conformational_epitopes=conformational_epitopes,
+        per_residue_score=per_residue_score,
+        epitope_coverage=round(coverage, 4),
+        methods_used=methods_used,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# B-cell epitope: backward compatibility
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def compute_surface_accessibility_approx(protein: str) -> list[float]:
     """Approximate relative surface accessibility per residue.
 
-    Based on amino-acid type and local flexibility.  Glycine and
-    proline confer additional flexibility which increases the
-    likelihood of surface exposure.  The result is a per-residue
-    value in the range [0, 1].
+    Based on amino-acid type and local flexibility. The result is a
+    per-residue value in the range [0, 1].
+
+    .. deprecated::
+        Prefer :func:`predict_eea` for Emini surface accessibility or
+        :func:`predict_epitopes` for combined B-cell predictions.
 
     Parameters
     ----------
@@ -389,7 +1931,6 @@ def compute_surface_accessibility_approx(protein: str) -> list[float]:
     if n == 0:
         return []
 
-    # Base surface propensity per AA type
     _surface_base: dict[str, float] = {
         "A": 0.45, "C": 0.30, "D": 0.75, "E": 0.78, "F": 0.35,
         "G": 0.55, "H": 0.65, "I": 0.30, "K": 0.80, "L": 0.30,
@@ -397,7 +1938,6 @@ def compute_surface_accessibility_approx(protein: str) -> list[float]:
         "S": 0.65, "T": 0.60, "V": 0.30, "W": 0.40, "Y": 0.55,
     }
 
-    # Flexibility contribution per AA (G, P = more flexible)
     _flexibility: dict[str, float] = {
         "A": 0.35, "C": 0.25, "D": 0.45, "E": 0.45, "F": 0.20,
         "G": 0.60, "H": 0.35, "I": 0.20, "K": 0.40, "L": 0.20,
@@ -410,14 +1950,12 @@ def compute_surface_accessibility_approx(protein: str) -> list[float]:
         base = _surface_base.get(aa, 0.40)
         flex = _flexibility.get(aa, 0.30)
 
-        # Local flexibility: average of window ±2
         win_start = max(0, i - 2)
         win_end = min(n, i + 3)
         local_flex = sum(
             _flexibility.get(protein[j], 0.30) for j in range(win_start, win_end)
         ) / (win_end - win_start)
 
-        # Terminal residues are more exposed
         terminal_boost = 0.0
         if i < 3 or i >= n - 3:
             terminal_boost = 0.15 * (1.0 - min(i, n - 1 - i) / 3.0)
@@ -432,11 +1970,11 @@ def predict_b_cell_epitopes(
     protein: str,
     method: str = "kolaskar_tongaonkar",
 ) -> list[dict]:
-    """Predict B-cell epitopes using the Kolaskar-Tongaonkar method.
+    """Predict B-cell epitopes.
 
-    Computes per-residue antigenicity propensity using a sliding
-    window (7 residues) and thresholds at 1.0 to identify antigenic
-    regions.
+    .. deprecated::
+        Prefer :func:`predict_kolaskar_tongaonkar` or
+        :func:`predict_epitopes` for richer results.
 
     Parameters
     ----------
@@ -458,90 +1996,70 @@ def predict_b_cell_epitopes(
             "Only 'kolaskar_tongaonkar' is supported."
         )
 
-    window_size = 7
-    threshold = 1.0
-    n = len(protein)
+    regions = predict_kolaskar_tongaonkar(protein)
 
-    if n < window_size:
-        # Short protein: score the whole thing
-        avg_prop = sum(ANTIGENICITY_PROPENSITY.get(aa, 0.5) for aa in protein) / n
-        return [
-            {
-                "start": 0,
-                "end": n,
-                "peptide": protein,
-                "score": round(avg_prop, 4),
-                "antigenic": avg_prop >= threshold,
-            }
-        ]
+    # Convert EpitopeRegion objects to dicts for backward compatibility
+    result: list[dict] = []
+    for r in regions:
+        avg_prop = r.score
+        result.append({
+            "start": r.start,
+            "end": r.end,
+            "peptide": r.peptide,
+            "score": round(avg_prop, 4),
+            "antigenic": avg_prop >= 0.5,
+        })
 
-    epitopes: list[dict] = []
-    for i in range(n - window_size + 1):
-        window = protein[i : i + window_size]
-        avg_prop = sum(ANTIGENICITY_PROPENSITY.get(aa, 0.5) for aa in window) / window_size
-        epitopes.append(
-            {
+    if not result:
+        # Fallback: return windows even if below threshold
+        window_size = 7
+        n = len(protein)
+        if n < window_size:
+            avg_prop = sum(ANTIGENICITY_SCALE.get(aa, 0.5) for aa in protein) / n
+            return [
+                {
+                    "start": 0,
+                    "end": n,
+                    "peptide": protein,
+                    "score": round(avg_prop, 4),
+                    "antigenic": avg_prop >= 1.0,
+                }
+            ]
+        fallback: list[dict] = []
+        for i in range(n - window_size + 1):
+            window = protein[i : i + window_size]
+            avg_prop = sum(ANTIGENICITY_SCALE.get(aa, 0.5) for aa in window) / window_size
+            fallback.append({
                 "start": i,
                 "end": i + window_size,
                 "peptide": window,
                 "score": round(avg_prop, 4),
-                "antigenic": avg_prop >= threshold,
-            }
-        )
+                "antigenic": avg_prop >= 1.0,
+            })
+        fallback.sort(key=lambda e: e["score"], reverse=True)
+        return fallback[:10]
 
-    # Merge overlapping antigenic windows into contiguous epitopes
-    merged: list[dict] = []
-    antigenic_windows = [e for e in epitopes if e["antigenic"]]
-
-    if not antigenic_windows:
-        # Return the top-scoring windows even if below threshold
-        epitopes.sort(key=lambda e: e["score"], reverse=True)
-        return epitopes[:10]
-
-    # Group overlapping windows
-    current_start = antigenic_windows[0]["start"]
-    current_end = antigenic_windows[0]["end"]
-    current_scores = [antigenic_windows[0]["score"]]
-
-    for epi in antigenic_windows[1:]:
-        if epi["start"] < current_end:
-            # Overlapping — extend
-            current_end = max(current_end, epi["end"])
-            current_scores.append(epi["score"])
-        else:
-            # Emit merged epitope
-            avg_score = sum(current_scores) / len(current_scores)
-            merged.append(
-                {
-                    "start": current_start,
-                    "end": current_end,
-                    "peptide": protein[current_start:current_end],
-                    "score": round(avg_score, 4),
-                    "antigenic": True,
-                }
-            )
-            current_start = epi["start"]
-            current_end = epi["end"]
-            current_scores = [epi["score"]]
-
-    # Last group
-    avg_score = sum(current_scores) / len(current_scores)
-    merged.append(
-        {
-            "start": current_start,
-            "end": current_end,
-            "peptide": protein[current_start:current_end],
-            "score": round(avg_score, 4),
-            "antigenic": True,
-        }
-    )
-
-    return merged
+    return result
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
 # Combined immunogenicity scoring
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class ImmunogenicityResult:
+    """Result of immunogenicity scoring for a protein sequence."""
+
+    protein: str
+    overall_score: float  # 0 (not immunogenic) to 1 (highly immunogenic)
+    immunogenicity_class: str  # "low", "moderate", "high"
+    t_cell_score: float  # T-cell epitope contribution
+    b_cell_score: float  # B-cell epitope contribution
+    t_cell_epitopes: list[dict]  # predicted T-cell epitopes
+    b_cell_epitopes: list[dict]  # predicted B-cell epitopes
+    deimmunization_candidates: list[dict]  # suggested mutations
+    method: str = "sequence_based"
 
 
 def compute_immunogenicity(
@@ -559,7 +2077,7 @@ def compute_immunogenicity(
 
     where:
     - t_cell_score = max epitope score (capped at 1.0)
-    - b_cell_score = fraction of surface residues that are antigenic
+    - b_cell_score = epitope coverage (fraction of residues in predicted epitopes)
 
     Classification:
     - low:      overall < 0.3
@@ -586,29 +2104,19 @@ def compute_immunogenicity(
     else:
         t_cell_score = 0.0
 
-    # B-cell prediction
-    b_epitopes = predict_b_cell_epitopes(protein)
-    surface = compute_surface_accessibility_approx(protein)
-
-    if surface and b_epitopes:
-        # Identify antigenic residues (covered by antigenic B-cell epitopes)
-        antigenic_residues = set()
-        for epi in b_epitopes:
-            if epi.get("antigenic", False):
-                for pos in range(epi["start"], epi["end"]):
-                    antigenic_residues.add(pos)
-
-        # Surface residues = those with accessibility > 0.5
-        surface_residue_count = sum(1 for s in surface if s > 0.5)
-        if surface_residue_count > 0:
-            surface_antigenic_count = sum(
-                1 for i in antigenic_residues if i < len(surface) and surface[i] > 0.5
-            )
-            b_cell_score = surface_antigenic_count / surface_residue_count
-        else:
-            b_cell_score = 0.0
-    else:
-        b_cell_score = 0.0
+    # B-cell prediction using epitope.py's predict_epitopes
+    b_result = predict_epitopes(protein)
+    b_epitopes_converted: list[dict] = [
+        {
+            "start": ep.start,
+            "end": ep.end,
+            "peptide": ep.peptide,
+            "score": ep.score,
+            "method": ep.method,
+        }
+        for ep in b_result.linear_epitopes
+    ]
+    b_cell_score = b_result.epitope_coverage
 
     # Combined score
     overall_score = 0.6 * t_cell_score + 0.4 * b_cell_score
@@ -632,15 +2140,15 @@ def compute_immunogenicity(
         t_cell_score=round(t_cell_score, 4),
         b_cell_score=round(b_cell_score, 4),
         t_cell_epitopes=t_epitopes,
-        b_cell_epitopes=b_epitopes,
+        b_cell_epitopes=b_epitopes_converted,
         deimmunization_candidates=deimm_candidates,
         method="sequence_based",
     )
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
 # Deimmunization mutation finding
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def find_deimmunization_mutations(
@@ -673,7 +2181,7 @@ def find_deimmunization_mutations(
     """
     protein = _validate_protein(protein)
 
-    # Get T-cell epitopes for all default alleles
+    # Get T-cell epitopes using PSSM-based scoring
     t_epitopes = predict_t_cell_epitopes(protein)
 
     # Filter to strong epitopes
@@ -692,7 +2200,7 @@ def find_deimmunization_mutations(
         allele = epi["allele"]
         original_score = epi["score"]
         start = epi["start"]
-        end = epi["end"]
+        end = epi["end"]  # exclusive
         peptide = epi["peptide"]
 
         for pos in range(start, end):
@@ -717,21 +2225,20 @@ def find_deimmunization_mutations(
                 # Build mutated protein and re-score the epitope region
                 mutated_protein = protein[:pos] + mutant + protein[pos + 1 :]
 
-                # Determine the peptide to re-score based on allele type
-                if _is_mhc_i_allele(allele):
-                    # MHC-I: 9-mer starting at same position
+                # Re-score using PSSM-based scoring
+                if allele in MHC_I_PSSM:
                     if end <= len(mutated_protein):
                         new_peptide = mutated_protein[start:end]
-                        new_score = _score_mhc_i_peptide(new_peptide, allele)
+                        new_score = score_peptide_pssm(new_peptide, allele)
                     else:
                         new_score = original_score
-                elif _is_mhc_ii_allele(allele):
-                    # MHC-II: 15-mer starting at same position
+                elif allele in MHC_II_PSSM:
+                    # MHC-II: 15-mer with 9-mer core scanning
                     mhc_ii_window = 15
                     pep_end = start + mhc_ii_window
                     if pep_end <= len(mutated_protein):
                         new_peptide = mutated_protein[start:pep_end]
-                        new_score = _score_mhc_ii_peptide(new_peptide, allele)
+                        new_score = _score_peptide_for_allele(new_peptide, allele)
                     else:
                         new_score = original_score
                 else:
@@ -753,8 +2260,8 @@ def find_deimmunization_mutations(
                         }
                     )
 
-    # Sort by largest binding score reduction, then by BLOSUM62 (most conservative first)
+    # Sort by largest binding score reduction, then by BLOSUM62
     candidates.sort(key=lambda c: (c["binding_score_change"], -c["blosum62"]))
 
-    # Limit to top candidates to avoid overwhelming output
+    # Limit to top candidates
     return candidates[:200]

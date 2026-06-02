@@ -7,8 +7,6 @@ from biocompiler.foldx import (
     FoldXResult, MutationResult, FoldXError,
     is_foldx_available, empirical_stability,
     BLOSUM62, HYDROPATHY, STANDARD_AAS,
-)
-from biocompiler.foldx_mutations import (
     scan_all_mutations, scan_position, compute_conservation,
     rank_positions_by_mutability, identify_hotspot_regions,
     StabilityLandscape, AA_VOLUME, ConservationScore,
@@ -339,7 +337,7 @@ class TestFoldXMutations:
 
     def test_blosum62_matrix_mutations(self):
         """BLOSUM62 in foldx_mutations is symmetric and has positive diagonal."""
-        from biocompiler.foldx_mutations import BLOSUM62 as FM_B62
+        from biocompiler.foldx import BLOSUM62 as FM_B62
         standard = set(STANDARD_AAS)
         for a1 in standard:
             # Diagonal is positive

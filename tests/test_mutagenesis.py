@@ -5,7 +5,7 @@ from biocompiler.mutagenesis import (
     propose_mutagenesis, MutagenesisProposal, MutagenesisReport,
 )
 from biocompiler.type_system import AA_TO_CODONS, CODON_TABLE
-from biocompiler.species import ECOLI_CAI
+from biocompiler.organisms import ECOLI_CAI
 
 
 class TestMutagenesisReport:

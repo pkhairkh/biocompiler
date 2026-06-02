@@ -10,10 +10,16 @@ Supported organisms:
 - Mus_musculus (Mouse)
 - CHO_K1 (Chinese Hamster Ovary)
 - Saccharomyces_cerevisiae (Yeast)
+
+Migrated from species.py (v7.0.0):
+- compute_cai_weights, ECOLI_CODON_USAGE, ECOLI_CAI
+- HUMAN_CODON_USAGE_SIMPLE, HUMAN_CAI, SPECIES
 """
 
-from .human import HUMAN_CODON_USAGE, HUMAN_CODON_ADAPTIVENESS, HUMAN_PREFERRED_CODONS
-from .e_coli import E_COLI_CODON_USAGE, E_COLI_CODON_ADAPTIVENESS, E_COLI_PREFERRED_CODONS
+from typing import Dict
+
+from .human import HUMAN_CODON_USAGE, HUMAN_CODON_ADAPTIVENESS, HUMAN_PREFERRED_CODONS, HUMAN_CODON_USAGE_SIMPLE
+from .e_coli import E_COLI_CODON_USAGE, E_COLI_CODON_ADAPTIVENESS, E_COLI_PREFERRED_CODONS, ECOLI_CODON_USAGE
 from .mouse import MOUSE_CODON_USAGE, MOUSE_CODON_ADAPTIVENESS, MOUSE_PREFERRED_CODONS
 from .cho import CHO_CODON_USAGE, CHO_CODON_ADAPTIVENESS, CHO_PREFERRED_CODONS
 from .yeast import YEAST_CODON_USAGE, YEAST_CODON_ADAPTIVENESS, YEAST_PREFERRED_CODONS
@@ -63,3 +69,40 @@ E_COLI = "Escherichia_coli"
 MOUSE = "Mus_musculus"
 CHO = "CHO_K1"
 YEAST = "Saccharomyces_cerevisiae"
+
+# ────────────────────────────────────────────────────────────
+# Migrated from species.py — backward-compatible API
+# ────────────────────────────────────────────────────────────
+
+def compute_cai_weights(usage: Dict[str, float]) -> Dict[str, float]:
+    """Compute CAI weights from codon usage. Most frequent codon per AA = 1.0.
+
+    Args:
+        usage: Dict mapping codon strings to per-thousand frequency values.
+
+    Returns:
+        Dict mapping codon strings to CAI weight (0.0–1.0).
+    """
+    from ..type_system import AA_TO_CODONS
+    weights: Dict[str, float] = {}
+    for aa, codons in AA_TO_CODONS.items():
+        if aa == "*":
+            continue
+        freqs = [usage.get(c, 0.1) for c in codons]
+        max_freq = max(freqs) if freqs else 1.0
+        for codon, freq in zip(codons, freqs):
+            weights[codon] = freq / max_freq if max_freq > 0 else 0.0
+    return weights
+
+
+ECOLI_CAI: Dict[str, float] = compute_cai_weights(ECOLI_CODON_USAGE)
+
+HUMAN_CAI: Dict[str, float] = compute_cai_weights(HUMAN_CODON_USAGE_SIMPLE)
+
+SPECIES: Dict[str, Dict[str, float]] = {
+    "ecoli": ECOLI_CAI,
+    "human": HUMAN_CAI,
+}
+
+# Re-export from organism_db for unified access via biocompiler.organisms
+from ..organism_db import OrganismDatabase, get_database  # noqa: E402

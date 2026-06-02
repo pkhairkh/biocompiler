@@ -25,9 +25,9 @@ from .type_system import (
     find_cross_codon_gt, find_cross_codon_cg, find_cross_codon_restriction,
     PREDICATE_NAMES,
 )
-from .species import SPECIES
+from .organisms import SPECIES
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
-from .certificates import compute_certificate, format_certificate
+from .certificate import compute_certificate, format_certificate
 from .exceptions import InvalidProteinError, UnsupportedOrganismError
 
 

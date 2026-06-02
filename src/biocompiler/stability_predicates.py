@@ -22,13 +22,13 @@ import logging
 from typing import Optional
 
 from biocompiler.type_system import Verdict, TypeCheckResult
+from .constants import HYDROPHOBIC_AAS
 
 logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────
 # Amino-acid sets
 # ────────────────────────────────────────────────────────────
-HYDROPHOBIC_AAS: set[str] = {"A", "I", "L", "M", "F", "W", "V"}
 CHARGED_AAS: set[str] = {"K", "R", "H", "D", "E"}
 
 # Normal hydrophobic-fraction range for well-folded globular proteins

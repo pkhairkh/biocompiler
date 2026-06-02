@@ -1,7 +1,7 @@
 """Test BioCompiler Certificate Generation — GOLD/SILVER/BRONZE computation."""
 
 import pytest
-from biocompiler.certificates import compute_certificate, format_certificate
+from biocompiler.certificate import compute_certificate, format_certificate
 from biocompiler.type_system import CertLevel, PredicateResult, SpliceVerdict
 
 

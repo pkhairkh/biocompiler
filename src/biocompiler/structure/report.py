@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-from biocompiler.type_system import Verdict, TypeCheckResult
+from ..type_system import Verdict, TypeCheckResult
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def assess_protein(
     # --- Structure Quality ---
     if run_structure:
         try:
-            from biocompiler.structure_quality import compute_structure_quality
+            from .quality import compute_structure_quality
             sq_result = compute_structure_quality(protein, pdb_string=pdb_string)
             report.structure_quality = _to_dict(sq_result)
             if isinstance(report.structure_quality, dict):
@@ -176,7 +176,7 @@ def assess_protein(
             logger.warning("Immunogenicity analysis failed: %s", exc)
 
         try:
-            from biocompiler.mhc_binding import predict_all as predict_mhc_all
+            from biocompiler.immunogenicity import predict_all as predict_mhc_all
             mhc_result = predict_mhc_all(protein, organism=organism)
             report.mhc_binding = _to_dict(mhc_result)
             if isinstance(report.mhc_binding, dict):
@@ -189,7 +189,7 @@ def assess_protein(
             logger.warning("MHC binding prediction failed: %s", exc)
 
         try:
-            from biocompiler.epitope import predict_epitopes
+            from biocompiler.immunogenicity import predict_epitopes
             epi_result = predict_epitopes(protein, organism=organism)
             report.epitope = _to_dict(epi_result)
             if isinstance(report.epitope, dict):

@@ -70,37 +70,15 @@ for _codon, _aa in CODON_TABLE.items():
 
 # ────────────────────────────────────────────────────────────
 # BLOSUM62 Substitution Matrix (20x20 standard)
+# Tuple-key format for backward compatibility: BLOSUM62[(aa1, aa2)] = score
+# Data sourced from constants.py canonical definition.
 # ────────────────────────────────────────────────────────────
-_BLOSUM62_ROWS = [
-    #  A   R   N   D   C   Q   E   G   H   I   L   K   M   F   P   S   T   W   Y   V
-    [  4, -1, -2, -2,  0, -1, -1,  0, -2, -1, -1, -1, -1, -2, -1,  1,  0, -3, -2,  0],  # A
-    [ -1,  5,  0, -2, -3,  1,  0, -2,  0, -3, -2,  2, -1, -3, -2, -1, -1, -3, -2, -3],  # R
-    [ -2,  0,  6,  1, -3,  0,  0,  0,  1, -3, -3,  0, -2, -3, -2,  1,  0, -4, -2, -3],  # N
-    [ -2, -2,  1,  6, -3,  0,  2, -1, -1, -3, -4, -1, -3, -3, -1,  0, -1, -4, -3, -3],  # D
-    [  0, -3, -3, -3,  9, -3, -4, -3, -3, -1, -1, -3, -1, -2, -3, -1, -1, -2, -2, -1],  # C
-    [ -1,  1,  0,  0, -3,  5,  2, -2,  0, -3, -2,  1,  0, -3, -1,  0, -1, -2, -1, -2],  # Q
-    [ -1,  0,  0,  2, -4,  2,  5, -2,  0, -3, -3,  1, -2, -3, -1,  0, -1, -3, -2, -2],  # E
-    [  0, -2,  0, -1, -3, -2, -2,  6, -2, -4, -4, -2, -3, -3, -2,  0, -2, -2, -3, -3],  # G
-    [ -2,  0,  1, -1, -3,  0,  0, -2,  8, -3, -3, -1, -2, -1, -2, -1, -2, -2,  2, -3],  # H
-    [ -1, -3, -3, -3, -1, -3, -3, -4, -3,  4,  2, -3,  1,  0, -3, -2, -1, -3, -1,  3],  # I
-    [ -1, -2, -3, -4, -1, -2, -3, -4, -3,  2,  4, -2,  2,  0, -3, -2, -1, -2, -1,  1],  # L
-    [ -1,  2,  0, -1, -3,  1,  1, -2, -1, -3, -2,  5, -1, -3, -1, -1, -1, -3, -2, -2],  # K
-    [ -1, -1, -2, -3, -1,  0, -2, -3, -2,  1,  2, -1,  5,  0, -2, -1, -1, -1, -1,  1],  # M
-    [ -2, -3, -3, -3, -2, -3, -3, -3, -1,  0,  0, -3,  0,  6, -4, -2, -2,  1,  3, -1],  # F
-    [ -1, -2, -2, -1, -3, -1, -1, -2, -2, -3, -3, -1, -2, -4,  7, -1, -1, -4, -3, -2],  # P
-    [  1, -1,  1,  0, -1,  0,  0,  0, -1, -2, -2,  0, -1, -2, -1,  4,  1, -3, -2, -2],  # S
-    [  0, -1,  0, -1, -1, -1, -1, -2, -2, -1, -1, -1, -1, -2, -1,  1,  5, -2, -2,  0],  # T
-    [ -3, -3, -4, -4, -2, -2, -3, -2, -2, -3, -2, -3, -1,  1, -4, -3, -2, 11,  2, -3],  # W
-    [ -2, -2, -2, -3, -2, -1, -2, -3,  2, -1, -1, -2, -1,  3, -3, -2, -2,  2,  7, -1],  # Y
-    [  0, -3, -3, -3, -1, -2, -2, -3, -3,  3,  1, -2,  1, -1, -2, -2,  0, -3, -1,  4],  # V
-]
-
-_BLOSUM_INDEX = list("ARNDCQEGHILKMFPSTWYV")
+from .constants import BLOSUM62 as _BLOSUM62_NESTED
 
 BLOSUM62: Dict[Tuple[str, str], int] = {}
-for _i, _a1 in enumerate(_BLOSUM_INDEX):
-    for _j, _a2 in enumerate(_BLOSUM_INDEX):
-        BLOSUM62[(_a1, _a2)] = _BLOSUM62_ROWS[_i][_j]
+for _a1, _row in _BLOSUM62_NESTED.items():
+    for _a2, _score in _row.items():
+        BLOSUM62[(_a1, _a2)] = _score
 
 
 # ────────────────────────────────────────────────────────────
@@ -339,7 +317,7 @@ def check_no_cryptic_promoter(seq: str, organism: str = "E_coli", threshold: flo
 
 def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> PredicateResult:
     """Predicate 2: No cryptic splice sites (dual-threshold PASS/UNCERTAIN/FAIL)."""
-    from .splice import maxent_score
+    from .splicing import maxent_score
     gt_positions = []
     for i in range(len(seq) - 1):
         if seq[i:i+2] == "GT":
@@ -1757,7 +1735,7 @@ def analyze_codon_at_position(
     Returns:
         Dict with keys: codon, amino_acid, cai, alternatives, position.
     """
-    from .species import SPECIES
+    from .organisms import SPECIES
 
     codon_start = (position // 3) * 3
     if codon_start + 3 > len(seq):
@@ -1819,7 +1797,7 @@ def evaluate_co_translational_folding(
     Returns:
         TypeCheckResult with PASS/LIKELY_PASS/UNCERTAIN/LIKELY_FAIL/FAIL verdict.
     """
-    from .species import SPECIES
+    from .organisms import SPECIES
 
     seq = seq.upper()
 
@@ -2243,7 +2221,7 @@ from .immuno_predicates import (
     evaluate_no_dominant_b_cell_epitope,
     evaluate_population_coverage_safe,
 )
-from .structure_predicates import (
+from .structure.predicates import (
     evaluate_structure_confidence,
     evaluate_no_misfolding_risk,
     evaluate_correct_fold_topology,

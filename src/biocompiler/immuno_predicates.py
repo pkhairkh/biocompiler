@@ -12,8 +12,8 @@ from typing import Optional
 
 from .types import Verdict, TypeCheckResult
 from .immunogenicity import compute_immunogenicity
-from .mhc_binding import predict_all as predict_mhc_all
-from .epitope import predict_epitopes
+from .immunogenicity import predict_all as predict_mhc_all
+from .immunogenicity import predict_epitopes
 
 
 def evaluate_low_immunogenicity(sequence, protein, organism, **kwargs) -> TypeCheckResult:

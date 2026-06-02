@@ -390,7 +390,7 @@ class TestStructureQuality:
 
     def test_assess_plddt(self):
         """assess_plddt returns correct statistics from known pLDDT distribution."""
-        from biocompiler.structure_quality import assess_plddt
+        from biocompiler.structure import assess_plddt
 
         plddt_values = [95.0, 88.0, 72.0, 65.0, 45.0, 30.0]
         result = assess_plddt(plddt_values)
@@ -402,7 +402,7 @@ class TestStructureQuality:
 
     def test_assess_plddt_categories(self):
         """assess_plddt correctly categorizes residues into confidence bands."""
-        from biocompiler.structure_quality import assess_plddt
+        from biocompiler.structure import assess_plddt
 
         # 2 very_high (>90), 2 confident (70-90), 1 low (50-70), 1 very_low (<50)
         plddt_values = [95.0, 92.0, 80.0, 75.0, 55.0, 30.0]
@@ -415,7 +415,7 @@ class TestStructureQuality:
 
     def test_assess_plddt_empty(self):
         """assess_plddt handles empty list gracefully."""
-        from biocompiler.structure_quality import assess_plddt
+        from biocompiler.structure import assess_plddt
 
         result = assess_plddt([])
         assert result["mean"] == 0.0
@@ -423,7 +423,7 @@ class TestStructureQuality:
 
     def test_assess_ramachandran(self):
         """assess_ramachandran classifies known phi/psi pairs."""
-        from biocompiler.structure_quality import assess_ramachandran
+        from biocompiler.structure import assess_ramachandran
 
         # Alpha-helix region: phi ~ -60, psi ~ -45
         # Beta-sheet region: phi ~ -120, psi ~ 120
@@ -445,7 +445,7 @@ class TestStructureQuality:
 
     def test_compute_clash_score(self):
         """Non-clashing atoms should produce a clash score near 0."""
-        from biocompiler.structure_quality import compute_clash_score
+        from biocompiler.structure import compute_clash_score
 
         # Well-separated atoms (10 A apart) — no clashes
         atoms = [
@@ -459,7 +459,7 @@ class TestStructureQuality:
 
     def test_compute_packing_density(self):
         """Compact coords should have higher packing density than extended."""
-        from biocompiler.structure_quality import compute_packing_density
+        from biocompiler.structure import compute_packing_density
 
         # Compact: all atoms near origin
         compact = [(0.0, 0.0, i * 0.5) for i in range(10)]
@@ -472,7 +472,7 @@ class TestStructureQuality:
 
     def test_kyte_doolittle_scale(self):
         """KYTE_DOOLITTLE has entries for all 20 standard amino acids."""
-        from biocompiler.structure_quality import KYTE_DOOLITTLE
+        from biocompiler.structure import KYTE_DOOLITTLE
 
         for aa in STANDARD_AAS_ONE:
             assert aa in KYTE_DOOLITTLE, f"Missing {aa} in KYTE_DOOLITTLE"
@@ -480,7 +480,7 @@ class TestStructureQuality:
 
     def test_structure_quality_report(self):
         """StructureQualityReport can be created with all required fields."""
-        from biocompiler.structure_quality import StructureQualityReport
+        from biocompiler.structure import StructureQualityReport
 
         report = StructureQualityReport(
             mean_plddt=85.0,
@@ -507,7 +507,7 @@ class TestStructureQuality:
 
     def test_compute_structure_quality(self):
         """compute_structure_quality returns a full report from PDB string."""
-        from biocompiler.structure_quality import compute_structure_quality, StructureQualityReport
+        from biocompiler.structure import compute_structure_quality, StructureQualityReport
 
         report = compute_structure_quality(MINI_PDB)
         assert isinstance(report, StructureQualityReport)
@@ -517,7 +517,7 @@ class TestStructureQuality:
 
     def test_find_low_confidence_regions(self):
         """find_low_confidence_regions identifies regions below threshold."""
-        from biocompiler.structure_quality import find_low_confidence_regions
+        from biocompiler.structure import find_low_confidence_regions
 
         # First 5 are low, rest are high
         scores = [40.0, 35.0, 45.0, 30.0, 50.0, 90.0, 95.0, 88.0, 92.0, 85.0]
@@ -554,7 +554,7 @@ class TestESMFoldCache:
 
     def test_cache_create_memory_only(self):
         """ESMFoldCache can be created without a cache directory."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
 
         cache = ESMFoldCache()
         assert cache is not None
@@ -562,7 +562,7 @@ class TestESMFoldCache:
 
     def test_cache_put_get_memory(self):
         """Put a result into memory-only cache and get it back."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
 
         cache = ESMFoldCache()
         result = self._make_result()
@@ -575,14 +575,14 @@ class TestESMFoldCache:
 
     def test_cache_miss(self):
         """Getting a non-existent key returns None."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
 
         cache = ESMFoldCache()
         assert cache.get("NONEXISTENT") is None
 
     def test_cache_eviction(self):
         """When max_size is exceeded, oldest entries are evicted."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
 
         cache = ESMFoldCache(max_size=3)
 
@@ -599,7 +599,7 @@ class TestESMFoldCache:
 
     def test_cache_hit_rate(self):
         """hit_rate tracks cache performance."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
 
         cache = ESMFoldCache()
         result = self._make_result()
@@ -616,7 +616,7 @@ class TestESMFoldCache:
 
     def test_cache_clear(self):
         """clear() resets the cache and stats."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
 
         cache = ESMFoldCache()
         cache.put("MAG", self._make_result())
@@ -630,7 +630,7 @@ class TestESMFoldCache:
 
     def test_cache_size_property(self):
         """size property reflects number of cached entries."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
 
         cache = ESMFoldCache()
         assert cache.size == 0
@@ -649,7 +649,7 @@ class TestESMFoldBatch:
 
     def test_validate_batch_input_valid(self):
         """Valid list of proteins returns empty error list."""
-        from biocompiler.esmfold_batch import validate_batch_input
+        from biocompiler.esmfold import validate_batch_input
 
         proteins = ["MKWVTFISLLFLFSSAYS", "MAG"]
         errors = validate_batch_input(proteins)
@@ -658,7 +658,7 @@ class TestESMFoldBatch:
 
     def test_validate_batch_input_invalid_aa(self):
         """Protein with non-standard AA (X) produces validation errors."""
-        from biocompiler.esmfold_batch import validate_batch_input
+        from biocompiler.esmfold import validate_batch_input
 
         proteins = ["MKWXV"]
         errors = validate_batch_input(proteins)
@@ -667,7 +667,7 @@ class TestESMFoldBatch:
 
     def test_validate_batch_input_too_large(self):
         """More than 50 proteins should produce validation errors."""
-        from biocompiler.esmfold_batch import validate_batch_input
+        from biocompiler.esmfold import validate_batch_input
 
         proteins = ["MAG"] * 51
         errors = validate_batch_input(proteins)
@@ -676,7 +676,7 @@ class TestESMFoldBatch:
 
     def test_validate_batch_input_too_long(self):
         """Protein exceeding 1000 residues should produce validation errors."""
-        from biocompiler.esmfold_batch import validate_batch_input
+        from biocompiler.esmfold import validate_batch_input
 
         proteins = ["A" * 1001]
         errors = validate_batch_input(proteins)
@@ -685,7 +685,7 @@ class TestESMFoldBatch:
 
     def test_batch_structure_request(self):
         """BatchStructureRequest can be created with correct fields."""
-        from biocompiler.esmfold_batch import BatchStructureRequest
+        from biocompiler.esmfold import BatchStructureRequest
 
         req = BatchStructureRequest(
             proteins=["MAG", "KLV"],
@@ -704,7 +704,7 @@ class TestESMFoldBatch:
 
     def test_batch_structure_request_defaults(self):
         """BatchStructureRequest defaults: names=None, use_cache=True, max_concurrent=3."""
-        from biocompiler.esmfold_batch import BatchStructureRequest
+        from biocompiler.esmfold import BatchStructureRequest
 
         req = BatchStructureRequest(proteins=["MAG"])
         assert req.names is None
@@ -715,7 +715,7 @@ class TestESMFoldBatch:
 
     def test_estimate_batch_time(self):
         """estimate_batch_time returns a positive float for valid inputs."""
-        from biocompiler.esmfold_batch import estimate_batch_time
+        from biocompiler.esmfold import estimate_batch_time
 
         time_estimate = estimate_batch_time(
             num_proteins=5,
@@ -727,14 +727,14 @@ class TestESMFoldBatch:
 
     def test_estimate_batch_time_zero(self):
         """estimate_batch_time returns 0 for zero inputs."""
-        from biocompiler.esmfold_batch import estimate_batch_time
+        from biocompiler.esmfold import estimate_batch_time
 
         assert estimate_batch_time(0, 100) == 0.0
         assert estimate_batch_time(5, 0) == 0.0
 
     def test_batch_structure_result_creation(self):
         """BatchStructureResult can be created with correct fields."""
-        from biocompiler.esmfold_batch import BatchStructureResult
+        from biocompiler.esmfold import BatchStructureResult
 
         result = BatchStructureResult(
             results=[{"name": "p1", "status": "success"}],

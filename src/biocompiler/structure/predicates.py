@@ -17,7 +17,7 @@ import math
 import logging
 from typing import Optional
 
-from .type_system import Verdict, TypeCheckResult
+from ..type_system import Verdict, TypeCheckResult
 
 logger = logging.getLogger(__name__)
 

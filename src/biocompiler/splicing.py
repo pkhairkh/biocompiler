@@ -2,15 +2,113 @@
 BioCompiler NDFST Splicing Engine — Enumerative Isoform Computation
 
 Production-grade splicing engine with:
+- MaxEntScan-based scoring for cryptic splice site detection (simplified PWM)
 - Enumerative isoform computation (all valid donor-acceptor paths)
 - Intron retention isoforms (major class of alternative splicing, ~15% of events)
 - Multi-exon skipping combinations
-- Tissue-weighted scoring using GTEx-derived data (tissue_data module)
+- Tissue-weighted scoring using GTex-derived data (tissue_data module)
 - Proper handling of alternative 5'/3' sites
 - Configurable parameters (not hardcoded magic numbers)
 """
 
+import math
 import logging
+from typing import Optional, List, Tuple
+
+# ==============================================================================
+# Cryptic Splice Site Scoring (merged from splice.py)
+#
+# This section provides a simplified PWM-based scoring function for quick
+# cryptic splice site detection. It uses a hand-crafted position weight matrix
+# for 5' splice sites (positions -3 to +6 relative to GT).
+#
+# DISTINCTION from maxentscan.py:
+#   - maxent_score()  (below): Simplified hand-crafted PWM, returns raw
+#     weighted sum. Fast but approximate. Used for quick PASS/UNCERTAIN/FAIL
+#     triage of cryptic sites.
+#   - score_donor() / score_acceptor() (in maxentscan.py): Proper MaxEntScan
+#     log-odds scoring using Yeo & Burge 2004 trained parameters. More
+#     accurate but slower. Used for precise isoform-level scoring.
+# ==============================================================================
+
+# Position weight matrix for 5' splice site (positions -3 to +6 relative to GT)
+_MAXENT_PWM = [
+    # pos -3   -2   -1    G    T   +1   +2   +3   +4
+    [0.10, 0.07, 0.12, 3.50, 3.50, 0.16, 0.20, 0.12, 0.08],  # A
+    [0.06, 0.04, 0.06, 0.01, 0.01, 0.06, 0.04, 0.06, 0.05],  # C
+    [0.06, 0.04, 0.06, 0.01, 0.01, 0.06, 0.04, 0.06, 0.05],  # G
+    [0.08, 0.15, 0.10, 0.01, 0.01, 0.14, 0.10, 0.12, 0.08],  # T
+]
+
+_BASE_INDEX = {"A": 0, "C": 1, "G": 2, "T": 3}
+
+
+def maxent_score(context: str) -> float:
+    """Compute simplified MaxEntScan score for a potential splice site context.
+
+    This is a fast approximate scoring using a hand-crafted PWM for 5' donor
+    sites. For precise log-odds scoring, use score_donor() / score_acceptor()
+    from the maxentscan module instead.
+
+    Args:
+        context: DNA sequence around a GT dinucleotide (ideally 9-mer)
+
+    Returns:
+        PWM weighted sum score. Higher = stronger splice signal.
+        Thresholds: < 3.0 PASS, 3.0-6.0 UNCERTAIN, >= 6.0 FAIL.
+    """
+    if len(context) < 4:
+        return 0.0
+
+    if len(context) < 9:
+        context = "A" * (9 - len(context)) + context
+        context = context[-9:]
+
+    score = 0.0
+    for pos in range(min(len(context), 9)):
+        base = context[pos].upper() if pos < len(context) else "A"
+        idx = _BASE_INDEX.get(base, 0)
+        score += _MAXENT_PWM[idx][pos]
+
+    return score
+
+
+def score_splice_sites(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0):
+    """Score all potential splice sites in a sequence using simplified PWM.
+
+    Scans for GT dinucleotides and classifies each site as
+    PASS / UNCERTAIN / FAIL based on dual-threshold scoring.
+
+    Args:
+        seq: DNA sequence to scan
+        low_thresh: Below this score → PASS (default 3.0)
+        high_thresh: At or above this score → FAIL (default 6.0)
+
+    Returns:
+        List of (position, score, SpliceVerdict) tuples for each GT site found.
+    """
+    from .type_system import SpliceVerdict
+    results: List[Tuple[int, float, SpliceVerdict]] = []
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "GT":
+            start = max(0, i - 3)
+            end = min(len(seq), i + 6)
+            context = seq[start:end]
+            sc = maxent_score(context)
+            if sc < low_thresh:
+                verdict = SpliceVerdict.PASS
+            elif sc < high_thresh:
+                verdict = SpliceVerdict.UNCERTAIN
+            else:
+                verdict = SpliceVerdict.FAIL
+            results.append((i, sc, verdict))
+    return results
+
+
+# ==============================================================================
+# NDFST Splicing Engine — Isoform Computation
+# ==============================================================================
+
 from .scanner import scan_sequence
 from .types import SpliceIsoform
 from .constants import MIN_INTRON_LENGTH

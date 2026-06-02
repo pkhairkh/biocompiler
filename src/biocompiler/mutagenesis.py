@@ -291,7 +291,7 @@ def find_unrepairable_cryptic_donors(
         - gt_mandatory: True if the AA has no GT-free synonymous codons
     """
     from .maxentscan import score_donor
-    from .species import SPECIES
+    from .organisms import SPECIES
 
     seq = seq.upper()
     results = []

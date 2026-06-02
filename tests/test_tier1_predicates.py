@@ -24,7 +24,7 @@ from biocompiler.type_system import (
     evaluate_all_predicates,
     PREDICATE_NAMES,
 )
-from biocompiler.species import SPECIES
+from biocompiler.organisms import SPECIES
 
 
 # ==============================================================================
@@ -230,7 +230,7 @@ class TestCoTranslationalFolding:
         from biocompiler.optimization import optimize_sequence
         result = optimize_sequence(target_protein=protein, organism="Homo_sapiens")
         # Check the folding predicate directly
-        from biocompiler.species import SPECIES
+        from biocompiler.organisms import SPECIES
         species_cai = SPECIES.get("human", {})
         fold_result = check_co_translational_folding(result.sequence, species_cai)
         # Should at least not crash; result depends on optimization

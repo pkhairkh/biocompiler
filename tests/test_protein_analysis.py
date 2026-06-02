@@ -20,7 +20,7 @@ class TestStructurePipeline:
 
     def test_parse_pdb_to_quality_report(self):
         """Parse PDB → compute quality metrics → verify report."""
-        from biocompiler.structure_quality import compute_structure_quality, StructureQualityReport
+        from biocompiler.structure import compute_structure_quality, StructureQualityReport
         report = compute_structure_quality(MINI_PDB)
         assert isinstance(report, StructureQualityReport)
         assert report.mean_plddt > 0
@@ -39,7 +39,7 @@ class TestStructurePipeline:
 
     def test_cache_integration(self):
         """Cache put/get round-trip works."""
-        from biocompiler.esmfold_cache import ESMFoldCache
+        from biocompiler.esmfold import ESMFoldCache
         from biocompiler.esmfold import ESMFoldResult
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -109,7 +109,7 @@ class TestImmunogenicityPipeline:
 
     def test_mhc_binding_basic(self):
         """Predict MHC binding → verify results."""
-        from biocompiler.mhc_binding import predict_mhc_i_binding, MHCBindingResult
+        from biocompiler.immunogenicity import predict_mhc_i_binding, MHCBindingResult
         results = predict_mhc_i_binding(HBB_PROTEIN)
         assert isinstance(results, list)
         for r in results:
@@ -117,7 +117,7 @@ class TestImmunogenicityPipeline:
 
     def test_epitope_prediction(self):
         """Find epitopes → verify structure."""
-        from biocompiler.epitope import predict_epitopes, EpitopePredictionResult
+        from biocompiler.immunogenicity import predict_epitopes, EpitopePredictionResult
         result = predict_epitopes(HBB_PROTEIN)
         assert isinstance(result, EpitopePredictionResult)
         assert isinstance(result.linear_epitopes, list)
@@ -170,7 +170,7 @@ class TestCrossModuleIntegration:
         from biocompiler.immuno_predicates import (
             evaluate_low_immunogenicity, evaluate_population_coverage_safe,
         )
-        from biocompiler.structure_predicates import (
+        from biocompiler.structure import (
             evaluate_structure_confidence,
         )
         from biocompiler.types import Verdict, TypeCheckResult
@@ -195,7 +195,7 @@ class TestCrossModuleIntegration:
         from biocompiler.stability_predicates import evaluate_stable_folding
         from biocompiler.solubility_predicates import evaluate_soluble_expression
         from biocompiler.immuno_predicates import evaluate_low_immunogenicity
-        from biocompiler.structure_predicates import evaluate_structure_confidence
+        from biocompiler.structure import evaluate_structure_confidence
         from biocompiler.types import Verdict, TypeCheckResult
 
         for fn in [evaluate_stable_folding, evaluate_soluble_expression,

@@ -7,6 +7,10 @@ modes for protein stability analysis, mutation scanning, and stabilization.
 Online mode requires FoldX installed on PATH. Offline mode uses heuristics
 based on amino acid composition, BLOSUM62, and Kyte-Doolittle hydropathy.
 
+Also includes systematic mutation scanning and stability landscape analysis
+(merged from foldx_mutations). Identifies stabilizing/destabilizing mutations,
+conserved positions, compensatory mutations, and structural/functional hotspots.
+
 Usage:
     from biocompiler.foldx import (
         is_foldx_available,
@@ -16,11 +20,20 @@ Usage:
         empirical_stability,
         scan_mutations,
         find_stabilizing_mutations,
+        scan_all_mutations,
+        scan_position,
+        compute_conservation,
+        find_compensatory_mutations,
+        rank_positions_by_mutability,
+        identify_hotspot_regions,
         FoldXResult,
         MutationResult,
         FoldXError,
+        StabilityLandscape,
+        ConservationScore,
         BLOSUM62,
         HYDROPATHY,
+        AA_VOLUME,
     )
 """
 
@@ -34,70 +47,34 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 
+from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS, HYDROPHOBIC_AAS
 from .exceptions import BioCompilerError
 
 logger = logging.getLogger(__name__)
-
-# ────────────────────────────────────────────────────────────
-# BLOSUM62 Substitution Matrix (20x20 standard AAs)
-# Nested dict format: BLOSUM62[aa1][aa2] = score
-# ────────────────────────────────────────────────────────────
-
-_BLOSUM62_ROWS = [
-    #  A   R   N   D   C   Q   E   G   H   I   L   K   M   F   P   S   T   W   Y   V
-    [  4, -1, -2, -2,  0, -1, -1,  0, -2, -1, -1, -1, -1, -2, -1,  1,  0, -3, -2,  0],  # A
-    [ -1,  5,  0, -2, -3,  1,  0, -2,  0, -3, -2,  2, -1, -3, -2, -1, -1, -3, -2, -3],  # R
-    [ -2,  0,  6,  1, -3,  0,  0,  0,  1, -3, -3,  0, -2, -3, -2,  1,  0, -4, -2, -3],  # N
-    [ -2, -2,  1,  6, -3,  0,  2, -1, -1, -3, -4, -1, -3, -3, -1,  0, -1, -4, -3, -3],  # D
-    [  0, -3, -3, -3,  9, -3, -4, -3, -3, -1, -1, -3, -1, -2, -3, -1, -1, -2, -2, -1],  # C
-    [ -1,  1,  0,  0, -3,  5,  2, -2,  0, -3, -2,  1,  0, -3, -1,  0, -1, -2, -1, -2],  # Q
-    [ -1,  0,  0,  2, -4,  2,  5, -2,  0, -3, -3,  1, -2, -3, -1,  0, -1, -3, -2, -2],  # E
-    [  0, -2,  0, -1, -3, -2, -2,  6, -2, -4, -4, -2, -3, -3, -2,  0, -2, -2, -3, -3],  # G
-    [ -2,  0,  1, -1, -3,  0,  0, -2,  8, -3, -3, -1, -2, -1, -2, -1, -2, -2,  2, -3],  # H
-    [ -1, -3, -3, -3, -1, -3, -3, -4, -3,  4,  2, -3,  1,  0, -3, -2, -1, -3, -1,  3],  # I
-    [ -1, -2, -3, -4, -1, -2, -3, -4, -3,  2,  4, -2,  2,  0, -3, -2, -1, -2, -1,  1],  # L
-    [ -1,  2,  0, -1, -3,  1,  1, -2, -1, -3, -2,  5, -1, -3, -1, -1, -1, -3, -2, -2],  # K
-    [ -1, -1, -2, -3, -1,  0, -2, -3, -2,  1,  2, -1,  5,  0, -2, -1, -1, -1, -1,  1],  # M
-    [ -2, -3, -3, -3, -2, -3, -3, -3, -1,  0,  0, -3,  0,  6, -4, -2, -2,  1,  3, -1],  # F
-    [ -1, -2, -2, -1, -3, -1, -1, -2, -2, -3, -3, -1, -2, -4,  7, -1, -1, -4, -3, -2],  # P
-    [  1, -1,  1,  0, -1,  0,  0,  0, -1, -2, -2,  0, -1, -2, -1,  4,  1, -3, -2, -2],  # S
-    [  0, -1,  0, -1, -1, -1, -1, -2, -2, -1, -1, -1, -1, -2, -1,  1,  5, -2, -2,  0],  # T
-    [ -3, -3, -4, -4, -2, -2, -3, -2, -2, -3, -2, -3, -1,  1, -4, -3, -2, 11,  2, -3],  # W
-    [ -2, -2, -2, -3, -2, -1, -2, -3,  2, -1, -1, -2, -1,  3, -3, -2, -2,  2,  7, -1],  # Y
-    [  0, -3, -3, -3, -1, -2, -2, -3, -3,  3,  1, -2,  1, -1, -2, -2,  0, -3, -1,  4],  # V
-]
-
-_BLOSUM_INDEX = list("ARNDCQEGHILKMFPSTWYV")
-
-BLOSUM62: dict[str, dict[str, int]] = {}
-for _i, _a1 in enumerate(_BLOSUM_INDEX):
-    BLOSUM62[_a1] = {}
-    for _j, _a2 in enumerate(_BLOSUM_INDEX):
-        BLOSUM62[_a1][_a2] = _BLOSUM62_ROWS[_i][_j]
-
-
-# ────────────────────────────────────────────────────────────
-# Kyte-Doolittle Hydropathy Scale
-# ────────────────────────────────────────────────────────────
-
-HYDROPATHY: dict[str, float] = {
-    "I": 4.5, "V": 4.2, "L": 3.8, "F": 2.8, "C": 2.5,
-    "M": 1.9, "A": 1.8, "G": -0.4, "T": -0.7, "S": -0.8,
-    "W": -0.9, "Y": -1.3, "P": -1.6, "H": -3.2, "E": -3.5,
-    "Q": -3.5, "D": -3.5, "N": -3.5, "K": -3.9, "R": -4.5,
-}
-
-# Standard 20 amino acids
-STANDARD_AAS: list[str] = list("ARNDCQEGHILKMFPSTWYV")
-
-# Hydrophobic residues (Kyte-Doolittle > 1.0)
-HYDROPHOBIC_AAS: set[str] = {"A", "I", "L", "M", "F", "W", "V"}
 
 # Positively charged residues
 POSITIVE_AAS: set[str] = {"K", "R", "H"}
 
 # Negatively charged residues
 NEGATIVE_AAS: set[str] = {"D", "E"}
+
+# Van der Waals volumes (Å³) — Creighton, 1993
+AA_VOLUME: dict[str, float] = {
+    "A":  88.6,  "R": 173.4,  "N": 114.1,  "D": 111.1,  "C": 108.5,
+    "Q": 143.8,  "E": 138.4,  "G":  60.1,  "H": 153.2,  "I": 166.7,
+    "L": 166.7,  "K": 168.6,  "M": 162.9,  "F": 189.9,  "P": 112.7,
+    "S":  89.0,  "T": 116.1,  "W": 227.8,  "Y": 193.6,  "V": 140.0,
+}
+
+# ΔΔG category thresholds (kcal/mol) for statistical estimation
+_STABILIZING_THRESHOLD = -0.5
+_DESTABILIZING_THRESHOLD = 0.5
+
+# Volume normalization factor: raw volumes are in Å³ (60–228), producing
+# |Δvolume| up to ~168.  Dividing by 100 keeps the volume term in the
+# same order of magnitude as the BLOSUM and hydropathy terms, yielding
+# physically reasonable ΔΔG estimates (roughly -1 to +6 kcal/mol).
+_VOLUME_SCALE = 100.0
 
 
 # ────────────────────────────────────────────────────────────
@@ -196,6 +173,33 @@ class MutationResult:
     neutral: bool
     destabilizing: bool
     method: str
+
+
+@dataclass
+class StabilityLandscape:
+    """Complete stability landscape for a protein across all point mutations."""
+
+    protein: str
+    wildtype_stability: float                # ΔG of wildtype (kcal/mol)
+    mutations: list[dict]                     # [{position, wildtype, mutant, ddg, stabilizing}]
+    stabilizing_count: int
+    destabilizing_count: int
+    neutral_count: int
+    most_stabilizing: dict | None             # best mutation
+    most_destabilizing: dict | None           # worst mutation
+    positions_scanned: list[int]
+    method: str                               # "empirical" or "foldx"
+
+
+@dataclass
+class ConservationScore:
+    """Conservation analysis for a single protein position."""
+
+    position: int
+    wildtype: str
+    conservation: float                       # 0 (variable) to 1 (fully conserved)
+    substitution_tolerance: float             # average ΔΔG for all 19 substitutions
+    critical: bool                            # conservation > 0.8 or avg_ddg > 3.0
 
 
 # ────────────────────────────────────────────────────────────
@@ -1084,6 +1088,389 @@ def find_stabilizing_mutations(
 
 
 # ────────────────────────────────────────────────────────────
+# Mutation Landscape & Conservation (from foldx_mutations)
+# ────────────────────────────────────────────────────────────
+
+def scan_all_mutations(
+    protein: str,
+    method: str = "empirical",
+) -> StabilityLandscape:
+    """Scan all 19 substitutions at every position in *protein*.
+
+    Args:
+        protein: Amino-acid sequence (1-letter codes).
+        method:  "empirical" for formula-based ΔΔG; "foldx" reserved
+                 for future integration (falls back to empirical).
+
+    Returns:
+        A :class:`StabilityLandscape` with every mutation scored and
+        categorized.
+    """
+    if not protein:
+        return StabilityLandscape(
+            protein="",
+            wildtype_stability=0.0,
+            mutations=[],
+            stabilizing_count=0,
+            destabilizing_count=0,
+            neutral_count=0,
+            most_stabilizing=None,
+            most_destabilizing=None,
+            positions_scanned=[],
+            method=method,
+        )
+
+    protein = protein.upper()
+    effective_method = method
+    if method == "foldx":
+        logger.warning(
+            "FoldX backend not available; falling back to empirical estimation"
+        )
+        effective_method = "empirical"
+
+    mutations: list[dict] = []
+    positions_scanned: list[int] = []
+    stabilizing = 0
+    destabilizing = 0
+    neutral = 0
+    best: dict | None = None
+    worst: dict | None = None
+
+    for pos, wt in enumerate(protein):
+        if wt not in STANDARD_AAS:
+            continue
+        positions_scanned.append(pos)
+        for mut in STANDARD_AAS:
+            if mut == wt:
+                continue
+            ddg = _estimate_ddg_statistical(wt, mut)
+            is_stabilizing = ddg < _STABILIZING_THRESHOLD
+            entry = {
+                "position": pos,
+                "wildtype": wt,
+                "mutant": mut,
+                "ddg": round(ddg, 4),
+                "stabilizing": is_stabilizing,
+            }
+            mutations.append(entry)
+
+            if is_stabilizing:
+                stabilizing += 1
+            elif ddg > _DESTABILIZING_THRESHOLD:
+                destabilizing += 1
+            else:
+                neutral += 1
+
+            if best is None or ddg < best["ddg"]:
+                best = entry
+            if worst is None or ddg > worst["ddg"]:
+                worst = entry
+
+    # Wildtype stability is set to 0.0 as the reference state
+    return StabilityLandscape(
+        protein=protein,
+        wildtype_stability=0.0,
+        mutations=mutations,
+        stabilizing_count=stabilizing,
+        destabilizing_count=destabilizing,
+        neutral_count=neutral,
+        most_stabilizing=best,
+        most_destabilizing=worst,
+        positions_scanned=positions_scanned,
+        method=effective_method,
+    )
+
+
+def scan_position(
+    protein: str,
+    position: int,
+    method: str = "empirical",
+) -> list[dict]:
+    """Scan all 19 substitutions at a single *position*.
+
+    Args:
+        protein:  Amino-acid sequence (1-letter codes).
+        position: 0-based residue index.
+        method:   "empirical" or "foldx" (falls back to empirical).
+
+    Returns:
+        List of mutation dicts sorted by ΔΔG ascending (most
+        stabilizing first).
+    """
+    protein = protein.upper()
+    if position < 0 or position >= len(protein):
+        logger.warning("Position %d out of range for protein of length %d", position, len(protein))
+        return []
+
+    wt = protein[position]
+    if wt not in STANDARD_AAS:
+        logger.warning("Wildtype residue '%s' at position %d is not a standard AA", wt, position)
+        return []
+
+    results: list[dict] = []
+    for mut in STANDARD_AAS:
+        if mut == wt:
+            continue
+        ddg = _estimate_ddg_statistical(wt, mut)
+        is_stabilizing = ddg < _STABILIZING_THRESHOLD
+        results.append({
+            "position": position,
+            "wildtype": wt,
+            "mutant": mut,
+            "ddg": round(ddg, 4),
+            "stabilizing": is_stabilizing,
+        })
+
+    results.sort(key=lambda m: m["ddg"])
+    return results
+
+
+def compute_conservation(
+    protein: str,
+    method: str = "empirical",
+) -> list[ConservationScore]:
+    """Compute conservation score for every position.
+
+    Conservation = 1 - (num_tolerated_substitutions / 19)
+    A tolerated substitution has ΔΔG < 1.0 kcal/mol.
+    A position is *critical* if conservation > 0.8 **or** average ΔΔG > 3.0.
+
+    Args:
+        protein: Amino-acid sequence (1-letter codes).
+        method:  "empirical" or "foldx" (falls back to empirical).
+
+    Returns:
+        List of :class:`ConservationScore` objects, one per residue.
+    """
+    protein = protein.upper()
+    scores: list[ConservationScore] = []
+
+    for pos, wt in enumerate(protein):
+        if wt not in STANDARD_AAS:
+            continue
+
+        ddgs: list[float] = []
+        tolerated = 0
+        for mut in STANDARD_AAS:
+            if mut == wt:
+                continue
+            ddg = _estimate_ddg_statistical(wt, mut)
+            ddgs.append(ddg)
+            if ddg < 1.0:
+                tolerated += 1
+
+        conservation = 1.0 - (tolerated / 19.0)
+        avg_ddg = sum(ddgs) / len(ddgs) if ddgs else 0.0
+        critical = conservation > 0.8 or avg_ddg > 3.0
+
+        scores.append(ConservationScore(
+            position=pos,
+            wildtype=wt,
+            conservation=round(conservation, 4),
+            substitution_tolerance=round(avg_ddg, 4),
+            critical=critical,
+        ))
+
+    return scores
+
+
+def find_compensatory_mutations(
+    protein: str,
+    destabilizing_mutations: list[dict],
+) -> list[dict]:
+    """Find second-site compensatory mutations for destabilizing variants.
+
+    A compensatory mutation is one that, when combined with the original
+    destabilizing mutation, reduces the total ΔΔG.  The heuristic looks
+    for stabilizing mutations at positions within ±5 residues of the
+    original mutation.
+
+    Args:
+        protein:               Amino-acid sequence.
+        destabilizing_mutations: List of dicts each with keys
+                                ``position``, ``wildtype``, ``mutant``,
+                                ``ddg``.
+
+    Returns:
+        List of dicts with keys ``position``, ``original_mutation``,
+        ``compensatory_mutation``, ``combined_ddg``.
+    """
+    if not protein or not destabilizing_mutations:
+        return []
+
+    protein = protein.upper()
+
+    # Pre-compute per-position mutation lists for efficiency
+    position_mutations: dict[int, list[dict]] = {}
+    for pos, wt in enumerate(protein):
+        if wt not in STANDARD_AAS:
+            continue
+        muts: list[dict] = []
+        for mut in STANDARD_AAS:
+            if mut == wt:
+                continue
+            ddg = _estimate_ddg_statistical(wt, mut)
+            muts.append({
+                "position": pos,
+                "wildtype": wt,
+                "mutant": mut,
+                "ddg": round(ddg, 4),
+                "stabilizing": ddg < _STABILIZING_THRESHOLD,
+            })
+        position_mutations[pos] = muts
+
+    results: list[dict] = []
+
+    for dm in destabilizing_mutations:
+        dm_pos = dm.get("position", -1)
+        dm_ddg = dm.get("ddg", 0.0)
+
+        if dm_pos < 0 or dm_pos >= len(protein):
+            continue
+
+        # Search nearby positions (within 5 residues)
+        best_comp: dict | None = None
+        best_combined = dm_ddg  # start with no compensation
+
+        for offset in range(-5, 6):
+            if offset == 0:
+                continue
+            nearby = dm_pos + offset
+            if nearby < 0 or nearby >= len(protein):
+                continue
+            if nearby not in position_mutations:
+                continue
+
+            for cm in position_mutations[nearby]:
+                combined = dm_ddg + cm["ddg"]
+                # A compensatory mutation must reduce total ΔΔG and be at
+                # least mildly stabilising (ddg < 0) on its own.
+                if combined < best_combined and cm["ddg"] < 0:
+                    best_combined = combined
+                    best_comp = cm
+
+        if best_comp is not None:
+            results.append({
+                "position": best_comp["position"],
+                "original_mutation": {
+                    "position": dm_pos,
+                    "wildtype": dm.get("wildtype", ""),
+                    "mutant": dm.get("mutant", ""),
+                    "ddg": dm_ddg,
+                },
+                "compensatory_mutation": {
+                    "position": best_comp["position"],
+                    "wildtype": best_comp["wildtype"],
+                    "mutant": best_comp["mutant"],
+                    "ddg": best_comp["ddg"],
+                },
+                "combined_ddg": round(best_combined, 4),
+            })
+
+    return results
+
+
+def rank_positions_by_mutability(
+    protein: str,
+) -> list[tuple[int, float]]:
+    """Rank positions from most to least mutable.
+
+    Mutability score = average ΔΔG across all 19 substitutions.
+    Lower scores → more mutable (easier to change without destabilizing).
+
+    Args:
+        protein: Amino-acid sequence.
+
+    Returns:
+        List of ``(position, avg_ddg)`` sorted by *avg_ddg* ascending
+        (most mutable first).
+    """
+    protein = protein.upper()
+    rankings: list[tuple[int, float]] = []
+
+    for pos, wt in enumerate(protein):
+        if wt not in STANDARD_AAS:
+            continue
+
+        ddgs: list[float] = []
+        for mut in STANDARD_AAS:
+            if mut == wt:
+                continue
+            ddgs.append(_estimate_ddg_statistical(wt, mut))
+
+        avg_ddg = sum(ddgs) / len(ddgs) if ddgs else 0.0
+        rankings.append((pos, round(avg_ddg, 4)))
+
+    rankings.sort(key=lambda x: x[1])
+    return rankings
+
+
+def identify_hotspot_regions(
+    protein: str,
+    window: int = 5,
+    threshold: float = 2.0,
+) -> list[tuple[int, int]]:
+    """Find contiguous regions where average ΔΔG exceeds *threshold*.
+
+    Hotspots are structural/functional regions that are hard to mutate
+    without destabilizing the protein.  A sliding window of *window*
+    residues is used; if the average ΔΔG of all 19 substitutions across
+    all positions in the window exceeds *threshold*, the window is
+    flagged.  Overlapping flagged windows are merged into contiguous
+    (start, end) intervals.
+
+    Args:
+        protein:   Amino-acid sequence.
+        window:    Sliding-window size (number of residues).
+        threshold: Average ΔΔG above which a window is a hotspot.
+
+    Returns:
+        List of ``(start, end)`` position tuples (0-based, inclusive).
+    """
+    protein = protein.upper()
+    if not protein or window < 1:
+        return []
+
+    # Compute per-position average ΔΔG
+    pos_avg: dict[int, float] = {}
+    for pos, wt in enumerate(protein):
+        if wt not in STANDARD_AAS:
+            continue
+        ddgs = [_estimate_ddg_statistical(wt, mut) for mut in STANDARD_AAS if mut != wt]
+        pos_avg[pos] = sum(ddgs) / len(ddgs) if ddgs else 0.0
+
+    # Sliding window scan
+    hot_positions: set[int] = set()
+    for start in range(len(protein) - window + 1):
+        window_positions = [p for p in range(start, start + window) if p in pos_avg]
+        if len(window_positions) < window:
+            continue
+        window_avg = sum(pos_avg[p] for p in window_positions) / len(window_positions)
+        if window_avg > threshold:
+            hot_positions.update(window_positions)
+
+    # Merge contiguous positions into (start, end) intervals
+    if not hot_positions:
+        return []
+
+    sorted_pos = sorted(hot_positions)
+    regions: list[tuple[int, int]] = []
+    region_start = sorted_pos[0]
+    region_end = sorted_pos[0]
+
+    for p in sorted_pos[1:]:
+        if p == region_end + 1:
+            region_end = p
+        else:
+            regions.append((region_start, region_end))
+            region_start = p
+            region_end = p
+    regions.append((region_start, region_end))
+
+    return regions
+
+
+# ────────────────────────────────────────────────────────────
 # Internal Helpers
 # ────────────────────────────────────────────────────────────
 
@@ -1430,6 +1817,23 @@ def _estimate_ddg(
 
     total_ddg = ddg_blosum + ddg_hydro + ddg_pro + ddg_gly + ddg_cys + ddg_charge
     return round(total_ddg, 2)
+
+
+def _estimate_ddg_statistical(wt: str, mut: str) -> float:
+    """Estimate ΔΔG for a single substitution using statistical formula.
+
+    ddg ≈ -0.1 * BLOSUM62(wt, mut) + 0.5 * |Δhydro| + 0.3 * |Δvolume|/100
+
+    The volume change is normalized by 100 (from Å³ to a unit that keeps
+    the term in the same order of magnitude as BLOSUM and hydropathy),
+    yielding physically reasonable ΔΔG estimates in kcal/mol.
+
+    Positive ΔΔG → destabilizing; negative → stabilizing.
+    """
+    blosum = BLOSUM62.get(wt, {}).get(mut, -4)
+    delta_hydro = abs(HYDROPATHY.get(wt, 0.0) - HYDROPATHY.get(mut, 0.0))
+    delta_volume = abs(AA_VOLUME.get(wt, 0.0) - AA_VOLUME.get(mut, 0.0)) / _VOLUME_SCALE
+    return -0.1 * blosum + 0.5 * delta_hydro + 0.3 * delta_volume
 
 
 def _cleanup_tempdir(tmpdir: str) -> None:

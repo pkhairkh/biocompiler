@@ -1,9 +1,9 @@
 """Test BioCompiler Species Data — CAI computation and species registry."""
 
 import pytest
-from biocompiler.species import (
+from biocompiler.organisms import (
     compute_cai_weights, ECOLI_CODON_USAGE, ECOLI_CAI,
-    HUMAN_CODON_USAGE, HUMAN_CAI, SPECIES,
+    HUMAN_CODON_USAGE_SIMPLE, HUMAN_CAI, SPECIES,
 )
 from biocompiler.type_system import AA_TO_CODONS
 

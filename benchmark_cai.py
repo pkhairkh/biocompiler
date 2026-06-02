@@ -7,7 +7,7 @@ sys.modules['biocompiler'] = type(sys)('biocompiler')
 sys.modules['biocompiler'].__path__ = ['/home/z/my-project/biocompiler/src/biocompiler']
 
 from biocompiler.type_system import CODON_TABLE, AA_TO_CODONS
-from biocompiler.species import SPECIES
+from biocompiler.organisms import SPECIES
 from biocompiler.optimization import BioOptimizer
 from biocompiler.restriction_sites import get_recognition_site
 
