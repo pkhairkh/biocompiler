@@ -182,12 +182,8 @@ def _build_html(
     overall_class = "uncertain"
     if type_results:
         verdicts = [r.verdict for r in type_results]
-        overall = Verdict.PASS
-        for v in verdicts:
-            if overall == Verdict.FAIL or v == Verdict.FAIL:
-                overall = Verdict.FAIL
-            elif overall == Verdict.UNCERTAIN or v == Verdict.UNCERTAIN:
-                overall = Verdict.UNCERTAIN
+        from .types import combined_verdict
+        overall = combined_verdict(verdicts)
         overall_verdict = overall.value
         overall_class = overall.value.lower()
 
@@ -202,9 +198,16 @@ def _build_html(
 
     # Build predicate rows
     predicate_rows = ""
+    _VERDICT_SYMBOLS = {
+        "PASS": "&#10003;",
+        "LIKELY_PASS": "&#10003;~",
+        "UNCERTAIN": "?",
+        "LIKELY_FAIL": "&#10007;~",
+        "FAIL": "&#10007;",
+    }
     for r in type_results:
         css_class = r.verdict.value.lower()
-        symbol = {"PASS": "&#10003;", "FAIL": "&#10007;", "UNCERTAIN": "?"}[r.verdict.value]
+        symbol = _VERDICT_SYMBOLS.get(r.verdict.value, "?")
         violation_html = f'<div class="violation">{html.escape(r.violation or "")}</div>' if r.violation else ""
         gap_html = f'<div class="knowledge-gap">Gap: {html.escape(r.knowledge_gap or "")}</div>' if r.knowledge_gap else ""
         # Build derivation tooltip text
@@ -350,7 +353,9 @@ body {{
     letter-spacing: 0.05em;
 }}
 .verdict-badge.pass {{ background: var(--pass); color: white; }}
+.verdict-badge.likely_pass {{ background: #22c55e; color: white; }}
 .verdict-badge.fail {{ background: var(--fail); color: white; }}
+.verdict-badge.likely_fail {{ background: #f87171; color: white; }}
 .verdict-badge.uncertain {{ background: var(--uncertain); color: white; }}
 .section {{
     background: var(--bg);
@@ -409,7 +414,9 @@ th {{
     color: var(--text-secondary);
 }}
 tr.pass {{ background: #f0fdf4; }}
+tr.likely_pass {{ background: #f0fdf4; }}
 tr.fail {{ background: #fef2f2; }}
+tr.likely_fail {{ background: #fef2f2; }}
 tr.uncertain {{ background: #fffbeb; }}
 .badge {{
     display: inline-block;
@@ -419,7 +426,9 @@ tr.uncertain {{ background: #fffbeb; }}
     font-size: 0.9rem;
 }}
 .badge.pass {{ background: #dcfce7; color: var(--pass); }}
+.badge.likely_pass {{ background: #dcfce7; color: #16a34a; }}
 .badge.fail {{ background: #fee2e2; color: var(--fail); }}
+.badge.likely_fail {{ background: #fee2e2; color: #dc2626; }}
 .badge.uncertain {{ background: #fef3c7; color: var(--uncertain); }}
 .violation {{ color: var(--fail); font-size: 0.85rem; margin-top: 0.25rem; }}
 .knowledge-gap {{ color: var(--uncertain); font-size: 0.85rem; }}
@@ -538,7 +547,9 @@ tr.uncertain {{ background: #fffbeb; }}
     border-color: var(--accent);
 }}
 .filter-btn[data-filter="pass"].active {{ background: var(--pass); border-color: var(--pass); }}
+.filter-btn[data-filter="likely_pass"].active {{ background: #22c55e; border-color: #22c55e; }}
 .filter-btn[data-filter="fail"].active {{ background: var(--fail); border-color: var(--fail); }}
+.filter-btn[data-filter="likely_fail"].active {{ background: #f87171; border-color: #f87171; }}
 .filter-btn[data-filter="uncertain"].active {{ background: var(--uncertain); border-color: var(--uncertain); }}
 /* Search input */
 .search-bar {{
@@ -642,10 +653,14 @@ body.dark-mode .header {{
     background: linear-gradient(135deg, #0f172a, #1e293b);
 }}
 body.dark-mode tr.pass {{ background: #052e16; }}
+body.dark-mode tr.likely_pass {{ background: #052e16; }}
 body.dark-mode tr.fail {{ background: #450a0a; }}
+body.dark-mode tr.likely_fail {{ background: #450a0a; }}
 body.dark-mode tr.uncertain {{ background: #451a03; }}
 body.dark-mode .badge.pass {{ background: #052e16; color: #4ade80; }}
+body.dark-mode .badge.likely_pass {{ background: #052e16; color: #4ade80; }}
 body.dark-mode .badge.fail {{ background: #450a0a; color: #f87171; }}
+body.dark-mode .badge.likely_fail {{ background: #450a0a; color: #f87171; }}
 body.dark-mode .badge.uncertain {{ background: #451a03; color: #fbbf24; }}
 body.dark-mode .violation {{ color: #f87171; }}
 body.dark-mode .knowledge-gap {{ color: #fbbf24; }}
@@ -752,7 +767,9 @@ body.dark-mode .tooltip::after {{
         <button class="filter-btn active" data-filter="all">All</button>
         <button class="filter-btn" data-filter="pass">&#10003; PASS</button>
         <button class="filter-btn" data-filter="fail">&#10007; FAIL</button>
+        <button class="filter-btn" data-filter="likely_pass">&#10003;~ LIKELY_PASS</button>
         <button class="filter-btn" data-filter="uncertain">? UNCERTAIN</button>
+        <button class="filter-btn" data-filter="likely_fail">&#10007;~ LIKELY_FAIL</button>
     </div>
     <table id="predicate-table">
         <thead>

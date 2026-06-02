@@ -577,10 +577,9 @@ class TestFullPipeline:
             pre_mrna, boundaries, organism="Homo_sapiens"
         )
         assert len(results) == 12  # 12 predicates
-
         # Overall verdict
         overall = combined_verdict([r.verdict for r in results])
-        assert overall in (Verdict.PASS, Verdict.FAIL, Verdict.UNCERTAIN)
+        assert overall in (Verdict.PASS, Verdict.FAIL, Verdict.UNCERTAIN, Verdict.LIKELY_PASS, Verdict.LIKELY_FAIL)
 
     def test_coding_sequence_pipeline(self):
         """Test pipeline on a simple coding sequence (no introns)."""

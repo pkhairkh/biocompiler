@@ -1897,6 +1897,7 @@ def evaluate_co_translational_folding(
 def evaluate_all_predicates(
     seq: str,
     boundaries: List[Tuple[int, int]] | None = None,
+    known_exon_boundaries: List[Tuple[int, int]] | None = None,
     organism: str = "Homo_sapiens",
     gc_lo: float = 0.30,
     gc_hi: float = 0.70,
@@ -1952,6 +1953,12 @@ def evaluate_all_predicates(
     Returns:
         List of 12 TypeCheckResult objects.
     """
+    # Backward compatibility: accept known_exon_boundaries as alias for boundaries
+    if boundaries is None and known_exon_boundaries is not None:
+        boundaries = known_exon_boundaries
+    if boundaries is None:
+        boundaries = [(0, len(seq))]
+
     if enzymes is None:
         enzymes = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
     # Map organism name to promoter organism key

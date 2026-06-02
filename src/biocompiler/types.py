@@ -50,21 +50,18 @@ _VERDICT_ORDER = {
     Verdict.LIKELY_PASS: 3,
     Verdict.UNCERTAIN: 2,
     Verdict.LIKELY_FAIL: 1,
-    Verdict.FAIL: 0,
-}
+    Verdict.FAIL: 0,}
 
 
 def five_valued_and(a: Verdict, b: Verdict) -> Verdict:
     """Conjunction in five-valued logic (Kleene-style). AND takes the minimum."""
-    if _VERDICT_ORDER[a] <= _VERDICT_ORDER[b]:
-        return a
+    if _VERDICT_ORDER[a] <= _VERDICT_ORDER[b]:        return a
     return b
 
 
 def five_valued_or(a: Verdict, b: Verdict) -> Verdict:
     """Disjunction in five-valued logic (Kleene-style). OR takes the maximum."""
-    if _VERDICT_ORDER[a] >= _VERDICT_ORDER[b]:
-        return a
+    if _VERDICT_ORDER[a] >= _VERDICT_ORDER[b]:        return a
     return b
 
 
@@ -74,7 +71,11 @@ three_valued_or = five_valued_or
 
 
 def combined_verdict(verdicts: list[Verdict]) -> Verdict:
-    """Compute the overall verdict from a list of verdicts using Kleene AND."""
+    """Compute the overall verdict from a list of verdicts using five-valued AND.
+
+    The combined verdict is the weakest link: if any predicate fails,
+    the overall result fails. If all pass, the result passes.
+    """
     if not verdicts:
         return Verdict.UNCERTAIN
     result = verdicts[0]
@@ -141,7 +142,8 @@ class TypeCheckResult:
 
     @property
     def passed(self) -> bool:
-        return self.verdict == Verdict.PASS
+        """True if the verdict is PASS or LIKELY_PASS."""
+        return self.verdict in (Verdict.PASS, Verdict.LIKELY_PASS)
 
     def __repr__(self) -> str:
         return f"TypeCheckResult({self.predicate}={self.verdict.value})"

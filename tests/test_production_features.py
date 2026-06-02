@@ -195,7 +195,6 @@ class TestRESTAPI:
         data = response.json()
         assert data["status"] == "healthy"
         assert data["version"] == "7.2.0"
-
     def test_organisms_endpoint(self, client):
         response = client.get("/organisms")
         assert response.status_code == 200

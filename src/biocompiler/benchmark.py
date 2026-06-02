@@ -301,3 +301,242 @@ def compare_tools() -> None:
 
 # Alias for compatibility with tests that use run_benchmarks (plural)
 run_benchmarks = run_benchmark
+
+
+# ==============================================================================
+# Extended Benchmark API (v7.2.0)
+# ==============================================================================
+# Provides structured benchmark results, reference gene data, and JSON/text
+# report formatters. This API is used by the test suite and REST API.
+
+import json as _json
+from dataclasses import dataclass as _dataclass, field as _field
+from datetime import datetime as _dt, timezone as _tz
+
+
+# Reference gene data for structured benchmarks
+REFERENCE_GENES = {
+    "HBB": {
+        "description": "Human Beta-Globin (HBB)",
+        "organism": "Homo_sapiens",
+        "exon_boundaries": [(0, 92), (273, 495), (1346, 1608)],
+        "known_protein_length": 147,
+        "expected_gc_range": (0.35, 0.55),
+        "expected_cai_range": (0.5, 1.0),
+        "known_splice_events": ["canonical", "exon_skip_2"],
+        "pre_mrna": (
+            "ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAACGTGGATGAAGTTGG"
+            "TGGTGAGGCCCTGGGCAGGCTGCTGGTGGTCTACCCTTGGACCCAGAGGTTCTTTGAGTCCTTTGGGGATCTGT"
+            "CCACTCCTGATGCTGTTATGGGCAACCCTAAGGTGAAGGCTCATGGCAAGAAAGTGCTCGGTGCCTTTAGTGAT"
+            "GGCCTGGCTCACCTGGACAACCTCAAGGGCACCTTTGCTCACTGCAGTGAGCTGCACTGTGACAAGCTGCACGT"
+            "GGATCCTGAGAACTTCAGGCTCCTGGGCAACGTGCTGGTCTGTGTGCTGGCCCATCACTTTGGCAAAGAATTCAC"
+            "CCCACCAGTGCAGGCTGCCTATCAGAAAGTGGTGGCTGGTGTGGCTAATGCCCTGGCCCACAAGTATCACTAAGC"
+            "TCGCTTTCTTGCTGTCCAATTTCTATTAAAGGTTCCTTTGTTCCCTAAGTCCAACTACTAAACTGGGGGATATTT"
+        ),
+    },
+    "INS": {
+        "description": "Human Insulin (INS)",
+        "organism": "Homo_sapiens",
+        "exon_boundaries": [(0, 153), (279, 465)],
+        "known_protein_length": 51,
+        "expected_gc_range": (0.40, 0.65),
+        "expected_cai_range": (0.5, 1.0),
+        "known_splice_events": ["canonical"],
+        "pre_mrna": (
+            "ATGGCCCTGTGGATGCGCCTCCTGCCCCTGCTGGCGCTGCTGGCCCTCTGGGGACCTGACCCAGCCGCAGCCTT"
+            "TGTGAACCAACACCTGTGCGGCTCACACCTGGTGGAAGCTCTCTACCTAGTGTGCGGGGAACGAGGCTTCTTCTA"
+            "CACACCCAAGACCCGCCGGGAGGCAGAGGACCTGCAGGTGGGGCAGGTGGAGCTGGGCGGGGGCCCTGGTGCAGG"
+            "CAGCCTGCAGCCCTTGGCCCTGGAGGGGTCCCTGCAGAAGCGTGGCATTGTGGAACAATGCTGTACCAGCATCTG"
+            "CTCCCTCTACCAGCTGGAGAACTACTGCAACTAG"
+        ),
+    },
+    "EGFP": {
+        "description": "Enhanced Green Fluorescent Protein (EGFP)",
+        "organism": "Homo_sapiens",
+        "exon_boundaries": [(0, 720)],
+        "known_protein_length": 239,
+        "expected_gc_range": (0.45, 0.65),
+        "expected_cai_range": (0.6, 1.0),
+        "known_splice_events": ["canonical"],
+        "pre_mrna": EGFP_DNA,
+    },
+}
+
+
+@_dataclass
+class BenchmarkResult:
+    """Result of a single benchmark test."""
+    gene_name: str
+    test_name: str
+    passed: bool
+    expected: str
+    actual: str
+    details: str | None = None
+    execution_time_ms: float = 0.0
+
+
+@_dataclass
+class BenchmarkReport:
+    """Complete benchmark report."""
+    timestamp: str
+    version: str
+    total_tests: int
+    passed: int
+    failed: int
+    results: list = _field(default_factory=list)
+    summary: dict = _field(default_factory=dict)
+
+    @property
+    def pass_rate(self) -> float:
+        return self.passed / max(self.total_tests, 1)
+
+
+def run_structured_benchmarks(
+    gene_names: list[str] | None = None,
+    include_optimization: bool = True,
+) -> BenchmarkReport:
+    """Run structured benchmarks against known gene sets.
+
+    This validates BioCompiler's predictions against biological ground truth.
+    """
+    from . import __version__
+    from .scanner import gc_content
+    from .translation import translate, compute_cai
+    from .type_system import evaluate_all_predicates
+
+    results: list[BenchmarkResult] = []
+    genes = gene_names or list(REFERENCE_GENES.keys())
+
+    for gene_name in genes:
+        gene_data = REFERENCE_GENES.get(gene_name)
+        if not gene_data:
+            continue
+
+        seq = gene_data["pre_mrna"].replace(" ", "")
+        exons = gene_data["exon_boundaries"]
+        organism = gene_data["organism"]
+
+        # Translation benchmark
+        t0 = time.perf_counter()
+        coding_seq = "".join(seq[start:end] for start, end in exons)
+        protein = translate(coding_seq)
+        protein_len = len(protein.rstrip("*"))
+        expected_len = gene_data["known_protein_length"]
+        passed = abs(protein_len - expected_len) <= 10
+        results.append(BenchmarkResult(
+            gene_name=gene_name, test_name="translation_length",
+            passed=passed, expected=f"protein_length={expected_len}",
+            actual=f"protein_length={protein_len}",
+            execution_time_ms=(time.perf_counter() - t0) * 1000,
+        ))
+
+        # GC content benchmark
+        t0 = time.perf_counter()
+        gc = gc_content(seq)
+        gc_lo, gc_hi = gene_data["expected_gc_range"]
+        passed = gc_lo <= gc <= gc_hi
+        results.append(BenchmarkResult(
+            gene_name=gene_name, test_name="gc_content_range",
+            passed=passed, expected=f"GC in [{gc_lo}, {gc_hi}]",
+            actual=f"GC = {gc:.4f}",
+            execution_time_ms=(time.perf_counter() - t0) * 1000,
+        ))
+
+        # CAI benchmark
+        t0 = time.perf_counter()
+        cai = compute_cai(coding_seq, organism)
+        cai_lo, cai_hi = gene_data["expected_cai_range"]
+        passed = cai_lo <= cai <= cai_hi
+        results.append(BenchmarkResult(
+            gene_name=gene_name, test_name="cai_range",
+            passed=passed, expected=f"CAI in [{cai_lo}, {cai_hi}]",
+            actual=f"CAI = {cai:.4f}",
+            execution_time_ms=(time.perf_counter() - t0) * 1000,
+        ))
+
+        # Type predicates benchmark
+        t0 = time.perf_counter()
+        try:
+            type_results = evaluate_all_predicates(
+                seq=seq, known_exon_boundaries=exons, organism=organism,
+            )
+            n_pass = sum(1 for r in type_results if r.verdict.value in ("PASS", "LIKELY_PASS"))
+            passed = n_pass >= 4
+            results.append(BenchmarkResult(
+                gene_name=gene_name, test_name="type_predicates",
+                passed=passed, expected=">=4 predicates PASS",
+                actual=f"PASS={n_pass}, total={len(type_results)}",
+                details="; ".join(f"{r.predicate}={r.verdict.value}" for r in type_results),
+                execution_time_ms=(time.perf_counter() - t0) * 1000,
+            ))
+        except Exception as e:
+            results.append(BenchmarkResult(
+                gene_name=gene_name, test_name="type_predicates",
+                passed=False, expected="Predicates evaluated",
+                actual=f"ERROR: {e}",
+            ))
+
+    total = len(results)
+    passed_count = sum(1 for r in results if r.passed)
+    return BenchmarkReport(
+        timestamp=_dt.now(_tz.utc).isoformat(),
+        version=__version__,
+        total_tests=total,
+        passed=passed_count,
+        failed=total - passed_count,
+        results=results,
+        summary={
+            "by_gene": {},
+            "by_test": {},
+        },
+    )
+
+
+# Override run_benchmarks with the structured version for test compatibility
+run_benchmarks = run_structured_benchmarks
+
+
+def format_benchmark_report_json(report: BenchmarkReport) -> str:
+    """Format benchmark report as JSON."""
+    return _json.dumps({
+        "timestamp": report.timestamp,
+        "version": report.version,
+        "total_tests": report.total_tests,
+        "passed": report.passed,
+        "failed": report.failed,
+        "pass_rate": report.pass_rate,
+        "summary": report.summary,
+        "results": [
+            {
+                "gene": r.gene_name,
+                "test": r.test_name,
+                "passed": r.passed,
+                "expected": r.expected,
+                "actual": r.actual,
+                "details": r.details,
+                "time_ms": r.execution_time_ms,
+            }
+            for r in report.results
+        ],
+    }, indent=2)
+
+
+def format_benchmark_report_text(report: BenchmarkReport) -> str:
+    """Format benchmark report as human-readable text."""
+    lines = [
+        f"BioCompiler Benchmark Report",
+        f"Version: {report.version}",
+        f"Timestamp: {report.timestamp}",
+        f"",
+        f"Results: {report.passed}/{report.total_tests} passed ({report.pass_rate:.1%})",
+        f"",
+    ]
+    for r in report.results:
+        symbol = "PASS" if r.passed else "FAIL"
+        lines.append(f"  [{symbol}] {r.gene_name}/{r.test_name}")
+        lines.append(f"       Expected: {r.expected}")
+        lines.append(f"       Actual:   {r.actual}")
+        if r.details:
+            lines.append(f"       Details:  {r.details}")
+        lines.append("")
+    return "\n".join(lines)
