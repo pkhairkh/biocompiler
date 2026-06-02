@@ -38,9 +38,10 @@ from biocompiler.immunogenicity import (
     predict_t_cell_epitopes,
     predict_b_cell_epitopes,
     find_deimmunization_mutations,
-    ANTIGENICITY_PROPENSITY,
+    ANTIGENICITY_SCALE,
     ImmunogenicityResult,
 )
+from biocompiler.exceptions import ImmunogenicityError
 
 from biocompiler.immunogenicity import (
     predict_mhc_i_binding,
@@ -148,14 +149,17 @@ class TestImmunogenicity:
                 assert key in ep, f"Missing key '{key}' in B-cell epitope dict"
 
     def test_find_deimmunization_mutations(self):
-        """find_deimmunization_mutations returns list of mutation dicts."""
+        """find_deimmunization_mutations returns list of MutationResult."""
         mutations = find_deimmunization_mutations(HBB_HUMAN)
         assert isinstance(mutations, list)
         if mutations:
             mut = mutations[0]
-            assert isinstance(mut, dict)
-            for key in ("position", "wildtype", "mutant", "epitope", "binding_score_change"):
-                assert key in mut, f"Missing key '{key}' in deimmunization mutation"
+            assert hasattr(mut, "position")
+            assert hasattr(mut, "original")
+            assert hasattr(mut, "mutant")
+            assert hasattr(mut, "score")
+            assert hasattr(mut, "engine")
+            assert hasattr(mut, "description")
 
     def test_immunogenicity_class_values(self):
         """Classification should be one of: low, moderate, high."""
@@ -164,14 +168,14 @@ class TestImmunogenicity:
             f"Unexpected classification: {result.immunogenicity_class}"
         )
 
-    def test_antigenicity_propensity_scale(self):
-        """ANTIGENICITY_PROPENSITY must have entries for all 20 standard AAs."""
+    def test_antigenicity_scale(self):
+        """ANTIGENICITY_SCALE must have entries for all 20 standard AAs."""
         standard_aas = set("ACDEFGHIKLMNPQRSTVWY")
-        assert isinstance(ANTIGENICITY_PROPENSITY, dict)
-        missing = standard_aas - set(ANTIGENICITY_PROPENSITY.keys())
-        assert not missing, f"ANTIGENICITY_PROPENSITY missing AAs: {missing}"
+        assert isinstance(ANTIGENICITY_SCALE, dict)
+        missing = standard_aas - set(ANTIGENICITY_SCALE.keys())
+        assert not missing, f"ANTIGENICITY_SCALE missing AAs: {missing}"
         # All values must be numeric
-        for aa, val in ANTIGENICITY_PROPENSITY.items():
+        for aa, val in ANTIGENICITY_SCALE.items():
             assert isinstance(val, (int, float)), (
                 f"Non-numeric propensity for {aa}: {val!r}"
             )
@@ -480,8 +484,8 @@ class TestImmunogenicityIntegration:
         if mutations:
             # Apply the first mutation
             mut = mutations[0]
-            pos = mut["position"]
-            new_aa = mut["mutant"]
+            pos = mut.position
+            new_aa = mut.mutant
             mutated = list(FOREIGN_PROTEIN)
             if pos < len(mutated):
                 mutated[pos] = new_aa

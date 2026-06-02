@@ -14,6 +14,7 @@ src/biocompiler/constants.py
 src/biocompiler/dataset_validation.py
 src/biocompiler/deimmunization.py
 src/biocompiler/dna_chisel_compat.py
+src/biocompiler/engine_base.py
 src/biocompiler/esmfold.py
 src/biocompiler/exceptions.py
 src/biocompiler/export.py

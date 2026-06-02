@@ -1,7 +1,7 @@
 """
 BioCompiler Protein Design & Engineering Helpers v7.2.0
 ========================================================
-Ties together Phase 2 (optimization) and Phase 3 (mutagenesis) capabilities
+Ties together sequence optimization and mutagenesis capabilities
 for goal-directed protein engineering: thermostability, solubility,
 deimmunization, and multi-objective design.
 

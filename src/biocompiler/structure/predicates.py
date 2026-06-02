@@ -18,6 +18,7 @@ import logging
 from typing import Optional
 
 from ..type_system import Verdict, TypeCheckResult
+from ..constants import HYDROPHOBIC_AAS
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,6 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────
 # Amino acid property sets
 # ────────────────────────────────────────────────────────────
-HYDROPHOBIC_AAS = set("AVILMFWY")
 POSITIVELY_CHARGED_AAS = set("KRH")
 NEGATIVELY_CHARGED_AAS = set("DE")
 CHARGED_AAS = POSITIVELY_CHARGED_AAS | NEGATIVELY_CHARGED_AAS

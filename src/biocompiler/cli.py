@@ -4,7 +4,7 @@ BioCompiler CLI v7.2.0
 Command-line interface for certified gene optimization and protein analysis.
 
 Commands:
-  optimize        Read FASTA, run full 6-phase optimization, write optimized FASTA + certificate
+  optimize        Read FASTA, run full multi-step optimization, write optimized FASTA + certificate
   check           Read FASTA, evaluate all 8 predicates, print certificate
   benchmark       Run built-in benchmarks (eGFP, mCherry, LacZ)
   scan            Scan a DNA sequence for features
@@ -106,15 +106,15 @@ def _summary_box(label: str, value: str) -> str:
 
 # ── Progress helper ──────────────────────────────────────────────────────────
 
-class _ProgressPhase:
-    """Context manager that prints a phase label to stderr and appends timing on exit."""
+class _ProgressStep:
+    """Context manager that prints a step label to stderr and appends timing on exit."""
 
     def __init__(self, label: str, verbose: bool = False) -> None:
         self.label = label
         self.verbose = verbose
         self._t0: float = 0.0
 
-    def __enter__(self) -> "_ProgressPhase":
+    def __enter__(self) -> "_ProgressStep":
         self._t0 = time.perf_counter()
         sys.stderr.write(f"{self.label}...")
         sys.stderr.flush()
@@ -361,7 +361,7 @@ def cmd_structure(args: argparse.Namespace) -> None:
             print(_error_msg("Error: --quality-only requires --pdb-file."), file=sys.stderr)
             sys.exit(1)
         from .structure.quality import compute_structure_quality
-        with _ProgressPhase("Assessing structure quality", verbose=getattr(args, "verbose", False)):
+        with _ProgressStep("Assessing structure quality", verbose=getattr(args, "verbose", False)):
             report = compute_structure_quality(pdb_file)
         _print_structure_quality(report)
         return
@@ -375,10 +375,10 @@ def cmd_structure(args: argparse.Namespace) -> None:
     if not esmfold_ok:
         print(_dim("ESMFold not available — using offline/fallback prediction."))
 
-    with _ProgressPhase("Predicting structure", verbose=getattr(args, "verbose", False)):
+    with _ProgressStep("Predicting structure", verbose=getattr(args, "verbose", False)):
         pdb_path = predict_structure(protein, organism=organism)
 
-    with _ProgressPhase("Computing quality metrics"):
+    with _ProgressStep("Computing quality metrics"):
         report = compute_structure_quality(pdb_path)
 
     print()
@@ -436,7 +436,7 @@ def cmd_stability(args: argparse.Namespace) -> None:
 
     from .foldx import empirical_stability, scan_mutations
 
-    with _ProgressPhase("Computing stability", verbose=getattr(args, "verbose", False)):
+    with _ProgressStep("Computing stability", verbose=getattr(args, "verbose", False)):
         result = empirical_stability(protein, organism=organism)
 
     print()
@@ -474,7 +474,7 @@ def cmd_stability(args: argparse.Namespace) -> None:
     # Mutation scanning
     if getattr(args, "scan_mutations", False):
         positions = getattr(args, "positions", None) or list(range(1, len(protein) + 1))
-        with _ProgressPhase("Scanning mutations", verbose=getattr(args, "verbose", False)):
+        with _ProgressStep("Scanning mutations", verbose=getattr(args, "verbose", False)):
             mut_results = scan_mutations(protein, positions=positions, organism=organism)
         _print_mutation_table(mut_results)
 
@@ -518,7 +518,7 @@ def cmd_solubility(args: argparse.Namespace) -> None:
 
     from .camsol import compute_solubility, find_solubility_mutations
 
-    with _ProgressPhase("Computing solubility", verbose=getattr(args, "verbose", False)):
+    with _ProgressStep("Computing solubility", verbose=getattr(args, "verbose", False)):
         result = compute_solubility(protein, organism=organism)
 
     print()
@@ -572,7 +572,7 @@ def cmd_solubility(args: argparse.Namespace) -> None:
 
     # Find solubility-improving mutations
     if getattr(args, "find_mutations", False):
-        with _ProgressPhase("Finding solubility-improving mutations",
+        with _ProgressStep("Finding solubility-improving mutations",
                             verbose=getattr(args, "verbose", False)):
             mut_results = find_solubility_mutations(protein, organism=organism)
         print()
@@ -601,7 +601,7 @@ def cmd_immunogenicity(args: argparse.Namespace) -> None:
 
     mhc_alleles = getattr(args, "mhc_alleles", None) or []
 
-    with _ProgressPhase("Computing immunogenicity", verbose=getattr(args, "verbose", False)):
+    with _ProgressStep("Computing immunogenicity", verbose=getattr(args, "verbose", False)):
         result = compute_immunogenicity(protein, organism=organism, mhc_alleles=mhc_alleles)
 
     print()
@@ -651,7 +651,7 @@ def cmd_immunogenicity(args: argparse.Namespace) -> None:
         max_mut = getattr(args, "max_mutations", 10)
         blosum_min = getattr(args, "blosum62_min", 1)
 
-        with _ProgressPhase("Running deimmunization optimization",
+        with _ProgressStep("Running deimmunization optimization",
                             verbose=getattr(args, "verbose", False)):
             deimm_result = deimmunize(
                 protein,
@@ -723,7 +723,7 @@ def cmd_assess(args: argparse.Namespace) -> None:
         format_assessment_html,
     )
 
-    with _ProgressPhase("Running comprehensive assessment",
+    with _ProgressStep("Running comprehensive assessment",
                         verbose=getattr(args, "verbose", False)):
         report = assess_protein(
             protein,
@@ -792,7 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── optimize ──
     opt_parser = subparsers.add_parser(
         "optimize",
-        help="Optimize a FASTA gene sequence with full 6-phase pipeline",
+        help="Optimize a FASTA gene sequence with multi-step optimization pipeline",
     )
     opt_parser.add_argument(
         "input",

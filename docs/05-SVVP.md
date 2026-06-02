@@ -281,6 +281,8 @@ The BioCompiler system is accepted only when ALL of the following system-level a
 
 ### 4.2 Per-Phase Acceptance
 
+> **Note**: Development phase numbers (Phase 1–4) refer to project milestones and are separate from the optimizer's internal processing steps.
+
 The BioCompiler system is developed in four phases, each with its own acceptance gate:
 
 #### Phase 1: Core Pipeline (COMP-01, COMP-02, COMP-03, IR Bus)

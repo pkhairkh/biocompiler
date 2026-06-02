@@ -120,29 +120,30 @@ class TestFoldXModule:
         """MutationResult has expected fields."""
         mr = MutationResult(
             position=5,
-            wildtype="K",
+            original="K",
             mutant="R",
-            ddg_kcal=1.2,
-            stabilizing=False,
-            neutral=False,
-            destabilizing=True,
-            method="empirical",
+            score=-1.2,
+            engine="foldx",
+            description="K6R: ddg_kcal=1.2",
+            details={"ddg_kcal": 1.2, "destabilizing": True},
         )
         assert mr.position == 5
-        assert mr.wildtype == "K"
+        assert mr.original == "K"
         assert mr.mutant == "R"
-        assert mr.ddg_kcal == 1.2
-        assert mr.destabilizing is True
+        assert mr.score == -1.2
+        assert mr.engine == "foldx"
+        assert mr.details["destabilizing"] is True
 
     def test_mutation_result_stabilizing(self):
-        """MutationResult with negative ddg is stabilising."""
+        """MutationResult with positive score is stabilising."""
         mr = MutationResult(
-            position=0, wildtype="G", mutant="A",
-            ddg_kcal=-1.5, stabilizing=True, neutral=False,
-            destabilizing=False, method="empirical",
+            position=0, original="G", mutant="A",
+            score=1.5, engine="foldx",
+            description="G1A: ddg_kcal=-1.5",
+            details={"ddg_kcal": -1.5, "stabilizing": True},
         )
-        assert mr.stabilizing is True
-        assert mr.ddg_kcal < 0
+        assert mr.details["stabilizing"] is True
+        assert mr.score > 0
 
     def test_is_foldx_available(self):
         """is_foldx_available returns a bool (likely False in test env)."""

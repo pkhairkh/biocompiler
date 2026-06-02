@@ -74,6 +74,8 @@ The success criteria for the BioCompiler project are defined by the acceptance c
 
 **Per-Phase Acceptance** (DOC-05 Section 4.2):
 
+> **Note**: Development phase numbers (Phase 1–4) refer to project milestones and are separate from the optimizer's internal processing steps.
+
 Each phase has its own acceptance gate with specific test case pass conditions. Phase transitions require passing the quality gate defined in Section 7 of this document before subsequent phase work may begin. The per-phase acceptance criteria in DOC-05 Section 4.2 are incorporated by reference and serve as the mandatory checkpoint definitions for milestones M1 through M4.
 
 **Pilot Validation Studies** (DOC-05 Section 3.3):

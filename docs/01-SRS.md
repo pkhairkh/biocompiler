@@ -620,6 +620,8 @@ The classification SHALL enable downstream users to prioritize: high-coupling po
 
 ## 6. Requirement Prioritization
 
+> **Note**: Development phase numbers (Phase 1–4) referenced in the rationale column refer to project milestones and are separate from the optimizer's internal processing steps.
+
 The following table maps each functional requirement to a MoSCoW priority category:
 
 | Requirement ID | Description | Priority | Rationale |

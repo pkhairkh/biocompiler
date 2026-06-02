@@ -115,22 +115,22 @@ PREDICATE_NAMES = [
     "NoUnexpectedTMDomain",   # 10 — unexpected transmembrane domain detection
     "mRNASecondaryStructure", # 11 — mRNA secondary structure around RBS
     "CoTranslationalFolding", # 12 — co-translational folding pause-site preservation
-    # Phase 2: Structure predicates
+    # Structure predicates
     "StructureConfidence",    # 13 — ESMFold structure quality confidence
     "NoMisfoldingRisk",       # 14 — misfolding risk indicators
     "CorrectFoldTopology",    # 15 — fold topology validation
     "NoUnexpectedInteraction",# 16 — unwanted protein-protein interactions
-    # Phase 3: Stability predicates
+    # Stability predicates
     "StableFolding",          # 17 — thermodynamic stability (ΔG)
     "NoDestabilizingMutation",# 18 — no high-ΔΔG mutations
     "DisulfideBondIntegrity", # 19 — cysteine pairing check
     "HydrophobicCoreQuality", # 20 — hydrophobic core composition
-    # Phase 3: Solubility predicates
+    # Solubility predicates
     "SolubleExpression",      # 21 — CamSol solubility score
     "NoAggregationProneRegion",#22 — aggregation-prone region detection
     "ChargeComposition",      # 23 — charge balance and pI
     "NoLongHydrophobicStretch",#24 — long hydrophobic stretch detection
-    # Phase 3: Immunogenicity predicates
+    # Immunogenicity predicates
     "LowImmunogenicity",      # 25 — overall immunogenicity score
     "NoStrongTCellEpitope",   # 26 — MHC binding epitope detection
     "NoDominantBCellEpitope", # 27 — B-cell epitope coverage
@@ -2200,7 +2200,7 @@ registry.register(
 )
 
 # ────────────────────────────────────────────────────────────
-# Phase 2+3: Protein-level predicates (stability, solubility,
+# Protein-level predicates (stability, solubility,
 # immunogenicity, structure)
 # ────────────────────────────────────────────────────────────
 from .stability_predicates import (
@@ -2228,7 +2228,7 @@ from .structure.predicates import (
     evaluate_no_unexpected_interaction,
 )
 
-# Phase 2: Structure predicates
+# Structure predicates
 registry.register(
     "StructureConfidence",
     evaluate_structure_confidence,
@@ -2270,7 +2270,7 @@ registry.register(
     },
 )
 
-# Phase 3: Stability predicates
+# Stability predicates
 registry.register(
     "StableFolding",
     evaluate_stable_folding,
@@ -2314,7 +2314,7 @@ registry.register(
     },
 )
 
-# Phase 3: Solubility predicates
+# Solubility predicates
 registry.register(
     "SolubleExpression",
     evaluate_soluble_expression,
@@ -2357,7 +2357,7 @@ registry.register(
     },
 )
 
-# Phase 3: Immunogenicity predicates
+# Immunogenicity predicates
 registry.register(
     "LowImmunogenicity",
     evaluate_low_immunogenicity,

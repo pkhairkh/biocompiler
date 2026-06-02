@@ -580,7 +580,7 @@ def format_benchmark_report_text(report: BenchmarkReport) -> str:
 #   1. Multi-gene comparison (12 proteins, both cai_first & constraint_first)
 #   2. Baselines (SimpleCAI, Random)
 #   3. Statistical analysis (mean/std/min/max + formatted table)
-#   4. Ablation study (phase contribution)
+#   4. Ablation study (step contribution)
 #   5. Pareto frontier plot (CAI vs constraint violations)
 #   6. Ablation bar chart
 #
@@ -1026,16 +1026,16 @@ def run_ablation_study(
     gc_lo: float = 0.30,
     gc_hi: float = 0.70,
 ) -> list[dict]:
-    """Run BioCompiler with each phase disabled to measure contribution."""
+    """Run BioCompiler with each step disabled to measure contribution."""
     genes = genes or GENE_PANEL
     enzymes = enzymes or DEFAULT_ENZYMES
 
     ablation_configs = [
-        {"name": "Full_pipeline", "skip_phases": []},
-        {"name": "Skip_Phase2_RS_removal", "skip_phases": [2]},
-        {"name": "Skip_Phase3_cross_codon", "skip_phases": [3]},
-        {"name": "Skip_Phase5_CpG_avoidance", "skip_phases": [5]},
-        {"name": "Phase1_only", "skip_phases": [2, 3, 4, 5, 6, 7]},
+        {"name": "Full_pipeline", "skip_steps": []},
+        {"name": "Skip_RS_removal", "skip_steps": [2]},
+        {"name": "Skip_cross_codon", "skip_steps": [3]},
+        {"name": "Skip_CpG_avoidance", "skip_steps": [5]},
+        {"name": "Step1_only", "skip_steps": [2, 3, 4, 5, 6, 7]},
     ]
 
     all_results = []
@@ -1063,8 +1063,8 @@ def _run_ablation_config(
     gc_hi: float,
     config: dict,
 ) -> dict:
-    """Run BioCompiler with specific phases disabled."""
-    skip = set(config["skip_phases"])
+    """Run BioCompiler with specific steps disabled."""
+    skip = set(config["skip_steps"])
     t0 = time.perf_counter()
     try:
         opt = BioOptimizer(species=species, enzymes=enzymes, avoid_gt=True,
@@ -1077,17 +1077,17 @@ def _run_ablation_config(
         opt._applied_mutagenesis = []
         opt._original_protein = opt._translate(seq)
 
-        # Phase 0: Max-CAI back-translation (always run)
+        # Step 0: Max-CAI back-translation (always run)
         seq = opt._phase0_max_cai_backtranslate(seq)
 
-        # Phase 1: Priority constraint resolution (always run)
+        # Step 1: Priority constraint resolution (always run)
         seq = opt._phase1_priority_constraint_resolution(seq)
 
-        # Phase 2: Restriction site removal
+        # Step 2: Restriction site removal
         if 2 not in skip:
             seq = opt._phase2_remove_restriction_sites(seq)
 
-        # Phase 3: Cross-codon constraint resolution
+        # Step 3: Cross-codon constraint resolution
         if 3 not in skip:
             from .mutagenesis import MutagenesisReport
             seq, mut_report = opt._phase3_cross_codon_constraints(seq)
@@ -1097,19 +1097,19 @@ def _run_ablation_config(
             from .mutagenesis import MutagenesisReport
             mut_report = MutagenesisReport()
 
-        # Phase 4: Mutagenesis fallback
+        # Step 4: Mutagenesis fallback
         if 4 not in skip:
             seq = opt._phase4_mutagenesis_fallback(seq, mut_report)
 
-        # Phase 5: CpG island avoidance
+        # Step 5: CpG island avoidance
         if 5 not in skip:
             seq = opt._phase5_avoid_cpg_islands(seq)
 
-        # Phase 6: CAI hill climbing
+        # Step 6: CAI hill climbing
         if 6 not in skip:
             seq = opt._phase6_cai_hill_climb(seq)
 
-        # Phase 7: Re-optimization pass
+        # Step 7: Re-optimization pass
         if 7 not in skip:
             seq = opt._phase7_reoptimize(seq)
 
@@ -1140,7 +1140,7 @@ def _run_ablation_config(
 
 
 def format_ablation_table(ablation_results: list[dict]) -> str:
-    """Format ablation study results showing CAI impact of each phase."""
+    """Format ablation study results showing CAI impact of each step."""
     valid = [r for r in ablation_results if r.get("success")]
     if not valid:
         return "No valid ablation results."
@@ -1148,7 +1148,7 @@ def format_ablation_table(ablation_results: list[dict]) -> str:
     configs = sorted(set(r["ablation_config"] for r in valid))
     lines = []
     lines.append("=" * 70)
-    lines.append("  Ablation Study: CAI Impact of Each Phase")
+    lines.append("  Ablation Study: CAI Impact of Each Step")
     lines.append("=" * 70)
     lines.append(f"  {'Config':<30s} {'Mean CAI':>10s} {'Mean Violations':>16s} {'Mean Time (s)':>14s}")
     lines.append("  " + "-" * 70)
@@ -1292,11 +1292,11 @@ def plot_ablation(
                       edgecolor="black", linewidth=0.5)
         ax.set_ylabel(label, fontsize=11)
         ax.set_xticks(x)
-        short = [c.replace("Skip_Phase2_RS_removal", "-RS")
-                 .replace("Skip_Phase3_cross_codon", "-CrossCodon")
-                 .replace("Skip_Phase5_CpG_avoidance", "-CpG")
+        short = [c.replace("Skip_RS_removal", "-RS")
+                 .replace("Skip_cross_codon", "-CrossCodon")
+                 .replace("Skip_CpG_avoidance", "-CpG")
                  .replace("Full_pipeline", "Full")
-                 .replace("Phase1_only", "Phase1")
+                 .replace("Step1_only", "Step1")
                  for c in configs]
         ax.set_xticklabels(short, rotation=45, ha="right", fontsize=9)
         ax.set_title(f"Ablation: {label}", fontsize=12, fontweight="bold")
@@ -1639,7 +1639,7 @@ def _optimize_dna_chisel(
     Run DNA Chisel's constraint solver on the same input.
 
     DNA Chisel uses random mutation + constraint propagation, a fundamentally
-    different algorithm from BioCompiler's deterministic phase-based approach.
+    different algorithm from BioCompiler's deterministic step-based approach.
     """
     if not _DNA_CHISEL_AVAILABLE:
         return ToolResult(
@@ -1725,7 +1725,7 @@ def _optimize_dnaworks(
        position that eliminates the site while maintaining CAI
     4. Repeat until no restriction sites remain or max iterations reached
 
-    This is a simpler algorithm than BioCompiler's multi-phase approach:
+    This is a simpler algorithm than BioCompiler's multi-step approach:
     - No splice site awareness
     - No CpG island avoidance
     - No coordinated multi-codon site removal
@@ -2075,7 +2075,7 @@ def run_head_to_head_benchmark(
     published benchmark data from literature).
 
     Tools compared:
-    - **BioCompiler**: Our multi-phase deterministic optimizer
+    - **BioCompiler**: Our multi-step deterministic optimizer
     - **DNA Chisel**: Random mutation + constraint propagation (if installed)
     - **DNAworks**: Faithful reimplementation of the iterative site-elimination algorithm
     - **GeneOptimizer**: Comparison against published benchmark data (not executable)

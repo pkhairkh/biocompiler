@@ -35,7 +35,8 @@ from dataclasses import dataclass, field
 from threading import Semaphore
 from typing import Any, Callable, Dict, Optional
 
-from .constants import CODON_TABLE, AA_TO_CODONS
+from .constants import CODON_TABLE, AA_TO_CODONS, DEFAULT_ENGINE_TIMEOUT
+from .engine_base import validate_protein_sequence, EngineTimer
 from .exceptions import BioCompilerError
 
 logger = logging.getLogger(__name__)
@@ -46,8 +47,9 @@ logger = logging.getLogger(__name__)
 
 STANDARD_AMINO_ACIDS: set[str] = set("ACDEFGHIKLMNPQRSTVWY")
 
+# ESMFold-specific constants (timeout falls back to shared DEFAULT_ENGINE_TIMEOUT)
 DEFAULT_API_URL = "https://api.esmatlas.com/fetchPredictedStructure"
-DEFAULT_TIMEOUT = 120.0
+DEFAULT_TIMEOUT: float = DEFAULT_ENGINE_TIMEOUT
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds, doubled each attempt
 
@@ -112,6 +114,9 @@ class ESMFoldResult:
         execution_time_s: Wall-clock time for the prediction in seconds.
         success:          Whether prediction completed without error.
         error:            Error message if success is False, else None.
+        method:           How the prediction was obtained — ``"esmfold_api"``
+                          for the remote ESM Atlas API, ``"esmfold_local"``
+                          for the locally-installed esm package.
     """
 
     pdb_string: str
@@ -123,6 +128,7 @@ class ESMFoldResult:
     execution_time_s: float
     success: bool
     error: str | None = None
+    method: str = "esmfold_api"
 
 
 # ==============================================================================
@@ -180,11 +186,14 @@ class ESMFoldCache:
                     result = ESMFoldResult(
                         protein=data["protein"],
                         pdb_string=data["pdb_string"],
+                        plddt_scores=data.get("plddt_scores", []),
                         mean_plddt=data["mean_plddt"],
-                        ptdmt=data.get("ptdmt", 0.0),
-                        num_residues=data.get("num_residues", len(data["protein"])),
-                        model_name=data.get("model_name", "esmfold-offline"),
-                        cached=True,
+                        pae_matrix=data.get("pae_matrix"),
+                        model_name=data.get("model_name", "esmfold_v1"),
+                        execution_time_s=data.get("execution_time_s", 0.0),
+                        success=data.get("success", True),
+                        error=data.get("error"),
+                        method=data.get("method", "esmfold_api"),
                     )
                     # Promote to memory cache
                     self._cache[key] = result
@@ -220,16 +229,15 @@ class ESMFoldCache:
                 data = {
                     "protein": result.protein,
                     "pdb_string": result.pdb_string,
+                    "plddt_scores": result.plddt_scores,
                     "mean_plddt": result.mean_plddt,
+                    "pae_matrix": result.pae_matrix,
                     "model_name": result.model_name,
+                    "execution_time_s": result.execution_time_s,
+                    "success": result.success,
+                    "error": result.error,
+                    "method": result.method,
                 }
-                # Add optional fields if they exist
-                if hasattr(result, 'plddt_scores'):
-                    data["plddt_scores"] = result.plddt_scores
-                if hasattr(result, 'execution_time_s'):
-                    data["execution_time_s"] = result.execution_time_s
-                if hasattr(result, 'success'):
-                    data["success"] = result.success
                 with open(filepath, "w") as f:
                     json.dump(data, f)
             except OSError:
@@ -282,17 +290,14 @@ def _get_default_cache() -> ESMFoldCache:
 def _validate_protein(protein: str) -> None:
     """Raise ESMFoldError if *protein* contains non-standard amino acids.
 
+    Delegates to :func:`engine_base.validate_protein_sequence` for the
+    standard validation, then applies ESMFold-specific checks (e.g. length).
     Only the 20 canonical single-letter codes are accepted.
     """
-    if not protein:
-        raise ESMFoldError("Empty protein sequence", protein=protein)
-    invalid = set(protein) - STANDARD_AMINO_ACIDS
-    if invalid:
-        raise ESMFoldError(
-            f"Invalid amino acid(s) in protein: {invalid}. "
-            f"Only standard single-letter codes {sorted(STANDARD_AMINO_ACIDS)} are permitted.",
-            protein=protein,
-        )
+    try:
+        validate_protein_sequence(protein, "ESMFold")
+    except ValueError as exc:
+        raise ESMFoldError(str(exc), protein=protein) from exc
 
 
 # ==============================================================================
@@ -623,23 +628,21 @@ def predict_structure(
     """
     _validate_protein(protein)
 
-    t0 = time.monotonic()
+    with EngineTimer() as timer:
+        # --- Strategy 1: Remote API ------------------------------------------------
+        if use_api:
+            result = _predict_via_api(protein, api_url, timeout)
+            if result is not None:
+                result.execution_time_s = timer.elapsed
+                return result
 
-    # --- Strategy 1: Remote API ------------------------------------------------
-    if use_api:
-        result = _predict_via_api(protein, api_url, timeout)
+        # --- Strategy 2: Local esm package -----------------------------------------
+        result = _predict_via_local_esm(protein)
         if result is not None:
-            result.execution_time_s = time.monotonic() - t0
+            result.execution_time_s = timer.elapsed
             return result
 
-    # --- Strategy 2: Local esm package -----------------------------------------
-    result = _predict_via_local_esm(protein)
-    if result is not None:
-        result.execution_time_s = time.monotonic() - t0
-        return result
-
     # --- Strategy 3: Offline fallback ------------------------------------------
-    elapsed = time.monotonic() - t0
     return ESMFoldResult(
         pdb_string="",
         plddt_scores=[],
@@ -647,9 +650,10 @@ def predict_structure(
         pae_matrix=None,
         protein=protein,
         model_name="esmfold_v1",
-        execution_time_s=elapsed,
+        execution_time_s=timer.elapsed,
         success=False,
         error="ESMFold unavailable: API unreachable and local esm package not installed",
+        method="esmfold_api",
     )
 
 
@@ -685,7 +689,7 @@ def _predict_via_api(
                 logger.warning("Attempt %d/%d: %s", attempt, MAX_RETRIES, last_error)
                 continue
 
-            return _build_result_from_pdb(protein, pdb_string, "esmfold_v1")
+            return _build_result_from_pdb(protein, pdb_string, "esmfold_v1", method="esmfold_api")
 
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
@@ -784,6 +788,7 @@ def _predict_via_local_esm(protein: str) -> ESMFoldResult | None:
             model_name="esmfold_v1",
             execution_time_s=0.0,  # filled by caller
             success=True,
+            method="esmfold_local",
         )
 
     except Exception as exc:
@@ -795,6 +800,7 @@ def _build_result_from_pdb(
     protein: str,
     pdb_string: str,
     model_name: str,
+    method: str = "esmfold_api",
 ) -> ESMFoldResult:
     """Construct an ESMFoldResult by parsing a PDB string."""
     parsed = parse_pdb(pdb_string)
@@ -810,6 +816,7 @@ def _build_result_from_pdb(
         model_name=model_name,
         execution_time_s=0.0,  # filled by caller
         success=True,
+        method=method,
     )
 
 
@@ -865,6 +872,7 @@ def predict_structure_batch(
                     execution_time_s=0.0,
                     success=False,
                     error=str(exc),
+                    method="esmfold_api",
                 )
             except Exception as exc:
                 result = ESMFoldResult(
@@ -877,6 +885,7 @@ def predict_structure_batch(
                     execution_time_s=0.0,
                     success=False,
                     error=f"Unexpected error: {exc}",
+                    method="esmfold_api",
                 )
             return idx, result
 
@@ -1090,57 +1099,55 @@ def _predict_single(
     Returns a result dict with at least ``name`` and ``status`` keys.
     """
     result: dict = {"name": name, "status": "error"}
-    start = time.monotonic()
 
-    try:
-        semaphore.acquire()
+    with EngineTimer() as timer:
         try:
-            # Attempt cache lookup first.
-            if use_cache:
-                try:
-                    cache = _get_default_cache()
-                    cached_result = cache.get(protein)
-                    if cached_result is not None:
-                        elapsed = round(time.monotonic() - start, 3)
-                        result = {
-                            "name": name,
-                            "status": "success",
-                            "from_cache": True,
-                            "mean_plddt": getattr(cached_result, "mean_plddt", None),
-                            "length": len(protein),
-                            "pdb": getattr(cached_result, "pdb", None),
-                            "time_s": elapsed,
-                        }
-                        return result
-                except Exception as exc:
-                    logger.debug("Cache lookup failed for %s: %s", name, exc)
+            semaphore.acquire()
+            try:
+                # Attempt cache lookup first.
+                if use_cache:
+                    try:
+                        cache = _get_default_cache()
+                        cached_result = cache.get(protein)
+                        if cached_result is not None:
+                            result = {
+                                "name": name,
+                                "status": "success",
+                                "from_cache": True,
+                                "mean_plddt": getattr(cached_result, "mean_plddt", None),
+                                "length": len(protein),
+                                "pdb": getattr(cached_result, "pdb_string", None),
+                                "time_s": timer.elapsed,
+                            }
+                            return result
+                    except Exception as exc:
+                        logger.debug("Cache lookup failed for %s: %s", name, exc)
 
-            # Call the prediction API.
-            prediction: ESMFoldResult = predict_structure(protein)
-            elapsed = round(time.monotonic() - start, 3)
+                # Call the prediction API.
+                prediction: ESMFoldResult = predict_structure(protein)
 
-            result = {
-                "name": name,
-                "status": "success",
-                "from_cache": False,
-                "mean_plddt": getattr(prediction, "mean_plddt", None),
-                "length": len(protein),
-                "pdb": getattr(prediction, "pdb", None),
-                "time_s": elapsed,
-            }
+                result = {
+                    "name": name,
+                    "status": "success",
+                    "from_cache": False,
+                    "mean_plddt": getattr(prediction, "mean_plddt", None),
+                    "length": len(protein),
+                    "pdb": getattr(prediction, "pdb_string", None),
+                    "time_s": timer.elapsed,
+                }
 
-        finally:
-            semaphore.release()
+            finally:
+                semaphore.release()
 
-    except TimeoutError:
-        result["error"] = f"Prediction timed out"
-        result["time_s"] = round(time.monotonic() - start, 3)
-    except ImportError as exc:
-        result["error"] = f"ESMFold module not available: {exc}"
-        result["time_s"] = round(time.monotonic() - start, 3)
-    except Exception as exc:
-        result["error"] = str(exc)
-        result["time_s"] = round(time.monotonic() - start, 3)
+        except TimeoutError:
+            result["error"] = "Prediction timed out"
+            result["time_s"] = timer.elapsed
+        except ImportError as exc:
+            result["error"] = f"ESMFold module not available: {exc}"
+            result["time_s"] = timer.elapsed
+        except Exception as exc:
+            result["error"] = str(exc)
+            result["time_s"] = timer.elapsed
 
     return result
 
@@ -1150,6 +1157,12 @@ def predict_batch(
     progress_callback: Callable[[int, int, dict], None] | None = None,
 ) -> BatchStructureResult:
     """Run batch ESMFold structure prediction with concurrency and error isolation.
+
+    .. deprecated::
+        Use :func:`predict_structure_batch` instead, which provides a
+        simpler, cleaner API (``list[str]`` → ``list[ESMFoldResult]``).
+        This function is retained for backward compatibility and will be
+        removed in a future release.
 
     Each protein is predicted independently — one failure does not affect
     others (unless ``request.stop_on_failure`` is *True*).
@@ -1162,105 +1175,60 @@ def predict_batch(
     Returns:
         Aggregated :class:`BatchStructureResult`.
     """
-    t0 = time.monotonic()
+    with EngineTimer() as batch_timer:
+        # Resolve names.
+        if request.names is not None:
+            if len(request.names) != len(request.proteins):
+                raise ValueError(
+                    f"Length of names ({len(request.names)}) does not match "
+                    f"length of proteins ({len(request.proteins)})"
+                )
+            names = list(request.names)
+        else:
+            names = [f"protein_{i}" for i in range(len(request.proteins))]
 
-    # Resolve names.
-    if request.names is not None:
-        if len(request.names) != len(request.proteins):
+        # Validate input.
+        validation_errors = validate_batch_input(request.proteins)
+        if validation_errors:
             raise ValueError(
-                f"Length of names ({len(request.names)}) does not match "
-                f"length of proteins ({len(request.proteins)})"
+                "Batch input validation failed: " + "; ".join(validation_errors)
             )
-        names = list(request.names)
-    else:
-        names = [f"protein_{i}" for i in range(len(request.proteins))]
 
-    # Validate input.
-    validation_errors = validate_batch_input(request.proteins)
-    if validation_errors:
-        raise ValueError(
-            "Batch input validation failed: " + "; ".join(validation_errors)
+        # Delegate to predict_structure_batch for the core predictions.
+        esmfold_results = predict_structure_batch(
+            proteins=request.proteins,
+            max_concurrent=request.max_concurrent,
         )
 
-    # Prepare concurrency primitives.
-    semaphore = Semaphore(request.max_concurrent)
-    total = len(request.proteins)
-    completed = 0
-    results: list[dict] = [None] * total  # type: ignore[list-item]
-    cancel = False
+        # Convert list[ESMFoldResult] → list[dict] for BatchStructureResult.
+        results: list[dict] = []
+        cancel = False
+        for idx, (name, ef_result) in enumerate(zip(names, esmfold_results)):
+            result_dict: dict = {
+                "name": name,
+                "status": "success" if ef_result.success else "error",
+                "from_cache": False,
+                "mean_plddt": ef_result.mean_plddt if ef_result.success else None,
+                "length": len(ef_result.protein),
+                "pdb": ef_result.pdb_string if ef_result.success else None,
+                "time_s": ef_result.execution_time_s,
+            }
+            if not ef_result.success:
+                result_dict["error"] = ef_result.error or "Prediction failed"
+                if request.stop_on_failure:
+                    cancel = True
+            results.append(result_dict)
 
-    # Submit all tasks.
-    with ThreadPoolExecutor(max_workers=request.max_concurrent) as executor:
-        future_to_index: dict = {}
-        for idx, (protein, name) in enumerate(zip(request.proteins, names)):
-            future = executor.submit(
-                _predict_single,
-                protein,
-                name,
-                request.use_cache,
-                semaphore,
-            )
-            future_to_index[future] = idx
-
-        # Collect results as they complete.
-        for future in as_completed(future_to_index, timeout=None):
-            idx = future_to_index[future]
-            try:
-                result = future.result(timeout=request.timeout_per_protein)
-            except TimeoutError:
-                result = {
-                    "name": names[idx],
-                    "status": "error",
-                    "error": "Prediction timed out",
-                    "time_s": request.timeout_per_protein,
-                }
-            except Exception as exc:
-                result = {
-                    "name": names[idx],
-                    "status": "error",
-                    "error": str(exc),
-                    "time_s": 0.0,
-                }
-
-            results[idx] = result
-            completed += 1
-
-            # Progress callback.
             if progress_callback is not None:
                 try:
-                    progress_callback(completed, total, result)
+                    progress_callback(idx + 1, len(esmfold_results), result_dict)
                 except Exception as cb_exc:
                     logger.warning("Progress callback raised: %s", cb_exc)
 
-            # Stop-on-failure: cancel remaining work.
-            if request.stop_on_failure and result["status"] == "error":
-                cancel = True
-                for pending_future in future_to_index:
-                    pending_future.cancel()
-                # Fill remaining slots with cancelled results.
-                for j in range(total):
-                    if results[j] is None:
-                        results[j] = {
-                            "name": names[j],
-                            "status": "error",
-                            "error": "Cancelled due to stop_on_failure",
-                            "time_s": 0.0,
-                        }
-                break
-
-    # If not cancelled, fill any remaining None slots (shouldn't happen normally).
-    for j in range(total):
-        if results[j] is None:
-            results[j] = {
-                "name": names[j],
-                "status": "error",
-                "error": "Result not collected (unknown reason)",
-                "time_s": 0.0,
-            }
-
-    total_time = round(time.monotonic() - t0, 3)
+    total_time = batch_timer.elapsed
 
     # Aggregate statistics.
+    total = len(results)
     successful = sum(1 for r in results if r["status"] == "success")
     failed = total - successful
     from_cache = sum(1 for r in results if r.get("from_cache", False))

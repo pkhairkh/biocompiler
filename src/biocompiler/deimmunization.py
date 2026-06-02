@@ -1,5 +1,5 @@
 """
-BioCompiler Deimmunization Engine v7.2.0
+BioCompiler Deimmunization Engine v7.5.0
 ==========================================
 Reduces protein immunogenicity while preserving function by disrupting
 T-cell epitopes through conservative amino acid substitutions.
@@ -16,7 +16,7 @@ Algorithm:
 References:
   - BLOSUM62: Henikoff & Henikoff (1992) PNAS 89:10915
   - Kyte-Doolittle hydropathy: Kyte & Doolittle (1982) J Mol Biol 157:105
-  - MHC binding prediction: NetMHCpan approach (pseudo-sequence + scoring)
+  - MHC binding prediction: PSSM-based scoring (immunogenicity module)
   - CamSol: Sormanni et al. (2015) J Mol Biol 427:478
 """
 
@@ -26,20 +26,38 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from .constants import BLOSUM62, HYDROPATHY
+from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS
+from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+from .exceptions import BioCompilerError
+from .immunogenicity import (
+    predict_mhc_i_binding,
+    predict_mhc_ii_binding,
+    predict_t_cell_epitopes,
+    score_peptide_pssm,
+)
 
 logger = logging.getLogger(__name__)
 
+
 # ────────────────────────────────────────────────────────────
-# Standard amino acids
+# Exceptions
 # ────────────────────────────────────────────────────────────
 
-_STANDARD_AAS = list("ARNDCQEGHILKMFPSTWYV")
+class ImmunogenicityError(BioCompilerError):
+    """Raised when immunogenicity analysis or deimmunization fails."""
+    pass
+
+
+# ────────────────────────────────────────────────────────────
+# Constants
+# ────────────────────────────────────────────────────────────
 
 # MHC class I peptide length (canonical 9-mer)
-_MHC_PEPTIDE_LENGTH = 9
+_MHC_I_PEPTIDE_LENGTH = 9
 
-# Default MHC alleles for common organisms
+# Default MHC alleles for common organisms.
+# Note: alleles not present in the immunogenicity module's PSSMs will be
+# silently skipped by score_peptide_pssm and predict_t_cell_epitopes.
 _DEFAULT_MHC_ALLELES: dict[str, list[str]] = {
     "Homo_sapiens": [
         "HLA-A*02:01", "HLA-A*01:01", "HLA-A*03:01",
@@ -55,13 +73,6 @@ _DEFAULT_MHC_ALLELES: dict[str, list[str]] = {
     ],
     "Saccharomyces_cerevisiae": [],
 }
-
-# Pseudo-position-specific scoring matrix for MHC class I binding
-# Simplified: positions 1, 2, and C-terminal (9) are anchor positions
-# Higher positive values = stronger binding preference
-_MHC_ANCHOR_POSITIONS = {0, 1, 8}  # 0-based positions in 9-mer
-_MHC_ANCHOR_WEIGHT = 2.0
-_MHC_NONANCHOR_WEIGHT = 1.0
 
 
 # ────────────────────────────────────────────────────────────
@@ -83,102 +94,16 @@ class DeimmunizationResult:
     iterations: int
     success: bool  # True if target_score was reached
     method: str  # algorithm name
+    execution_time_s: float = 0.0  # wall-clock time
 
 
-@dataclass
-class EpitopeMutation:
-    """A mutation that disrupts a T-cell epitope."""
-
-    position: int  # 0-based position in protein
-    wildtype: str  # original amino acid
-    mutant: str  # substitution amino acid
-    epitope_disrupted: str  # peptide that was an epitope
-    binding_reduction: float  # how much binding score decreased
-    blosum62: int  # conservation score
-    ddg_estimate: float  # estimated stability impact
-    solubility_impact: float  # estimated solubility change
+# Backward-compatible alias — prefer MutationResult from engine_base.
+EpitopeMutation = MutationResult
 
 
 # ────────────────────────────────────────────────────────────
 # Internal helpers
 # ────────────────────────────────────────────────────────────
-
-def _estimate_mhc_binding_score(peptide: str, allele: str = "") -> float:
-    """Estimate MHC binding score for a 9-mer peptide.
-
-    Uses a simplified position-specific scoring approach based on
-    BLOSUM62 conservation at anchor positions and hydropathy preferences.
-    Higher score = stronger predicted binding = more immunogenic.
-
-    This is a heuristic; production use should call out to NetMHCpan.
-
-    Args:
-        peptide: 9-mer amino acid string.
-        allele: MHC allele name (used for allele-specific adjustments).
-
-    Returns:
-        Estimated binding score (arbitrary units, higher = stronger binding).
-    """
-    if len(peptide) != _MHC_PEPTIDE_LENGTH:
-        # For non-9-mers, use a sliding window approach
-        if len(peptide) < _MHC_PEPTIDE_LENGTH:
-            return 0.0
-        # Score all possible 9-mers within the longer peptide
-        max_score = 0.0
-        for i in range(len(peptide) - _MHC_PEPTIDE_LENGTH + 1):
-            score = _estimate_mhc_binding_score(
-                peptide[i:i + _MHC_PEPTIDE_LENGTH], allele
-            )
-            max_score = max(max_score, score)
-        return max_score
-
-    score = 0.0
-    for pos, aa in enumerate(peptide):
-        if aa not in BLOSUM62:
-            continue
-        # Self-conservation at this position
-        self_score = BLOSUM62[aa][aa]
-
-        if pos in _MHC_ANCHOR_POSITIONS:
-            # Anchor positions: hydrophobic and large AAs preferred
-            hydro = HYDROPATHY.get(aa, 0.0)
-            # Strong binding: hydrophobic at anchors
-            anchor_bonus = max(0.0, hydro) * 0.5
-            # AAs with high self-conservation at anchors are preferred
-            score += (self_score / 4.0 + anchor_bonus) * _MHC_ANCHOR_WEIGHT
-        else:
-            # Non-anchor: more permissive, still use conservation
-            score += (self_score / 6.0) * _MHC_NONANCHOR_WEIGHT
-
-    # Allele-specific adjustments
-    if "A*02" in allele:
-        # HLA-A*02:01 prefers Leu/Met/Val at position 2, Val/Leu at C-term
-        if peptide[1] in "LMV":
-            score += 1.5
-        if peptide[-1] in "VLIA":
-            score += 1.0
-    elif "A*01" in allele:
-        # HLA-A*01 prefers Tyr/Phe at position 2
-        if peptide[1] in "YFW":
-            score += 1.2
-    elif "B*07" in allele:
-        # HLA-B*07 prefers Pro at position 2
-        if peptide[1] == "P":
-            score += 1.5
-    elif "B*27" in allele:
-        # HLA-B*27 prefers Arg at position 2
-        if peptide[1] == "R":
-            score += 2.0
-    elif "DRB1" in allele:
-        # MHC class II: different anchor pattern
-        # Hydrophobic at position 1, small at position 6
-        if len(peptide) >= 6 and peptide[0] in "AVLIMFYW":
-            score += 1.0
-        if len(peptide) >= 6 and peptide[5] in "GASPN":
-            score += 0.8
-
-    return max(0.0, score)
-
 
 def _compute_binding_score_for_region(
     protein: str, start: int, end: int, mhc_alleles: list[str] | None = None
@@ -186,7 +111,8 @@ def _compute_binding_score_for_region(
     """Compute the maximum MHC binding score for a protein region.
 
     Scores all possible 9-mers overlapping the [start, end) region
-    against all specified alleles.
+    against all specified alleles using score_peptide_pssm from the
+    immunogenicity module.
 
     Args:
         protein: Full protein sequence.
@@ -195,26 +121,26 @@ def _compute_binding_score_for_region(
         mhc_alleles: MHC alleles to test.
 
     Returns:
-        Maximum binding score across all 9-mers and alleles.
+        Maximum binding score across all 9-mers and alleles (0.0–1.0).
     """
     if mhc_alleles is None:
         mhc_alleles = _DEFAULT_MHC_ALLELES.get("Homo_sapiens", [])
 
     max_score = 0.0
     # Scan all 9-mers that overlap the region
-    scan_start = max(0, start - _MHC_PEPTIDE_LENGTH + 1)
-    scan_end = min(len(protein) - _MHC_PEPTIDE_LENGTH + 1, end)
+    scan_start = max(0, start - _MHC_I_PEPTIDE_LENGTH + 1)
+    scan_end = min(len(protein) - _MHC_I_PEPTIDE_LENGTH + 1, end)
 
     for i in range(scan_start, scan_end):
-        peptide = protein[i:i + _MHC_PEPTIDE_LENGTH]
-        if len(peptide) < _MHC_PEPTIDE_LENGTH:
+        peptide = protein[i:i + _MHC_I_PEPTIDE_LENGTH]
+        if len(peptide) < _MHC_I_PEPTIDE_LENGTH:
             continue
         # Check if this 9-mer overlaps the target region
-        pep_end = i + _MHC_PEPTIDE_LENGTH
+        pep_end = i + _MHC_I_PEPTIDE_LENGTH
         if pep_end <= start or i >= end:
             continue
         for allele in mhc_alleles:
-            score = _estimate_mhc_binding_score(peptide, allele)
+            score = score_peptide_pssm(peptide, allele)
             max_score = max(max_score, score)
 
     return max_score
@@ -307,21 +233,34 @@ def _organism_to_species(organism: str) -> str:
     return mapping.get(organism, organism.lower().split("_")[0] if "_" in organism else organism.lower())
 
 
+def _filter_binder_epitopes(epitopes: list[dict]) -> list[dict]:
+    """Filter epitope predictions to only include strong and moderate binders."""
+    return [
+        e for e in epitopes
+        if e.get("binding_class", "") in ("strong_binder", "moderate_binder")
+    ]
+
+
 # ────────────────────────────────────────────────────────────
 # Public API
 # ────────────────────────────────────────────────────────────
 
 def compute_mutation_impact(
-    protein: str, position: int, mutant_aa: str
+    protein: str, position: int, mutant_aa: str,
+    mhc_alleles: list[str] | None = None,
 ) -> dict:
     """Compute the impact of a single amino acid mutation.
 
     Assesses the effect on MHC binding, stability, and solubility.
+    Uses score_peptide_pssm from the immunogenicity module for
+    MHC binding prediction.
 
     Args:
         protein: Protein sequence (1-letter codes).
         position: 0-based position to mutate.
         mutant_aa: Substitution amino acid.
+        mhc_alleles: MHC alleles to test binding against.
+            Defaults to Homo_sapiens alleles.
 
     Returns:
         Dictionary with keys:
@@ -330,6 +269,9 @@ def compute_mutation_impact(
           - solubility_impact: estimated solubility change
           - blosum62: BLOSUM62 score for the substitution
     """
+    if mhc_alleles is None:
+        mhc_alleles = _DEFAULT_MHC_ALLELES.get("Homo_sapiens", [])
+
     if not protein or position < 0 or position >= len(protein):
         return {
             "binding_impact": [],
@@ -358,14 +300,14 @@ def compute_mutation_impact(
 
     # Compute binding impact: find all 9-mer epitopes overlapping this position
     binding_impact = []
-    for i in range(max(0, position - _MHC_PEPTIDE_LENGTH + 1),
-                   min(len(protein) - _MHC_PEPTIDE_LENGTH + 1, position + 1)):
-        original_peptide = protein[i:i + _MHC_PEPTIDE_LENGTH]
-        if len(original_peptide) < _MHC_PEPTIDE_LENGTH:
+    for i in range(max(0, position - _MHC_I_PEPTIDE_LENGTH + 1),
+                   min(len(protein) - _MHC_I_PEPTIDE_LENGTH + 1, position + 1)):
+        original_peptide = protein[i:i + _MHC_I_PEPTIDE_LENGTH]
+        if len(original_peptide) < _MHC_I_PEPTIDE_LENGTH:
             continue
 
         # Only consider 9-mers that include the mutation position
-        if not (i <= position < i + _MHC_PEPTIDE_LENGTH):
+        if not (i <= position < i + _MHC_I_PEPTIDE_LENGTH):
             continue
 
         # Create mutated peptide
@@ -376,19 +318,21 @@ def compute_mutation_impact(
             + original_peptide[mut_pos_in_peptide + 1:]
         )
 
-        # Score before and after
-        orig_score = _estimate_mhc_binding_score(original_peptide)
-        mut_score = _estimate_mhc_binding_score(mutated_peptide)
+        # Score before and after across all alleles
+        for allele in mhc_alleles:
+            orig_score = score_peptide_pssm(original_peptide, allele)
+            mut_score = score_peptide_pssm(mutated_peptide, allele)
 
-        if orig_score > 0:
-            binding_impact.append({
-                "epitope": original_peptide,
-                "start": i,
-                "end": i + _MHC_PEPTIDE_LENGTH,
-                "original_binding": round(orig_score, 3),
-                "mutated_binding": round(mut_score, 3),
-                "binding_reduction": round(orig_score - mut_score, 3),
-            })
+            if orig_score > 0:
+                binding_impact.append({
+                    "epitope": original_peptide,
+                    "start": i,
+                    "end": i + _MHC_I_PEPTIDE_LENGTH,
+                    "allele": allele,
+                    "original_binding": round(orig_score, 4),
+                    "mutated_binding": round(mut_score, 4),
+                    "binding_reduction": round(orig_score - mut_score, 4),
+                })
 
     return {
         "binding_impact": binding_impact,
@@ -404,12 +348,12 @@ def find_epitope_disrupting_mutations(
     epitope_end: int,
     mhc_alleles: list[str] | None = None,
     blosum62_min: int = 0,
-) -> list[EpitopeMutation]:
+) -> list[MutationResult]:
     """Find mutations that disrupt a specific T-cell epitope region.
 
     Tries all 19 possible substitutions at each position within the
-    epitope region, computes binding score change, and filters by
-    BLOSUM62 conservation.
+    epitope region, computes binding score change using score_peptide_pssm
+    from the immunogenicity module, and filters by BLOSUM62 conservation.
 
     Args:
         protein: Full protein sequence.
@@ -419,8 +363,8 @@ def find_epitope_disrupting_mutations(
         blosum62_min: Minimum BLOSUM62 score for acceptable substitutions.
 
     Returns:
-        List of EpitopeMutation objects, sorted by binding_reduction
-        (most disruption first).
+        List of MutationResult objects, sorted by score
+        (binding_reduction, most disruption first).
     """
     if mhc_alleles is None:
         mhc_alleles = _DEFAULT_MHC_ALLELES.get("Homo_sapiens", [])
@@ -430,14 +374,14 @@ def find_epitope_disrupting_mutations(
         protein, epitope_start, epitope_end, mhc_alleles
     )
 
-    mutations: list[EpitopeMutation] = []
+    mutations: list[MutationResult] = []
 
     for pos in range(max(0, epitope_start), min(len(protein), epitope_end)):
         wildtype = protein[pos]
         if wildtype not in BLOSUM62:
             continue
 
-        for mutant in _STANDARD_AAS:
+        for mutant in STANDARD_AAS:
             if mutant == wildtype:
                 continue
             if mutant not in BLOSUM62:
@@ -467,46 +411,42 @@ def find_epitope_disrupting_mutations(
             # Estimate solubility impact
             sol_impact = _estimate_solubility_impact(wildtype, mutant)
 
-            # Identify the epitope peptide (the 9-mer with highest binding)
-            epitope_peptide = protein[
-                max(0, pos - _MHC_PEPTIDE_LENGTH + 1):
-                pos + _MHC_PEPTIDE_LENGTH
-            ]
-            # Use the specific 9-mer that includes this position
-            best_pep_start = max(0, pos - _MHC_PEPTIDE_LENGTH + 1)
-            # Find the 9-mer with highest binding score
+            # Find the 9-mer with highest binding score that includes this position
             best_score = 0.0
             best_peptide = ""
             for pep_start in range(
-                max(0, pos - _MHC_PEPTIDE_LENGTH + 1),
-                min(len(protein) - _MHC_PEPTIDE_LENGTH + 1, pos + 1)
+                max(0, pos - _MHC_I_PEPTIDE_LENGTH + 1),
+                min(len(protein) - _MHC_I_PEPTIDE_LENGTH + 1, pos + 1)
             ):
-                if not (pep_start <= pos < pep_start + _MHC_PEPTIDE_LENGTH):
+                if not (pep_start <= pos < pep_start + _MHC_I_PEPTIDE_LENGTH):
                     continue
-                pep = protein[pep_start:pep_start + _MHC_PEPTIDE_LENGTH]
-                if len(pep) < _MHC_PEPTIDE_LENGTH:
+                pep = protein[pep_start:pep_start + _MHC_I_PEPTIDE_LENGTH]
+                if len(pep) < _MHC_I_PEPTIDE_LENGTH:
                     continue
-                sc = max(
-                    _estimate_mhc_binding_score(pep, allele)
-                    for allele in (mhc_alleles or [""])
-                )
-                if sc > best_score:
-                    best_score = sc
-                    best_peptide = pep
+                for allele in mhc_alleles:
+                    sc = score_peptide_pssm(pep, allele)
+                    if sc > best_score:
+                        best_score = sc
+                        best_peptide = pep
 
-            mutations.append(EpitopeMutation(
+            mutations.append(MutationResult(
                 position=pos,
-                wildtype=wildtype,
+                original=wildtype,
                 mutant=mutant,
-                epitope_disrupted=best_peptide,
-                binding_reduction=round(binding_reduction, 3),
-                blosum62=blosum,
-                ddg_estimate=ddg,
-                solubility_impact=sol_impact,
+                score=round(binding_reduction, 4),
+                engine="deimmunization",
+                description=f"Disrupts epitope {best_peptide} at position {pos}",
+                details={
+                    "epitope_disrupted": best_peptide,
+                    "binding_reduction": round(binding_reduction, 4),
+                    "blosum62": blosum,
+                    "ddg_estimate": ddg,
+                    "solubility_impact": sol_impact,
+                },
             ))
 
-    # Sort by binding_reduction descending (most disruption first)
-    mutations.sort(key=lambda m: m.binding_reduction, reverse=True)
+    # Sort by score descending (most disruption first)
+    mutations.sort(key=lambda m: m.score, reverse=True)
     return mutations
 
 
@@ -514,12 +454,13 @@ def rank_deimmunization_mutations(
     protein: str,
     mhc_alleles: list[str] | None = None,
     blosum62_min: int = 0,
-) -> list[EpitopeMutation]:
+) -> list[MutationResult]:
     """Find all possible deimmunization mutations across all epitopes.
 
-    Identifies T-cell epitopes in the protein, then for each epitope
-    finds mutations that reduce MHC binding. Results are ranked by a
-    combined score considering binding reduction, conservation, and stability.
+    Identifies T-cell epitopes in the protein using predict_t_cell_epitopes
+    from the immunogenicity module, then for each epitope finds mutations
+    that reduce MHC binding. Results are ranked by a combined score
+    considering binding reduction, conservation, and stability.
 
     Args:
         protein: Protein sequence.
@@ -527,32 +468,20 @@ def rank_deimmunization_mutations(
         blosum62_min: Minimum BLOSUM62 score for acceptable substitutions.
 
     Returns:
-        Ranked list of EpitopeMutation objects (best first).
+        Ranked list of MutationResult objects (best first).
     """
-    # Lazy import to avoid circular dependency
-    try:
-        from biocompiler.immunogenicity import compute_immunogenicity
-        # Use immunogenicity module's T-cell epitope data
-        species = _organism_to_species("Homo_sapiens")
-        result = compute_immunogenicity(protein, mhc_alleles=mhc_alleles, species=species)
-        if result.num_t_cell_epitopes == 0:
-            return []
-    except ImportError:
-        pass
-    except Exception:
-        pass
+    # Use immunogenicity module's T-cell epitope data for screening
+    epitopes = predict_t_cell_epitopes(protein, mhc_alleles)
+    binder_epitopes = _filter_binder_epitopes(epitopes)
 
-    # Always use internal epitope scanning for detailed position data
-    epitopes = _scan_t_cell_epitopes(protein, mhc_alleles)
-
-    if not epitopes:
+    if not binder_epitopes:
         return []
 
-    all_mutations: list[EpitopeMutation] = []
+    all_mutations: list[MutationResult] = []
 
-    for epitope in epitopes:
+    for epitope in binder_epitopes:
         start = epitope.get("start", epitope.get("position", 0))
-        end = epitope.get("end", start + _MHC_PEPTIDE_LENGTH)
+        end = epitope.get("end", start + _MHC_I_PEPTIDE_LENGTH)
         score = epitope.get("score", epitope.get("binding_score", 0.0))
 
         # Only consider epitopes with meaningful binding
@@ -566,18 +495,20 @@ def rank_deimmunization_mutations(
 
     # Rank by combined score:
     # binding_reduction * (1 - |blosum62|/4) * (1 - max(0, ddg)/5)
-    def _combined_score(m: EpitopeMutation) -> float:
-        conservation_factor = 1.0 - abs(m.blosum62) / 4.0
-        stability_factor = 1.0 - max(0.0, m.ddg_estimate) / 5.0
+    def _combined_score(m: MutationResult) -> float:
+        blosum62 = m.details.get("blosum62", 0)
+        ddg = m.details.get("ddg_estimate", 0.0)
+        conservation_factor = 1.0 - abs(blosum62) / 4.0
+        stability_factor = 1.0 - max(0.0, ddg) / 5.0
         # Ensure factors are non-negative
         conservation_factor = max(0.0, conservation_factor)
         stability_factor = max(0.0, stability_factor)
-        return m.binding_reduction * conservation_factor * stability_factor
+        return m.score * conservation_factor * stability_factor
 
     all_mutations.sort(key=_combined_score, reverse=True)
 
     # Deduplicate: keep the best mutation per position
-    seen_positions: dict[int, EpitopeMutation] = {}
+    seen_positions: dict[tuple[int, str], MutationResult] = {}
     for mut in all_mutations:
         key = (mut.position, mut.mutant)
         if key not in seen_positions:
@@ -587,54 +518,6 @@ def rank_deimmunization_mutations(
     return deduped
 
 
-def _scan_t_cell_epitopes(
-    protein: str,
-    mhc_alleles: list[str] | None = None,
-) -> list[dict]:
-    """Scan protein for T-cell epitopes using internal heuristic scoring.
-
-    This is a fallback when the immunogenicity module is not available.
-    Identifies 9-mer peptides with high predicted MHC binding.
-
-    Args:
-        protein: Protein sequence.
-        mhc_alleles: MHC alleles to test.
-
-    Returns:
-        List of dicts with keys: start, end, peptide, score.
-    """
-    if mhc_alleles is None:
-        mhc_alleles = _DEFAULT_MHC_ALLELES.get("Homo_sapiens", [])
-
-    epitopes = []
-
-    for i in range(len(protein) - _MHC_PEPTIDE_LENGTH + 1):
-        peptide = protein[i:i + _MHC_PEPTIDE_LENGTH]
-
-        # Score against each allele
-        max_score = 0.0
-        best_allele = ""
-        for allele in mhc_alleles:
-            score = _estimate_mhc_binding_score(peptide, allele)
-            if score > max_score:
-                max_score = score
-                best_allele = allele
-
-        # Threshold: scores above ~3.0 are potential epitopes
-        if max_score > 3.0:
-            epitopes.append({
-                "start": i,
-                "end": i + _MHC_PEPTIDE_LENGTH,
-                "peptide": peptide,
-                "score": round(max_score, 3),
-                "allele": best_allele,
-            })
-
-    # Sort by score descending
-    epitopes.sort(key=lambda e: e["score"], reverse=True)
-    return epitopes
-
-
 def _compute_immunogenicity_score(
     protein: str,
     organism: str = "Homo_sapiens",
@@ -642,8 +525,8 @@ def _compute_immunogenicity_score(
 ) -> float:
     """Compute overall immunogenicity score for a protein.
 
-    The score is the average of the top epitope binding scores,
-    normalized to [0, 1] range. Higher = more immunogenic.
+    The score is based on the average of the top epitope binding scores.
+    Higher = more immunogenic.
 
     Args:
         protein: Protein sequence.
@@ -653,34 +536,34 @@ def _compute_immunogenicity_score(
     Returns:
         Immunogenicity score in [0, 1].
     """
-    # Try the immunogenicity module first
+    # Try the immunogenicity module's compute_immunogenicity first
     try:
-        from biocompiler.immunogenicity import compute_immunogenicity
+        from .immunogenicity import compute_immunogenicity
         species = _organism_to_species(organism)
         result = compute_immunogenicity(protein, mhc_alleles=mhc_alleles, species=species)
         return result.immunogenicity_score
     except ImportError:
-        pass
+        logger.warning("immunogenicity.compute_immunogenicity unavailable, using local fallback")
     except Exception:
-        pass  # Fall back to internal heuristic
+        logger.warning("immunogenicity.compute_immunogenicity failed, using local fallback")
 
+    # Fallback: use predict_t_cell_epitopes and compute score from epitope data
     if mhc_alleles is None:
         mhc_alleles = _get_mhc_alleles(organism)
 
-    epitopes = _scan_t_cell_epitopes(protein, mhc_alleles)
+    epitopes = predict_t_cell_epitopes(protein, mhc_alleles)
+    binder_epitopes = _filter_binder_epitopes(epitopes)
 
-    if not epitopes:
+    if not binder_epitopes:
         return 0.0
 
     # Take top 5 epitope scores (or fewer if < 5)
-    top_scores = [e["score"] for e in epitopes[:5]]
+    top_scores = [e["score"] for e in binder_epitopes[:5]]
 
-    # Normalize: typical strong binder scores are ~5-10
-    # Map to [0, 1] using sigmoid-like transformation
+    # Scores from predict_t_cell_epitopes are already normalized to [0, 1]
     avg_score = sum(top_scores) / len(top_scores)
-    normalized = 1.0 / (1.0 + math.exp(-0.5 * (avg_score - 5.0)))
 
-    return round(normalized, 4)
+    return round(min(1.0, avg_score), 4)
 
 
 def _count_t_cell_epitopes(
@@ -696,23 +579,24 @@ def _count_t_cell_epitopes(
         mhc_alleles: MHC alleles to test.
 
     Returns:
-        Number of predicted epitopes.
+        Number of predicted epitopes (strong and moderate binders).
     """
     try:
-        from biocompiler.immunogenicity import compute_immunogenicity
+        from .immunogenicity import compute_immunogenicity
         species = _organism_to_species(organism)
         result = compute_immunogenicity(protein, mhc_alleles=mhc_alleles, species=species)
         return result.num_t_cell_epitopes
     except ImportError:
-        pass
+        logger.warning("immunogenicity.compute_immunogenicity unavailable, using local fallback")
     except Exception:
-        pass  # Fall back to internal heuristic
+        logger.warning("immunogenicity.compute_immunogenicity failed, using local fallback")
 
     if mhc_alleles is None:
         mhc_alleles = _get_mhc_alleles(organism)
 
-    epitopes = _scan_t_cell_epitopes(protein, mhc_alleles)
-    return len(epitopes)
+    epitopes = predict_t_cell_epitopes(protein, mhc_alleles)
+    binder_epitopes = _filter_binder_epitopes(epitopes)
+    return len(binder_epitopes)
 
 
 def _compute_solubility_score(protein: str) -> float:
@@ -792,141 +676,158 @@ def deimmunize(
 
     Returns:
         DeimmunizationResult with optimized protein and detailed metrics.
+
+    Raises:
+        ImmunogenicityError: If the protein sequence is invalid.
     """
-    preserve_set = set(preserve_positions) if preserve_positions else set()
-    mhc_alleles = _get_mhc_alleles(organism)
+    with EngineTimer() as timer:
+        # Validate protein sequence
+        try:
+            protein = validate_protein_sequence(protein, "deimmunization")
+        except ValueError as exc:
+            raise ImmunogenicityError(str(exc)) from exc
 
-    # Compute initial metrics
-    original_immunogenicity = _compute_immunogenicity_score(
-        protein, organism, mhc_alleles
-    )
-    original_epitope_count = _count_t_cell_epitopes(protein, organism, mhc_alleles)
+        preserve_set = set(preserve_positions) if preserve_positions else set()
+        mhc_alleles = _get_mhc_alleles(organism)
 
-    current_protein = protein
-    mutations_applied: list[dict] = []
-    total_ddg = 0.0
-    iteration = 0
+        # Compute initial metrics
+        original_immunogenicity = _compute_immunogenicity_score(
+            protein, organism, mhc_alleles
+        )
+        original_epitope_count = _count_t_cell_epitopes(protein, organism, mhc_alleles)
 
-    while iteration < max_mutations:
-        # Check if target is reached
-        current_score = _compute_immunogenicity_score(
+        current_protein = protein
+        mutations_applied: list[dict] = []
+        total_ddg = 0.0
+        iteration = 0
+
+        while iteration < max_mutations:
+            # Check if target is reached
+            current_score = _compute_immunogenicity_score(
+                current_protein, organism, mhc_alleles
+            )
+            if current_score <= target_score:
+                break
+
+            # Find T-cell epitopes using predict_t_cell_epitopes
+            all_epitopes = predict_t_cell_epitopes(current_protein, mhc_alleles)
+            epitopes = _filter_binder_epitopes(all_epitopes)
+            if not epitopes:
+                break
+
+            # Collect all possible mutations for the strongest epitopes
+            # Process epitopes in order of strength (strongest first)
+            all_candidates: list[MutationResult] = []
+
+            for epitope in epitopes:
+                start = epitope["start"]
+                end = epitope["end"]
+
+                epi_mutations = find_epitope_disrupting_mutations(
+                    current_protein, start, end, mhc_alleles, blosum62_min
+                )
+                all_candidates.extend(epi_mutations)
+
+            if not all_candidates:
+                logger.info("No disruptive mutations found for remaining epitopes")
+                break
+
+            # Rank by combined score
+            def _combined_score(m: MutationResult) -> float:
+                blosum62 = m.details.get("blosum62", 0)
+                ddg = m.details.get("ddg_estimate", 0.0)
+                conservation_factor = 1.0 - abs(blosum62) / 4.0
+                stability_factor = 1.0 - max(0.0, ddg) / 5.0
+                conservation_factor = max(0.0, conservation_factor)
+                stability_factor = max(0.0, stability_factor)
+                return m.score * conservation_factor * stability_factor
+
+            all_candidates.sort(key=_combined_score, reverse=True)
+
+            # Find the best mutation that passes all filters
+            best_mutation = None
+            for candidate in all_candidates:
+                ddg_est = candidate.details.get("ddg_estimate", 0.0)
+                blosum62_val = candidate.details.get("blosum62", 0)
+
+                # Skip preserved positions
+                if candidate.position in preserve_set:
+                    continue
+
+                # Check BLOSUM62 filter
+                if blosum62_val < blosum62_min:
+                    continue
+
+                # Check ΔΔG filter
+                if ddg_est >= max_ddg:
+                    continue
+
+                # Check cumulative ΔΔG
+                if total_ddg + ddg_est >= max_ddg * 2:
+                    continue
+
+                # Check if this position was already mutated
+                already_mutated = any(
+                    m["position"] == candidate.position for m in mutations_applied
+                )
+                if already_mutated:
+                    continue
+
+                best_mutation = candidate
+                break
+
+            if best_mutation is None:
+                logger.info("No mutation passes all filters")
+                break
+
+            # Apply the mutation
+            current_protein = (
+                current_protein[:best_mutation.position]
+                + best_mutation.mutant
+                + current_protein[best_mutation.position + 1:]
+            )
+
+            ddg_est = best_mutation.details.get("ddg_estimate", 0.0)
+            total_ddg += ddg_est
+
+            mutations_applied.append({
+                "position": best_mutation.position,
+                "wildtype": best_mutation.original,
+                "mutant": best_mutation.mutant,
+                "epitope_removed": best_mutation.details.get("epitope_disrupted", ""),
+                "ddg": ddg_est,
+                "blosum62": best_mutation.details.get("blosum62", 0),
+                "binding_reduction": best_mutation.score,
+                "solubility_impact": best_mutation.details.get("solubility_impact", 0.0),
+            })
+
+            iteration += 1
+            logger.debug(
+                "Iteration %d: %s%d%s (ddG=%.2f, BLOSUM62=%d, binding_reduction=%.4f)",
+                iteration,
+                best_mutation.original,
+                best_mutation.position + 1,  # 1-based for display
+                best_mutation.mutant,
+                ddg_est,
+                best_mutation.details.get("blosum62", 0),
+                best_mutation.score,
+            )
+
+        # Compute final metrics
+        optimized_immunogenicity = _compute_immunogenicity_score(
             current_protein, organism, mhc_alleles
         )
-        if current_score <= target_score:
-            break
-
-        # Find T-cell epitopes
-        epitopes = _scan_t_cell_epitopes(current_protein, mhc_alleles)
-        if not epitopes:
-            break
-
-        # Collect all possible mutations for the strongest epitopes
-        # Process epitopes in order of strength (strongest first)
-        all_candidates: list[EpitopeMutation] = []
-
-        for epitope in epitopes:
-            start = epitope["start"]
-            end = epitope["end"]
-
-            epi_mutations = find_epitope_disrupting_mutations(
-                current_protein, start, end, mhc_alleles, blosum62_min
-            )
-            all_candidates.extend(epi_mutations)
-
-        if not all_candidates:
-            logger.info("No disruptive mutations found for remaining epitopes")
-            break
-
-        # Rank by combined score
-        def _combined_score(m: EpitopeMutation) -> float:
-            conservation_factor = 1.0 - abs(m.blosum62) / 4.0
-            stability_factor = 1.0 - max(0.0, m.ddg_estimate) / 5.0
-            conservation_factor = max(0.0, conservation_factor)
-            stability_factor = max(0.0, stability_factor)
-            return m.binding_reduction * conservation_factor * stability_factor
-
-        all_candidates.sort(key=_combined_score, reverse=True)
-
-        # Find the best mutation that passes all filters
-        best_mutation = None
-        for candidate in all_candidates:
-            # Skip preserved positions
-            if candidate.position in preserve_set:
-                continue
-
-            # Check BLOSUM62 filter
-            if candidate.blosum62 < blosum62_min:
-                continue
-
-            # Check ΔΔG filter
-            if candidate.ddg_estimate >= max_ddg:
-                continue
-
-            # Check cumulative ΔΔG
-            if total_ddg + candidate.ddg_estimate >= max_ddg * 2:
-                continue
-
-            # Check if this position was already mutated
-            already_mutated = any(
-                m["position"] == candidate.position for m in mutations_applied
-            )
-            if already_mutated:
-                continue
-
-            best_mutation = candidate
-            break
-
-        if best_mutation is None:
-            logger.info("No mutation passes all filters")
-            break
-
-        # Apply the mutation
-        current_protein = (
-            current_protein[:best_mutation.position]
-            + best_mutation.mutant
-            + current_protein[best_mutation.position + 1:]
+        optimized_epitope_count = _count_t_cell_epitopes(
+            current_protein, organism, mhc_alleles
         )
 
-        total_ddg += best_mutation.ddg_estimate
+        # Check stability: all ΔΔG values summed < max_ddg * len(mutations)
+        stability_threshold = max_ddg * max(len(mutations_applied), 1)
+        stability_preserved = total_ddg < stability_threshold
 
-        mutations_applied.append({
-            "position": best_mutation.position,
-            "wildtype": best_mutation.wildtype,
-            "mutant": best_mutation.mutant,
-            "epitope_removed": best_mutation.epitope_disrupted,
-            "ddg": best_mutation.ddg_estimate,
-            "blosum62": best_mutation.blosum62,
-            "binding_reduction": best_mutation.binding_reduction,
-            "solubility_impact": best_mutation.solubility_impact,
-        })
+        success = optimized_immunogenicity <= target_score
 
-        iteration += 1
-        logger.debug(
-            "Iteration %d: %s%d%s (ddG=%.2f, BLOSUM62=%d, binding_reduction=%.3f)",
-            iteration,
-            best_mutation.wildtype,
-            best_mutation.position + 1,  # 1-based for display
-            best_mutation.mutant,
-            best_mutation.ddg_estimate,
-            best_mutation.blosum62,
-            best_mutation.binding_reduction,
-        )
-
-    # Compute final metrics
-    optimized_immunogenicity = _compute_immunogenicity_score(
-        current_protein, organism, mhc_alleles
-    )
-    optimized_epitope_count = _count_t_cell_epitopes(
-        current_protein, organism, mhc_alleles
-    )
-
-    # Check stability: all ΔΔG values summed < max_ddg * len(mutations)
-    stability_threshold = max_ddg * max(len(mutations_applied), 1)
-    stability_preserved = total_ddg < stability_threshold
-
-    success = optimized_immunogenicity <= target_score
-
-    return DeimmunizationResult(
+    result = DeimmunizationResult(
         original_protein=protein,
         optimized_protein=current_protein,
         mutations_applied=mutations_applied,
@@ -938,7 +839,21 @@ def deimmunize(
         iterations=iteration,
         success=success,
         method="iterative_epitope_disruption",
+        execution_time_s=round(timer.elapsed, 4),
     )
+
+    logger.info(
+        "Deimmunization complete: %d mutations, immunogenicity %.4f -> %.4f, "
+        "epitopes %d -> %d, %.2fs",
+        iteration,
+        original_immunogenicity,
+        optimized_immunogenicity,
+        original_epitope_count,
+        optimized_epitope_count,
+        timer.elapsed,
+    )
+
+    return result
 
 
 def validate_deimmunized_protein(
@@ -973,7 +888,17 @@ def validate_deimmunized_protein(
           - all_mutations_conservative: bool
           - mutations: list of dicts with validation per mutation
           - overall_valid: bool
+
+    Raises:
+        ImmunogenicityError: If either protein sequence is invalid.
     """
+    # Validate protein sequences
+    try:
+        protein = validate_protein_sequence(protein, "deimmunization")
+        original_protein = validate_protein_sequence(original_protein, "deimmunization")
+    except ValueError as exc:
+        raise ImmunogenicityError(str(exc)) from exc
+
     mhc_alleles = _get_mhc_alleles(organism)
 
     # Check immunogenicity
@@ -1029,6 +954,20 @@ def validate_deimmunized_protein(
         and solubility_preserved
         and all_conservative
     )
+
+    if not overall_valid:
+        reasons = []
+        if not immunogenicity_reduced:
+            reasons.append("immunogenicity not reduced")
+        if not stability_preserved:
+            reasons.append("stability not preserved")
+        if not solubility_preserved:
+            reasons.append("solubility not preserved")
+        if not all_conservative:
+            reasons.append("non-conservative mutations present")
+        logger.warning(
+            "Deimmunized protein validation failed: %s", "; ".join(reasons)
+        )
 
     return {
         "immunogenicity_reduced": immunogenicity_reduced,

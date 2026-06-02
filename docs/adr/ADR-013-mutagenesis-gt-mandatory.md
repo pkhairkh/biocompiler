@@ -50,7 +50,7 @@ to determine whether a failing position is GT-mandatory or an optimizer weakness
 3. Only propose AA substitutions for GT-mandatory positions in
    `type_directed_mutagenesis`. Positions where `gt_mandatory=False` are skipped
    — these represent optimizer weaknesses that should be addressed by improving
-   the optimizer (Phase 7 GT-free codon prioritization, ADR-011), not by changing
+   the optimizer (cryptic splice elimination step GT-free codon prioritization, ADR-011), not by changing
    the protein.
 
 4. Add `diagnose_optimizer_weakness()` function that identifies positions where

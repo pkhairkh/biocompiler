@@ -1,5 +1,5 @@
 """
-BioCompiler CamSol Solubility Module v7.2.0
+BioCompiler CamSol Solubility Module v7.5.0
 =============================================
 CamSol-inspired solubility prediction algorithm in pure Python.
 
@@ -15,13 +15,55 @@ Scoring range: -3 to +3 (positive = soluble, negative = aggregation-prone).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-from .constants import BLOSUM62
+from .constants import BLOSUM62, STANDARD_AAS
+from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+from .exceptions import BioCompilerError
+
+try:
+    from .exceptions import CamSolError
+except ImportError:
+    class CamSolError(BioCompilerError):
+        """Raised when CamSol solubility computation encounters a fatal error."""
+        pass
+
+# ── Attempt to import shared defaults; provide local fallbacks ──
+try:
+    from .constants import DEFAULT_SOLUBILITY_WINDOW as _DEFAULT_WINDOW
+except ImportError:
+    _DEFAULT_WINDOW: int = 7  # type: ignore[misc]
+
+try:
+    from .constants import DEFAULT_SOLUBILITY_SMOOTHING as _DEFAULT_SMOOTHING
+except ImportError:
+    _DEFAULT_SMOOTHING: int = 3  # type: ignore[misc]
+
+try:
+    from .constants import DEFAULT_BATCH_SIZE as _DEFAULT_BATCH_SIZE
+except ImportError:
+    _DEFAULT_BATCH_SIZE: int = 8  # type: ignore[misc]
+
 
 logger = logging.getLogger(__name__)
+
+
+# ────────────────────────────────────────────────────────────
+# In-memory cache
+# ────────────────────────────────────────────────────────────
+
+_cache: dict[tuple[str, int, int], SolubilityResult] = {}
+
+
+def clear_cache() -> None:
+    """Clear the module-level CamSol result cache."""
+    _cache.clear()
+    logger.info("CamSol cache cleared.")
+
 
 # ────────────────────────────────────────────────────────────
 # CamSol-specific physicochemical scales
@@ -128,10 +170,8 @@ CAMSOL_BETA_STRAND: dict[str, float] = {
 }
 
 # ────────────────────────────────────────────────────────────
-# Standard amino acids and internal constants
+# Internal constants
 # ────────────────────────────────────────────────────────────
-
-_STANDARD_AAS = list("ACDEFGHIKLMNPQRSTVWY")
 
 # Weights for each component in the intrinsic solubility calculation
 _WEIGHT_HYDROPATHY = 0.35
@@ -167,6 +207,9 @@ class SolubilityResult:
             "marginally_soluble", "insoluble".
         recommendations: Actionable suggestions for improving solubility.
         method: "camsol_intrinsic" or "camsol_structural".
+        success: Whether the computation completed without errors.
+        error: Error message if the computation failed.
+        execution_time_s: Wall-clock time for the computation in seconds.
     """
     protein: str
     intrinsic_score: float
@@ -176,7 +219,10 @@ class SolubilityResult:
     aggregation_prone_regions: list[tuple[int, int, float]]
     solubility_class: str
     recommendations: list[str]
-    method: str
+    method: str = "camsol_intrinsic"
+    success: bool = True
+    error: str | None = None
+    execution_time_s: float = 0.0
 
 
 # ────────────────────────────────────────────────────────────
@@ -185,8 +231,8 @@ class SolubilityResult:
 
 def compute_intrinsic_solubility(
     protein: str,
-    window: int = 7,
-    smoothing: int = 3,
+    window: int = _DEFAULT_WINDOW,
+    smoothing: int = _DEFAULT_SMOOTHING,
 ) -> SolubilityResult:
     """Compute CamSol intrinsic solubility score from protein sequence.
 
@@ -195,13 +241,14 @@ def compute_intrinsic_solubility(
     propensity, and proline/glycine content.
 
     Steps:
-        1. Compute per-residue intrinsic score using weighted combination.
-        2. Apply sliding window smoothing (default window=7).
-        3. Apply additional smoothing pass (3-residue window).
-        4. Compute global score as average of per-residue scores.
-        5. Identify aggregation-prone regions.
-        6. Classify solubility.
-        7. Generate recommendations.
+        1. Validate protein sequence.
+        2. Compute per-residue intrinsic score using weighted combination.
+        3. Apply sliding window smoothing (default window=7).
+        4. Apply additional smoothing pass (3-residue window).
+        5. Compute global score as average of per-residue scores.
+        6. Identify aggregation-prone regions.
+        7. Classify solubility.
+        8. Generate recommendations.
 
     Args:
         protein: Protein sequence (1-letter amino acid codes).
@@ -212,99 +259,101 @@ def compute_intrinsic_solubility(
         SolubilityResult with intrinsic solubility prediction.
 
     Raises:
-        ValueError: If protein is empty or contains non-standard residues.
+        CamSolError: If protein is empty or contains non-standard residues.
     """
-    protein = protein.upper().strip()
+    with EngineTimer() as timer:
+        try:
+            protein = validate_protein_sequence(protein, "CamSol")
+        except ValueError as exc:
+            raise CamSolError(str(exc)) from exc
 
-    if not protein:
-        raise ValueError("Protein sequence must not be empty.")
+        # Check cache
+        cache_key = _make_cache_key(protein, window, smoothing)
+        if cache_key in _cache:
+            logger.info("CamSol intrinsic: cache hit for %s...", protein[:10])
+            return _cache[cache_key]
 
-    invalid = set(protein) - set(_STANDARD_AAS)
-    if invalid:
-        raise ValueError(
-            f"Protein contains non-standard residues: {invalid}. "
-            f"Only standard 20 amino acids are supported."
+        n = len(protein)
+
+        # Step 1: Per-residue intrinsic score
+        raw_scores = []
+        for aa in protein:
+            hydro = CAMSOL_HYDROPATHY.get(aa, 0.0)
+            charge = CAMSOL_CHARGE.get(aa, 0.0)
+            alpha = CAMSOL_ALPHA_HELIX.get(aa, 0.0)
+            beta = CAMSOL_BETA_STRAND.get(aa, 0.0)
+
+            # Proline/glycine effect: P increases solubility (breaks structure),
+            # G decreases solubility (flexible, can adopt aggregation-prone
+            # conformations)
+            if aa == "P":
+                progly = 1.0
+            elif aa == "G":
+                progly = -0.5
+            else:
+                progly = 0.0
+
+            score = (
+                _WEIGHT_HYDROPATHY * hydro
+                + _WEIGHT_CHARGE * charge
+                + _WEIGHT_ALPHA_HELIX * alpha
+                + _WEIGHT_BETA_STRAND * (-beta)  # strand increases aggregation
+                + _WEIGHT_PROGLY * progly
+            )
+            raw_scores.append(score)
+
+        # Step 2: Sliding window smoothing
+        smoothed = _sliding_window_smooth(raw_scores, window)
+
+        # Step 3: Additional smoothing pass
+        double_smoothed = _sliding_window_smooth(smoothed, smoothing)
+
+        # Step 4: Compute global score
+        intrinsic_score = (
+            sum(double_smoothed) / len(double_smoothed) if double_smoothed else 0.0
         )
 
-    n = len(protein)
-    if n == 0:
-        raise ValueError("Protein sequence must not be empty.")
+        # Clamp to [-3, +3]
+        intrinsic_score = max(-3.0, min(3.0, intrinsic_score))
 
-    # ── Step 1: Per-residue intrinsic score ──
-    raw_scores = []
-    for aa in protein:
-        hydro = CAMSOL_HYDROPATHY.get(aa, 0.0)
-        charge = CAMSOL_CHARGE.get(aa, 0.0)
-        alpha = CAMSOL_ALPHA_HELIX.get(aa, 0.0)
-        beta = CAMSOL_BETA_STRAND.get(aa, 0.0)
-
-        # Proline/glycine effect: P increases solubility (breaks structure),
-        # G decreases solubility (flexible, can adopt aggregation-prone
-        # conformations)
-        if aa == "P":
-            progly = 1.0
-        elif aa == "G":
-            progly = -0.5
-        else:
-            progly = 0.0
-
-        score = (
-            _WEIGHT_HYDROPATHY * hydro
-            + _WEIGHT_CHARGE * charge
-            + _WEIGHT_ALPHA_HELIX * alpha
-            + _WEIGHT_BETA_STRAND * (-beta)  # strand increases aggregation
-            + _WEIGHT_PROGLY * progly
+        # Step 5: Identify aggregation-prone regions
+        agg_regions = _find_aggregation_prone_regions(
+            double_smoothed, _AGGREGATION_THRESHOLD
         )
-        raw_scores.append(score)
 
-    # ── Step 2: Sliding window smoothing ──
-    smoothed = _sliding_window_smooth(raw_scores, window)
+        # Step 6: Classify solubility
+        solubility_class = classify_solubility(intrinsic_score)
 
-    # ── Step 3: Additional smoothing pass ──
-    double_smoothed = _sliding_window_smooth(smoothed, smoothing)
+        # Step 7: Generate recommendations
+        result = SolubilityResult(
+            protein=protein,
+            intrinsic_score=round(intrinsic_score, 4),
+            structural_score=None,
+            overall_score=round(intrinsic_score, 4),
+            per_residue_scores=[round(s, 4) for s in double_smoothed],
+            aggregation_prone_regions=[
+                (start, end, round(avg, 4)) for start, end, avg in agg_regions
+            ],
+            solubility_class=solubility_class,
+            recommendations=[],  # filled below
+            method="camsol_intrinsic",
+        )
+        result.recommendations = generate_solubility_recommendations(result)
 
-    # ── Step 4: Compute global score ──
-    intrinsic_score = (
-        sum(double_smoothed) / len(double_smoothed) if double_smoothed else 0.0
-    )
+        # Store in cache
+        _cache[cache_key] = result
 
-    # Clamp to [-3, +3]
-    intrinsic_score = max(-3.0, min(3.0, intrinsic_score))
+        logger.info(
+            "CamSol intrinsic: protein=%s, len=%d, score=%.4f, class=%s, "
+            "agg_regions=%d",
+            protein[:10] + "..." if len(protein) > 10 else protein,
+            n,
+            intrinsic_score,
+            solubility_class,
+            len(agg_regions),
+        )
 
-    # ── Step 5: Identify aggregation-prone regions ──
-    agg_regions = _find_aggregation_prone_regions(
-        double_smoothed, _AGGREGATION_THRESHOLD
-    )
-
-    # ── Step 6: Classify solubility ──
-    solubility_class = classify_solubility(intrinsic_score)
-
-    # ── Step 7: Generate recommendations ──
-    result = SolubilityResult(
-        protein=protein,
-        intrinsic_score=round(intrinsic_score, 4),
-        structural_score=None,
-        overall_score=round(intrinsic_score, 4),
-        per_residue_scores=[round(s, 4) for s in double_smoothed],
-        aggregation_prone_regions=[
-            (start, end, round(avg, 4)) for start, end, avg in agg_regions
-        ],
-        solubility_class=solubility_class,
-        recommendations=[],  # filled below
-        method="camsol_intrinsic",
-    )
-    result.recommendations = generate_solubility_recommendations(result)
-
-    logger.debug(
-        "CamSol intrinsic: protein=%s, len=%d, score=%.4f, class=%s, "
-        "agg_regions=%d",
-        protein[:10] + "..." if len(protein) > 10 else protein,
-        n,
-        intrinsic_score,
-        solubility_class,
-        len(agg_regions),
-    )
-
+    result.execution_time_s = round(timer.elapsed, 6)
     return result
 
 
@@ -332,105 +381,109 @@ def compute_structural_solubility(
         SolubilityResult with structure-corrected solubility prediction.
 
     Raises:
-        ValueError: If protein is empty or PDB string is empty.
+        CamSolError: If protein is empty or contains invalid residues.
     """
-    protein = protein.upper().strip()
+    with EngineTimer() as timer:
+        try:
+            protein = validate_protein_sequence(protein, "CamSol")
+        except ValueError as exc:
+            raise CamSolError(str(exc)) from exc
 
-    if not protein:
-        raise ValueError("Protein sequence must not be empty.")
-    if not pdb_string.strip():
-        raise ValueError("PDB string must not be empty.")
+        if not pdb_string.strip():
+            raise CamSolError("PDB string must not be empty.")
 
-    # Compute intrinsic first
-    intrinsic = compute_intrinsic_solubility(protein)
+        # Compute intrinsic first
+        intrinsic = compute_intrinsic_solubility(protein)
 
-    # Parse PDB coordinates (CA atoms only)
-    ca_coords = _parse_pdb_ca_coords(pdb_string)
+        # Parse PDB coordinates (CA atoms only)
+        ca_coords = _parse_pdb_ca_coords(pdb_string)
 
-    if len(ca_coords) < 3:
-        logger.warning(
-            "Too few CA atoms in PDB (%d). Falling back to intrinsic score.",
-            len(ca_coords),
+        if len(ca_coords) < 3:
+            logger.warning(
+                "Too few CA atoms in PDB (%d). Falling back to intrinsic score.",
+                len(ca_coords),
+            )
+            intrinsic.method = "camsol_structural"
+            intrinsic.structural_score = intrinsic.intrinsic_score
+            intrinsic.execution_time_s = round(timer.elapsed, 6)
+            return intrinsic
+
+        # Approximate SASA using CA neighbor counting
+        sasa = _approximate_sasa(ca_coords)
+
+        # Detect disulfide bonds from SSBOND records
+        disulfide_residues = _parse_disulfide_bonds(pdb_string)
+
+        # Apply structure-based corrections
+        corrected_scores = list(intrinsic.per_residue_scores)
+
+        for i in range(min(len(corrected_scores), len(sasa))):
+            residue_sasa = sasa[i]
+
+            if residue_sasa < 0.15:
+                # Buried residue: reduce aggregation penalty
+                # If score is negative (aggregation-prone), reduce the magnitude
+                if corrected_scores[i] < 0:
+                    correction = abs(corrected_scores[i]) * 0.5 * (
+                        1.0 - residue_sasa / 0.15
+                    )
+                    corrected_scores[i] += correction
+            elif residue_sasa > 0.40:
+                # Exposed residue
+                hydro = CAMSOL_HYDROPATHY.get(protein[i], 0.0)
+                if hydro < 0:
+                    # Exposed hydrophobic: increase aggregation penalty
+                    penalty = abs(hydro) * 0.3 * (residue_sasa - 0.40) / 0.60
+                    corrected_scores[i] -= penalty
+
+            # Disulfide bond correction
+            if i in disulfide_residues:
+                corrected_scores[i] += 0.15  # moderate stabilizing effect
+
+        # Re-smooth after corrections
+        corrected_smooth = _sliding_window_smooth(corrected_scores, 3)
+
+        # Recompute global score
+        structural_score = (
+            sum(corrected_smooth) / len(corrected_smooth)
+            if corrected_smooth
+            else 0.0
         )
-        intrinsic.method = "camsol_structural"
-        intrinsic.structural_score = intrinsic.intrinsic_score
-        return intrinsic
+        structural_score = max(-3.0, min(3.0, structural_score))
 
-    # Approximate SASA using CA neighbor counting
-    sasa = _approximate_sasa(ca_coords)
+        # Recompute aggregation-prone regions
+        agg_regions = _find_aggregation_prone_regions(
+            corrected_smooth, _AGGREGATION_THRESHOLD
+        )
 
-    # Detect disulfide bonds from SSBOND records
-    disulfide_residues = _parse_disulfide_bonds(pdb_string)
+        solubility_class = classify_solubility(structural_score)
 
-    # Apply structure-based corrections
-    corrected_scores = list(intrinsic.per_residue_scores)
+        result = SolubilityResult(
+            protein=protein,
+            intrinsic_score=intrinsic.intrinsic_score,
+            structural_score=round(structural_score, 4),
+            overall_score=round(structural_score, 4),
+            per_residue_scores=[round(s, 4) for s in corrected_smooth],
+            aggregation_prone_regions=[
+                (start, end, round(avg, 4)) for start, end, avg in agg_regions
+            ],
+            solubility_class=solubility_class,
+            recommendations=[],
+            method="camsol_structural",
+        )
+        result.recommendations = generate_solubility_recommendations(result)
 
-    for i in range(min(len(corrected_scores), len(sasa))):
-        residue_sasa = sasa[i]
+        logger.info(
+            "CamSol structural: protein=%s, len=%d, intrinsic=%.4f, "
+            "structural=%.4f, class=%s",
+            protein[:10] + "..." if len(protein) > 10 else protein,
+            len(protein),
+            intrinsic.intrinsic_score,
+            structural_score,
+            solubility_class,
+        )
 
-        if residue_sasa < 0.15:
-            # Buried residue: reduce aggregation penalty
-            # If score is negative (aggregation-prone), reduce the magnitude
-            if corrected_scores[i] < 0:
-                correction = abs(corrected_scores[i]) * 0.5 * (
-                    1.0 - residue_sasa / 0.15
-                )
-                corrected_scores[i] += correction
-        elif residue_sasa > 0.40:
-            # Exposed residue
-            hydro = CAMSOL_HYDROPATHY.get(protein[i], 0.0)
-            if hydro < 0:
-                # Exposed hydrophobic: increase aggregation penalty
-                penalty = abs(hydro) * 0.3 * (residue_sasa - 0.40) / 0.60
-                corrected_scores[i] -= penalty
-
-        # Disulfide bond correction
-        if i in disulfide_residues:
-            corrected_scores[i] += 0.15  # moderate stabilizing effect
-
-    # Re-smooth after corrections
-    corrected_smooth = _sliding_window_smooth(corrected_scores, 3)
-
-    # Recompute global score
-    structural_score = (
-        sum(corrected_smooth) / len(corrected_smooth)
-        if corrected_smooth
-        else 0.0
-    )
-    structural_score = max(-3.0, min(3.0, structural_score))
-
-    # Recompute aggregation-prone regions
-    agg_regions = _find_aggregation_prone_regions(
-        corrected_smooth, _AGGREGATION_THRESHOLD
-    )
-
-    solubility_class = classify_solubility(structural_score)
-
-    result = SolubilityResult(
-        protein=protein,
-        intrinsic_score=intrinsic.intrinsic_score,
-        structural_score=round(structural_score, 4),
-        overall_score=round(structural_score, 4),
-        per_residue_scores=[round(s, 4) for s in corrected_smooth],
-        aggregation_prone_regions=[
-            (start, end, round(avg, 4)) for start, end, avg in agg_regions
-        ],
-        solubility_class=solubility_class,
-        recommendations=[],
-        method="camsol_structural",
-    )
-    result.recommendations = generate_solubility_recommendations(result)
-
-    logger.debug(
-        "CamSol structural: protein=%s, len=%d, intrinsic=%.4f, "
-        "structural=%.4f, class=%s",
-        protein[:10] + "..." if len(protein) > 10 else protein,
-        len(protein),
-        intrinsic.intrinsic_score,
-        structural_score,
-        solubility_class,
-    )
-
+    result.execution_time_s = round(timer.elapsed, 6)
     return result
 
 
@@ -447,22 +500,118 @@ def compute_solubility(
     Args:
         protein: Protein sequence (1-letter amino acid codes).
         pdb_string: Optional PDB file content as a string.
-        **kwargs: Ignored (backward compatibility for callers passing
-            extra keyword arguments like organism, structure_correction).
+        **kwargs: Passed through to the underlying compute function
+            (e.g., window, smoothing for intrinsic computation).
 
     Returns:
         SolubilityResult with solubility prediction.
     """
     if pdb_string is not None and pdb_string.strip():
         return compute_structural_solubility(protein, pdb_string)
-    return compute_intrinsic_solubility(protein)
+
+    # Extract supported kwargs for intrinsic computation
+    window = kwargs.get("window", _DEFAULT_WINDOW)  # type: ignore[arg-type]
+    smoothing = kwargs.get("smoothing", _DEFAULT_SMOOTHING)  # type: ignore[arg-type]
+    return compute_intrinsic_solubility(protein, window=window, smoothing=smoothing)
+
+
+def compute_solubility_batch(
+    sequences: list[str],
+    *,
+    window: int = _DEFAULT_WINDOW,
+    smoothing: int = _DEFAULT_SMOOTHING,
+    max_workers: int | None = None,
+) -> list[SolubilityResult]:
+    """Compute intrinsic solubility for multiple sequences in parallel.
+
+    Uses a thread pool for concurrent computation. Each sequence is
+    processed independently; failures are captured in the result object
+    rather than raising exceptions.
+
+    Args:
+        sequences: List of protein sequences (1-letter amino acid codes).
+        window: Sliding window size for initial smoothing.
+        smoothing: Secondary smoothing window size.
+        max_workers: Maximum number of threads. Defaults to
+            min(len(sequences), DEFAULT_BATCH_SIZE).
+
+    Returns:
+        List of SolubilityResult objects, one per input sequence, in the
+        same order as the input.
+    """
+    if not sequences:
+        return []
+
+    if max_workers is None:
+        max_workers = min(len(sequences), _DEFAULT_BATCH_SIZE)
+
+    logger.info(
+        "CamSol batch: computing solubility for %d sequences (workers=%d)",
+        len(sequences),
+        max_workers,
+    )
+
+    results: dict[int, SolubilityResult] = {}
+
+    def _compute_one(idx: int, seq: str) -> tuple[int, SolubilityResult]:
+        try:
+            result = compute_intrinsic_solubility(seq, window=window, smoothing=smoothing)
+            return (idx, result)
+        except CamSolError as exc:
+            error_result = SolubilityResult(
+                protein=seq,
+                intrinsic_score=0.0,
+                structural_score=None,
+                overall_score=0.0,
+                per_residue_scores=[],
+                aggregation_prone_regions=[],
+                solubility_class="insoluble",
+                recommendations=[],
+                method="camsol_intrinsic",
+                success=False,
+                error=str(exc),
+            )
+            return (idx, error_result)
+        except Exception as exc:
+            error_result = SolubilityResult(
+                protein=seq,
+                intrinsic_score=0.0,
+                structural_score=None,
+                overall_score=0.0,
+                per_residue_scores=[],
+                aggregation_prone_regions=[],
+                solubility_class="insoluble",
+                recommendations=[],
+                method="camsol_intrinsic",
+                success=False,
+                error=f"Unexpected error: {exc}",
+            )
+            return (idx, error_result)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_compute_one, i, seq): i
+            for i, seq in enumerate(sequences)
+        }
+        for future in as_completed(futures):
+            idx, result = future.result()
+            results[idx] = result
+
+    ordered = [results[i] for i in range(len(sequences))]
+    logger.info(
+        "CamSol batch: completed %d sequences (%d successful, %d failed)",
+        len(sequences),
+        sum(1 for r in ordered if r.success),
+        sum(1 for r in ordered if not r.success),
+    )
+    return ordered
 
 
 def find_solubility_mutations(
     protein: str,
     min_score: float = 0.0,
     **kwargs: object,
-) -> list[dict]:
+) -> list[MutationResult]:
     """Find amino acid substitutions to improve solubility.
 
     For each position in aggregation-prone regions, tries all 19 possible
@@ -477,21 +626,16 @@ def find_solubility_mutations(
             extra keyword arguments like pdb_string).
 
     Returns:
-        List of dicts with keys:
-            position (int): 0-based residue position.
-            wildtype (str): Original amino acid.
-            mutant (str): Substituted amino acid.
-            delta_solubility (float): Change in intrinsic score.
-            blosum62 (int): BLOSUM62 score for the substitution.
-        Sorted by delta_solubility descending (most improvement first).
+        List of MutationResult objects sorted by score descending
+        (most improvement first).
 
     Raises:
-        ValueError: If protein is empty.
+        CamSolError: If protein is empty or contains non-standard residues.
     """
-    protein = protein.upper().strip()
-
-    if not protein:
-        raise ValueError("Protein sequence must not be empty.")
+    try:
+        protein = validate_protein_sequence(protein, "CamSol")
+    except ValueError as exc:
+        raise CamSolError(str(exc)) from exc
 
     # Compute intrinsic solubility to find aggregation-prone regions
     result = compute_intrinsic_solubility(protein)
@@ -500,7 +644,7 @@ def find_solubility_mutations(
     if result.intrinsic_score >= min_score and not result.aggregation_prone_regions:
         return []
 
-    mutations: list[dict] = []
+    mutations: list[MutationResult] = []
 
     # Determine positions to target: all residues in aggregation-prone regions
     target_positions: set[int] = set()
@@ -523,7 +667,7 @@ def find_solubility_mutations(
             continue
         wildtype = protein[pos]
 
-        for mutant in _STANDARD_AAS:
+        for mutant in STANDARD_AAS:
             if mutant == wildtype:
                 continue
 
@@ -535,16 +679,29 @@ def find_solubility_mutations(
             # Compute delta solubility
             delta = _compute_mutation_delta(protein, pos, mutant)
             if delta > 0:
-                mutations.append({
-                    "position": pos,
-                    "wildtype": wildtype,
-                    "mutant": mutant,
-                    "delta_solubility": round(delta, 4),
-                    "blosum62": blosum,
-                })
+                mutations.append(MutationResult(
+                    position=pos,
+                    original=wildtype,
+                    mutant=mutant,
+                    score=round(delta, 4),
+                    engine="camsol",
+                    description=(
+                        f"{wildtype}{pos+1}{mutant}: delta_solubility={round(delta, 4):.4f}"
+                    ),
+                    details={
+                        "delta_solubility": round(delta, 4),
+                        "blosum62": blosum,
+                    },
+                ))
 
-    # Sort by delta_solubility descending (most improvement first)
-    mutations.sort(key=lambda m: m["delta_solubility"], reverse=True)
+    # Sort by score descending (most improvement first)
+    mutations.sort(key=lambda m: m.score, reverse=True)
+
+    logger.info(
+        "CamSol mutations: protein=%s, found %d suggested mutations",
+        protein[:10] + "..." if len(protein) > 10 else protein,
+        len(mutations),
+    )
 
     return mutations
 
@@ -680,6 +837,15 @@ def generate_solubility_recommendations(result: SolubilityResult) -> list[str]:
 # ────────────────────────────────────────────────────────────
 # Internal helper functions
 # ────────────────────────────────────────────────────────────
+
+def _make_cache_key(protein: str, window: int, smoothing: int) -> tuple[str, int, int]:
+    """Create a cache key from protein sequence, window, and smoothing.
+
+    Uses a truncated hash of the protein to keep keys reasonable in size.
+    """
+    protein_hash = hashlib.sha256(protein.encode()).hexdigest()[:16]
+    return (protein_hash, window, smoothing)
+
 
 def _sliding_window_smooth(scores: list[float], window: int) -> list[float]:
     """Apply sliding window averaging to a list of scores.

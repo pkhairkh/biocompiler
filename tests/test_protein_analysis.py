@@ -1,4 +1,4 @@
-"""Integration tests for Phase 2+3 modules — cross-module workflows."""
+"""Integration tests for protein analysis modules — cross-module workflows."""
 
 import pytest
 
@@ -155,10 +155,10 @@ class TestImmunogenicityPipeline:
 # Test Cross-Module Integration
 # ────────────────────────────────────────────────────────────
 class TestCrossModuleIntegration:
-    """Tests that span multiple Phase 2+3 modules."""
+    """Tests that span multiple protein analysis modules."""
 
     def test_full_protein_assessment(self):
-        """Run ALL Phase 2+3 predicates on HBB, verify all return TypeCheckResult."""
+        """Run ALL protein analysis predicates on HBB, verify all return TypeCheckResult."""
         from biocompiler.stability_predicates import (
             evaluate_stable_folding, evaluate_disulfide_bond_integrity,
             evaluate_hydrophobic_core_quality,
@@ -214,9 +214,9 @@ class TestCrossModuleIntegration:
 # Test Backward Compatibility
 # ────────────────────────────────────────────────────────────
 class TestBackwardCompatibility:
-    """Phase 1 predicates still work after Phase 2+3 additions."""
+    """Core DNA-level predicates still work after protein analysis additions."""
 
-    def test_phase1_predicates_still_work(self):
+    def test_core_predicates_still_work(self):
         """Original 12 predicates still work."""
         from biocompiler.type_system import evaluate_all_predicates
         results = evaluate_all_predicates(HBB_SEQUENCE, organism="Homo_sapiens")

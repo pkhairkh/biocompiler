@@ -15,7 +15,7 @@ import math
 import logging
 from dataclasses import dataclass, field
 
-from ..constants import HYDROPATHY
+from ..constants import HYDROPATHY, HYDROPHOBIC_AAS
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ────────────────────────────────────────────────────────────
 
-# Alias for backward compatibility within this module
+# KYTE_DOOLITTLE: backward-compatible alias for constants.HYDROPATHY
 KYTE_DOOLITTLE = HYDROPATHY
 
 VDW_RADII: dict[str, float] = {
@@ -60,8 +60,7 @@ MAX_SASA: dict[str, float] = {
     "V": 174.0,
 }
 
-# Hydrophobic amino acids (Kyte-Doolittle > 0)
-HYDROPHOBIC_AAS: set[str] = {"A", "V", "I", "L", "M", "F", "W", "P"}
+# HYDROPHOBIC_AAS now imported from ..constants (standardized in v7.5.0)
 
 
 # ────────────────────────────────────────────────────────────
@@ -406,7 +405,7 @@ def compute_exposed_hydrophobic(
     Approximate solvent accessibility: a CA atom is considered
     "exposed" if it has fewer than 15 neighbors within 12 Angstroms.
 
-    Hydrophobic amino acids: A, V, I, L, M, F, W, P.
+    Hydrophobic amino acids: defined by constants.HYDROPHOBIC_AAS.
 
     A high value indicates aggregation risk — hydrophobic residues
     on the surface may drive non-specific interactions.

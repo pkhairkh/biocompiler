@@ -24,12 +24,14 @@ Protein Analysis Endpoints (mounted at /protein/):
 - POST /protein/structure/quality         — Assess structure quality from PDB
 - POST /protein/stability/analyze         — Analyze protein stability
 - POST /protein/stability/mutations        — Scan mutations for stability
+- POST /protein/stability/batch           — Batch stability analysis (max 20)
 - POST /protein/solubility/analyze        — Analyze protein solubility
 - POST /protein/solubility/mutations       — Find solubility-improving mutations
+- POST /protein/solubility/batch          — Batch solubility analysis (max 20)
 - POST /protein/immunogenicity/analyze    — Analyze immunogenicity
 - POST /protein/immunogenicity/deimmunize — Deimmunize a protein
+- POST /protein/immunogenicity/batch      — Batch immunogenicity analysis (max 20)
 - POST /protein/assessment/full           — Full protein assessment
-- (Backward-compatible: all above also available at /phase2_3/)
 
 Security:
 - API key authentication (optional, set BIOCOMPILER_API_KEY env var)
@@ -1699,6 +1701,336 @@ async def assessment_full(input_data: FullAssessmentInput):
     )
 
 
+# ─── Protein Analysis Batch Endpoints ────────────────────────────────
+
+BATCH_PROTEIN_MAX = 20
+
+
+class BatchStabilityItem(StabilityInput):
+    """Single item in a batch stability analysis request."""
+    pass
+
+
+class BatchStabilityInput(BaseModel):
+    """Input for batch stability analysis endpoint."""
+    proteins: list[BatchStabilityItem] = Field(
+        ..., description=f"List of proteins for stability analysis (max {BATCH_PROTEIN_MAX})"
+    )
+
+
+class BatchStabilityResponse(BaseModel):
+    """Response for batch stability analysis endpoint."""
+    results: list[dict] = Field(..., description="Per-item stability analysis results")
+    summary: dict = Field(..., description="Aggregate summary")
+
+
+class BatchSolubilityItem(SolubilityInput):
+    """Single item in a batch solubility analysis request."""
+    pass
+
+
+class BatchSolubilityInput(BaseModel):
+    """Input for batch solubility analysis endpoint."""
+    proteins: list[BatchSolubilityItem] = Field(
+        ..., description=f"List of proteins for solubility analysis (max {BATCH_PROTEIN_MAX})"
+    )
+
+
+class BatchSolubilityResponse(BaseModel):
+    """Response for batch solubility analysis endpoint."""
+    results: list[dict] = Field(..., description="Per-item solubility analysis results")
+    summary: dict = Field(..., description="Aggregate summary")
+
+
+class BatchImmunogenicityItem(ImmunogenicityInput):
+    """Single item in a batch immunogenicity analysis request."""
+    pass
+
+
+class BatchImmunogenicityInput(BaseModel):
+    """Input for batch immunogenicity analysis endpoint."""
+    proteins: list[BatchImmunogenicityItem] = Field(
+        ..., description=f"List of proteins for immunogenicity analysis (max {BATCH_PROTEIN_MAX})"
+    )
+
+
+class BatchImmunogenicityResponse(BaseModel):
+    """Response for batch immunogenicity analysis endpoint."""
+    results: list[dict] = Field(..., description="Per-item immunogenicity analysis results")
+    summary: dict = Field(..., description="Aggregate summary")
+
+
+@_protein_router.post(
+    "/stability/batch",
+    response_model=BatchStabilityResponse,
+    summary="Batch protein stability analysis",
+)
+async def stability_batch(input_data: BatchStabilityInput):
+    """
+    Analyze protein stability for multiple proteins in one request.
+
+    Each protein is analyzed independently using FoldX (empirical) and/or
+    statistical potentials. One failure does not affect other items.
+
+    Maximum batch size: 20 proteins.
+    Each item consumes one rate-limit unit.
+    """
+    n = len(input_data.proteins)
+    if n > BATCH_PROTEIN_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size {n} exceeds maximum of {BATCH_PROTEIN_MAX} proteins",
+        )
+
+    client_id = "batch_stability"  # Rate limit key for batch operations
+    _check_batch_rate_limit(client_id, n)
+
+    results: list[dict] = []
+    total = n
+    stable_count = 0
+    marginal_count = 0
+    unstable_count = 0
+    error_count = 0
+
+    for item in input_data.proteins:
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_stability_batch_single, item),
+                timeout=BATCH_ITEM_TIMEOUT_S,
+            )
+            results.append(result)
+            verdict = result.get("verdict", "")
+            if verdict == "STABLE":
+                stable_count += 1
+            elif verdict == "MARGINAL":
+                marginal_count += 1
+            elif verdict == "UNSTABLE":
+                unstable_count += 1
+        except asyncio.TimeoutError:
+            results.append({"status": "error", "error": f"Timeout after {BATCH_ITEM_TIMEOUT_S}s"})
+            error_count += 1
+        except Exception as e:
+            results.append({"status": "error", "error": str(e)})
+            error_count += 1
+
+    return BatchStabilityResponse(
+        results=results,
+        summary={
+            "total": total,
+            "stable": stable_count,
+            "marginal": marginal_count,
+            "unstable": unstable_count,
+            "errors": error_count,
+        },
+    )
+
+
+def _stability_batch_single(item: StabilityInput) -> dict[str, Any]:
+    """Process a single stability analysis item for batch processing."""
+    try:
+        from biocompiler.foldx import run_stability_batch
+        result = run_stability_batch(
+            protein=item.protein,
+            organism=item.organism,
+            pdb_string=item.pdb_string,
+        )
+    except ImportError:
+        # Fallback to the single-item API if batch function not available
+        try:
+            from biocompiler.foldx import empirical_stability
+            result = empirical_stability(
+                protein=item.protein,
+                organism=item.organism,
+                pdb_string=item.pdb_string,
+            )
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="FoldX stability module not available.",
+            )
+    return result
+
+
+@_protein_router.post(
+    "/solubility/batch",
+    response_model=BatchSolubilityResponse,
+    summary="Batch protein solubility analysis",
+)
+async def solubility_batch(input_data: BatchSolubilityInput):
+    """
+    Analyze protein solubility for multiple proteins in one request.
+
+    Each protein is analyzed independently using the CamSol algorithm.
+    One failure does not affect other items.
+
+    Maximum batch size: 20 proteins.
+    Each item consumes one rate-limit unit.
+    """
+    n = len(input_data.proteins)
+    if n > BATCH_PROTEIN_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size {n} exceeds maximum of {BATCH_PROTEIN_MAX} proteins",
+        )
+
+    client_id = "batch_solubility"
+    _check_batch_rate_limit(client_id, n)
+
+    results: list[dict] = []
+    total = n
+    high_count = 0
+    medium_count = 0
+    low_count = 0
+    error_count = 0
+
+    for item in input_data.proteins:
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_solubility_batch_single, item),
+                timeout=BATCH_ITEM_TIMEOUT_S,
+            )
+            results.append(result)
+            sol_class = result.get("solubility_class", "")
+            if sol_class == "high":
+                high_count += 1
+            elif sol_class == "medium":
+                medium_count += 1
+            elif sol_class in ("low", "very_low"):
+                low_count += 1
+        except asyncio.TimeoutError:
+            results.append({"status": "error", "error": f"Timeout after {BATCH_ITEM_TIMEOUT_S}s"})
+            error_count += 1
+        except Exception as e:
+            results.append({"status": "error", "error": str(e)})
+            error_count += 1
+
+    return BatchSolubilityResponse(
+        results=results,
+        summary={
+            "total": total,
+            "high": high_count,
+            "medium": medium_count,
+            "low": low_count,
+            "errors": error_count,
+        },
+    )
+
+
+def _solubility_batch_single(item: SolubilityInput) -> dict[str, Any]:
+    """Process a single solubility analysis item for batch processing."""
+    try:
+        from biocompiler.camsol import compute_solubility_batch
+        result = compute_solubility_batch(
+            protein=item.protein,
+            pdb_string=item.pdb_string,
+        )
+    except ImportError:
+        # Fallback to the single-item API if batch function not available
+        try:
+            from biocompiler.camsol import compute_solubility
+            result = compute_solubility(
+                protein=item.protein,
+                pdb_string=item.pdb_string,
+            )
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="CamSol solubility module not available.",
+            )
+    return result
+
+
+@_protein_router.post(
+    "/immunogenicity/batch",
+    response_model=BatchImmunogenicityResponse,
+    summary="Batch protein immunogenicity analysis",
+)
+async def immunogenicity_batch(input_data: BatchImmunogenicityInput):
+    """
+    Analyze protein immunogenicity for multiple proteins in one request.
+
+    Each protein is analyzed independently for T-cell and B-cell epitopes.
+    One failure does not affect other items.
+
+    Maximum batch size: 20 proteins.
+    Each item consumes one rate-limit unit.
+    """
+    n = len(input_data.proteins)
+    if n > BATCH_PROTEIN_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size {n} exceeds maximum of {BATCH_PROTEIN_MAX} proteins",
+        )
+
+    client_id = "batch_immunogenicity"
+    _check_batch_rate_limit(client_id, n)
+
+    results: list[dict] = []
+    total = n
+    low_count = 0
+    moderate_count = 0
+    high_count = 0
+    error_count = 0
+
+    for item in input_data.proteins:
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_immunogenicity_batch_single, item),
+                timeout=BATCH_ITEM_TIMEOUT_S,
+            )
+            results.append(result)
+            imm_class = result.get("immunogenicity_class", "")
+            if imm_class == "low":
+                low_count += 1
+            elif imm_class == "moderate":
+                moderate_count += 1
+            elif imm_class in ("high", "very_high"):
+                high_count += 1
+        except asyncio.TimeoutError:
+            results.append({"status": "error", "error": f"Timeout after {BATCH_ITEM_TIMEOUT_S}s"})
+            error_count += 1
+        except Exception as e:
+            results.append({"status": "error", "error": str(e)})
+            error_count += 1
+
+    return BatchImmunogenicityResponse(
+        results=results,
+        summary={
+            "total": total,
+            "low": low_count,
+            "moderate": moderate_count,
+            "high": high_count,
+            "errors": error_count,
+        },
+    )
+
+
+def _immunogenicity_batch_single(item: ImmunogenicityInput) -> dict[str, Any]:
+    """Process a single immunogenicity analysis item for batch processing."""
+    try:
+        from biocompiler.immunogenicity import compute_immunogenicity_batch
+        result = compute_immunogenicity_batch(
+            protein=item.protein,
+            organism=item.organism,
+            mhc_alleles=item.mhc_alleles,
+        )
+    except ImportError:
+        # Fallback to the single-item API if batch function not available
+        try:
+            from biocompiler.immunogenicity import compute_immunogenicity
+            result = compute_immunogenicity(
+                protein=item.protein,
+                organism=item.organism,
+                mhc_alleles=item.mhc_alleles,
+            )
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="Immunogenicity module not available.",
+            )
+    return result
+
+
 # ─── FastAPI Application ──────────────────────────────────────────
 
 def create_app() -> FastAPI:
@@ -1721,15 +2053,18 @@ def create_app() -> FastAPI:
     - POST /batch/optimize   — Optimize multiple proteins (max 20)
     - POST /batch/export     — Export multiple sequences (max 50)
 
-    Protein Analysis endpoints (also at /phase2_3/ for backward compat):
+    Protein Analysis endpoints:
     - POST /protein/structure/predict       — Predict protein structure
     - POST /protein/structure/quality       — Assess structure quality
     - POST /protein/stability/analyze       — Analyze stability
     - POST /protein/stability/mutations     — Scan stability mutations
+    - POST /protein/stability/batch         — Batch stability analysis
     - POST /protein/solubility/analyze      — Analyze solubility
     - POST /protein/solubility/mutations    — Find solubility mutations
+    - POST /protein/solubility/batch        — Batch solubility analysis
     - POST /protein/immunogenicity/analyze  — Analyze immunogenicity
     - POST /protein/immunogenicity/deimmunize — Deimmunize a protein
+    - POST /protein/immunogenicity/batch    — Batch immunogenicity analysis
     - POST /protein/assessment/full         — Full protein assessment
     """
     from . import __version__
@@ -2245,9 +2580,6 @@ def create_app() -> FastAPI:
     # ─── Protein Analysis Router ───────────────────────────────────
     # Mount at /protein/ for clean URLs (primary)
     app.include_router(_protein_router, prefix="/protein")
-    # Backward-compatible mount at /phase2_3/ (deprecated)
-    app.include_router(_protein_router, prefix="/phase2_3")
-
     return app
 
 

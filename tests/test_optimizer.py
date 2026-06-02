@@ -1,4 +1,4 @@
-"""Test BioCompiler Optimizer — full 6-phase pipeline, certificate generation, eGFP optimization."""
+"""Test BioCompiler Optimizer — full optimization pipeline, certificate generation, eGFP optimization."""
 
 import pytest
 from biocompiler.optimization import BioOptimizer

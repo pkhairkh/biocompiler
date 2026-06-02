@@ -805,13 +805,13 @@ class TestOptimizePipeline:
 
 
 # ==============================================================================
-# CpG Avoidance Phase Tests (v7.1)
+# CpG Avoidance Step Tests (v7.1)
 # ==============================================================================
 
 class TestCpGAvoidance:
     """Test that the optimizer reduces CpG dinucleotides.
 
-    The CpG avoidance phase (Phase 7.5) in the greedy optimizer attempts to
+    The CpG avoidance step in the greedy optimizer attempts to
     replace CG dinucleotides with synonymous codons that don't create CG,
     but only if the swap doesn't worsen cryptic splice scores or reintroduce
     restriction sites. This is a soft optimization, not a hard constraint.
@@ -820,7 +820,7 @@ class TestCpGAvoidance:
     def test_cpg_count_decreases_after_optimization(self):
         """Optimized sequences should have fewer CpG dinucleotides than random.
 
-        The CpG phase runs without errors and produces a valid sequence.
+        The CpG avoidance step runs without errors and produces a valid sequence.
         We verify the CpG count is computable and the result is valid.
         """
         protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPK"
@@ -829,12 +829,12 @@ class TestCpGAvoidance:
         # Count CpG in optimized sequence
         opt_cpg = sum(1 for i in range(len(result.sequence)-1) if result.sequence[i:i+2] == "CG")
 
-        # The key is that the CpG phase runs without errors
+        # The key is that the CpG avoidance step runs without errors
         # The count should be a valid integer (soft check)
         assert isinstance(opt_cpg, int)
         assert opt_cpg >= 0
 
-    def test_cpg_phase_preserves_translation(self):
+    def test_cpg_step_preserves_translation(self):
         """CpG avoidance must not change the protein.
 
         Even after CpG dinucleotide disruption, the optimized sequence must
@@ -852,7 +852,7 @@ class TestCpGAvoidance:
         result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
         assert 0.30 <= result.gc_content <= 0.70, (
             f"GC content {result.gc_content:.3f} out of range [0.30, 0.70] "
-            f"after CpG avoidance phase"
+            f"after CpG avoidance step"
         )
 
 
@@ -863,11 +863,11 @@ class TestCpGAvoidance:
 class TestCrypticSplicePassRate:
     """Test that GT-free codon prioritization improves NoCrypticSplice pass rate.
 
-    The v7.1 optimizer uses GT-free codon prioritization in Phase 7: when
-    eliminating cryptic splice donors, it prefers GT-free synonymous codons
-    (available for C, G, R, S) over context disruption. This should
-    significantly improve the NoCrypticSplice pass rate compared to the
-    previous approach that only used context disruption.
+    The v7.1 optimizer uses GT-free codon prioritization in the cryptic splice
+    donor elimination step: when eliminating cryptic splice donors, it prefers
+    GT-free synonymous codons (available for C, G, R, S) over context disruption.
+    This should significantly improve the NoCrypticSplice pass rate compared to
+    the previous approach that only used context disruption.
     """
 
     def test_cryptic_splice_pass_rate_improved(self):

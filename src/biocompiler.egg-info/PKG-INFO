@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: biocompiler
-Version: 7.4.0
+Version: 7.5.0
 Summary: A compiler framework for machine-verified gene design with deterministic type checking and certificates
 License: MIT
 Project-URL: Homepage, https://github.com/pkhairkh/biocompiler

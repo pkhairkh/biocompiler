@@ -103,7 +103,7 @@ class TestCpGAvoidance:
         cpg_result = evaluate_no_cpg_island(seq=result.sequence)
         # Note: CpG elimination may not always succeed for GC-rich proteins,
         # but the optimizer should attempt it
-        # If it passes, great. If not, verify it at least tried (cpG phase exists).
+        # If it passes, great. If not, verify it at least tried (CpG avoidance step exists).
         # For HBB which is GC-rich, complete elimination may not be possible
         # while maintaining other constraints
         if cpg_result.verdict.value != "PASS":

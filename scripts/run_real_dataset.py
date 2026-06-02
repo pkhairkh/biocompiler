@@ -6,6 +6,20 @@ Run BioCompiler v7.0.0 against real biological datasets with full
 type-directed mutagenesis. This script produces a detailed report
 of optimizer performance, predicate satisfaction, and mutagenesis
 impact on proteins that are impossible at codon level.
+
+This is a standalone analysis/reporting script that:
+  1. Runs full dataset validation (all organisms, all genes)
+  2. Runs the benchmark suite (HBB, INS, EGFP)
+  3. Performs detailed per-gene optimization analysis
+  4. Analyzes GT-mandatory amino acids (Valine, Cysteine)
+  5. Deep-dives HBB as the key mutagenesis proof case
+  6. Cross-organism optimization comparison
+  7. Restriction site elimination analysis
+  8. Mutagenesis impact assessment on all failing genes
+  9. Summary statistics by organism
+
+Usage:
+    python scripts/run_real_dataset.py
 """
 
 import sys
@@ -13,7 +27,7 @@ import os
 import time
 import json
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from biocompiler import (
     optimize_sequence,

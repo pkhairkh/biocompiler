@@ -9,6 +9,10 @@ Extended with:
 - SplicingError for NDFST computation failures
 - Better InvalidSequenceError with position context
 - Typed unsat_core in OptimizationError
+- EngineError base class for unified engine error handling
+- ESMFoldError, FoldXError refactored to inherit from EngineError
+- CamSolError for CamSol solubility engine errors
+- ImmunogenicityError for immunogenicity engine errors
 """
 
 
@@ -122,3 +126,109 @@ class MutagenesisError(BioCompilerError):
             f"Mutagenesis error: {reason} "
             f"({substitutions_applied} substitutions applied before failure)"
         )
+
+
+# ==============================================================================
+# Engine-specific errors
+# ==============================================================================
+
+class EngineError(BioCompilerError):
+    """Base exception for all engine-specific errors.
+
+    All computational engine errors (ESMFold, FoldX, CamSol,
+    Immunogenicity, etc.) inherit from this class, allowing callers
+    to catch any engine failure with a single ``except EngineError``
+    handler while still being able to catch specific engine errors
+    individually.
+    """
+
+    def __init__(self, reason: str, engine: str = "unknown"):
+        self.reason = reason
+        self.engine = engine
+        # Subclasses may set _message before calling super().__init__;
+        # only set the default format if the subclass hasn't already.
+        if not hasattr(self, "_message"):
+            self._message = f"[{engine}] {reason}"
+        super().__init__(self._message)
+
+    def __str__(self) -> str:
+        return self._message
+
+
+class ESMFoldError(EngineError):
+    """Raised when ESMFold structure prediction fails.
+
+    This covers API communication errors, invalid protein sequences,
+    parsing failures of returned PDB data, and timeout conditions
+    during structure prediction.
+    """
+
+    def __init__(self, reason: str, protein: str | None = None):
+        self.reason = reason
+        self.protein = protein
+        self._message = f"ESMFold prediction failed: {reason}"
+        if protein:
+            self._message += f" (protein length={len(protein)})"
+        super().__init__(self._message, engine="ESMFold")
+
+    def __str__(self) -> str:
+        return self._message
+
+
+class FoldXError(EngineError):
+    """Raised when FoldX stability analysis fails.
+
+    This covers command execution errors, missing FoldX installation,
+    PDB processing failures, and energy computation errors.
+    """
+
+    def __init__(self, reason: str, command: str | None = None):
+        self.reason = reason
+        self.command = command
+        self._message = f"FoldX error: {reason}"
+        if command:
+            self._message += f" (command: {command})"
+        super().__init__(self._message, engine="FoldX")
+
+    def __str__(self) -> str:
+        return self._message
+
+
+class CamSolError(EngineError):
+    """Raised when CamSol solubility prediction fails.
+
+    This covers errors during solubility score computation, invalid
+    protein input for the CamSol engine, and failures in the
+    solubility-guided optimization loop.
+    """
+
+    def __init__(self, reason: str, protein: str | None = None):
+        self.reason = reason
+        self.protein = protein
+        self._message = f"CamSol error: {reason}"
+        if protein:
+            self._message += f" (protein length={len(protein)})"
+        super().__init__(self._message, engine="CamSol")
+
+    def __str__(self) -> str:
+        return self._message
+
+
+class ImmunogenicityError(EngineError):
+    """Raised when immunogenicity prediction or optimization fails.
+
+    This covers errors during epitope scoring, T-cell binding
+    prediction failures, and errors in the immunogenicity-guided
+    de-immunization optimization loop.
+    """
+
+    def __init__(self, reason: str, protein: str | None = None):
+        self.reason = reason
+        self.protein = protein
+        self._message = f"Immunogenicity error: {reason}"
+        if protein:
+            self._message += f" (protein length={len(protein)})"
+        super().__init__(self._message, engine="Immunogenicity")
+
+    def __str__(self) -> str:
+        return self._message

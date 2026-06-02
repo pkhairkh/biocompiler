@@ -165,8 +165,11 @@ def reverse_complement(seq: str) -> str:
 # 5. Amino Acid Constants
 # ==============================================================================
 
-# Standard 20 amino acids (BLOSUM62 index order)
-STANDARD_AAS: list[str] = list("ARNDCQEGHILKMFPSTWYV")
+# Standard 20 amino acids (alphabetical order — canonical)
+STANDARD_AAS: str = "ACDEFGHIKLMNPQRSTVWY"
+
+# Backward-compat alias: BLOSUM62 index order (deprecated — use STANDARD_AAS or _BLOSUM_INDEX)
+STANDARD_AAS_BLOSUM_ORDER: list[str] = list("ARNDCQEGHILKMFPSTWYV")
 
 # ────────────────────────────────────────────────────────────
 # BLOSUM62 Substitution Matrix (20×20, nested dict format)
@@ -221,3 +224,13 @@ HYDROPATHY: dict[str, float] = {
 
 # Hydrophobic residues (Kyte-Doolittle > 1.0)
 HYDROPHOBIC_AAS: set[str] = {"A", "I", "L", "M", "F", "W", "V"}
+
+# ==============================================================================
+# 6. Engine Shared Constants
+# ==============================================================================
+
+DEFAULT_ENGINE_TIMEOUT: float = 120.0       # Default timeout in seconds for all engines
+DEFAULT_BATCH_SIZE: int = 8                 # Default batch size for parallel processing
+DEFAULT_SOLUBILITY_WINDOW: int = 7          # Default CamSol window size
+DEFAULT_SOLUBILITY_SMOOTHING: int = 3       # Default CamSol smoothing
+DEFAULT_MHC_PEPTIDE_LENGTH: int = 9         # Default peptide length for MHC binding

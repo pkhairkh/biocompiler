@@ -1,15 +1,18 @@
 """
 BioCompiler Optimizer v7.0.0
 ==============================
-6-phase certified gene optimization pipeline with aggressive GT resolution.
+Multi-step certified gene optimization pipeline with aggressive GT resolution.
 
-Phase 1:   Greedy codon optimization (GT-aware, with unavoidable-GT tracking)
-Phase 2:   Restriction site removal
-Phase 3:   Cross-codon constraint resolution (iterative, global validation)
-Phase 3.5: Within-codon GT resolution (synonymous substitution + mutagenesis flagging)
-Phase 4:   Mutagenesis fallback (AA substitution for Valine etc. using BLOSUM62)
-Phase 5:   CpG island avoidance
-Phase 6:   Re-optimization pass (iterative until convergence)
+Step: Maximize CAI          — Greedy codon optimization (GT-aware, with unavoidable-GT tracking)
+Step: Backtranslate CAI     — DP-based max-CAI back-translation with avoidable-GT avoidance
+Step: Resolve Constraints   — Priority-based constraint resolution (fix GT/CG/RS with minimal CAI loss)
+Step: Remove Restriction Sites — Restriction site removal by synonymous substitution
+Step: Cross-Codon Optimization — Cross-codon constraint resolution (iterative, global validation)
+Step: Within-Codon GT Resolution — Within-codon GT resolution (synonymous substitution + mutagenesis flagging)
+Step: Mutagenesis Fallback  — Mutagenesis fallback (AA substitution for Valine etc. using BLOSUM62)
+Step: Avoid CpG Islands     — CpG island avoidance
+Step: CAI Hill Climb        — CAI hill climbing (upgrade codons while maintaining constraints)
+Step: Reoptimize            — Re-optimization pass (iterative until convergence)
 """
 
 from typing import List, Dict, Optional, Tuple, Set
@@ -252,10 +255,10 @@ def _greedy_optimize(
     """
     Greedy multi-objective codon optimization with coordinated constraint solving.
 
-    Phase ordering prioritizes hard constraints (restriction sites) over soft constraints (CAI).
-    Reconciliation pass ensures earlier phases aren't undone by later ones.
+    Step ordering prioritizes hard constraints (restriction sites) over soft constraints (CAI).
+    Reconciliation pass ensures earlier steps aren't undone by later ones.
 
-    Phases:
+    Steps:
     1. Best codon per position (maximize CAI)
     2. Remove restriction sites (multi-codon coordinated)
     3. Remove ATTTA instability motifs
@@ -295,11 +298,11 @@ def _greedy_optimize(
         codons_sorted = sorted(codons, key=lambda c: usage.get(c, 0.0), reverse=True)
         sorted_codons[aa] = codons_sorted
 
-    # Phase 1: Best codon per position (maximize CAI)
+    # Step: Maximize CAI — Best codon per position (maximize CAI)
     sequence = "".join(sorted_codons[aa][0] for aa in aas)
-    assert len(sequence) == len(aas) * 3, "Phase 1: sequence length mismatch"
+    assert len(sequence) == len(aas) * 3, "Maximize CAI step: sequence length mismatch"
 
-    # Phase 2: Remove restriction sites (HIGHEST PRIORITY — multi-codon coordinated)
+    # Step: Remove Restriction Sites (HIGHEST PRIORITY — multi-codon coordinated)
     # Process concrete sites first, then IUPAC sites
     concrete_sites = []
     iupac_sites = []
@@ -408,7 +411,7 @@ def _greedy_optimize(
                 if variant in sequence or variant_rc in sequence:
                     warnings.append(f"IUPAC site {site_upper} variant {variant}: max iterations")
 
-    # Phase 3: Remove ATTTA instability motifs
+    # Step: Remove ATTTA instability motifs
     for iteration in range(100):
         pos = sequence.find("ATTTA")
         if pos == -1:
@@ -433,7 +436,7 @@ def _greedy_optimize(
     else:
         warnings.append("ATTTA motif: max iterations reached, may still be present")
 
-    # Phase 4: Fix 6+ consecutive T runs
+    # Step: Fix 6+ consecutive T runs
     for iteration in range(100):
         max_run, max_pos = 0, -1
         i = 0
@@ -467,7 +470,7 @@ def _greedy_optimize(
     else:
         warnings.append("Consecutive T: max iterations reached, may still have 6+ T runs")
 
-    # Phase 5: Adjust GC content
+    # Step: Adjust GC content
     # Strategy: GC must be in [gc_lo, gc_hi] (hard constraint).
     # If in range, we gently nudge toward organism target but NEVER at the
     # cost of significant CAI reduction. The organism GC target is aspirational,
@@ -520,7 +523,7 @@ def _greedy_optimize(
         else:
             warnings.append(f"GC adjustment: max iterations reached, current GC={gc_val:.3f}")
 
-    # Phase 6: Reconciliation — check if GC adjustment reintroduced restriction sites
+    # Step: Reconciliation — check if GC adjustment reintroduced restriction sites
     for site_upper in concrete_sites:
         site_rc = reverse_complement(site_upper)
         if site_upper in sequence or site_rc in sequence:
@@ -558,10 +561,10 @@ def _greedy_optimize(
                                 gc_val = gc_count / n_bases
                                 break
             else:
-                # Could not remove — already warned in Phase 2
+                # Could not remove — already warned in Remove Restriction Sites step
                 pass
 
-    # Phase 7: Eliminate cryptic splice donor/acceptor sites
+    # Step: Eliminate cryptic splice donor/acceptor sites
     # Strategy (ordered by effectiveness):
     #   1. GT-free codon swap — guaranteed to eliminate the GT dinucleotide
     #      (works for C, G, R, S which have GT-free synonymous codons)
@@ -803,7 +806,7 @@ def _greedy_optimize(
     else:
         warnings.append("Cryptic splice elimination: max iterations reached")
 
-    # Phase 7.5: Disrupt CpG dinucleotides to avoid CpG islands
+    # Step: Disrupt CpG dinucleotides to avoid CpG islands
     # Strategy: Replace CG dinucleotides with synonymous codons that don't create CG,
     # but ONLY if the swap doesn't reintroduce cryptic splice sites or restriction sites.
     # Key constraint: CpG avoidance is lower priority than splice site elimination.
@@ -876,7 +879,7 @@ def _greedy_optimize(
         if not fixed:
             break
 
-    # Phase 8: Reconciliation after cryptic splice elimination
+    # Step: Reconciliation after cryptic splice elimination
     # Check if cryptic splice fixes reintroduced restriction sites
     for site_upper in concrete_sites:
         site_rc = reverse_complement(site_upper)
@@ -887,7 +890,7 @@ def _greedy_optimize(
             if fixed:
                 sequence = new_seq
 
-    # Phase 8.5: CpG reconciliation after restriction site reconciliation
+    # Step: CpG reconciliation after restriction site reconciliation
     # Restriction site removal may have reintroduced CpG dinucleotides;
     # re-apply CpG disruption without reintroducing restriction sites or
     # worsening cryptic splice scores.
@@ -1328,7 +1331,7 @@ def _codon_creates_boundary_gt(
 
 
 class BioOptimizer:
-    """Certified gene sequence optimizer with 8-phase CAI-maximizing pipeline."""
+    """Certified gene sequence optimizer with multi-step CAI-maximizing pipeline."""
 
     def __init__(
         self,
@@ -1385,33 +1388,33 @@ class BioOptimizer:
             return self._optimize_cai_first(seq)
 
         # ── Default: constraint_first strategy ──
-        # Phase 0: Max-CAI back-translation (DNAworks-style)
-        seq = self._phase0_max_cai_backtranslate(seq)
+        # Step: Backtranslate CAI (DNAworks-style)
+        seq = self._step_backtranslate_cai(seq)
 
-        # Phase 1: Priority-based constraint resolution (fix GT/CG/RS with minimal CAI loss)
-        seq = self._phase1_priority_constraint_resolution(seq)
+        # Step: Resolve Constraints (fix GT/CG/RS with minimal CAI loss)
+        seq = self._step_resolve_constraints(seq)
 
-        # Phase 2: Restriction site removal
-        seq = self._phase2_remove_restriction_sites(seq)
+        # Step: Remove Restriction Sites
+        seq = self._step_remove_restriction_sites(seq)
 
-        # Phase 3: Cross-codon constraint resolution (iterative)
-        seq, mut_report = self._phase3_cross_codon_constraints(seq)
+        # Step: Cross-Codon Optimization (iterative)
+        seq, mut_report = self._step_cross_codon_optimization(seq)
 
-        # Phase 3.5: Within-codon GT resolution
-        seq, mut_report_35 = self._phase35_within_codon_gt(seq)
+        # Step: Within-Codon GT Resolution
+        seq, mut_report_35 = self._step_within_codon_gt_resolution(seq)
         mut_report.proposals.extend(mut_report_35.proposals)
 
-        # Phase 4: Mutagenesis fallback (aggressive, handles within-codon GTs too)
-        seq = self._phase4_mutagenesis_fallback(seq, mut_report)
+        # Step: Mutagenesis Fallback (aggressive, handles within-codon GTs too)
+        seq = self._step_mutagenesis_fallback(seq, mut_report)
 
-        # Phase 5: CpG island avoidance
-        seq = self._phase5_avoid_cpg_islands(seq)
+        # Step: Avoid CpG Islands
+        seq = self._step_avoid_cpg_islands(seq)
 
-        # Phase 6: CAI hill climbing (upgrade codons while maintaining constraints)
-        seq = self._phase6_cai_hill_climb(seq)
+        # Step: CAI Hill Climb (upgrade codons while maintaining constraints)
+        seq = self._step_cai_hill_climb(seq)
 
-        # Phase 7: Re-optimization pass (iterative until convergence)
-        seq = self._phase7_reoptimize(seq)
+        # Step: Reoptimize (iterative until convergence)
+        seq = self._step_reoptimize(seq)
 
         # Evaluate all 8 predicates
         results = self._evaluate_all_predicates(seq)
@@ -1452,7 +1455,7 @@ class BioOptimizer:
         """
         import math
 
-        # Phase 0: Pure max-CAI back-translation (ignore ALL constraints)
+        # Step: Maximize CAI — Pure max-CAI back-translation (ignore ALL constraints)
         protein = self._translate(seq)
         codons_result = []
         for i, aa in enumerate(protein):
@@ -1473,35 +1476,35 @@ class BioOptimizer:
                 codons_result.append(seq[codon_start:codon_start + 3])
         seq = "".join(codons_result)
 
-        # Phase 1: Fix restriction sites (highest priority — binary constraint)
+        # Step: Fix restriction sites (highest priority — binary constraint)
         seq = self._cai_first_fix_restriction_sites(seq)
 
-        # Phase 2: Fix avoidable GT dinucleotides (minimal CAI impact)
+        # Step: Fix avoidable GT dinucleotides (minimal CAI impact)
         seq = self._cai_first_fix_gts(seq)
 
-        # Phase 2.5: Mutagenesis fallback for Valine GTs
+        # Step: Mutagenesis fallback for Valine GTs
         # Valine codons all contain GT (GTN), so we substitute V→I
         # (BLOSUM62 score 3, conservative) using high-CAI Ile codons
         seq = self._cai_first_mutagenesis_fallback(seq)
 
-        # Phase 3: Fix CpG islands (minimal CAI impact)
+        # Step: Fix CpG islands (minimal CAI impact)
         seq = self._cai_first_fix_cpg(seq)
 
-        # Phase 4: Fix cryptic splice sites (minimal CAI impact)
+        # Step: Fix cryptic splice sites (minimal CAI impact)
         seq = self._cai_first_fix_splice(seq)
 
-        # Phase 5: CAI hill climbing (upgrade codons while maintaining constraints)
-        seq = self._phase6_cai_hill_climb(seq)
+        # Step: CAI hill climbing (upgrade codons while maintaining constraints)
+        seq = self._step_cai_hill_climb(seq)
 
-        # Phase 6: Aggressive re-optimization pass
-        seq = self._phase7_reoptimize(seq)
+        # Step: Aggressive re-optimization pass
+        seq = self._step_reoptimize(seq)
 
-        # Phase 7: Second pass of GT fixing + CAI boost (iterative refinement)
+        # Step: Second pass of GT fixing + CAI boost (iterative refinement)
         for _refinement in range(3):
             old_cai = self._compute_seq_cai(seq)
             seq = self._cai_first_fix_gts(seq)
-            seq = self._phase6_cai_hill_climb(seq)
-            seq = self._phase7_reoptimize(seq)
+            seq = self._step_cai_hill_climb(seq)
+            seq = self._step_reoptimize(seq)
             new_cai = self._compute_seq_cai(seq)
             if new_cai <= old_cai + 0.0001:
                 break
@@ -1536,11 +1539,11 @@ class BioOptimizer:
             return 0.0
         return math.exp(log_sum / count)
 
-    def _phase0_pure_max_cai(self, seq: str) -> str:
-        """Phase 0 (cai_first): Back-translate with absolute max CAI everywhere.
+    def _step_maximize_cai(self, seq: str) -> str:
+        """Maximize CAI step (cai_first): Back-translate with absolute max CAI everywhere.
 
         No GT avoidance at all - just pick the highest-CAI codon for each AA.
-        Constraint violations will be fixed in subsequent phases.
+        Constraint violations will be fixed in subsequent steps.
         """
         protein = self._translate(seq)
         codons_result = []
@@ -1558,7 +1561,7 @@ class BioOptimizer:
         return "".join(codons_result)
 
     def _cai_first_fix_restriction_sites(self, seq: str) -> str:
-        """CAI-first Phase 1: Fix restriction sites with minimal CAI impact."""
+        """CAI-first Fix restriction sites with minimal CAI impact."""
         from .restriction_sites import get_recognition_site
         seq_list = list(seq)
 
@@ -1664,7 +1667,7 @@ class BioOptimizer:
         return False
 
     def _cai_first_fix_gts(self, seq: str) -> str:
-        """CAI-first Phase 2: Fix avoidable GT dinucleotides with minimal CAI impact.
+        """CAI-first Fix avoidable GT dinucleotides with minimal CAI impact.
 
         Iteratively finds each avoidable GT and resolves it by choosing
         the synonymous substitution(s) with the highest possible CAI that
@@ -1860,7 +1863,7 @@ class BioOptimizer:
         return False
 
     def _cai_first_fix_cpg(self, seq: str) -> str:
-        """CAI-first Phase 3: Fix CpG islands with minimal CAI impact."""
+        """CAI-first Fix CpG islands with minimal CAI impact."""
         seq_list = list(seq)
         changed = True
         iterations = 0
@@ -1919,7 +1922,7 @@ class BioOptimizer:
         return "".join(seq_list)
 
     def _cai_first_fix_splice(self, seq: str) -> str:
-        """CAI-first Phase 4: Fix cryptic splice sites with minimal CAI impact."""
+        """CAI-first Fix cryptic splice sites with minimal CAI impact."""
         seq_list = list(seq)
         max_rounds = 30
 
@@ -1956,7 +1959,7 @@ class BioOptimizer:
         return "".join(seq_list)
 
     def _cai_first_mutagenesis_fallback(self, seq: str) -> str:
-        """CAI-first Phase 2.5: Apply mutagenesis for GTs that can't be resolved
+        """CAI-first Apply mutagenesis for GTs that can't be resolved
         by synonymous substitution.
 
         Specifically targets Valine codons (GTN) which all contain GT.
@@ -2011,11 +2014,14 @@ class BioOptimizer:
 
         return "".join(seq_list)
 
+    # Deprecated alias — use _step_maximize_cai instead
+    _phase0_pure_max_cai = _step_maximize_cai
+
     # ──────────────────────────────────────────────────────────
-    # Phase 0: Max-CAI back-translation (DNAworks-style)
+    # Step: Backtranslate CAI (DP-based max-CAI back-translation)
     # ──────────────────────────────────────────────────────────
-    def _phase0_max_cai_backtranslate(self, seq: str) -> str:
-        """Phase 0: DP-based max-CAI back-translation with avoidable-GT avoidance.
+    def _step_backtranslate_cai(self, seq: str) -> str:
+        """Backtranslate CAI step: DP-based max-CAI back-translation with avoidable-GT avoidance.
 
         Uses Viterbi-style dynamic programming to find the globally optimal
         codon assignment that maximizes CAI while avoiding only AVOIDABLE GTs.
@@ -2168,18 +2174,21 @@ class BioOptimizer:
 
         return "".join(codons_result)
 
+    # Deprecated alias — use _step_backtranslate_cai instead
+    _phase0_max_cai_backtranslate = _step_backtranslate_cai
+
     # ──────────────────────────────────────────────────────────
-    # Phase 1: Priority-based constraint resolution
+    # Step: Resolve Constraints (Priority-based constraint resolution)
     # ──────────────────────────────────────────────────────────
-    def _phase1_priority_constraint_resolution(self, seq: str) -> str:
-        """Phase 1: Fix constraint violations with minimal CAI impact.
+    def _step_resolve_constraints(self, seq: str) -> str:
+        """Resolve Constraints step: Fix constraint violations with minimal CAI impact.
 
         Iteratively finds GT/CG dinucleotides and restriction sites, then
         resolves them by choosing the synonymous substitution with the
         smallest CAI penalty. This is the DNAworks-style approach: start
         with max CAI, then fix only what's needed.
 
-        Key difference from old Phase 1: instead of greedily avoiding GT
+        Key difference from old greedy approach: instead of greedily avoiding GT
         during codon selection (which permanently sacrifices CAI), we fix
         GT violations after the fact, choosing the resolution that costs
         the least CAI.
@@ -2448,17 +2457,20 @@ class BioOptimizer:
 
         return False
 
+    # Deprecated alias — use _step_resolve_constraints instead
+    _phase1_priority_constraint_resolution = _step_resolve_constraints
+
     # ──────────────────────────────────────────────────────────
-    # Phase 1: Greedy codon optimization
+    # Step: Greedy Optimize (Per-position CAI maximization)
     # ──────────────────────────────────────────────────────────
-    def _phase1_greedy_optimize(self, seq: str) -> str:
-        """Phase 1: Per-position CAI maximization, GT-aware.
+    def _step_greedy_optimize(self, seq: str) -> str:
+        """Greedy Optimize step: Per-position CAI maximization, GT-aware.
 
         For each amino acid, select the highest-CAI codon that does not
         introduce a GT dinucleotide within or across codon boundaries.
 
         If ALL synonymous codons for an AA contain GT (e.g., Valine GTN),
-        flag the position as "unavoidable GT" for Phase 4 mutagenesis.
+        flag the position as "unavoidable GT" for mutagenesis fallback step.
         """
         codons = []
         protein = self._translate(seq)
@@ -2526,11 +2538,14 @@ class BioOptimizer:
 
         return "".join(codons)
 
+    # Deprecated alias — use _step_greedy_optimize instead
+    _phase1_greedy_optimize = _step_greedy_optimize
+
     # ──────────────────────────────────────────────────────────
-    # Phase 2: Restriction site removal
+    # Step: Remove Restriction Sites
     # ──────────────────────────────────────────────────────────
-    def _phase2_remove_restriction_sites(self, seq: str) -> str:
-        """Phase 2: Remove restriction enzyme recognition sites by synonymous substitution."""
+    def _step_remove_restriction_sites(self, seq: str) -> str:
+        """Remove Restriction Sites step: Remove restriction enzyme recognition sites by synonymous substitution."""
         from .restriction_sites import get_recognition_site
 
         seq_list = list(seq)
@@ -2563,7 +2578,7 @@ class BioOptimizer:
                             test_seq = "".join(test_list)
                             if site not in test_seq:
                                 # Note: we allow temporary GT increase to remove RS;
-                                # GTs will be fixed by later phases (3/3.5/hill climbing)
+                                # GTs will be fixed by later steps (cross-codon/hill climbing)
                                 # Only reject if GT increase is severe (more than 2 new GTs)
                                 if self.avoid_gt:
                                     old_gt_count = _count_gts("".join(seq_list))
@@ -2585,13 +2600,16 @@ class BioOptimizer:
 
         return "".join(seq_list)
 
-    # ──────────────────────────────────────────────────────────
-    # Phase 3: Cross-codon constraint resolution (iterative)
-    # ──────────────────────────────────────────────────────────
-    def _phase3_cross_codon_constraints(self, seq: str) -> Tuple[str, MutagenesisReport]:
-        """Phase 3: Resolve cross-codon GT, CG, and restriction site constraints.
+    # Deprecated alias — use _step_remove_restriction_sites instead
+    _phase2_remove_restriction_sites = _step_remove_restriction_sites
 
-        This phase iterates until no more cross-codon constraints can be
+    # ──────────────────────────────────────────────────────────
+    # Step: Cross-Codon Optimization (iterative constraint resolution)
+    # ──────────────────────────────────────────────────────────
+    def _step_cross_codon_optimization(self, seq: str) -> Tuple[str, MutagenesisReport]:
+        """Cross-Codon Optimization step: Resolve cross-codon GT, CG, and restriction site constraints.
+
+        This step iterates until no more cross-codon constraints can be
         resolved. Each resolution is globally validated to ensure no new
         GTs are introduced elsewhere.
         """
@@ -2825,11 +2843,14 @@ class BioOptimizer:
 
         return False
 
+    # Deprecated alias — use _step_cross_codon_optimization instead
+    _phase3_cross_codon_constraints = _step_cross_codon_optimization
+
     # ──────────────────────────────────────────────────────────
-    # Phase 3.5: Within-codon GT resolution
+    # Step: Within-Codon GT Resolution
     # ──────────────────────────────────────────────────────────
-    def _phase35_within_codon_gt(self, seq: str) -> Tuple[str, MutagenesisReport]:
-        """Phase 3.5: Within-codon GT resolution.
+    def _step_within_codon_gt_resolution(self, seq: str) -> Tuple[str, MutagenesisReport]:
+        """Within-Codon GT Resolution step: Resolve within-codon GT dinucleotides.
 
         For each within-codon GT (not cross-codon), try synonymous substitution
         first. If no synonymous codon can avoid GT, flag for mutagenesis.
@@ -2975,11 +2996,14 @@ class BioOptimizer:
 
         return report
 
+    # Deprecated alias — use _step_within_codon_gt_resolution instead
+    _phase35_within_codon_gt = _step_within_codon_gt_resolution
+
     # ──────────────────────────────────────────────────────────
-    # Phase 4: Mutagenesis fallback
+    # Step: Mutagenesis Fallback
     # ──────────────────────────────────────────────────────────
-    def _phase4_mutagenesis_fallback(self, seq: str, mut_report: MutagenesisReport) -> str:
-        """Phase 4: Apply mutagenesis proposals for intractable constraints.
+    def _step_mutagenesis_fallback(self, seq: str, mut_report: MutagenesisReport) -> str:
+        """Mutagenesis Fallback step: Apply mutagenesis proposals for intractable constraints.
 
         Applies conservative AA substitutions (e.g., Val→Ile, Val→Leu)
         using BLOSUM62 guidance. Only applies to AVOIDABLE GT positions;
@@ -3012,11 +3036,14 @@ class BioOptimizer:
 
         return "".join(seq_list)
 
+    # Deprecated alias — use _step_mutagenesis_fallback instead
+    _phase4_mutagenesis_fallback = _step_mutagenesis_fallback
+
     # ──────────────────────────────────────────────────────────
-    # Phase 5: CpG island avoidance
+    # Step: Avoid CpG Islands
     # ──────────────────────────────────────────────────────────
-    def _phase5_avoid_cpg_islands(self, seq: str) -> str:
-        """Phase 5: CpG island avoidance by synonymous substitution.
+    def _step_avoid_cpg_islands(self, seq: str) -> str:
+        """Avoid CpG Islands step: CpG island avoidance by synonymous substitution.
 
         Also handles cross-codon CG dinucleotides by two-codon coordination.
         """
@@ -3085,15 +3112,18 @@ class BioOptimizer:
 
         return "".join(seq_list)
 
+    # Deprecated alias — use _step_avoid_cpg_islands instead
+    _phase5_avoid_cpg_islands = _step_avoid_cpg_islands
+
     # ──────────────────────────────────────────────────────────
-    # Phase 6: CAI hill climbing
+    # Step: CAI Hill Climb
     # ──────────────────────────────────────────────────────────
-    def _phase6_cai_hill_climb(self, seq: str) -> str:
-        """Phase 6: CAI hill climbing.
+    def _step_cai_hill_climb(self, seq: str) -> str:
+        """CAI Hill Climb step: CAI hill climbing.
 
         For each codon position, try upgrading to a higher-CAI synonym
         if it doesn't introduce new constraint violations (GT, RS, etc.).
-        This is the key phase that recovers CAI lost during constraint fixing.
+        This is the key step that recovers CAI lost during constraint fixing.
 
         Also tries paired codon swaps: when upgrading one codon would create
         a cross-codon GT, simultaneously adjust the adjacent codon to avoid it.
@@ -3264,11 +3294,14 @@ class BioOptimizer:
 
         return None
 
+    # Deprecated alias — use _step_cai_hill_climb instead
+    _phase6_cai_hill_climb = _step_cai_hill_climb
+
     # ──────────────────────────────────────────────────────────
-    # Phase 7: Re-optimization pass (iterative until convergence)
+    # Step: Reoptimize (iterative until convergence)
     # ──────────────────────────────────────────────────────────
-    def _phase7_reoptimize(self, seq: str) -> str:
-        """Phase 6: Iterative re-optimization pass.
+    def _step_reoptimize(self, seq: str) -> str:
+        """Re-optimization step: Iterative re-optimization pass.
 
         Repeats until no more improvements can be made:
         1. Per-codon CAI optimization with GT avoidance
@@ -3425,6 +3458,9 @@ class BioOptimizer:
                 break
 
         return "".join(seq_list)
+
+    # Deprecated alias — use _step_reoptimize instead
+    _phase7_reoptimize = _step_reoptimize
 
     # ──────────────────────────────────────────────────────────
     # Predicate evaluation

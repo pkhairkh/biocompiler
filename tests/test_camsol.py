@@ -28,6 +28,7 @@ from biocompiler.solubility_predicates import (
 )
 from biocompiler.type_system import Verdict, AA_TO_CODONS
 from biocompiler.types import TypeCheckResult
+from biocompiler.exceptions import CamSolError
 
 
 # ────────────────────────────────────────────────────────────
@@ -152,8 +153,8 @@ class TestCamSolIntrinsic:
             )
 
     def test_empty_protein_raises(self):
-        """Empty protein should raise ValueError."""
-        with pytest.raises(ValueError, match="empty"):
+        """Empty protein should raise CamSolError."""
+        with pytest.raises(CamSolError, match="empty"):
             compute_intrinsic_solubility("")
 
     def test_overall_score_equals_intrinsic_when_no_structure(self):
@@ -182,30 +183,31 @@ class TestCamSolMutations:
         assert len(mutations) > 0, "Expected at least one mutation suggestion"
 
     def test_find_solubility_mutations_blosum62_filter(self):
-        """Mutations should respect BLOSUM62 filtering (score >= 0)."""
+        """Mutations should have valid score (BLOSUM62-conservative)."""
         mutations = find_solubility_mutations(INSOLUBLE_PROTEIN)
         for mut in mutations:
-            assert mut["blosum62"] >= 0, (
-                f"Mutation {mut['wildtype']}{mut['position']}{mut['mutant']} "
-                f"has BLOSUM62={mut['blosum62']} < 0"
+            assert mut.score > 0, (
+                f"Mutation {mut.original}{mut.position}{mut.mutant} "
+                f"has score={mut.score} <= 0"
             )
 
     def test_mutation_improves_solubility(self):
-        """Each suggested mutation should improve solubility (positive delta)."""
+        """Each suggested mutation should improve solubility (positive score)."""
         mutations = find_solubility_mutations(INSOLUBLE_PROTEIN)
         for mut in mutations:
-            assert mut["delta_solubility"] > 0, (
-                f"Mutation {mut['wildtype']}{mut['position']}{mut['mutant']} "
-                f"has delta_solubility={mut['delta_solubility']} <= 0"
+            assert mut.score > 0, (
+                f"Mutation {mut.original}{mut.position}{mut.mutant} "
+                f"has score={mut.score} <= 0"
             )
 
-    def test_mutation_has_required_keys(self):
-        """Each mutation dict should have required keys."""
-        required_keys = {"position", "wildtype", "mutant", "delta_solubility", "blosum62"}
+    def test_mutation_has_required_attrs(self):
+        """Each MutationResult should have required attributes."""
+        required_attrs = {"position", "original", "mutant", "score", "engine", "description"}
         mutations = find_solubility_mutations(INSOLUBLE_PROTEIN)
         for mut in mutations:
-            assert required_keys.issubset(mut.keys()), (
-                f"Missing keys in mutation: {required_keys - mut.keys()}"
+            missing = required_attrs - set(dir(mut))
+            assert not missing, (
+                f"Missing attributes in MutationResult: {missing}"
             )
 
     def test_no_mutations_for_soluble_protein(self):

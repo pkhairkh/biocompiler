@@ -1,9 +1,9 @@
 """
-BioCompiler Structure Report — Phase 2+3 Protein Assessment Reporting
+BioCompiler Structure Report — Protein Assessment Reporting
 
 Comprehensive protein structure visualization and reporting helpers for
-Phase 2 (structure quality, stability, solubility) and Phase 3
-(immunogenicity, MHC binding, epitope prediction) results.
+Structure quality, stability, solubility, and immunogenicity assessment
+results (including MHC binding and epitope prediction).
 
 Features:
 - ProteinAssessmentReport dataclass for structured assessment results
@@ -54,7 +54,7 @@ def _to_dict(obj: object) -> object:
 
 @dataclass
 class ProteinAssessmentReport:
-    """Comprehensive protein assessment report combining Phase 2+3 results.
+    """Comprehensive protein assessment report combining protein assessment results.
 
     Aggregates structure quality, stability, solubility, and
     immunogenicity analyses into a single report with an overall
@@ -87,7 +87,7 @@ def assess_protein(
     run_solubility: bool = True,
     run_immunogenicity: bool = True,
 ) -> ProteinAssessmentReport:
-    """Run all Phase 2+3 analyses on a protein and return a comprehensive report.
+    """Run all protein assessment analyses on a protein and return a comprehensive report.
 
     Each analysis is wrapped in try/except so that individual failures
     do not prevent other analyses from completing. Predicate results from
@@ -455,7 +455,7 @@ def generate_recommendations(report: ProteinAssessmentReport) -> list[str]:
                 report.solubility, report.immunogenicity,
                 report.mhc_binding, report.epitope]):
         recs.append(
-            "No Phase 2+3 analyses completed successfully. Ensure the "
+            "No protein analyses completed successfully. Ensure the "
             "required modules (structure_quality, foldx, camsol, "
             "immunogenicity, mhc_binding, epitope) are installed and "
             "configured."

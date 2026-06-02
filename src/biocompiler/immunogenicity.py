@@ -26,22 +26,33 @@ References
 """
 from __future__ import annotations
 
+import concurrent.futures
+import hashlib
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 
-from .constants import BLOSUM62, HYDROPATHY
+from .constants import BLOSUM62, DEFAULT_MHC_PEPTIDE_LENGTH, HYDROPATHY, STANDARD_AAS
+from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+
+try:
+    from .exceptions import ImmunogenicityError
+except ImportError:
+    from .exceptions import BioCompilerError
+
+    class ImmunogenicityError(BioCompilerError):
+        """Raised when immunogenicity analysis encounters invalid input."""
+        pass
 
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Amino-acid constants
+# Amino-acid constants — derived from shared constants.py
 # ═══════════════════════════════════════════════════════════════════════════
 
-_STANDARD_AA = set("ACDEFGHIKLMNPQRSTVWY")
-
-AMINO_ACIDS: list[str] = list("ACDEFGHIKLMNPQRSTVWY")
-_AA_INDEX: dict[str, int] = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
+_STANDARD_AA_SET: set[str] = set(STANDARD_AAS)
+_AA_INDEX: dict[str, int] = {aa: i for i, aa in enumerate(STANDARD_AAS)}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MHC allele defaults and population coverage
@@ -119,11 +130,6 @@ POPULATION_COVERAGE: dict[str, dict[str, float]] = {
     },
 }
 
-# Private backward-compat aliases
-_DEFAULT_MHC_I_ALLELES = DEFAULT_MHC_I_ALLELES
-_DEFAULT_MHC_II_ALLELES = DEFAULT_MHC_II_ALLELES
-_DEFAULT_MHC_ALLELES = DEFAULT_MHC_I_ALLELES + DEFAULT_MHC_II_ALLELES
-
 # ═══════════════════════════════════════════════════════════════════════════
 # MHC binding: PSSM construction
 # ═══════════════════════════════════════════════════════════════════════════
@@ -142,7 +148,7 @@ def _make_pssm_row(
     disfavored : dict mapping AA -> score for disfavored residues
     default : score for residues not mentioned in *preferred* or *disfavored*
     """
-    row: dict[str, float] = {aa: default for aa in AMINO_ACIDS}
+    row: dict[str, float] = {aa: default for aa in STANDARD_AAS}
     if preferred:
         for aa, score in preferred.items():
             if aa in row:
@@ -408,20 +414,62 @@ def _build_mhc_ii_pssms() -> dict[str, list[dict[str, float]]]:
     return pssms
 
 
-MHC_I_PSSM: dict[str, list[dict[str, float]]] = _build_mhc_i_pssms()
-MHC_II_PSSM: dict[str, list[dict[str, float]]] = _build_mhc_ii_pssms()
+# ═══════════════════════════════════════════════════════════════════════════
+# Lazy PSSM initialization
+# ═══════════════════════════════════════════════════════════════════════════
 
-# Backward compatibility: derive MHC_I_PREFERENCES / MHC_II_PREFERENCES
-# from the PSSMs so that ``allele in MHC_I_PREFERENCES`` still works.
-# Deprecated: use MHC_I_PSSM / MHC_II_PSSM instead.
-MHC_I_PREFERENCES: dict[str, dict[int, dict[str, float]]] = {
-    allele: {i: row for i, row in enumerate(pssm, 1)}
-    for allele, pssm in MHC_I_PSSM.items()
-}
-MHC_II_PREFERENCES: dict[str, dict[int, dict[str, float]]] = {
-    allele: {i: row for i, row in enumerate(pssm, 1)}
-    for allele, pssm in MHC_II_PSSM.items()
-}
+MHC_I_PSSM: dict[str, list[dict[str, float]]] = {}
+MHC_II_PSSM: dict[str, list[dict[str, float]]] = {}
+_pssm_built: bool = False
+
+
+def _ensure_pssms_built() -> None:
+    """Build PSSM dicts on first access (lazy initialization)."""
+    global MHC_I_PSSM, MHC_II_PSSM, _pssm_built
+    if not _pssm_built:
+        MHC_I_PSSM = _build_mhc_i_pssms()
+        MHC_II_PSSM = _build_mhc_ii_pssms()
+        _pssm_built = True
+
+
+def _get_mhc_i_pssms() -> dict[str, list[dict[str, float]]]:
+    """Return MHC-I PSSMs, building them lazily on first call."""
+    _ensure_pssms_built()
+    return MHC_I_PSSM
+
+
+def _get_mhc_ii_pssms() -> dict[str, list[dict[str, float]]]:
+    """Return MHC-II PSSMs, building them lazily on first call."""
+    _ensure_pssms_built()
+    return MHC_II_PSSM
+
+
+# Eagerly build PSSMs at module load so MHC_I_PSSM / MHC_II_PSSM are
+# populated when tests access them directly.
+_ensure_pssms_built()
+
+
+# Removed in v7.5.0: MHC_I_PREFERENCES, MHC_II_PREFERENCES (backward-compat
+# aliases derived from PSSMs — use MHC_I_PSSM / MHC_II_PSSM instead).
+# Removed in v7.5.0: _DEFAULT_MHC_I_ALLELES, _DEFAULT_MHC_II_ALLELES,
+# _DEFAULT_MHC_ALLELES (private backward-compat aliases).
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Prediction cache
+# ═══════════════════════════════════════════════════════════════════════════
+
+_prediction_cache: dict[tuple[str, str, int], list[MHCBindingResult]] = {}
+
+
+def clear_cache() -> None:
+    """Clear the MHC binding prediction cache and PSSM cache."""
+    global _prediction_cache, MHC_I_PSSM, MHC_II_PSSM, _pssm_built
+    _prediction_cache.clear()
+    MHC_I_PSSM = {}
+    MHC_II_PSSM = {}
+    _pssm_built = False
+    logger.info("Immunogenicity cache cleared")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MHC binding: data classes
@@ -442,15 +490,8 @@ class MHCBindingResult:
     anchor_residues: dict[int, str]  # position -> AA at anchor positions
     anchor_scores: dict[int, float]  # position -> binding contribution
 
-    @property
-    def score(self) -> float:
-        """Alias for ``binding_score`` for backward compatibility."""
-        return self.binding_score
-
-    @property
-    def position(self) -> int:
-        """Alias for ``start_position`` for backward compatibility."""
-        return self.start_position
+    # Removed in v7.5.0: score (alias for binding_score), position (alias
+    # for start_position) backward-compat properties.
 
 
 @dataclass
@@ -464,21 +505,18 @@ class MHCPredictionResult:
     weak_binders: int
     non_binders: int
     binding_profile: dict[str, float]  # allele -> max binding score
+    # EngineResult protocol fields
+    success: bool = True
+    error: str | None = None
+    execution_time_s: float = 0.0
 
     @property
     def predictions(self) -> list[MHCBindingResult]:
         """All predictions combined (MHC-I + MHC-II)."""
         return self.mhc_i_results + self.mhc_ii_results
 
-    @property
-    def class_i_results(self) -> list[MHCBindingResult]:
-        """Alias for ``mhc_i_results`` for backward compatibility."""
-        return self.mhc_i_results
-
-    @property
-    def class_ii_results(self) -> list[MHCBindingResult]:
-        """Alias for ``mhc_ii_results`` for backward compatibility."""
-        return self.mhc_ii_results
+    # Removed in v7.5.0: class_i_results / class_ii_results aliases —
+    # use mhc_i_results / mhc_ii_results directly.
 
     @property
     def binders(self) -> list[MHCBindingResult]:
@@ -546,7 +584,7 @@ def score_peptide_pssm(
     """
     if isinstance(pssm, str):
         allele = pssm
-        lookup = MHC_I_PSSM.get(allele) or MHC_II_PSSM.get(allele)
+        lookup = _get_mhc_i_pssms().get(allele) or _get_mhc_ii_pssms().get(allele)
         if lookup is None:
             logger.debug("No PSSM for allele %s — returning 0.0", allele)
             return 0.0
@@ -683,7 +721,7 @@ def _identify_anchor_positions(
 def predict_mhc_i_binding(
     protein: str,
     alleles: list[str] | None = None,
-    peptide_length: int = 9,
+    peptide_length: int = DEFAULT_MHC_PEPTIDE_LENGTH,
 ) -> list[MHCBindingResult]:
     """Predict MHC class I binding for overlapping peptides.
 
@@ -707,10 +745,16 @@ def predict_mhc_i_binding(
     if not protein or peptide_length < 1:
         return []
 
+    # Check cache
+    cache_key = (hashlib.md5(protein.encode()).hexdigest(), ",".join(alleles), peptide_length)
+    if cache_key in _prediction_cache:
+        return _prediction_cache[cache_key]
+
     results: list[MHCBindingResult] = []
+    mhc_i_pssms = _get_mhc_i_pssms()
 
     for allele in alleles:
-        pssm = MHC_I_PSSM.get(allele)
+        pssm = mhc_i_pssms.get(allele)
         if pssm is None:
             logger.debug("No PSSM for allele %s — skipping", allele)
             continue
@@ -727,7 +771,7 @@ def predict_mhc_i_binding(
         for start in range(len(protein) - peptide_length + 1):
             peptide = protein[start : start + peptide_length]
 
-            if any(c.upper() not in _AA_INDEX for c in peptide):
+            if any(c.upper() not in _STANDARD_AA_SET for c in peptide):
                 continue
 
             score = score_peptide_pssm(peptide, pssm)
@@ -748,6 +792,8 @@ def predict_mhc_i_binding(
                     anchor_scores={k: round(v, 4) for k, v in anchor_scores.items()},
                 )
             )
+
+    _prediction_cache[cache_key] = results
 
     logger.info(
         "MHC-I prediction: %d results for %d alleles, protein length %d",
@@ -789,12 +835,18 @@ def predict_mhc_ii_binding(
     if not protein or peptide_length < 9:
         return []
 
+    # Check cache
+    cache_key = (hashlib.md5(protein.encode()).hexdigest(), ",".join(alleles), -peptide_length)
+    if cache_key in _prediction_cache:
+        return _prediction_cache[cache_key]
+
     core_length = 9
 
     results: list[MHCBindingResult] = []
+    mhc_ii_pssms = _get_mhc_ii_pssms()
 
     for allele in alleles:
-        pssm = MHC_II_PSSM.get(allele)
+        pssm = mhc_ii_pssms.get(allele)
         if pssm is None:
             logger.debug("No PSSM for allele %s — skipping", allele)
             continue
@@ -811,7 +863,7 @@ def predict_mhc_ii_binding(
         for start in range(len(protein) - peptide_length + 1):
             peptide = protein[start : start + peptide_length]
 
-            if any(c.upper() not in _AA_INDEX for c in peptide):
+            if any(c.upper() not in _STANDARD_AA_SET for c in peptide):
                 continue
 
             best_score = 0.0
@@ -855,6 +907,8 @@ def predict_mhc_ii_binding(
                 )
             )
 
+    _prediction_cache[cache_key] = results
+
     logger.info(
         "MHC-II prediction: %d results for %d alleles, protein length %d",
         len(results),
@@ -885,47 +939,50 @@ def predict_all(
     MHCPredictionResult
         Aggregated binding prediction.
     """
-    mhc_i_results = predict_mhc_i_binding(protein, alleles=mhc_i_alleles)
-    mhc_ii_results = predict_mhc_ii_binding(protein, alleles=mhc_ii_alleles)
+    with EngineTimer() as timer:
+        mhc_i_results = predict_mhc_i_binding(protein, alleles=mhc_i_alleles)
+        mhc_ii_results = predict_mhc_ii_binding(protein, alleles=mhc_ii_alleles)
 
-    all_results = mhc_i_results + mhc_ii_results
+        all_results = mhc_i_results + mhc_ii_results
 
-    strong_binders = sum(
-        1 for r in all_results if r.binding_class == "strong_binder"
-    )
-    moderate_binders = sum(
-        1 for r in all_results if r.binding_class == "moderate_binder"
-    )
-    weak_binders = sum(
-        1 for r in all_results if r.binding_class == "weak_binder"
-    )
-    non_binders = sum(
-        1 for r in all_results if r.binding_class == "non_binder"
-    )
+        strong_binders = sum(
+            1 for r in all_results if r.binding_class == "strong_binder"
+        )
+        moderate_binders = sum(
+            1 for r in all_results if r.binding_class == "moderate_binder"
+        )
+        weak_binders = sum(
+            1 for r in all_results if r.binding_class == "weak_binder"
+        )
+        non_binders = sum(
+            1 for r in all_results if r.binding_class == "non_binder"
+        )
 
-    binding_profile: dict[str, float] = {}
-    for r in all_results:
-        if r.allele not in binding_profile or r.binding_score > binding_profile[r.allele]:
-            binding_profile[r.allele] = round(r.binding_score, 6)
+        binding_profile: dict[str, float] = {}
+        for r in all_results:
+            if r.allele not in binding_profile or r.binding_score > binding_profile[r.allele]:
+                binding_profile[r.allele] = round(r.binding_score, 6)
 
-    result = MHCPredictionResult(
-        protein=protein,
-        mhc_i_results=mhc_i_results,
-        mhc_ii_results=mhc_ii_results,
-        strong_binders=strong_binders + moderate_binders,
-        weak_binders=weak_binders,
-        non_binders=non_binders,
-        binding_profile=binding_profile,
-    )
+        result = MHCPredictionResult(
+            protein=protein,
+            mhc_i_results=mhc_i_results,
+            mhc_ii_results=mhc_ii_results,
+            strong_binders=strong_binders + moderate_binders,
+            weak_binders=weak_binders,
+            non_binders=non_binders,
+            binding_profile=binding_profile,
+            execution_time_s=timer.elapsed,
+        )
 
     logger.info(
         "predict_all: %d MHC-I, %d MHC-II results; "
-        "strong+moderate=%d, weak=%d, non=%d",
+        "strong+moderate=%d, weak=%d, non=%d (%.2fs)",
         len(mhc_i_results),
         len(mhc_ii_results),
         result.strong_binders,
         result.weak_binders,
         result.non_binders,
+        result.execution_time_s,
     )
     return result
 
@@ -936,16 +993,15 @@ def predict_all(
 
 
 def _validate_protein(protein: str) -> str:
-    """Validate and normalise a protein sequence."""
-    protein = protein.strip().upper()
-    if not protein:
-        raise ValueError("Protein sequence must not be empty")
-    invalid = set(protein) - _STANDARD_AA
-    if invalid:
-        raise ValueError(
-            f"Protein contains non-standard amino acids: {sorted(invalid)}"
-        )
-    return protein
+    """Validate and normalise a protein sequence.
+
+    Uses the shared ``validate_protein_sequence`` from engine_base, then
+    raises ``ImmunogenicityError`` on failure instead of ``ValueError``.
+    """
+    try:
+        return validate_protein_sequence(protein, "immunogenicity")
+    except ValueError as exc:
+        raise ImmunogenicityError(str(exc)) from exc
 
 
 def _peptide_hydrophobicity_score(peptide: str) -> float:
@@ -982,9 +1038,11 @@ def _score_peptide_for_allele(peptide: str, allele: str) -> float:
     For MHC-I, the peptide must match the PSSM length.
     For MHC-II, scans all 9-mer cores within the peptide.
     """
-    if allele in MHC_I_PSSM:
+    mhc_i = _get_mhc_i_pssms()
+    mhc_ii = _get_mhc_ii_pssms()
+    if allele in mhc_i:
         return score_peptide_pssm(peptide, allele)
-    elif allele in MHC_II_PSSM:
+    elif allele in mhc_ii:
         best_score = 0.0
         for offset in range(len(peptide) - 8):
             core = peptide[offset : offset + 9]
@@ -1002,7 +1060,7 @@ def _score_peptide_for_allele(peptide: str, allele: str) -> float:
 def predict_t_cell_epitopes(
     protein: str,
     mhc_alleles: list[str] | None = None,
-    peptide_length: int = 9,
+    peptide_length: int = DEFAULT_MHC_PEPTIDE_LENGTH,
 ) -> list[dict]:
     """Predict T-cell epitopes in a protein sequence.
 
@@ -1028,9 +1086,12 @@ def predict_t_cell_epitopes(
     """
     protein = _validate_protein(protein)
 
+    mhc_i_pssms = _get_mhc_i_pssms()
+    mhc_ii_pssms = _get_mhc_ii_pssms()
+
     if mhc_alleles is not None:
-        mhc_i_alleles = [a for a in mhc_alleles if a in MHC_I_PSSM]
-        mhc_ii_alleles = [a for a in mhc_alleles if a in MHC_II_PSSM]
+        mhc_i_alleles = [a for a in mhc_alleles if a in mhc_i_pssms]
+        mhc_ii_alleles = [a for a in mhc_alleles if a in mhc_ii_pssms]
         unrecognised = set(mhc_alleles) - set(mhc_i_alleles) - set(mhc_ii_alleles)
         for allele in unrecognised:
             logger.warning("Unrecognised MHC allele: %s — skipping", allele)
@@ -1136,8 +1197,7 @@ _THREE_TO_ONE: dict[str, str] = {
     "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
 
-# Backward compatibility alias — deprecated, use ANTIGENICITY_SCALE
-ANTIGENICITY_PROPENSITY: dict[str, float] = ANTIGENICITY_SCALE
+# Removed in v7.5.0: ANTIGENICITY_PROPENSITY (alias for ANTIGENICITY_SCALE).
 
 # ═══════════════════════════════════════════════════════════════════════════
 # B-cell epitope: data classes
@@ -1991,7 +2051,7 @@ def predict_b_cell_epitopes(
     protein = _validate_protein(protein)
 
     if method != "kolaskar_tongaonkar":
-        raise ValueError(
+        raise ImmunogenicityError(
             f"Unsupported B-cell epitope method: {method!r}. "
             "Only 'kolaskar_tongaonkar' is supported."
         )
@@ -2058,8 +2118,12 @@ class ImmunogenicityResult:
     b_cell_score: float  # B-cell epitope contribution
     t_cell_epitopes: list[dict]  # predicted T-cell epitopes
     b_cell_epitopes: list[dict]  # predicted B-cell epitopes
-    deimmunization_candidates: list[dict]  # suggested mutations
-    method: str = "sequence_based"
+    deimmunization_candidates: list[MutationResult]  # suggested mutations
+    # EngineResult protocol fields
+    success: bool = True
+    error: str | None = None
+    execution_time_s: float = 0.0
+    method: str = "immunogenicity_pssm"
 
 
 def compute_immunogenicity(
@@ -2095,55 +2159,71 @@ def compute_immunogenicity(
     -------
     ImmunogenicityResult
     """
-    protein = _validate_protein(protein)
+    try:
+        protein = _validate_protein(protein)
+    except ImmunogenicityError as exc:
+        return ImmunogenicityResult(
+            protein=protein,
+            overall_score=0.0,
+            immunogenicity_class="low",
+            t_cell_score=0.0,
+            b_cell_score=0.0,
+            t_cell_epitopes=[],
+            b_cell_epitopes=[],
+            deimmunization_candidates=[],
+            success=False,
+            error=str(exc),
+        )
 
-    # T-cell prediction
-    t_epitopes = predict_t_cell_epitopes(protein, mhc_alleles)
-    if t_epitopes:
-        t_cell_score = min(1.0, max(e["score"] for e in t_epitopes))
-    else:
-        t_cell_score = 0.0
+    with EngineTimer() as timer:
+        # T-cell prediction
+        t_epitopes = predict_t_cell_epitopes(protein, mhc_alleles)
+        if t_epitopes:
+            t_cell_score = min(1.0, max(e["score"] for e in t_epitopes))
+        else:
+            t_cell_score = 0.0
 
-    # B-cell prediction using epitope.py's predict_epitopes
-    b_result = predict_epitopes(protein)
-    b_epitopes_converted: list[dict] = [
-        {
-            "start": ep.start,
-            "end": ep.end,
-            "peptide": ep.peptide,
-            "score": ep.score,
-            "method": ep.method,
-        }
-        for ep in b_result.linear_epitopes
-    ]
-    b_cell_score = b_result.epitope_coverage
+        # B-cell prediction using epitope.py's predict_epitopes
+        b_result = predict_epitopes(protein)
+        b_epitopes_converted: list[dict] = [
+            {
+                "start": ep.start,
+                "end": ep.end,
+                "peptide": ep.peptide,
+                "score": ep.score,
+                "method": ep.method,
+            }
+            for ep in b_result.linear_epitopes
+        ]
+        b_cell_score = b_result.epitope_coverage
 
-    # Combined score
-    overall_score = 0.6 * t_cell_score + 0.4 * b_cell_score
-    overall_score = max(0.0, min(1.0, overall_score))
+        # Combined score
+        overall_score = 0.6 * t_cell_score + 0.4 * b_cell_score
+        overall_score = max(0.0, min(1.0, overall_score))
 
-    # Classification
-    if overall_score < 0.3:
-        immuno_class = "low"
-    elif overall_score < 0.6:
-        immuno_class = "moderate"
-    else:
-        immuno_class = "high"
+        # Classification
+        if overall_score < 0.3:
+            immuno_class = "low"
+        elif overall_score < 0.6:
+            immuno_class = "moderate"
+        else:
+            immuno_class = "high"
 
-    # Deimmunization candidates
-    deimm_candidates = find_deimmunization_mutations(protein)
+        # Deimmunization candidates
+        deimm_candidates = find_deimmunization_mutations(protein)
 
-    return ImmunogenicityResult(
-        protein=protein,
-        overall_score=round(overall_score, 4),
-        immunogenicity_class=immuno_class,
-        t_cell_score=round(t_cell_score, 4),
-        b_cell_score=round(b_cell_score, 4),
-        t_cell_epitopes=t_epitopes,
-        b_cell_epitopes=b_epitopes_converted,
-        deimmunization_candidates=deimm_candidates,
-        method="sequence_based",
-    )
+        return ImmunogenicityResult(
+            protein=protein,
+            overall_score=round(overall_score, 4),
+            immunogenicity_class=immuno_class,
+            t_cell_score=round(t_cell_score, 4),
+            b_cell_score=round(b_cell_score, 4),
+            t_cell_epitopes=t_epitopes,
+            b_cell_epitopes=b_epitopes_converted,
+            deimmunization_candidates=deimm_candidates,
+            execution_time_s=timer.elapsed,
+            method="immunogenicity_pssm",
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2155,7 +2235,7 @@ def find_deimmunization_mutations(
     protein: str,
     epitope_threshold: float = 0.7,
     blosum62_min: int = 0,
-) -> list[dict]:
+) -> list[MutationResult]:
     """Find mutations that may reduce immunogenicity.
 
     For each T-cell epitope scoring above *epitope_threshold*,
@@ -2175,9 +2255,9 @@ def find_deimmunization_mutations(
 
     Returns
     -------
-    list[dict]
-        Each dict: position, wildtype, mutant, epitope,
-        binding_score_change, blosum62, protein_preserved.
+    list[MutationResult]
+        Mutation suggestions that reduce immunogenicity, sorted by
+        largest binding score reduction.
     """
     protein = _validate_protein(protein)
 
@@ -2194,7 +2274,10 @@ def find_deimmunization_mutations(
 
     # Deduplicate: track which (position, allele) combos we've already scored
     seen: set[tuple[int, str]] = set()
-    candidates: list[dict] = []
+    candidates: list[MutationResult] = []
+
+    mhc_i_pssms = _get_mhc_i_pssms()
+    mhc_ii_pssms = _get_mhc_ii_pssms()
 
     for epi in strong_epitopes:
         allele = epi["allele"]
@@ -2213,7 +2296,7 @@ def find_deimmunization_mutations(
 
             wildtype = protein[pos]
 
-            for mutant in sorted(_STANDARD_AA):
+            for mutant in sorted(_STANDARD_AA_SET):
                 if mutant == wildtype:
                     continue
 
@@ -2226,13 +2309,13 @@ def find_deimmunization_mutations(
                 mutated_protein = protein[:pos] + mutant + protein[pos + 1 :]
 
                 # Re-score using PSSM-based scoring
-                if allele in MHC_I_PSSM:
+                if allele in mhc_i_pssms:
                     if end <= len(mutated_protein):
                         new_peptide = mutated_protein[start:end]
                         new_score = score_peptide_pssm(new_peptide, allele)
                     else:
                         new_score = original_score
-                elif allele in MHC_II_PSSM:
+                elif allele in mhc_ii_pssms:
                     # MHC-II: 15-mer with 9-mer core scanning
                     mhc_ii_window = 15
                     pep_end = start + mhc_ii_window
@@ -2249,19 +2332,92 @@ def find_deimmunization_mutations(
                 # Only keep substitutions that reduce binding
                 if score_change < 0:
                     candidates.append(
-                        {
-                            "position": pos,
-                            "wildtype": wildtype,
-                            "mutant": mutant,
-                            "epitope": peptide,
-                            "binding_score_change": round(score_change, 4),
-                            "blosum62": blosum_score,
-                            "protein_preserved": blosum_score >= 0,
-                        }
+                        MutationResult(
+                            position=pos,
+                            original=wildtype,
+                            mutant=mutant,
+                            score=round(-score_change, 4),  # positive = improvement
+                            engine="immunogenicity",
+                            description=(
+                                f"{wildtype}{pos+1}{mutant}: reduces {allele} "
+                                f"binding by {abs(score_change):.4f}"
+                            ),
+                            details={
+                                "epitope": peptide,
+                                "binding_score_change": round(score_change, 4),
+                                "blosum62": blosum_score,
+                                "protein_preserved": blosum_score >= 0,
+                                "allele": allele,
+                            },
+                        )
                     )
 
-    # Sort by largest binding score reduction, then by BLOSUM62
-    candidates.sort(key=lambda c: (c["binding_score_change"], -c["blosum62"]))
+    # Sort by largest improvement (highest score), then by BLOSUM62
+    candidates.sort(key=lambda c: (-c.score, -c.details.get("blosum62", 0)))
 
     # Limit to top candidates
     return candidates[:200]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Batch API
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def compute_immunogenicity_batch(
+    sequences: list[str],
+    **kwargs,
+) -> list[ImmunogenicityResult]:
+    """Compute immunogenicity scores for multiple sequences in parallel.
+
+    Uses ``concurrent.futures.ThreadPoolExecutor`` for parallelism.
+
+    Parameters
+    ----------
+    sequences : list[str]
+        List of protein amino-acid sequences.
+    **kwargs
+        Additional keyword arguments passed to :func:`compute_immunogenicity`
+        (e.g. ``mhc_alleles``).
+
+    Returns
+    -------
+    list[ImmunogenicityResult]
+        One result per input sequence, in the same order.
+    """
+    logger.info("compute_immunogenicity_batch: processing %d sequences", len(sequences))
+
+    results: list[ImmunogenicityResult] = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_idx = {
+            executor.submit(compute_immunogenicity, seq, **kwargs): i
+            for i, seq in enumerate(sequences)
+        }
+        result_map: dict[int, ImmunogenicityResult] = {}
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                result_map[idx] = future.result()
+            except Exception as exc:
+                result_map[idx] = ImmunogenicityResult(
+                    protein=sequences[idx],
+                    overall_score=0.0,
+                    immunogenicity_class="low",
+                    t_cell_score=0.0,
+                    b_cell_score=0.0,
+                    t_cell_epitopes=[],
+                    b_cell_epitopes=[],
+                    deimmunization_candidates=[],
+                    success=False,
+                    error=str(exc),
+                )
+
+        for i in range(len(sequences)):
+            results.append(result_map[i])
+
+    logger.info(
+        "compute_immunogenicity_batch: completed %d/%d successfully",
+        sum(1 for r in results if r.success),
+        len(results),
+    )
+    return results

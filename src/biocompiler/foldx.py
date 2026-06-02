@@ -1,5 +1,5 @@
 """
-BioCompiler FoldX Stability Analysis Module v7.2.0
+BioCompiler FoldX Stability Analysis Module v7.5.0
 ====================================================
 Provides both online (FoldX CLI wrapper) and offline (empirical scoring)
 modes for protein stability analysis, mutation scanning, and stabilization.
@@ -18,6 +18,7 @@ Usage:
         run_foldx_repair,
         run_foldx_mutation,
         empirical_stability,
+        run_stability_batch,
         scan_mutations,
         find_stabilizing_mutations,
         scan_all_mutations,
@@ -31,6 +32,8 @@ Usage:
         FoldXError,
         StabilityLandscape,
         ConservationScore,
+        FoldXCache,
+        clear_cache,
         BLOSUM62,
         HYDROPATHY,
         AA_VOLUME,
@@ -39,6 +42,8 @@ Usage:
 
 from __future__ import annotations
 
+import concurrent.futures
+import hashlib
 import logging
 import os
 import re
@@ -48,7 +53,15 @@ import time
 from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS, HYDROPHOBIC_AAS
+from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
 from .exceptions import BioCompilerError
+
+# Shared constants — fallback defaults if not yet present in constants module
+try:
+    from .constants import DEFAULT_ENGINE_TIMEOUT, DEFAULT_BATCH_SIZE
+except ImportError:
+    DEFAULT_ENGINE_TIMEOUT: float = 300.0
+    DEFAULT_BATCH_SIZE: int = 8
 
 logger = logging.getLogger(__name__)
 
@@ -151,28 +164,11 @@ class FoldXResult:
     error: str | None = None
 
 
-@dataclass
-class MutationResult:
-    """Result of a single-point mutation analysis.
-
-    Attributes:
-        position: 0-indexed residue position in the protein.
-        wildtype: Original amino acid (single-letter code).
-        mutant: Mutant amino acid (single-letter code).
-        ddg_kcal: ΔΔG in kcal/mol (positive = destabilizing).
-        stabilizing: True if ΔΔG < -0.5 kcal/mol.
-        neutral: True if -0.5 ≤ ΔΔG ≤ 0.5 kcal/mol.
-        destabilizing: True if ΔΔG > 0.5 kcal/mol.
-        method: Analysis method used.
-    """
-    position: int
-    wildtype: str
-    mutant: str
-    ddg_kcal: float
-    stabilizing: bool
-    neutral: bool
-    destabilizing: bool
-    method: str
+# Note: MutationResult is now imported from engine_base.
+# The unified MutationResult has fields: position, original, mutant, score,
+# engine, description, details.  The 'score' field uses the convention
+# higher = better improvement (i.e. score = -ddg_kcal).  FoldX-specific
+# flags (stabilizing, neutral, destabilizing) are stored in details dict.
 
 
 @dataclass
@@ -203,6 +199,102 @@ class ConservationScore:
 
 
 # ────────────────────────────────────────────────────────────
+# Result Cache
+# ────────────────────────────────────────────────────────────
+
+class FoldXCache:
+    """Simple in-memory cache for FoldX results.
+
+    Caches results keyed by (content_hash, method).  Supports an
+    optional maximum size; when exceeded, the oldest entries are
+    evicted (FIFO).
+    """
+
+    def __init__(self, max_size: int = 256):
+        self._store: dict[tuple[str, str], object] = {}
+        self._insert_order: list[tuple[str, str]] = []
+        self.max_size = max_size
+
+    def _make_key(self, content: str, method: str) -> tuple[str, str]:
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        return (content_hash, method)
+
+    def get(self, content: str, method: str):
+        key = self._make_key(content, method)
+        return self._store.get(key)
+
+    def put(self, content: str, method: str, result: object) -> None:
+        key = self._make_key(content, method)
+        if key not in self._store:
+            self._insert_order.append(key)
+        self._store[key] = result
+        # Evict oldest entries if over capacity
+        while len(self._store) > self.max_size and self._insert_order:
+            oldest_key = self._insert_order.pop(0)
+            self._store.pop(oldest_key, None)
+
+    def clear(self) -> None:
+        self._store.clear()
+        self._insert_order.clear()
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+
+# Module-level cache instance
+_cache = FoldXCache()
+
+
+def clear_cache() -> None:
+    """Clear the module-level FoldX result cache."""
+    _cache.clear()
+    logger.info("FoldX cache cleared")
+
+
+# ────────────────────────────────────────────────────────────
+# Helper: build a failed FoldXResult
+# ────────────────────────────────────────────────────────────
+
+def _make_failed_result(
+    method: str,
+    error: str,
+    pdb_string: str | None = None,
+    protein: str = "",
+    execution_time_s: float = 0.0,
+) -> FoldXResult:
+    """Construct a FoldXResult representing a failure.
+
+    This helper reduces repetition across all error-return paths.
+    """
+    return FoldXResult(
+        protein=protein,
+        pdb_string=pdb_string,
+        stability_kcal=0.0,
+        ddg_kcal=None,
+        interaction_energy=None,
+        backbone_hbond=None,
+        sidechain_hbond=None,
+        van_der_waals=None,
+        electrostatics=None,
+        solvation=None,
+        van_der_waals_clashes=None,
+        entropy_sidechain=None,
+        entropy_mainchain=None,
+        torsional_clash=None,
+        backbone_clash=None,
+        helix_dipole=None,
+        disulfide=None,
+        electrostatic_kon=None,
+        partial_covalent=None,
+        energy_ionisation=None,
+        execution_time_s=execution_time_s,
+        method=method,
+        success=False,
+        error=error,
+    )
+
+
+# ────────────────────────────────────────────────────────────
 # FoldX CLI Availability Check
 # ────────────────────────────────────────────────────────────
 
@@ -224,13 +316,13 @@ def is_foldx_available() -> bool:
         # as long as it runs, we consider it available
         return True
     except FileNotFoundError:
-        logger.debug("foldx executable not found on PATH")
+        logger.warning("foldx executable not found on PATH")
         return False
     except subprocess.TimeoutExpired:
-        logger.debug("foldx --version timed out")
+        logger.warning("foldx --version timed out")
         return False
     except OSError as exc:
-        logger.debug("foldx availability check failed: %s", exc)
+        logger.warning("foldx availability check failed: %s", exc)
         return False
 
 
@@ -241,7 +333,7 @@ def is_foldx_available() -> bool:
 def run_foldx_stability(
     pdb_string: str,
     foldx_dir: str | None = None,
-    timeout: float = 300.0,
+    timeout: float | None = None,
 ) -> FoldXResult:
     """Run FoldX Stability analysis on a PDB structure.
 
@@ -253,206 +345,130 @@ def run_foldx_stability(
         pdb_string: PDB file content as a string.
         foldx_dir: Directory containing the FoldX rotabase and other
             required files. If None, uses current working directory.
-        timeout: Maximum execution time in seconds.
+        timeout: Maximum execution time in seconds.  Falls back to
+            ``DEFAULT_ENGINE_TIMEOUT`` if not specified.
 
     Returns:
         FoldXResult with all energy components populated on success,
         or with success=False and an error message on failure.
     """
-    start_time = time.time()
+    if timeout is None:
+        timeout = DEFAULT_ENGINE_TIMEOUT
 
-    if not is_foldx_available():
-        elapsed = time.time() - start_time
-        return FoldXResult(
-            protein="",
-            pdb_string=pdb_string,
-            stability_kcal=0.0,
-            ddg_kcal=None,
-            interaction_energy=None,
-            backbone_hbond=None,
-            sidechain_hbond=None,
-            van_der_waals=None,
-            electrostatics=None,
-            solvation=None,
-            van_der_waals_clashes=None,
-            entropy_sidechain=None,
-            entropy_mainchain=None,
-            torsional_clash=None,
-            backbone_clash=None,
-            helix_dipole=None,
-            disulfide=None,
-            electrostatic_kon=None,
-            partial_covalent=None,
-            energy_ionisation=None,
-            execution_time_s=elapsed,
-            method="foldx_cli",
-            success=False,
-            error="FoldX CLI not available on PATH",
-        )
+    # Validate the PDB string is non-empty
+    if not pdb_string or not pdb_string.strip():
+        return _make_failed_result("foldx_cli", "Empty PDB string", pdb_string=pdb_string)
 
-    tmpdir = tempfile.mkdtemp(prefix="foldx_stability_")
+    # Check cache
+    cached = _cache.get(pdb_string, "foldx_stability")
+    if cached is not None:
+        logger.info("FoldX Stability: cache hit")
+        return cached
+
+    # Validate protein extracted from PDB
+    protein = _extract_protein_from_pdb(pdb_string)
     try:
-        # Write PDB file — FoldX expects the file in the working directory
-        pdb_path = os.path.join(tmpdir, "input.pdb")
-        with open(pdb_path, "w") as f:
-            f.write(pdb_string)
+        validate_protein_sequence(protein, "FoldX")
+    except ValueError as e:
+        return _make_failed_result("foldx_cli", str(e), pdb_string=pdb_string)
 
-        # Build command
-        cmd = [
-            "foldx",
-            "--command=Stability",
-            f"--pdb=input.pdb",
-        ]
-        if foldx_dir:
-            cmd.append(f"--foldxDir={foldx_dir}")
+    with EngineTimer() as timer:
+        if not is_foldx_available():
+            result = _make_failed_result(
+                "foldx_cli", "FoldX CLI not available on PATH",
+                pdb_string=pdb_string, protein=protein,
+                execution_time_s=timer.elapsed,
+            )
+            _cache.put(pdb_string, "foldx_stability", result)
+            return result
 
-        logger.info("Running FoldX Stability: %s", " ".join(cmd))
+        tmpdir = tempfile.mkdtemp(prefix="foldx_stability_")
+        try:
+            # Write PDB file — FoldX expects the file in the working directory
+            pdb_path = os.path.join(tmpdir, "input.pdb")
+            with open(pdb_path, "w") as f:
+                f.write(pdb_string)
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=tmpdir,
-        )
+            # Build command
+            cmd = [
+                "foldx",
+                "--command=Stability",
+                "--pdb=input.pdb",
+            ]
+            if foldx_dir:
+                cmd.append(f"--foldxDir={foldx_dir}")
 
-        elapsed = time.time() - start_time
+            logger.info("Running FoldX Stability: %s", " ".join(cmd))
 
-        if result.returncode != 0:
-            stderr = result.stderr.strip() if result.stderr else "unknown error"
-            return FoldXResult(
-                protein="",
-                pdb_string=pdb_string,
-                stability_kcal=0.0,
-                ddg_kcal=None,
-                interaction_energy=None,
-                backbone_hbond=None,
-                sidechain_hbond=None,
-                van_der_waals=None,
-                electrostatics=None,
-                solvation=None,
-                van_der_waals_clashes=None,
-                entropy_sidechain=None,
-                entropy_mainchain=None,
-                torsional_clash=None,
-                backbone_clash=None,
-                helix_dipole=None,
-                disulfide=None,
-                electrostatic_kon=None,
-                partial_covalent=None,
-                energy_ionisation=None,
-                execution_time_s=elapsed,
-                method="foldx_cli",
-                success=False,
-                error=f"FoldX exited with code {result.returncode}: {stderr}",
+            proc_result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=tmpdir,
             )
 
-        # Parse the output file
-        fxout_path = os.path.join(tmpdir, "input_ST.fxout")
-        if not os.path.exists(fxout_path):
-            # Try alternative naming
-            fxout_candidates = [
-                f for f in os.listdir(tmpdir) if f.endswith(".fxout")
-            ]
-            if fxout_candidates:
-                fxout_path = os.path.join(tmpdir, fxout_candidates[0])
-            else:
-                return FoldXResult(
-                    protein="",
-                    pdb_string=pdb_string,
-                    stability_kcal=0.0,
-                    ddg_kcal=None,
-                    interaction_energy=None,
-                    backbone_hbond=None,
-                    sidechain_hbond=None,
-                    van_der_waals=None,
-                    electrostatics=None,
-                    solvation=None,
-                    van_der_waals_clashes=None,
-                    entropy_sidechain=None,
-                    entropy_mainchain=None,
-                    torsional_clash=None,
-                    backbone_clash=None,
-                    helix_dipole=None,
-                    disulfide=None,
-                    electrostatic_kon=None,
-                    partial_covalent=None,
-                    energy_ionisation=None,
-                    execution_time_s=elapsed,
-                    method="foldx_cli",
-                    success=False,
-                    error="FoldX output file (.fxout) not found",
+            if proc_result.returncode != 0:
+                stderr = proc_result.stderr.strip() if proc_result.stderr else "unknown error"
+                result = _make_failed_result(
+                    "foldx_cli",
+                    f"FoldX exited with code {proc_result.returncode}: {stderr}",
+                    pdb_string=pdb_string, protein=protein,
+                    execution_time_s=timer.elapsed,
                 )
+                _cache.put(pdb_string, "foldx_stability", result)
+                return result
 
-        parsed = _parse_stability_fxout(fxout_path)
-        parsed["protein"] = _extract_protein_from_pdb(pdb_string)
-        parsed["pdb_string"] = pdb_string
-        parsed["execution_time_s"] = elapsed
-        parsed["method"] = "foldx_cli"
-        parsed["success"] = True
-        parsed["error"] = None
+            # Parse the output file
+            fxout_path = os.path.join(tmpdir, "input_ST.fxout")
+            if not os.path.exists(fxout_path):
+                # Try alternative naming
+                fxout_candidates = [
+                    f for f in os.listdir(tmpdir) if f.endswith(".fxout")
+                ]
+                if fxout_candidates:
+                    fxout_path = os.path.join(tmpdir, fxout_candidates[0])
+                else:
+                    result = _make_failed_result(
+                        "foldx_cli", "FoldX output file (.fxout) not found",
+                        pdb_string=pdb_string, protein=protein,
+                        execution_time_s=timer.elapsed,
+                    )
+                    _cache.put(pdb_string, "foldx_stability", result)
+                    return result
 
-        return FoldXResult(**parsed)
+            parsed = _parse_stability_fxout(fxout_path)
+            parsed["protein"] = protein
+            parsed["pdb_string"] = pdb_string
+            parsed["execution_time_s"] = timer.elapsed
+            parsed["method"] = "foldx_cli"
+            parsed["success"] = True
+            parsed["error"] = None
 
-    except subprocess.TimeoutExpired:
-        elapsed = time.time() - start_time
-        return FoldXResult(
-            protein="",
-            pdb_string=pdb_string,
-            stability_kcal=0.0,
-            ddg_kcal=None,
-            interaction_energy=None,
-            backbone_hbond=None,
-            sidechain_hbond=None,
-            van_der_waals=None,
-            electrostatics=None,
-            solvation=None,
-            van_der_waals_clashes=None,
-            entropy_sidechain=None,
-            entropy_mainchain=None,
-            torsional_clash=None,
-            backbone_clash=None,
-            helix_dipole=None,
-            disulfide=None,
-            electrostatic_kon=None,
-            partial_covalent=None,
-            energy_ionisation=None,
-            execution_time_s=elapsed,
-            method="foldx_cli",
-            success=False,
-            error=f"FoldX timed out after {timeout}s",
-        )
-    except Exception as exc:
-        elapsed = time.time() - start_time
-        return FoldXResult(
-            protein="",
-            pdb_string=pdb_string,
-            stability_kcal=0.0,
-            ddg_kcal=None,
-            interaction_energy=None,
-            backbone_hbond=None,
-            sidechain_hbond=None,
-            van_der_waals=None,
-            electrostatics=None,
-            solvation=None,
-            van_der_waals_clashes=None,
-            entropy_sidechain=None,
-            entropy_mainchain=None,
-            torsional_clash=None,
-            backbone_clash=None,
-            helix_dipole=None,
-            disulfide=None,
-            electrostatic_kon=None,
-            partial_covalent=None,
-            energy_ionisation=None,
-            execution_time_s=elapsed,
-            method="foldx_cli",
-            success=False,
-            error=str(exc),
-        )
-    finally:
-        # Clean up temp directory
-        _cleanup_tempdir(tmpdir)
+            result = FoldXResult(**parsed)
+            _cache.put(pdb_string, "foldx_stability", result)
+            return result
+
+        except subprocess.TimeoutExpired:
+            result = _make_failed_result(
+                "foldx_cli", f"FoldX timed out after {timeout}s",
+                pdb_string=pdb_string, protein=protein,
+                execution_time_s=timer.elapsed,
+            )
+            _cache.put(pdb_string, "foldx_stability", result)
+            return result
+        except Exception as exc:
+            logger.error("FoldX Stability analysis failed: %s", exc)
+            result = _make_failed_result(
+                "foldx_cli", str(exc),
+                pdb_string=pdb_string, protein=protein,
+                execution_time_s=timer.elapsed,
+            )
+            _cache.put(pdb_string, "foldx_stability", result)
+            return result
+        finally:
+            # Clean up temp directory
+            _cleanup_tempdir(tmpdir)
 
 
 # ────────────────────────────────────────────────────────────
@@ -462,7 +478,7 @@ def run_foldx_stability(
 def run_foldx_repair(
     pdb_string: str,
     foldx_dir: str | None = None,
-    timeout: float = 600.0,
+    timeout: float | None = None,
 ) -> tuple[str, FoldXResult]:
     """Run FoldX RepairPDB to optimize sidechain conformations.
 
@@ -470,220 +486,132 @@ def run_foldx_repair(
         pdb_string: PDB file content as a string.
         foldx_dir: Directory containing the FoldX rotabase and other
             required files.
-        timeout: Maximum execution time in seconds.
+        timeout: Maximum execution time in seconds.  Falls back to
+            ``DEFAULT_ENGINE_TIMEOUT`` if not specified.
 
     Returns:
         Tuple of (repaired PDB string, FoldXResult). If repair fails,
         returns the original PDB string and a result with success=False.
     """
-    start_time = time.time()
+    if timeout is None:
+        timeout = DEFAULT_ENGINE_TIMEOUT
 
-    if not is_foldx_available():
-        elapsed = time.time() - start_time
-        result = FoldXResult(
-            protein="",
-            pdb_string=pdb_string,
-            stability_kcal=0.0,
-            ddg_kcal=None,
-            interaction_energy=None,
-            backbone_hbond=None,
-            sidechain_hbond=None,
-            van_der_waals=None,
-            electrostatics=None,
-            solvation=None,
-            van_der_waals_clashes=None,
-            entropy_sidechain=None,
-            entropy_mainchain=None,
-            torsional_clash=None,
-            backbone_clash=None,
-            helix_dipole=None,
-            disulfide=None,
-            electrostatic_kon=None,
-            partial_covalent=None,
-            energy_ionisation=None,
-            execution_time_s=elapsed,
-            method="foldx_cli",
-            success=False,
-            error="FoldX CLI not available on PATH",
-        )
-        return pdb_string, result
-
-    tmpdir = tempfile.mkdtemp(prefix="foldx_repair_")
-    try:
-        pdb_path = os.path.join(tmpdir, "input.pdb")
-        with open(pdb_path, "w") as f:
-            f.write(pdb_string)
-
-        cmd = [
-            "foldx",
-            "--command=RepairPDB",
-            "--pdb=input.pdb",
-        ]
-        if foldx_dir:
-            cmd.append(f"--foldxDir={foldx_dir}")
-
-        logger.info("Running FoldX RepairPDB: %s", " ".join(cmd))
-
-        proc_result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=tmpdir,
-        )
-
-        elapsed = time.time() - start_time
-
-        if proc_result.returncode != 0:
-            stderr = proc_result.stderr.strip() if proc_result.stderr else "unknown error"
-            result = FoldXResult(
-                protein="",
-                pdb_string=pdb_string,
-                stability_kcal=0.0,
-                ddg_kcal=None,
-                interaction_energy=None,
-                backbone_hbond=None,
-                sidechain_hbond=None,
-                van_der_waals=None,
-                electrostatics=None,
-                solvation=None,
-                van_der_waals_clashes=None,
-                entropy_sidechain=None,
-                entropy_mainchain=None,
-                torsional_clash=None,
-                backbone_clash=None,
-                helix_dipole=None,
-                disulfide=None,
-                electrostatic_kon=None,
-                partial_covalent=None,
-                energy_ionisation=None,
-                execution_time_s=elapsed,
-                method="foldx_cli",
-                success=False,
-                error=f"FoldX RepairPDB exited with code {proc_result.returncode}: {stderr}",
+    with EngineTimer() as timer:
+        if not is_foldx_available():
+            result = _make_failed_result(
+                "foldx_cli", "FoldX CLI not available on PATH",
+                pdb_string=pdb_string, execution_time_s=timer.elapsed,
             )
             return pdb_string, result
 
-        # Read repaired PDB
-        repaired_path = os.path.join(tmpdir, "input_Repair.pdb")
-        if not os.path.exists(repaired_path):
-            # Try alternative names
+        tmpdir = tempfile.mkdtemp(prefix="foldx_repair_")
+        try:
+            pdb_path = os.path.join(tmpdir, "input.pdb")
+            with open(pdb_path, "w") as f:
+                f.write(pdb_string)
+
+            cmd = [
+                "foldx",
+                "--command=RepairPDB",
+                "--pdb=input.pdb",
+            ]
+            if foldx_dir:
+                cmd.append(f"--foldxDir={foldx_dir}")
+
+            logger.info("Running FoldX RepairPDB: %s", " ".join(cmd))
+
+            proc_result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=tmpdir,
+            )
+
+            if proc_result.returncode != 0:
+                stderr = proc_result.stderr.strip() if proc_result.stderr else "unknown error"
+                result = _make_failed_result(
+                    "foldx_cli",
+                    f"FoldX RepairPDB exited with code {proc_result.returncode}: {stderr}",
+                    pdb_string=pdb_string, execution_time_s=timer.elapsed,
+                )
+                return pdb_string, result
+
+            # Read repaired PDB
+            repaired_path = os.path.join(tmpdir, "input_Repair.pdb")
+            if not os.path.exists(repaired_path):
+                # Try alternative names
+                for fname in os.listdir(tmpdir):
+                    if fname.endswith("_Repair.pdb"):
+                        repaired_path = os.path.join(tmpdir, fname)
+                        break
+
+            repaired_pdb = pdb_string  # fallback
+            if os.path.exists(repaired_path):
+                with open(repaired_path) as f:
+                    repaired_pdb = f.read()
+
+            # Parse stability of repaired structure if output available
+            parsed: dict = {
+                "protein": _extract_protein_from_pdb(repaired_pdb),
+                "pdb_string": repaired_pdb,
+                "stability_kcal": 0.0,
+                "ddg_kcal": None,
+                "interaction_energy": None,
+                "backbone_hbond": None,
+                "sidechain_hbond": None,
+                "van_der_waals": None,
+                "electrostatics": None,
+                "solvation": None,
+                "van_der_waals_clashes": None,
+                "entropy_sidechain": None,
+                "entropy_mainchain": None,
+                "torsional_clash": None,
+                "backbone_clash": None,
+                "helix_dipole": None,
+                "disulfide": None,
+                "electrostatic_kon": None,
+                "partial_covalent": None,
+                "energy_ionisation": None,
+                "execution_time_s": timer.elapsed,
+                "method": "foldx_cli",
+                "success": True,
+                "error": None,
+            }
+
+            # Look for repair output
             for fname in os.listdir(tmpdir):
-                if fname.endswith("_Repair.pdb"):
-                    repaired_path = os.path.join(tmpdir, fname)
+                if fname.endswith(".fxout"):
+                    fxout_data = _parse_stability_fxout(os.path.join(tmpdir, fname))
+                    for key in (
+                        "stability_kcal", "interaction_energy", "backbone_hbond",
+                        "sidechain_hbond", "van_der_waals", "electrostatics",
+                        "solvation", "van_der_waals_clashes", "entropy_sidechain",
+                        "entropy_mainchain", "torsional_clash", "backbone_clash",
+                        "helix_dipole", "disulfide", "electrostatic_kon",
+                        "partial_covalent", "energy_ionisation",
+                    ):
+                        if key in fxout_data:
+                            parsed[key] = fxout_data[key]
                     break
 
-        repaired_pdb = pdb_string  # fallback
-        if os.path.exists(repaired_path):
-            with open(repaired_path) as f:
-                repaired_pdb = f.read()
+            return repaired_pdb, FoldXResult(**parsed)
 
-        # Parse stability of repaired structure if output available
-        parsed: dict = {
-            "protein": _extract_protein_from_pdb(repaired_pdb),
-            "pdb_string": repaired_pdb,
-            "stability_kcal": 0.0,
-            "ddg_kcal": None,
-            "interaction_energy": None,
-            "backbone_hbond": None,
-            "sidechain_hbond": None,
-            "van_der_waals": None,
-            "electrostatics": None,
-            "solvation": None,
-            "van_der_waals_clashes": None,
-            "entropy_sidechain": None,
-            "entropy_mainchain": None,
-            "torsional_clash": None,
-            "backbone_clash": None,
-            "helix_dipole": None,
-            "disulfide": None,
-            "electrostatic_kon": None,
-            "partial_covalent": None,
-            "energy_ionisation": None,
-            "execution_time_s": elapsed,
-            "method": "foldx_cli",
-            "success": True,
-            "error": None,
-        }
-
-        # Look for repair output
-        for fname in os.listdir(tmpdir):
-            if fname.endswith(".fxout"):
-                fxout_data = _parse_stability_fxout(os.path.join(tmpdir, fname))
-                for key in (
-                    "stability_kcal", "interaction_energy", "backbone_hbond",
-                    "sidechain_hbond", "van_der_waals", "electrostatics",
-                    "solvation", "van_der_waals_clashes", "entropy_sidechain",
-                    "entropy_mainchain", "torsional_clash", "backbone_clash",
-                    "helix_dipole", "disulfide", "electrostatic_kon",
-                    "partial_covalent", "energy_ionisation",
-                ):
-                    if key in fxout_data:
-                        parsed[key] = fxout_data[key]
-                break
-
-        return repaired_pdb, FoldXResult(**parsed)
-
-    except subprocess.TimeoutExpired:
-        elapsed = time.time() - start_time
-        result = FoldXResult(
-            protein="",
-            pdb_string=pdb_string,
-            stability_kcal=0.0,
-            ddg_kcal=None,
-            interaction_energy=None,
-            backbone_hbond=None,
-            sidechain_hbond=None,
-            van_der_waals=None,
-            electrostatics=None,
-            solvation=None,
-            van_der_waals_clashes=None,
-            entropy_sidechain=None,
-            entropy_mainchain=None,
-            torsional_clash=None,
-            backbone_clash=None,
-            helix_dipole=None,
-            disulfide=None,
-            electrostatic_kon=None,
-            partial_covalent=None,
-            energy_ionisation=None,
-            execution_time_s=elapsed,
-            method="foldx_cli",
-            success=False,
-            error=f"FoldX RepairPDB timed out after {timeout}s",
-        )
-        return pdb_string, result
-    except Exception as exc:
-        elapsed = time.time() - start_time
-        result = FoldXResult(
-            protein="",
-            pdb_string=pdb_string,
-            stability_kcal=0.0,
-            ddg_kcal=None,
-            interaction_energy=None,
-            backbone_hbond=None,
-            sidechain_hbond=None,
-            van_der_waals=None,
-            electrostatics=None,
-            solvation=None,
-            van_der_waals_clashes=None,
-            entropy_sidechain=None,
-            entropy_mainchain=None,
-            torsional_clash=None,
-            backbone_clash=None,
-            helix_dipole=None,
-            disulfide=None,
-            electrostatic_kon=None,
-            partial_covalent=None,
-            energy_ionisation=None,
-            execution_time_s=elapsed,
-            method="foldx_cli",
-            success=False,
-            error=str(exc),
-        )
-        return pdb_string, result
-    finally:
-        _cleanup_tempdir(tmpdir)
+        except subprocess.TimeoutExpired:
+            result = _make_failed_result(
+                "foldx_cli", f"FoldX RepairPDB timed out after {timeout}s",
+                pdb_string=pdb_string, execution_time_s=timer.elapsed,
+            )
+            return pdb_string, result
+        except Exception as exc:
+            logger.error("FoldX RepairPDB failed: %s", exc)
+            result = _make_failed_result(
+                "foldx_cli", str(exc),
+                pdb_string=pdb_string, execution_time_s=timer.elapsed,
+            )
+            return pdb_string, result
+        finally:
+            _cleanup_tempdir(tmpdir)
 
 
 # ────────────────────────────────────────────────────────────
@@ -694,7 +622,7 @@ def run_foldx_mutation(
     pdb_string: str,
     mutations: list[str],
     foldx_dir: str | None = None,
-    timeout: float = 300.0,
+    timeout: float | None = None,
 ) -> list[MutationResult]:
     """Run FoldX BuildModel for point mutation ΔΔG analysis.
 
@@ -704,12 +632,16 @@ def run_foldx_mutation(
             (e.g., ``["A123G", "L45F"]`` — single-letter wildtype AA,
             1-indexed position, single-letter mutant AA).
         foldx_dir: Directory containing FoldX auxiliary files.
-        timeout: Maximum execution time in seconds.
+        timeout: Maximum execution time in seconds.  Falls back to
+            ``DEFAULT_ENGINE_TIMEOUT`` if not specified.
 
     Returns:
         List of MutationResult, one per mutation. If FoldX is
         unavailable, returns an empty list.
     """
+    if timeout is None:
+        timeout = DEFAULT_ENGINE_TIMEOUT
+
     if not is_foldx_available():
         logger.warning("FoldX CLI not available; cannot run mutation analysis")
         return []
@@ -717,91 +649,101 @@ def run_foldx_mutation(
     if not mutations:
         return []
 
-    start_time = time.time()
-    tmpdir = tempfile.mkdtemp(prefix="foldx_mutation_")
+    with EngineTimer() as timer:
+        tmpdir = tempfile.mkdtemp(prefix="foldx_mutation_")
 
-    try:
-        # Write PDB file
-        pdb_path = os.path.join(tmpdir, "input.pdb")
-        with open(pdb_path, "w") as f:
-            f.write(pdb_string)
+        try:
+            # Write PDB file
+            pdb_path = os.path.join(tmpdir, "input.pdb")
+            with open(pdb_path, "w") as f:
+                f.write(pdb_string)
 
-        # Write individual_list.txt (FoldX mutation file format)
-        # Format: A123G;  (one mutation per line, semicolon-terminated)
-        mutant_file = os.path.join(tmpdir, "individual_list.txt")
-        with open(mutant_file, "w") as f:
-            for mut in mutations:
-                f.write(f"{mut};\n")
+            # Write individual_list.txt (FoldX mutation file format)
+            # Format: A123G;  (one mutation per line, semicolon-terminated)
+            mutant_file = os.path.join(tmpdir, "individual_list.txt")
+            with open(mutant_file, "w") as f:
+                for mut in mutations:
+                    f.write(f"{mut};\n")
 
-        cmd = [
-            "foldx",
-            "--command=BuildModel",
-            "--pdb=input.pdb",
-            "--mutant-file=individual_list.txt",
-        ]
-        if foldx_dir:
-            cmd.append(f"--foldxDir={foldx_dir}")
+            cmd = [
+                "foldx",
+                "--command=BuildModel",
+                "--pdb=input.pdb",
+                "--mutant-file=individual_list.txt",
+            ]
+            if foldx_dir:
+                cmd.append(f"--foldxDir={foldx_dir}")
 
-        logger.info("Running FoldX BuildModel for %d mutations", len(mutations))
+            logger.info("Running FoldX BuildModel for %d mutations", len(mutations))
 
-        proc_result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=tmpdir,
-        )
-
-        elapsed = time.time() - start_time
-
-        if proc_result.returncode != 0:
-            logger.error(
-                "FoldX BuildModel failed (code %d): %s",
-                proc_result.returncode,
-                proc_result.stderr.strip() if proc_result.stderr else "unknown",
+            proc_result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=tmpdir,
             )
+
+            if proc_result.returncode != 0:
+                logger.error(
+                    "FoldX BuildModel failed (code %d): %s",
+                    proc_result.returncode,
+                    proc_result.stderr.strip() if proc_result.stderr else "unknown",
+                )
+                return []
+
+            # Parse ΔΔG output
+            results: list[MutationResult] = []
+            ddg_values = _parse_buildmodel_output(tmpdir)
+
+            for mut_str in mutations:
+                parsed = _parse_mutation_string(mut_str)
+                if parsed is None:
+                    continue
+                wt, pos_1idx, mt = parsed
+                pos_0idx = pos_1idx - 1  # convert to 0-indexed
+
+                ddg = ddg_values.get(mut_str, None)
+                if ddg is None:
+                    # Try looking up by position
+                    ddg = ddg_values.get(f"{wt}{pos_1idx}{mt}", 0.0)
+
+                if ddg is None:
+                    ddg = 0.0
+
+                is_stabilizing = ddg < _STABILIZING_THRESHOLD
+                is_neutral = _STABILIZING_THRESHOLD <= ddg <= _DESTABILIZING_THRESHOLD
+                is_destabilizing = ddg > _DESTABILIZING_THRESHOLD
+
+                results.append(MutationResult(
+                    position=pos_0idx,
+                    original=wt,
+                    mutant=mt,
+                    score=-ddg,  # higher = better improvement
+                    engine="foldx",
+                    description=(
+                        "Stabilizing" if is_stabilizing
+                        else "Destabilizing" if is_destabilizing
+                        else "Neutral"
+                    ) + " mutation",
+                    details={
+                        "ddg_kcal": ddg,
+                        "stabilizing": is_stabilizing,
+                        "neutral": is_neutral,
+                        "destabilizing": is_destabilizing,
+                    },
+                ))
+
+            return results
+
+        except subprocess.TimeoutExpired:
+            logger.error("FoldX BuildModel timed out after %ss", timeout)
             return []
-
-        # Parse ΔΔG output
-        results: list[MutationResult] = []
-        ddg_values = _parse_buildmodel_output(tmpdir)
-
-        for mut_str in mutations:
-            parsed = _parse_mutation_string(mut_str)
-            if parsed is None:
-                continue
-            wt, pos_1idx, mt = parsed
-            pos_0idx = pos_1idx - 1  # convert to 0-indexed
-
-            ddg = ddg_values.get(mut_str, None)
-            if ddg is None:
-                # Try looking up by position
-                ddg = ddg_values.get(f"{wt}{pos_1idx}{mt}", 0.0)
-
-            if ddg is None:
-                ddg = 0.0
-
-            results.append(MutationResult(
-                position=pos_0idx,
-                wildtype=wt,
-                mutant=mt,
-                ddg_kcal=ddg,
-                stabilizing=ddg < -0.5,
-                neutral=-0.5 <= ddg <= 0.5,
-                destabilizing=ddg > 0.5,
-                method="foldx_cli",
-            ))
-
-        return results
-
-    except subprocess.TimeoutExpired:
-        logger.error("FoldX BuildModel timed out after %ss", timeout)
-        return []
-    except Exception as exc:
-        logger.error("FoldX mutation analysis failed: %s", exc)
-        return []
-    finally:
-        _cleanup_tempdir(tmpdir)
+        except Exception as exc:
+            logger.error("FoldX mutation analysis failed: %s", exc)
+            return []
+        finally:
+            _cleanup_tempdir(tmpdir)
 
 
 # ────────────────────────────────────────────────────────────
@@ -837,167 +779,213 @@ def empirical_stability(protein: str) -> FoldXResult:
     Returns:
         FoldXResult with method="empirical".
     """
-    start_time = time.time()
+    # Validate input
+    try:
+        protein = validate_protein_sequence(protein, "FoldX")
+    except ValueError as e:
+        return _make_failed_result("empirical", str(e))
 
-    if not protein:
-        elapsed = time.time() - start_time
-        return FoldXResult(
-            protein="",
+    # Check cache
+    cached = _cache.get(protein, "empirical")
+    if cached is not None:
+        logger.info("Empirical stability: cache hit")
+        return cached
+
+    with EngineTimer() as timer:
+        seq = protein.upper()
+        n = len(seq)
+
+        # ── Heuristic a: Hydrophobic core quality ──
+        hydrophobic_count = sum(1 for aa in seq if aa in HYDROPHOBIC_AAS)
+        hydrophobic_frac = hydrophobic_count / n if n > 0 else 0.0
+        # Optimal range: 0.35–0.45; deviations penalized
+        if 0.35 <= hydrophobic_frac <= 0.45:
+            hydro_score = 0.0
+        else:
+            # Quadratic penalty for deviation from optimal range
+            if hydrophobic_frac < 0.35:
+                deviation = 0.35 - hydrophobic_frac
+            else:
+                deviation = hydrophobic_frac - 0.45
+            hydro_score = deviation * 20.0  # kcal/mol penalty
+
+        # ── Heuristic b: Charge balance ──
+        pos_count = sum(1 for aa in seq if aa in POSITIVE_AAS)
+        neg_count = sum(1 for aa in seq if aa in NEGATIVE_AAS)
+        total_charged = pos_count + neg_count
+        if total_charged > 0:
+            charge_ratio = min(pos_count, neg_count) / max(pos_count, neg_count)
+        else:
+            charge_ratio = 0.0
+        # Ideal ratio is 1.0; deviation is destabilizing
+        charge_score = (1.0 - charge_ratio) * 3.0  # up to 3 kcal/mol penalty
+
+        # ── Heuristic c: Proline content ──
+        proline_count = sum(1 for aa in seq if aa == "P")
+        proline_frac = proline_count / n if n > 0 else 0.0
+        if proline_frac <= 0.05:
+            pro_score = -0.2  # slight stabilizing effect of moderate proline
+        elif proline_frac <= 0.08:
+            pro_score = 0.0   # neutral
+        else:
+            pro_score = (proline_frac - 0.08) * 15.0  # destabilizing above 8%
+
+        # ── Heuristic d: Glycine content ──
+        glycine_count = sum(1 for aa in seq if aa == "G")
+        glycine_frac = glycine_count / n if n > 0 else 0.0
+        if glycine_frac <= 0.07:
+            gly_score = 0.0
+        else:
+            gly_score = (glycine_frac - 0.07) * 10.0  # destabilizing above 7%
+
+        # ── Heuristic e: Cysteine pairs (disulfide bonds) ──
+        cys_count = sum(1 for aa in seq if aa == "C")
+        if cys_count >= 2 and cys_count % 2 == 0:
+            disulfide_count = cys_count // 2
+            disulfide_score = -disulfide_count * 2.0  # each disulfide ~ -2 kcal/mol
+        elif cys_count >= 2:
+            # Odd number of cysteines — one unpaired, partial stabilization
+            disulfide_score = -((cys_count - 1) // 2) * 2.0 + 0.5
+        else:
+            disulfide_score = 0.0
+
+        # ── Heuristic f: Charged-hydrophobic pattern (helix indicator) ──
+        # Alternating charged/hydrophobic residues suggest helical content
+        pattern_score = 0.0
+        if n >= 4:
+            alternations = 0
+            for i in range(n - 1):
+                is_charged_i = seq[i] in POSITIVE_AAS or seq[i] in NEGATIVE_AAS
+                is_hydro_i = seq[i] in HYDROPHOBIC_AAS
+                is_charged_j = seq[i + 1] in POSITIVE_AAS or seq[i + 1] in NEGATIVE_AAS
+                is_hydro_j = seq[i + 1] in HYDROPHOBIC_AAS
+                if (is_charged_i and is_hydro_j) or (is_hydro_i and is_charged_j):
+                    alternations += 1
+            alt_frac = alternations / (n - 1) if n > 1 else 0.0
+            # Moderate alternation (0.2–0.35) suggests good helix content
+            if 0.2 <= alt_frac <= 0.35:
+                pattern_score = -0.5
+            elif alt_frac > 0.35:
+                pattern_score = (alt_frac - 0.35) * 3.0  # too much is bad
+
+        # ── Heuristic g: Sequence length ──
+        # Longer proteins have more intramolecular contacts → more stable
+        # Base stability increases logarithmically with length
+        length_bonus = -2.0 * (1.0 - 1.0 / (1.0 + n / 100.0))
+
+        # ── Combine into estimated ΔG ──
+        # Typical globular protein: -5 to -15 kcal/mol
+        stability_kcal = (
+            -5.0            # base stability for a folded protein
+            + hydro_score   # positive = destabilizing
+            + charge_score  # positive = destabilizing
+            + pro_score     # can be stabilizing or destabilizing
+            + gly_score     # positive = destabilizing
+            + disulfide_score  # negative = stabilizing
+            + pattern_score    # can be stabilizing or destabilizing
+            + length_bonus     # negative = stabilizing for longer proteins
+        )
+
+        # Compute sub-component estimates for the result
+        # Approximate decomposition of the total into FoldX-like terms
+        vdw_est = hydrophobic_frac * n * -0.3  # hydrophobic packing ≈ VdW
+        hbond_est = -(hydrophobic_count + pos_count + neg_count) * 0.1
+        elec_est = -charge_ratio * 1.5 if total_charged > 0 else 0.0
+        solv_est = -hydrophobic_frac * 2.0  # burial of hydrophobic surface
+        sc_entropy_est = glycine_frac * n * 0.05  # glycine increases entropy
+
+        result = FoldXResult(
+            protein=protein,
             pdb_string=None,
-            stability_kcal=0.0,
+            stability_kcal=round(stability_kcal, 2),
             ddg_kcal=None,
             interaction_energy=None,
-            backbone_hbond=None,
-            sidechain_hbond=None,
-            van_der_waals=None,
-            electrostatics=None,
-            solvation=None,
+            backbone_hbond=round(hbond_est, 2),
+            sidechain_hbond=round(hbond_est * 0.6, 2),
+            van_der_waals=round(vdw_est, 2),
+            electrostatics=round(elec_est, 2),
+            solvation=round(solv_est, 2),
             van_der_waals_clashes=None,
-            entropy_sidechain=None,
-            entropy_mainchain=None,
+            entropy_sidechain=round(sc_entropy_est, 2),
+            entropy_mainchain=round(glycine_frac * n * 0.02, 2),
             torsional_clash=None,
             backbone_clash=None,
             helix_dipole=None,
-            disulfide=None,
+            disulfide=round(disulfide_score, 2),
             electrostatic_kon=None,
             partial_covalent=None,
             energy_ionisation=None,
-            execution_time_s=elapsed,
+            execution_time_s=round(timer.elapsed, 4),
             method="empirical",
-            success=False,
-            error="Empty protein sequence",
+            success=True,
+            error=None,
         )
 
-    seq = protein.upper()
-    n = len(seq)
+        _cache.put(protein, "empirical", result)
+        logger.info("Empirical stability computed for protein of length %d: %.2f kcal/mol", n, stability_kcal)
+        return result
 
-    # ── Heuristic a: Hydrophobic core quality ──
-    hydrophobic_count = sum(1 for aa in seq if aa in HYDROPHOBIC_AAS)
-    hydrophobic_frac = hydrophobic_count / n if n > 0 else 0.0
-    # Optimal range: 0.35–0.45; deviations penalized
-    if 0.35 <= hydrophobic_frac <= 0.45:
-        hydro_score = 0.0
-    else:
-        # Quadratic penalty for deviation from optimal range
-        if hydrophobic_frac < 0.35:
-            deviation = 0.35 - hydrophobic_frac
-        else:
-            deviation = hydrophobic_frac - 0.45
-        hydro_score = deviation * 20.0  # kcal/mol penalty
 
-    # ── Heuristic b: Charge balance ──
-    pos_count = sum(1 for aa in seq if aa in POSITIVE_AAS)
-    neg_count = sum(1 for aa in seq if aa in NEGATIVE_AAS)
-    total_charged = pos_count + neg_count
-    if total_charged > 0:
-        charge_ratio = min(pos_count, neg_count) / max(pos_count, neg_count)
-    else:
-        charge_ratio = 0.0
-    # Ideal ratio is 1.0; deviation is destabilizing
-    charge_score = (1.0 - charge_ratio) * 3.0  # up to 3 kcal/mol penalty
+# ────────────────────────────────────────────────────────────
+# Batch API
+# ────────────────────────────────────────────────────────────
 
-    # ── Heuristic c: Proline content ──
-    proline_count = sum(1 for aa in seq if aa == "P")
-    proline_frac = proline_count / n if n > 0 else 0.0
-    if proline_frac <= 0.05:
-        pro_score = -0.2  # slight stabilizing effect of moderate proline
-    elif proline_frac <= 0.08:
-        pro_score = 0.0   # neutral
-    else:
-        pro_score = (proline_frac - 0.08) * 15.0  # destabilizing above 8%
+def run_stability_batch(
+    sequences: list[str],
+    max_workers: int | None = None,
+    batch_size: int | None = None,
+    **kwargs,
+) -> list[FoldXResult]:
+    """Run empirical stability analysis on multiple sequences in parallel.
 
-    # ── Heuristic d: Glycine content ──
-    glycine_count = sum(1 for aa in seq if aa == "G")
-    glycine_frac = glycine_count / n if n > 0 else 0.0
-    if glycine_frac <= 0.07:
-        gly_score = 0.0
-    else:
-        gly_score = (glycine_frac - 0.07) * 10.0  # destabilizing above 7%
+    Uses ``concurrent.futures.ThreadPoolExecutor`` to process sequences
+    concurrently.  Each sequence is analysed with :func:`empirical_stability`.
 
-    # ── Heuristic e: Cysteine pairs (disulfide bonds) ──
-    cys_count = sum(1 for aa in seq if aa == "C")
-    if cys_count >= 2 and cys_count % 2 == 0:
-        disulfide_count = cys_count // 2
-        disulfide_score = -disulfide_count * 2.0  # each disulfide ~ -2 kcal/mol
-    elif cys_count >= 2:
-        # Odd number of cysteines — one unpaired, partial stabilization
-        disulfide_score = -((cys_count - 1) // 2) * 2.0 + 0.5
-    else:
-        disulfide_score = 0.0
+    Args:
+        sequences: List of protein sequences to analyse.
+        max_workers: Maximum number of worker threads.  Defaults to
+            ``DEFAULT_BATCH_SIZE``.
+        batch_size: Alias for *max_workers* (kept for API compatibility).
+            If both are given, *max_workers* takes precedence.
+        **kwargs: Additional keyword arguments forwarded to
+            :func:`empirical_stability`.
 
-    # ── Heuristic f: Charged-hydrophobic pattern (helix indicator) ──
-    # Alternating charged/hydrophobic residues suggest helical content
-    pattern_score = 0.0
-    if n >= 4:
-        alternations = 0
-        for i in range(n - 1):
-            is_charged_i = seq[i] in POSITIVE_AAS or seq[i] in NEGATIVE_AAS
-            is_hydro_i = seq[i] in HYDROPHOBIC_AAS
-            is_charged_j = seq[i + 1] in POSITIVE_AAS or seq[i + 1] in NEGATIVE_AAS
-            is_hydro_j = seq[i + 1] in HYDROPHOBIC_AAS
-            if (is_charged_i and is_hydro_j) or (is_hydro_i and is_charged_j):
-                alternations += 1
-        alt_frac = alternations / (n - 1) if n > 1 else 0.0
-        # Moderate alternation (0.2–0.35) suggests good helix content
-        if 0.2 <= alt_frac <= 0.35:
-            pattern_score = -0.5
-        elif alt_frac > 0.35:
-            pattern_score = (alt_frac - 0.35) * 3.0  # too much is bad
+    Returns:
+        List of :class:`FoldXResult` objects, one per input sequence,
+        in the same order as *sequences*.
+    """
+    if batch_size is None:
+        batch_size = DEFAULT_BATCH_SIZE
+    if max_workers is None:
+        max_workers = batch_size
 
-    # ── Heuristic g: Sequence length ──
-    # Longer proteins have more intramolecular contacts → more stable
-    # Base stability increases logarithmically with length
-    length_bonus = -2.0 * (1.0 - 1.0 / (1.0 + n / 100.0))
+    logger.info("Running stability batch for %d sequences (workers=%d)", len(sequences), max_workers)
 
-    # ── Combine into estimated ΔG ──
-    # Typical globular protein: -5 to -15 kcal/mol
-    stability_kcal = (
-        -5.0            # base stability for a folded protein
-        + hydro_score   # positive = destabilizing
-        + charge_score  # positive = destabilizing
-        + pro_score     # can be stabilizing or destabilizing
-        + gly_score     # positive = destabilizing
-        + disulfide_score  # negative = stabilizing
-        + pattern_score    # can be stabilizing or destabilizing
-        + length_bonus     # negative = stabilizing for longer proteins
+    results: list[FoldXResult] = [None] * len(sequences)  # type: ignore[list-item]
+
+    def _process(index: int, seq: str) -> tuple[int, FoldXResult]:
+        return index, empirical_stability(seq, **kwargs)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_process, i, seq): i
+            for i, seq in enumerate(sequences)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            idx, result = future.result()
+            results[idx] = result
+
+    # Replace any None entries with failed results (shouldn't happen, but safety)
+    for i, r in enumerate(results):
+        if r is None:
+            results[i] = _make_failed_result("empirical", "Batch processing error")
+
+    logger.info(
+        "Stability batch complete: %d/%d succeeded",
+        sum(1 for r in results if r.success),
+        len(results),
     )
-
-    # Compute sub-component estimates for the result
-    # Approximate decomposition of the total into FoldX-like terms
-    vdw_est = hydrophobic_frac * n * -0.3  # hydrophobic packing ≈ VdW
-    hbond_est = -(hydrophobic_count + pos_count + neg_count) * 0.1
-    elec_est = -charge_ratio * 1.5 if total_charged > 0 else 0.0
-    solv_est = -hydrophobic_frac * 2.0  # burial of hydrophobic surface
-    sc_entropy_est = glycine_frac * n * 0.05  # glycine increases entropy
-
-    elapsed = time.time() - start_time
-
-    return FoldXResult(
-        protein=protein,
-        pdb_string=None,
-        stability_kcal=round(stability_kcal, 2),
-        ddg_kcal=None,
-        interaction_energy=None,
-        backbone_hbond=round(hbond_est, 2),
-        sidechain_hbond=round(hbond_est * 0.6, 2),
-        van_der_waals=round(vdw_est, 2),
-        electrostatics=round(elec_est, 2),
-        solvation=round(solv_est, 2),
-        van_der_waals_clashes=None,
-        entropy_sidechain=round(sc_entropy_est, 2),
-        entropy_mainchain=round(glycine_frac * n * 0.02, 2),
-        torsional_clash=None,
-        backbone_clash=None,
-        helix_dipole=None,
-        disulfide=round(disulfide_score, 2),
-        electrostatic_kon=None,
-        partial_covalent=None,
-        energy_ionisation=None,
-        execution_time_s=round(elapsed, 4),
-        method="empirical",
-        success=True,
-        error=None,
-    )
+    return results
 
 
 # ────────────────────────────────────────────────────────────
@@ -1024,9 +1012,14 @@ def scan_mutations(
             scans all positions.
 
     Returns:
-        List of MutationResult sorted by ΔΔG (most stabilizing first).
+        List of MutationResult sorted by score descending
+        (most stabilizing first).
     """
-    if not protein:
+    # Validate input
+    try:
+        protein = validate_protein_sequence(protein, "FoldX")
+    except ValueError as e:
+        logger.error("scan_mutations validation failed: %s", e)
         return []
 
     seq = protein.upper()
@@ -1056,10 +1049,12 @@ def scan_mutations(
 
         foldx_results = run_foldx_mutation(pdb_string, mutation_strings)
         if foldx_results:
-            foldx_results.sort(key=lambda r: r.ddg_kcal)
+            logger.info("FoldX mutation scan returned %d results", len(foldx_results))
+            foldx_results.sort(key=lambda r: r.score, reverse=True)
             return foldx_results
 
     # Fall back to empirical scoring
+    logger.info("Using empirical scoring for mutation scan")
     return _empirical_mutation_scan(seq, positions)
 
 
@@ -1084,7 +1079,10 @@ def find_stabilizing_mutations(
         (most stabilizing first).
     """
     all_mutations = scan_mutations(protein, pdb_string)
-    return [m for m in all_mutations if m.ddg_kcal < ddg_threshold]
+    return [
+        m for m in all_mutations
+        if m.details.get("ddg_kcal", -m.score) < ddg_threshold
+    ]
 
 
 # ────────────────────────────────────────────────────────────
@@ -1127,6 +1125,8 @@ def scan_all_mutations(
             "FoldX backend not available; falling back to empirical estimation"
         )
         effective_method = "empirical"
+
+    logger.info("Scanning all mutations for protein of length %d", len(protein))
 
     mutations: list[dict] = []
     positions_scanned: list[int] = []
@@ -1616,7 +1616,7 @@ def _extract_protein_from_pdb(pdb_string: str) -> str:
         "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
     }
 
-    residues: dict[int, str] = []
+    residues: list[tuple[int, str]] = []
 
     for line in pdb_string.splitlines():
         if not line.startswith("ATOM"):
@@ -1686,7 +1686,8 @@ def _empirical_mutation_scan(
         positions: 0-indexed positions to scan.
 
     Returns:
-        List of MutationResult sorted by ΔΔG (most stabilizing first).
+        List of MutationResult sorted by score descending
+        (most stabilizing first).
     """
     n = len(protein)
     results: list[MutationResult] = []
@@ -1711,18 +1712,30 @@ def _empirical_mutation_scan(
                 continue
 
             ddg = _estimate_ddg(wt, mt, is_core, pos, n)
+            is_stabilizing = ddg < _STABILIZING_THRESHOLD
+            is_neutral = _STABILIZING_THRESHOLD <= ddg <= _DESTABILIZING_THRESHOLD
+            is_destabilizing = ddg > _DESTABILIZING_THRESHOLD
+
             results.append(MutationResult(
                 position=pos,
-                wildtype=wt,
+                original=wt,
                 mutant=mt,
-                ddg_kcal=round(ddg, 2),
-                stabilizing=ddg < -0.5,
-                neutral=-0.5 <= ddg <= 0.5,
-                destabilizing=ddg > 0.5,
-                method="empirical",
+                score=-round(ddg, 2),  # higher = better improvement
+                engine="foldx",
+                description=(
+                    "Stabilizing" if is_stabilizing
+                    else "Destabilizing" if is_destabilizing
+                    else "Neutral"
+                ) + " mutation",
+                details={
+                    "ddg_kcal": round(ddg, 2),
+                    "stabilizing": is_stabilizing,
+                    "neutral": is_neutral,
+                    "destabilizing": is_destabilizing,
+                },
             ))
 
-    results.sort(key=lambda r: r.ddg_kcal)
+    results.sort(key=lambda r: r.score, reverse=True)
     return results
 
 
@@ -1851,4 +1864,4 @@ def _cleanup_tempdir(tmpdir: str) -> None:
                 pass
         os.rmdir(tmpdir)
     except OSError:
-        logger.debug("Could not clean up temp directory: %s", tmpdir)
+        logger.warning("Could not clean up temp directory: %s", tmpdir)

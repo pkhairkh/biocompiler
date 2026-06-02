@@ -8,12 +8,12 @@
 
 ## Context
 
-Phase 7 (cryptic splice elimination) was failing on ~80% of genes because it didn't
+The cryptic splice elimination step was failing on ~80% of genes because it didn't
 prioritize GT-free codons for amino acids that have them. Valine is the ONLY amino
 acid whose ALL codons contain GT. For C, G, R, S, GT-free alternatives exist and
 should be tried first (guaranteed to eliminate the GT dinucleotide).
 
-The previous implementation of Phase 7 attempted codon swaps without considering
+The previous implementation of the cryptic splice elimination step attempted codon swaps without considering
 whether GT-free alternatives existed for a given amino acid. This meant that the
 optimizer would often cycle through all synonymous codons for Cysteine (TGC, TGT),
 both of which contain GT, when it could have simply chosen a GT-free codon — except
@@ -31,7 +31,7 @@ is guaranteed to eliminate the cryptic donor.
 
 ## Decision
 
-Rewrite Phase 7 with a 3-strategy approach:
+Rewrite the cryptic splice elimination step with a 3-strategy approach:
 
 1. **GT-free codon swap** (highest priority): For amino acids with GT-free alternatives,
    swap to the highest-CAI GT-free codon. This GUARANTEES elimination of the GT
@@ -70,7 +70,7 @@ acid where all codons contain GT).
   enabling the mutagenesis engine to act only on truly necessary positions.
 - **Negative**: Context disruption for Valine is best-effort and may not always
   reduce the MaxEntScan score below threshold. These positions require mutagenesis.
-- **Negative**: The 3-strategy approach adds complexity to Phase 7, but the
+- **Negative**: The 3-strategy approach adds complexity to the cryptic splice elimination step, but the
   improvement in pass rate justifies it.
 
 ## References

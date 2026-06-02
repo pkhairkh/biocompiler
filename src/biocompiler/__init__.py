@@ -9,7 +9,7 @@ representations. Pipeline:
 All computation is DETERMINISTIC: same input always produces identical output.
 """
 
-__version__ = "7.4.0"
+__version__ = "7.5.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -29,8 +29,16 @@ from .types import (
     three_valued_or,
     combined_verdict,
 )
+
+# Note: three_valued_and/three_valued_or are kept for backward compatibility.
+# For the full 5-valued logic, use five_valued_and/five_valued_or from .types.
 from .exceptions import (
     BioCompilerError,
+    EngineError,
+    ESMFoldError,
+    FoldXError,
+    CamSolError,
+    ImmunogenicityError,
     InvalidSequenceError,
     CertificateGenerationError,
     CertificateVerificationError,
@@ -47,7 +55,12 @@ from .exceptions import (
 # Canonical biological constants
 # ═══════════════════════════════════════════════════════════════════════
 
-from .constants import BLOSUM62, HYDROPATHY, HYDROPHOBIC_AAS, STANDARD_AAS
+from .constants import (
+    BLOSUM62, HYDROPATHY, HYDROPHOBIC_AAS, STANDARD_AAS,
+    DEFAULT_ENGINE_TIMEOUT, DEFAULT_BATCH_SIZE,
+    DEFAULT_SOLUBILITY_WINDOW, DEFAULT_SOLUBILITY_SMOOTHING,
+    DEFAULT_MHC_PEPTIDE_LENGTH,
+)
 
 # ═══════════════════════════════════════════════════════════════════════
 # Pipeline: Scanner → Splicing → Translation → Type Check
@@ -239,6 +252,8 @@ try:
         compute_structural_solubility,
         classify_solubility, find_solubility_mutations,
         generate_solubility_recommendations,
+        compute_solubility_batch,
+        clear_cache as camsol_clear_cache,
         SolubilityResult,
         CAMSOL_HYDROPATHY, CAMSOL_CHARGE, CAMSOL_ALPHA_HELIX,
         CAMSOL_BETA_STRAND,
@@ -283,16 +298,16 @@ try:
         predict_t_cell_epitopes, predict_b_cell_epitopes,
         compute_surface_accessibility_approx,
         compute_immunogenicity, find_deimmunization_mutations,
-        MHC_I_PREFERENCES, MHC_II_PREFERENCES,
-        ANTIGENICITY_PROPENSITY,
-        # MHC binding (merged from mhc_binding.py)
+        compute_immunogenicity_batch,
+        clear_cache as immunogenicity_clear_cache,
+        # MHC binding
         MHCBindingResult, MHCPredictionResult,
         predict_mhc_i_binding, predict_mhc_ii_binding,
         score_peptide_pssm, binding_score_to_ic50, classify_binding,
         predict_all as predict_mhc_binding,
         MHC_I_PSSM, MHC_II_PSSM, POPULATION_COVERAGE,
         DEFAULT_MHC_I_ALLELES, DEFAULT_MHC_II_ALLELES,
-        # B-cell epitope (merged from epitope.py)
+        # B-cell epitope
         EpitopeRegion, EpitopePredictionResult,
         predict_kolaskar_tongaonkar, predict_parker_hydrophilicity,
         predict_chou_fasman_beta_turn, predict_eea,
@@ -303,6 +318,11 @@ try:
     )
 except ImportError:
     pass
+
+# Deprecated aliases removed in v7.5.0:
+# MHC_I_PREFERENCES → use MHC_I_PSSM
+# MHC_II_PREFERENCES → use MHC_II_PSSM
+# ANTIGENICITY_PROPENSITY → use ANTIGENICITY_SCALE
 
 # ═══════════════════════════════════════════════════════════════════════
 # Deimmunization
@@ -357,14 +377,28 @@ except ImportError:
 
 try:
     from .foldx import (
-        FoldXResult, MutationResult, FoldXError,
+        FoldXResult, FoldXError, FoldXCache,
         StabilityLandscape, ConservationScore,
         is_foldx_available, run_foldx_stability, run_foldx_repair,
         run_foldx_mutation, empirical_stability,
+        run_stability_batch,
+        clear_cache as foldx_clear_cache,
         scan_mutations, find_stabilizing_mutations,
         scan_all_mutations, scan_position, compute_conservation,
         find_compensatory_mutations, rank_positions_by_mutability,
         identify_hotspot_regions,
+    )
+except ImportError:
+    pass
+
+# ═══════════════════════════════════════════════════════════════════════
+# Engine base — unified types for all analysis engines
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .engine_base import (
+        EngineResult, MutationResult, BatchResult,
+        EngineTimer, validate_protein_sequence,
     )
 except ImportError:
     pass
@@ -398,7 +432,9 @@ __all__ = [
     "three_valued_and", "three_valued_or", "combined_verdict",
 
     # ── Exceptions ───────────────────────────────────────────
-    "BioCompilerError", "InvalidSequenceError",
+    "BioCompilerError", "EngineError",
+    "ESMFoldError", "FoldXError", "CamSolError", "ImmunogenicityError",
+    "InvalidSequenceError",
     "CertificateGenerationError", "CertificateVerificationError",
     "UnknownPredicateError", "OptimizationError",
     "UnsupportedOrganismError", "InvalidProteinError",
@@ -406,6 +442,9 @@ __all__ = [
 
     # ── Canonical constants ──────────────────────────────────
     "BLOSUM62", "HYDROPATHY", "HYDROPHOBIC_AAS", "STANDARD_AAS",
+    "DEFAULT_ENGINE_TIMEOUT", "DEFAULT_BATCH_SIZE",
+    "DEFAULT_SOLUBILITY_WINDOW", "DEFAULT_SOLUBILITY_SMOOTHING",
+    "DEFAULT_MHC_PEPTIDE_LENGTH",
 
     # ── Scanner ──────────────────────────────────────────────
     "validate_dna_sequence", "gc_content", "scan_sequence",
@@ -482,11 +521,16 @@ __all__ = [
     "find_unrepairable_cryptic_acceptors", "propose_substitutions",
     "apply_substitution",
 
+    # ── Engine base types ────────────────────────────────────
+    "EngineResult", "MutationResult", "BatchResult",
+    "EngineTimer", "validate_protein_sequence",
+
     # ── Solubility ───────────────────────────────────────────
     "compute_intrinsic_solubility", "compute_solubility",
     "compute_structural_solubility",
     "classify_solubility", "find_solubility_mutations",
     "generate_solubility_recommendations",
+    "compute_solubility_batch", "camsol_clear_cache",
     "SolubilityResult",
     "CAMSOL_HYDROPATHY", "CAMSOL_CHARGE", "CAMSOL_ALPHA_HELIX",
     "CAMSOL_BETA_STRAND",
@@ -509,8 +553,7 @@ __all__ = [
     "predict_t_cell_epitopes", "predict_b_cell_epitopes",
     "compute_surface_accessibility_approx",
     "compute_immunogenicity", "find_deimmunization_mutations",
-    "MHC_I_PREFERENCES", "MHC_II_PREFERENCES",
-    "ANTIGENICITY_PROPENSITY",
+    "compute_immunogenicity_batch", "immunogenicity_clear_cache",
     "MHCBindingResult", "MHCPredictionResult",
     "predict_mhc_i_binding", "predict_mhc_ii_binding",
     "score_peptide_pssm", "binding_score_to_ic50", "classify_binding",
@@ -554,10 +597,11 @@ __all__ = [
     "plot_plddt_bar_svg", "plot_solubility_profile_svg",
 
     # ── FoldX stability ──────────────────────────────────────
-    "FoldXResult", "MutationResult", "FoldXError",
+    "FoldXResult", "FoldXError", "FoldXCache",
     "StabilityLandscape", "ConservationScore",
     "is_foldx_available", "run_foldx_stability", "run_foldx_repair",
     "run_foldx_mutation", "empirical_stability",
+    "run_stability_batch", "foldx_clear_cache",
     "scan_mutations", "find_stabilizing_mutations",
     "scan_all_mutations", "scan_position", "compute_conservation",
     "find_compensatory_mutations", "rank_positions_by_mutability",
