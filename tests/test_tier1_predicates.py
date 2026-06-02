@@ -88,13 +88,17 @@ class TestFiveValuedVerdict:
         assert three_valued_and is five_valued_and
         assert three_valued_or is five_valued_or
 
-    def test_12_predicates(self):
-        """There should be 12 predicate names."""
-        assert len(PREDICATE_NAMES) == 12
+    def test_28_predicates(self):
+        """There should be 28 predicate names (12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity)."""
+        assert len(PREDICATE_NAMES) == 28
         assert "NoCrypticPromoter" in PREDICATE_NAMES
         assert "NoUnexpectedTMDomain" in PREDICATE_NAMES
         assert "mRNASecondaryStructure" in PREDICATE_NAMES
         assert "CoTranslationalFolding" in PREDICATE_NAMES
+        assert "StructureConfidence" in PREDICATE_NAMES
+        assert "StableFolding" in PREDICATE_NAMES
+        assert "SolubleExpression" in PREDICATE_NAMES
+        assert "LowImmunogenicity" in PREDICATE_NAMES
 
 
 # ==============================================================================

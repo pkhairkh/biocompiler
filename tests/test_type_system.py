@@ -144,10 +144,10 @@ class TestCheckNoAvoidableGT:
 
 
 class TestPredicateNames:
-    """Test that all 8 predicate names are defined."""
+    """Test that all predicate names are defined."""
 
-    def test_eight_predicates(self):
-        assert len(PREDICATE_NAMES) == 12
+    def test_28_predicates(self):
+        assert len(PREDICATE_NAMES) == 28
         assert "NoStopCodons" in PREDICATE_NAMES
         assert "NoCrypticSplice" in PREDICATE_NAMES
         assert "NoCpGIsland" in PREDICATE_NAMES

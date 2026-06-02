@@ -692,10 +692,12 @@ class TestDualThresholdNoCrypticSplice:
         result = evaluate_no_cryptic_splice(hbb, boundaries, cryptic_threshold=3.0, uncertain_lo=1.5)
         assert result.verdict == Verdict.FAIL
 
-    def test_eight_predicates_in_registry(self):
-        """Exactly 8 predicates should be registered in the predicate registry."""
-        assert len(predicate_registry.names()) == 12
+    def test_predicates_in_registry(self):
+        """28 predicates should be registered in the predicate registry."""
+        assert len(predicate_registry.names()) == 28
         assert "NoCpGIsland" in predicate_registry.names()
+        assert "StableFolding" in predicate_registry.names()
+        assert "SolubleExpression" in predicate_registry.names()
 
 
 # ==============================================================================

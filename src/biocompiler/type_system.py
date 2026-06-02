@@ -1,8 +1,9 @@
 """
-BioCompiler Type System v7.0.0
+BioCompiler Type System v7.3.0
 ==============================
-Defines the core types, codon tables, BLOSUM62 matrix, and 12 predicate classes
-for certified gene optimization.
+Defines the core types, codon tables, BLOSUM62 matrix, and 28 predicate classes
+for certified gene optimization: 12 DNA-level + 4 structure + 4 stability +
+4 solubility + 4 immunogenicity.
 """
 
 from dataclasses import dataclass, field
@@ -136,6 +137,26 @@ PREDICATE_NAMES = [
     "NoUnexpectedTMDomain",   # 10 — unexpected transmembrane domain detection
     "mRNASecondaryStructure", # 11 — mRNA secondary structure around RBS
     "CoTranslationalFolding", # 12 — co-translational folding pause-site preservation
+    # Phase 2: Structure predicates
+    "StructureConfidence",    # 13 — ESMFold structure quality confidence
+    "NoMisfoldingRisk",       # 14 — misfolding risk indicators
+    "CorrectFoldTopology",    # 15 — fold topology validation
+    "NoUnexpectedInteraction",# 16 — unwanted protein-protein interactions
+    # Phase 3: Stability predicates
+    "StableFolding",          # 17 — thermodynamic stability (ΔG)
+    "NoDestabilizingMutation",# 18 — no high-ΔΔG mutations
+    "DisulfideBondIntegrity", # 19 — cysteine pairing check
+    "HydrophobicCoreQuality", # 20 — hydrophobic core composition
+    # Phase 3: Solubility predicates
+    "SolubleExpression",      # 21 — CamSol solubility score
+    "NoAggregationProneRegion",#22 — aggregation-prone region detection
+    "ChargeComposition",      # 23 — charge balance and pI
+    "NoLongHydrophobicStretch",#24 — long hydrophobic stretch detection
+    # Phase 3: Immunogenicity predicates
+    "LowImmunogenicity",      # 25 — overall immunogenicity score
+    "NoStrongTCellEpitope",   # 26 — MHC binding epitope detection
+    "NoDominantBCellEpitope", # 27 — B-cell epitope coverage
+    "PopulationCoverageSafe", # 28 — MHC allele population coverage
 ]
 
 
@@ -2197,5 +2218,204 @@ registry.register(
         "window_start": "window_start",
         "window_end": "window_end",
         "dg_threshold": "dg_threshold",
+    },
+)
+
+# ────────────────────────────────────────────────────────────
+# Phase 2+3: Protein-level predicates (stability, solubility,
+# immunogenicity, structure)
+# ────────────────────────────────────────────────────────────
+from .stability_predicates import (
+    evaluate_stable_folding,
+    evaluate_no_destabilizing_mutation,
+    evaluate_disulfide_bond_integrity,
+    evaluate_hydrophobic_core_quality,
+)
+from .solubility_predicates import (
+    evaluate_soluble_expression,
+    evaluate_no_aggregation_prone_region,
+    evaluate_charge_composition,
+    evaluate_no_long_hydrophobic_stretch,
+)
+from .immuno_predicates import (
+    evaluate_low_immunogenicity,
+    evaluate_no_strong_t_cell_epitope,
+    evaluate_no_dominant_b_cell_epitope,
+    evaluate_population_coverage_safe,
+)
+from .structure_predicates import (
+    evaluate_structure_confidence,
+    evaluate_no_misfolding_risk,
+    evaluate_correct_fold_topology,
+    evaluate_no_unexpected_interaction,
+)
+
+# Phase 2: Structure predicates
+registry.register(
+    "StructureConfidence",
+    evaluate_structure_confidence,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "NoMisfoldingRisk",
+    evaluate_no_misfolding_risk,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "CorrectFoldTopology",
+    evaluate_correct_fold_topology,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "NoUnexpectedInteraction",
+    evaluate_no_unexpected_interaction,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+
+# Phase 3: Stability predicates
+registry.register(
+    "StableFolding",
+    evaluate_stable_folding,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "stability_threshold": "stability_threshold",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "NoDestabilizingMutation",
+    evaluate_no_destabilizing_mutation,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "max_ddg": "max_ddg",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "DisulfideBondIntegrity",
+    evaluate_disulfide_bond_integrity,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "HydrophobicCoreQuality",
+    evaluate_hydrophobic_core_quality,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+
+# Phase 3: Solubility predicates
+registry.register(
+    "SolubleExpression",
+    evaluate_soluble_expression,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "min_solubility_score": "min_solubility_score",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "NoAggregationProneRegion",
+    evaluate_no_aggregation_prone_region,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "ChargeComposition",
+    evaluate_charge_composition,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+registry.register(
+    "NoLongHydrophobicStretch",
+    evaluate_no_long_hydrophobic_stretch,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "pdb_string": "pdb_string",
+    },
+)
+
+# Phase 3: Immunogenicity predicates
+registry.register(
+    "LowImmunogenicity",
+    evaluate_low_immunogenicity,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "max_immunogenicity_score": "max_immunogenicity_score",
+    },
+)
+registry.register(
+    "NoStrongTCellEpitope",
+    evaluate_no_strong_t_cell_epitope,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "mhc_alleles": "mhc_alleles",
+    },
+)
+registry.register(
+    "NoDominantBCellEpitope",
+    evaluate_no_dominant_b_cell_epitope,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+    },
+)
+registry.register(
+    "PopulationCoverageSafe",
+    evaluate_population_coverage_safe,
+    verify_param_map={
+        "sequence": "sequence",
+        "protein": "protein",
+        "organism": "organism",
+        "mhc_alleles": "mhc_alleles",
     },
 )
