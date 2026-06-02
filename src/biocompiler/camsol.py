@@ -23,14 +23,7 @@ from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, STANDARD_AAS
 from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
-from .exceptions import BioCompilerError
-
-try:
-    from .exceptions import CamSolError
-except ImportError:
-    class CamSolError(BioCompilerError):
-        """Raised when CamSol solubility computation encounters a fatal error."""
-        pass
+from .exceptions import CamSolError
 
 # ── Attempt to import shared defaults; provide local fallbacks ──
 try:
@@ -50,6 +43,23 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+__all__ = [
+    "SolubilityResult",
+    "compute_intrinsic_solubility",
+    "compute_solubility",
+    "compute_structural_solubility",
+    "compute_solubility_batch",
+    "find_solubility_mutations",
+    "classify_solubility",
+    "generate_solubility_recommendations",
+    "clear_cache",
+    "CAMSOL_HYDROPATHY",
+    "CAMSOL_CHARGE",
+    "CAMSOL_ALPHA_HELIX",
+    "CAMSOL_BETA_STRAND",
+]
 
 
 # ────────────────────────────────────────────────────────────
@@ -233,6 +243,7 @@ def compute_intrinsic_solubility(
     protein: str,
     window: int = _DEFAULT_WINDOW,
     smoothing: int = _DEFAULT_SMOOTHING,
+    organism: str = "Homo_sapiens",
 ) -> SolubilityResult:
     """Compute CamSol intrinsic solubility score from protein sequence.
 
@@ -254,6 +265,8 @@ def compute_intrinsic_solubility(
         protein: Protein sequence (1-letter amino acid codes).
         window: Sliding window size for initial smoothing (default 7).
         smoothing: Secondary smoothing window size (default 3).
+        organism: Target organism for codon/context awareness
+            (default "Homo_sapiens").
 
     Returns:
         SolubilityResult with intrinsic solubility prediction.
@@ -353,13 +366,14 @@ def compute_intrinsic_solubility(
             len(agg_regions),
         )
 
-    result.execution_time_s = round(timer.elapsed, 6)
+    result.execution_time_s = round(timer.elapsed, 4)
     return result
 
 
 def compute_structural_solubility(
     protein: str,
     pdb_string: str,
+    organism: str = "Homo_sapiens",
 ) -> SolubilityResult:
     """Compute structure-corrected CamSol solubility score.
 
@@ -376,6 +390,8 @@ def compute_structural_solubility(
     Args:
         protein: Protein sequence (1-letter amino acid codes).
         pdb_string: PDB file content as a string.
+        organism: Target organism for codon/context awareness
+            (default "Homo_sapiens").
 
     Returns:
         SolubilityResult with structure-corrected solubility prediction.
@@ -393,7 +409,7 @@ def compute_structural_solubility(
             raise CamSolError("PDB string must not be empty.")
 
         # Compute intrinsic first
-        intrinsic = compute_intrinsic_solubility(protein)
+        intrinsic = compute_intrinsic_solubility(protein, organism=organism)
 
         # Parse PDB coordinates (CA atoms only)
         ca_coords = _parse_pdb_ca_coords(pdb_string)
@@ -405,7 +421,7 @@ def compute_structural_solubility(
             )
             intrinsic.method = "camsol_structural"
             intrinsic.structural_score = intrinsic.intrinsic_score
-            intrinsic.execution_time_s = round(timer.elapsed, 6)
+            intrinsic.execution_time_s = round(timer.elapsed, 4)
             return intrinsic
 
         # Approximate SASA using CA neighbor counting
@@ -483,13 +499,14 @@ def compute_structural_solubility(
             solubility_class,
         )
 
-    result.execution_time_s = round(timer.elapsed, 6)
+    result.execution_time_s = round(timer.elapsed, 4)
     return result
 
 
 def compute_solubility(
     protein: str,
     pdb_string: str | None = None,
+    organism: str = "Homo_sapiens",
     **kwargs: object,
 ) -> SolubilityResult:
     """Unified solubility computation interface.
@@ -500,6 +517,8 @@ def compute_solubility(
     Args:
         protein: Protein sequence (1-letter amino acid codes).
         pdb_string: Optional PDB file content as a string.
+        organism: Target organism for codon/context awareness
+            (default "Homo_sapiens").
         **kwargs: Passed through to the underlying compute function
             (e.g., window, smoothing for intrinsic computation).
 
@@ -507,20 +526,20 @@ def compute_solubility(
         SolubilityResult with solubility prediction.
     """
     if pdb_string is not None and pdb_string.strip():
-        return compute_structural_solubility(protein, pdb_string)
+        return compute_structural_solubility(protein, pdb_string, organism=organism)
 
     # Extract supported kwargs for intrinsic computation
     window = kwargs.get("window", _DEFAULT_WINDOW)  # type: ignore[arg-type]
     smoothing = kwargs.get("smoothing", _DEFAULT_SMOOTHING)  # type: ignore[arg-type]
-    return compute_intrinsic_solubility(protein, window=window, smoothing=smoothing)
+    return compute_intrinsic_solubility(protein, window=window, smoothing=smoothing, organism=organism)
 
 
 def compute_solubility_batch(
     sequences: list[str],
-    *,
     window: int = _DEFAULT_WINDOW,
     smoothing: int = _DEFAULT_SMOOTHING,
     max_workers: int | None = None,
+    organism: str = "Homo_sapiens",
 ) -> list[SolubilityResult]:
     """Compute intrinsic solubility for multiple sequences in parallel.
 
@@ -534,6 +553,8 @@ def compute_solubility_batch(
         smoothing: Secondary smoothing window size.
         max_workers: Maximum number of threads. Defaults to
             min(len(sequences), DEFAULT_BATCH_SIZE).
+        organism: Target organism for codon/context awareness
+            (default "Homo_sapiens").
 
     Returns:
         List of SolubilityResult objects, one per input sequence, in the
@@ -555,7 +576,7 @@ def compute_solubility_batch(
 
     def _compute_one(idx: int, seq: str) -> tuple[int, SolubilityResult]:
         try:
-            result = compute_intrinsic_solubility(seq, window=window, smoothing=smoothing)
+            result = compute_intrinsic_solubility(seq, window=window, smoothing=smoothing, organism=organism)
             return (idx, result)
         except CamSolError as exc:
             error_result = SolubilityResult(
@@ -610,7 +631,7 @@ def compute_solubility_batch(
 def find_solubility_mutations(
     protein: str,
     min_score: float = 0.0,
-    **kwargs: object,
+    organism: str = "Homo_sapiens",
 ) -> list[MutationResult]:
     """Find amino acid substitutions to improve solubility.
 
@@ -622,8 +643,8 @@ def find_solubility_mutations(
     Args:
         protein: Protein sequence (1-letter amino acid codes).
         min_score: Minimum intrinsic score to target (default 0.0).
-        **kwargs: Ignored (backward compatibility for callers passing
-            extra keyword arguments like pdb_string).
+        organism: Target organism for codon/context awareness
+            (default "Homo_sapiens").
 
     Returns:
         List of MutationResult objects sorted by score descending
@@ -638,7 +659,7 @@ def find_solubility_mutations(
         raise CamSolError(str(exc)) from exc
 
     # Compute intrinsic solubility to find aggregation-prone regions
-    result = compute_intrinsic_solubility(protein)
+    result = compute_intrinsic_solubility(protein, organism=organism)
 
     # If already above threshold, no mutations needed
     if result.intrinsic_score >= min_score and not result.aggregation_prone_regions:

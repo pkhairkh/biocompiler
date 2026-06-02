@@ -21,6 +21,7 @@ Batch Endpoints:
 
 Protein Analysis Endpoints (mounted at /protein/):
 - POST /protein/structure/predict        — Predict protein structure via ESMFold
+- POST /protein/structure/batch          — Batch structure prediction (max 20)
 - POST /protein/structure/quality         — Assess structure quality from PDB
 - POST /protein/stability/analyze         — Analyze protein stability
 - POST /protein/stability/mutations        — Scan mutations for stability
@@ -934,10 +935,10 @@ class MutationScanResponse(BaseModel):
 class SolubilityResponse(BaseModel):
     """Response from protein solubility analysis."""
     intrinsic_score: float = Field(
-        ..., description="Intrinsic solubility score (0-1, higher = more soluble)"
+        ..., description="Intrinsic solubility score (-3 to +3, higher = more soluble)"
     )
     overall_score: float = Field(
-        ..., description="Overall solubility score including structural effects (0-1)"
+        ..., description="Overall solubility score including structural effects (-3 to +3)"
     )
     solubility_class: str = Field(
         ..., description="Solubility class: high, medium, low, very_low"
@@ -1052,8 +1053,6 @@ async def structure_predict(input_data: StructurePredictInput):
     try:
         result = predict_structure(
             protein=input_data.protein,
-            organism=input_data.organism,
-            use_cache=input_data.use_cache,
         )
     except TimeoutError:
         raise HTTPException(
@@ -1069,8 +1068,8 @@ async def structure_predict(input_data: StructurePredictInput):
 
     elapsed = time.monotonic() - t0
 
-    # Classify quality from mean pLDDT
-    mean_plddt = float(result.get("mean_plddt", 0.0))
+    # result is an ESMFoldResult dataclass, not a dict
+    mean_plddt = float(getattr(result, "mean_plddt", 0.0))
     if mean_plddt >= 90:
         quality_class = "very_high"
     elif mean_plddt >= 70:
@@ -1081,9 +1080,9 @@ async def structure_predict(input_data: StructurePredictInput):
         quality_class = "low"
 
     return StructurePredictResponse(
-        pdb_string=result["pdb_string"],
+        pdb_string=result.pdb_string,
         mean_plddt=mean_plddt,
-        plddt_scores=result.get("plddt_scores", []),
+        plddt_scores=getattr(result, "plddt_scores", []),
         quality_class=quality_class,
         execution_time_s=round(elapsed, 3),
     )
@@ -1131,6 +1130,149 @@ async def structure_quality(input_data: QualityAssessInput):
     )
 
 
+# ─── Structure Batch Endpoint ─────────────────────────────────────────
+
+BATCH_PROTEIN_MAX = 20
+
+class BatchStructureItem(StructurePredictInput):
+    """Single item in a batch structure prediction request."""
+    pass
+
+
+class BatchStructureInput(BaseModel):
+    """Input for batch structure prediction endpoint."""
+    proteins: list[BatchStructureItem] = Field(
+        ..., description=f"List of proteins for structure prediction (max {BATCH_PROTEIN_MAX})"
+    )
+
+
+class BatchStructureResultItem(BaseModel):
+    """Result for a single structure prediction item."""
+    pdb_string: Optional[str] = Field(None, description="Predicted structure in PDB format")
+    mean_plddt: float = Field(0.0, description="Mean pLDDT confidence score (0-100)")
+    quality_class: Optional[str] = Field(None, description="Quality classification")
+    error: Optional[str] = Field(None, description="Error message if prediction failed")
+
+
+class BatchStructureResponse(BaseModel):
+    """Response for batch structure prediction endpoint."""
+    results: list[BatchStructureResultItem] = Field(..., description="Per-item structure prediction results")
+    summary: dict = Field(..., description="Aggregate summary")
+
+
+@_protein_router.post(
+    "/structure/batch",
+    response_model=BatchStructureResponse,
+    summary="Batch protein structure prediction",
+)
+async def structure_batch(input_data: BatchStructureInput):
+    """
+    Predict protein structures for multiple proteins in one request.
+
+    Each protein is processed independently using ESMFold. One failure
+    does not affect other items.
+
+    Maximum batch size: 20 proteins.
+    Each item consumes one rate-limit unit.
+    Returns 503 if ESMFold is not available.
+    """
+    try:
+        from biocompiler.esmfold import predict_structure, is_esmfold_available
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="ESMFold module not available. Install biocompiler[esmfold].",
+        )
+
+    if not is_esmfold_available():
+        raise HTTPException(
+            status_code=503,
+            detail="ESMFold model is not available. Ensure torch and esm are installed.",
+        )
+
+    n = len(input_data.proteins)
+    if n > BATCH_PROTEIN_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size {n} exceeds maximum of {BATCH_PROTEIN_MAX} proteins",
+        )
+
+    client_id = "batch_structure"
+    _check_batch_rate_limit(client_id, n)
+
+    results: list[BatchStructureResultItem] = []
+    total = n
+    high_count = 0
+    medium_count = 0
+    low_count = 0
+    error_count = 0
+
+    for item in input_data.proteins:
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_structure_batch_single, item),
+                timeout=ESMFOLD_TIMEOUT_S,
+            )
+            results.append(result)
+            if result.error is None:
+                qc = result.quality_class
+                if qc in ("very_high", "high"):
+                    high_count += 1
+                elif qc == "medium":
+                    medium_count += 1
+                else:
+                    low_count += 1
+            else:
+                error_count += 1
+        except asyncio.TimeoutError:
+            results.append(BatchStructureResultItem(
+                error=f"Timeout after {ESMFOLD_TIMEOUT_S}s",
+            ))
+            error_count += 1
+        except Exception as e:
+            results.append(BatchStructureResultItem(error=str(e)))
+            error_count += 1
+
+    return BatchStructureResponse(
+        results=results,
+        summary={
+            "total": total,
+            "high_confidence": high_count,
+            "medium_confidence": medium_count,
+            "low_confidence": low_count,
+            "errors": error_count,
+        },
+    )
+
+
+def _structure_batch_single(item: StructurePredictInput) -> BatchStructureResultItem:
+    """Process a single structure prediction item for batch processing."""
+    from biocompiler.esmfold import predict_structure
+
+    result = predict_structure(
+        protein=item.protein,
+    )
+
+    if not result.success:
+        return BatchStructureResultItem(error=result.error or "Prediction failed")
+
+    mean_plddt = float(getattr(result, "mean_plddt", 0.0))
+    if mean_plddt >= 90:
+        quality_class = "very_high"
+    elif mean_plddt >= 70:
+        quality_class = "high"
+    elif mean_plddt >= 50:
+        quality_class = "medium"
+    else:
+        quality_class = "low"
+
+    return BatchStructureResultItem(
+        pdb_string=result.pdb_string,
+        mean_plddt=mean_plddt,
+        quality_class=quality_class,
+    )
+
+
 # ─── Stability Endpoints ────────────────────────────────────────────
 
 @_protein_router.post(
@@ -1160,8 +1302,6 @@ async def stability_analyze(input_data: StabilityInput):
     try:
         result = empirical_stability(
             protein=input_data.protein,
-            organism=input_data.organism,
-            pdb_string=input_data.pdb_string,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1172,11 +1312,31 @@ async def stability_analyze(input_data: StabilityInput):
             detail=f"Stability analysis failed: {e}",
         )
 
+    # result is a FoldXResult dataclass — build components dict and verdict
+    components = {
+        key: getattr(result, key)
+        for key in (
+            "backbone_hbond", "sidechain_hbond", "van_der_waals",
+            "electrostatics", "solvation", "van_der_waals_clashes",
+            "entropy_sidechain", "entropy_mainchain", "torsional_clash",
+            "backbone_clash", "helix_dipole", "disulfide",
+            "electrostatic_kon", "partial_covalent", "energy_ionisation",
+        )
+        if getattr(result, key, None) is not None
+    }
+    stability_kcal = result.stability_kcal
+    if stability_kcal < -5.0:
+        verdict = "STABLE"
+    elif stability_kcal < 0.0:
+        verdict = "MARGINAL"
+    else:
+        verdict = "UNSTABLE"
+
     return StabilityResponse(
-        stability_kcal=result["stability_kcal"],
-        method=result["method"],
-        components=result["components"],
-        verdict=result["verdict"],
+        stability_kcal=stability_kcal,
+        method=result.method,
+        components=components,
+        verdict=verdict,
     )
 
 
@@ -1219,7 +1379,6 @@ async def stability_mutations(input_data: MutationScanInput):
         result = scan_mutations(
             protein=input_data.protein,
             positions=input_data.positions,
-            method=input_data.method,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1230,10 +1389,29 @@ async def stability_mutations(input_data: MutationScanInput):
             detail=f"Mutation scanning failed: {e}",
         )
 
+    # result is a list of MutationResult dataclasses
+    mutations = [
+        {
+            "position": m.position,
+            "original": m.original,
+            "mutant": m.mutant,
+            "score": m.score,
+            "description": m.description,
+            "details": m.details,
+        }
+        for m in result
+    ]
+    stabilizing_count = sum(
+        1 for m in result if m.details and m.details.get("stabilizing")
+    )
+    destabilizing_count = sum(
+        1 for m in result if m.details and m.details.get("destabilizing")
+    )
+
     return MutationScanResponse(
-        mutations=result["mutations"],
-        stabilizing_count=result["stabilizing_count"],
-        destabilizing_count=result["destabilizing_count"],
+        mutations=mutations,
+        stabilizing_count=stabilizing_count,
+        destabilizing_count=destabilizing_count,
     )
 
 
@@ -1276,11 +1454,12 @@ async def solubility_analyze(input_data: SolubilityInput):
             detail=f"Solubility analysis failed: {e}",
         )
 
+    # result is a SolubilityResult dataclass, not a dict
     return SolubilityResponse(
-        intrinsic_score=result["intrinsic_score"],
-        overall_score=result["overall_score"],
-        solubility_class=result["solubility_class"],
-        aggregation_prone_regions=result["aggregation_prone_regions"],
+        intrinsic_score=result.intrinsic_score,
+        overall_score=result.overall_score,
+        solubility_class=result.solubility_class,
+        aggregation_prone_regions=result.aggregation_prone_regions,
     )
 
 
@@ -1310,7 +1489,6 @@ async def solubility_mutations(input_data: SolubilityInput):
     try:
         result = find_solubility_mutations(
             protein=input_data.protein,
-            pdb_string=input_data.pdb_string,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1321,10 +1499,25 @@ async def solubility_mutations(input_data: SolubilityInput):
             detail=f"Solubility mutation scan failed: {e}",
         )
 
+    # result is a list of MutationResult dataclasses
+    mutations = [
+        {
+            "position": m.position,
+            "original": m.original,
+            "mutant": m.mutant,
+            "score": m.score,
+            "description": m.description,
+            "details": m.details,
+        }
+        for m in result
+    ]
+    stabilizing = sum(1 for m in result if m.score > 0)
+    destabilizing = sum(1 for m in result if m.score <= 0)
+
     return MutationScanResponse(
-        mutations=result["mutations"],
-        stabilizing_count=result.get("stabilizing_count", 0),
-        destabilizing_count=result.get("destabilizing_count", 0),
+        mutations=mutations,
+        stabilizing_count=stabilizing,
+        destabilizing_count=destabilizing,
     )
 
 
@@ -1358,7 +1551,6 @@ async def immunogenicity_analyze(input_data: ImmunogenicityInput):
     try:
         result = compute_immunogenicity(
             protein=input_data.protein,
-            organism=input_data.organism,
             mhc_alleles=input_data.mhc_alleles,
         )
     except ValueError as e:
@@ -1370,12 +1562,24 @@ async def immunogenicity_analyze(input_data: ImmunogenicityInput):
             detail=f"Immunogenicity analysis failed: {e}",
         )
 
+    # result is an ImmunogenicityResult dataclass
+    deimmunization_candidates = [
+        {
+            "position": m.position,
+            "original": m.original,
+            "mutant": m.mutant,
+            "score": m.score,
+            "description": m.description,
+        }
+        for m in result.deimmunization_candidates
+    ]
+
     return ImmunogenicityResponse(
-        overall_score=result["overall_score"],
-        immunogenicity_class=result["immunogenicity_class"],
-        t_cell_epitopes=result["t_cell_epitopes"],
-        b_cell_epitopes=result["b_cell_epitopes"],
-        deimmunization_candidates=result["deimmunization_candidates"],
+        overall_score=result.overall_score,
+        immunogenicity_class=result.immunogenicity_class,
+        t_cell_epitopes=result.t_cell_epitopes,
+        b_cell_epitopes=result.b_cell_epitopes,
+        deimmunization_candidates=deimmunization_candidates,
     )
 
 
@@ -1422,12 +1626,13 @@ async def immunogenicity_deimmunize(input_data: DeimmunizeInput):
             detail=f"Deimmunization failed: {e}",
         )
 
+    # result is a DeimmunizationResult dataclass
     return DeimmunizeResponse(
-        optimized_protein=result["optimized_protein"],
-        mutations_applied=result["mutations_applied"],
-        original_score=result["original_score"],
-        optimized_score=result["optimized_score"],
-        success=result["success"],
+        optimized_protein=result.optimized_protein,
+        mutations_applied=len(result.mutations_applied),
+        original_score=result.original_immunogenicity,
+        optimized_score=result.optimized_immunogenicity,
+        success=result.success,
     )
 
 
@@ -1472,11 +1677,9 @@ async def assessment_full(input_data: FullAssessmentInput):
                 if is_esmfold_available():
                     pred = predict_structure(
                         protein=input_data.protein,
-                        organism=input_data.organism,
-                        use_cache=True,
                     )
-                    pdb_str = pred["pdb_string"]
-                    mean_plddt = float(pred.get("mean_plddt", 0.0))
+                    pdb_str = pred.pdb_string
+                    mean_plddt = float(getattr(pred, "mean_plddt", 0.0))
 
                     if mean_plddt < 50:
                         recommendations.append(
@@ -1534,21 +1737,31 @@ async def assessment_full(input_data: FullAssessmentInput):
 
             stab = empirical_stability(
                 protein=input_data.protein,
-                organism=input_data.organism,
-                pdb_string=input_data.pdb_string,
             )
-            stability_result = stab
+            # stab is a FoldXResult dataclass — build dict for response
+            stability_result = {
+                "stability_kcal": stab.stability_kcal,
+                "method": stab.method,
+                "success": stab.success,
+            }
+            # Derive verdict from stability_kcal
+            if stab.stability_kcal < -5.0:
+                stability_result["verdict"] = "STABLE"
+            elif stab.stability_kcal < 0.0:
+                stability_result["verdict"] = "MARGINAL"
+            else:
+                stability_result["verdict"] = "UNSTABLE"
 
-            if stab["verdict"] == "UNSTABLE":
+            if stability_result["verdict"] == "UNSTABLE":
                 recommendations.append(
                     f"Protein is predicted to be unstable "
-                    f"(ΔG={stab['stability_kcal']:.1f} kcal/mol). "
+                    f"(ΔG={stab.stability_kcal:.1f} kcal/mol). "
                     f"Consider stability-enhancing mutations."
                 )
-            elif stab["verdict"] == "MARGINAL":
+            elif stability_result["verdict"] == "MARGINAL":
                 recommendations.append(
                     f"Protein stability is marginal "
-                    f"(ΔG={stab['stability_kcal']:.1f} kcal/mol). "
+                    f"(ΔG={stab.stability_kcal:.1f} kcal/mol). "
                     f"Monitor during expression."
                 )
         except ImportError:
@@ -1568,17 +1781,23 @@ async def assessment_full(input_data: FullAssessmentInput):
                 protein=input_data.protein,
                 pdb_string=input_data.pdb_string,
             )
-            solubility_result = sol
+            # sol is a SolubilityResult dataclass — build dict for response
+            solubility_result = {
+                "intrinsic_score": sol.intrinsic_score,
+                "overall_score": sol.overall_score,
+                "solubility_class": sol.solubility_class,
+                "aggregation_prone_regions": sol.aggregation_prone_regions,
+            }
 
-            if sol["solubility_class"] in ("low", "very_low"):
+            if sol.solubility_class in ("low", "very_low", "marginally_soluble", "insoluble"):
                 recommendations.append(
-                    f"Protein solubility is {sol['solubility_class']} "
-                    f"(score={sol['overall_score']:.2f}). "
+                    f"Protein solubility is {sol.solubility_class} "
+                    f"(score={sol.overall_score:.2f}). "
                     f"Consider solubility-enhancing mutations or fusion tags."
                 )
-            if sol["aggregation_prone_regions"]:
+            if sol.aggregation_prone_regions:
                 recommendations.append(
-                    f"Found {len(sol['aggregation_prone_regions'])} "
+                    f"Found {len(sol.aggregation_prone_regions)} "
                     f"aggregation-prone region(s). Review for potential redesign."
                 )
         except ImportError:
@@ -1596,20 +1815,34 @@ async def assessment_full(input_data: FullAssessmentInput):
 
             imm = compute_immunogenicity(
                 protein=input_data.protein,
-                organism=input_data.organism,
                 mhc_alleles=None,
             )
-            immunogenicity_result = imm
+            # imm is an ImmunogenicityResult dataclass — build dict for response
+            immunogenicity_result = {
+                "overall_score": imm.overall_score,
+                "immunogenicity_class": imm.immunogenicity_class,
+                "t_cell_epitopes": imm.t_cell_epitopes,
+                "b_cell_epitopes": imm.b_cell_epitopes,
+                "deimmunization_candidates": [
+                    {
+                        "position": m.position,
+                        "original": m.original,
+                        "mutant": m.mutant,
+                        "score": m.score,
+                    }
+                    for m in imm.deimmunization_candidates
+                ],
+            }
 
-            if imm["immunogenicity_class"] in ("high", "very_high"):
+            if imm.immunogenicity_class in ("high", "very_high"):
                 recommendations.append(
-                    f"Protein immunogenicity is {imm['immunogenicity_class']} "
-                    f"(score={imm['overall_score']:.2f}). "
+                    f"Protein immunogenicity is {imm.immunogenicity_class} "
+                    f"(score={imm.overall_score:.2f}). "
                     f"Consider deimmunization for therapeutic applications."
                 )
-            if imm["deimmunization_candidates"]:
+            if imm.deimmunization_candidates:
                 recommendations.append(
-                    f"Found {len(imm['deimmunization_candidates'])} "
+                    f"Found {len(imm.deimmunization_candidates)} "
                     f"deimmunization candidate position(s)."
                 )
         except ImportError:
@@ -1702,8 +1935,6 @@ async def assessment_full(input_data: FullAssessmentInput):
 
 
 # ─── Protein Analysis Batch Endpoints ────────────────────────────────
-
-BATCH_PROTEIN_MAX = 20
 
 
 class BatchStabilityItem(StabilityInput):
@@ -1828,27 +2059,40 @@ async def stability_batch(input_data: BatchStabilityInput):
 def _stability_batch_single(item: StabilityInput) -> dict[str, Any]:
     """Process a single stability analysis item for batch processing."""
     try:
-        from biocompiler.foldx import run_stability_batch
-        result = run_stability_batch(
+        from biocompiler.foldx import empirical_stability
+        result = empirical_stability(
             protein=item.protein,
-            organism=item.organism,
-            pdb_string=item.pdb_string,
         )
     except ImportError:
-        # Fallback to the single-item API if batch function not available
-        try:
-            from biocompiler.foldx import empirical_stability
-            result = empirical_stability(
-                protein=item.protein,
-                organism=item.organism,
-                pdb_string=item.pdb_string,
-            )
-        except ImportError:
-            raise HTTPException(
-                status_code=503,
-                detail="FoldX stability module not available.",
-            )
-    return result
+        raise HTTPException(
+            status_code=503,
+            detail="FoldX stability module not available.",
+        )
+    # result is a FoldXResult dataclass — build dict for API response
+    stability_kcal = result.stability_kcal
+    if stability_kcal < -5.0:
+        verdict = "STABLE"
+    elif stability_kcal < 0.0:
+        verdict = "MARGINAL"
+    else:
+        verdict = "UNSTABLE"
+    components = {
+        key: getattr(result, key)
+        for key in (
+            "backbone_hbond", "sidechain_hbond", "van_der_waals",
+            "electrostatics", "solvation", "van_der_waals_clashes",
+            "entropy_sidechain", "entropy_mainchain", "torsional_clash",
+            "backbone_clash", "helix_dipole", "disulfide",
+            "electrostatic_kon", "partial_covalent", "energy_ionisation",
+        )
+        if getattr(result, key, None) is not None
+    }
+    return {
+        "stability_kcal": stability_kcal,
+        "method": result.method,
+        "components": components,
+        "verdict": verdict,
+    }
 
 
 @_protein_router.post(
@@ -1919,25 +2163,23 @@ async def solubility_batch(input_data: BatchSolubilityInput):
 def _solubility_batch_single(item: SolubilityInput) -> dict[str, Any]:
     """Process a single solubility analysis item for batch processing."""
     try:
-        from biocompiler.camsol import compute_solubility_batch
-        result = compute_solubility_batch(
+        from biocompiler.camsol import compute_solubility
+        result = compute_solubility(
             protein=item.protein,
             pdb_string=item.pdb_string,
         )
     except ImportError:
-        # Fallback to the single-item API if batch function not available
-        try:
-            from biocompiler.camsol import compute_solubility
-            result = compute_solubility(
-                protein=item.protein,
-                pdb_string=item.pdb_string,
-            )
-        except ImportError:
-            raise HTTPException(
-                status_code=503,
-                detail="CamSol solubility module not available.",
-            )
-    return result
+        raise HTTPException(
+            status_code=503,
+            detail="CamSol solubility module not available.",
+        )
+    # result is a SolubilityResult dataclass — build dict for API response
+    return {
+        "intrinsic_score": result.intrinsic_score,
+        "overall_score": result.overall_score,
+        "solubility_class": result.solubility_class,
+        "aggregation_prone_regions": result.aggregation_prone_regions,
+    }
 
 
 @_protein_router.post(
@@ -2008,27 +2250,23 @@ async def immunogenicity_batch(input_data: BatchImmunogenicityInput):
 def _immunogenicity_batch_single(item: ImmunogenicityInput) -> dict[str, Any]:
     """Process a single immunogenicity analysis item for batch processing."""
     try:
-        from biocompiler.immunogenicity import compute_immunogenicity_batch
-        result = compute_immunogenicity_batch(
+        from biocompiler.immunogenicity import compute_immunogenicity
+        result = compute_immunogenicity(
             protein=item.protein,
-            organism=item.organism,
             mhc_alleles=item.mhc_alleles,
         )
     except ImportError:
-        # Fallback to the single-item API if batch function not available
-        try:
-            from biocompiler.immunogenicity import compute_immunogenicity
-            result = compute_immunogenicity(
-                protein=item.protein,
-                organism=item.organism,
-                mhc_alleles=item.mhc_alleles,
-            )
-        except ImportError:
-            raise HTTPException(
-                status_code=503,
-                detail="Immunogenicity module not available.",
-            )
-    return result
+        raise HTTPException(
+            status_code=503,
+            detail="Immunogenicity module not available.",
+        )
+    # result is an ImmunogenicityResult dataclass — build dict for API response
+    return {
+        "overall_score": result.overall_score,
+        "immunogenicity_class": result.immunogenicity_class,
+        "t_cell_epitopes": result.t_cell_epitopes,
+        "b_cell_epitopes": result.b_cell_epitopes,
+    }
 
 
 # ─── FastAPI Application ──────────────────────────────────────────
@@ -2055,6 +2293,7 @@ def create_app() -> FastAPI:
 
     Protein Analysis endpoints:
     - POST /protein/structure/predict       — Predict protein structure
+    - POST /protein/structure/batch         — Batch structure prediction
     - POST /protein/structure/quality       — Assess structure quality
     - POST /protein/stability/analyze       — Analyze stability
     - POST /protein/stability/mutations     — Scan stability mutations

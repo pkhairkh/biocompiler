@@ -1,5 +1,5 @@
 """
-BioCompiler CLI v7.2.0
+BioCompiler CLI
 =======================
 Command-line interface for certified gene optimization and protein analysis.
 
@@ -26,6 +26,7 @@ import sys
 import time
 from typing import List, Optional
 
+from . import __version__
 from .optimization import BioOptimizer
 from .type_system import (
     CODON_TABLE,
@@ -37,6 +38,12 @@ from .type_system import (
     check_valid_coding_seq,
 )
 from .certificate import format_certificate, compute_certificate
+
+# Lazy imports for clear_cache functions — imported inside cmd_optimize
+# to avoid circular import issues:
+#   from .foldx import clear_cache as foldx_clear_cache
+#   from .camsol import clear_cache as camsol_clear_cache
+#   from .immunogenicity import clear_cache as immunogenicity_clear_cache
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +222,23 @@ def _get_organism(args: argparse.Namespace) -> str:
 
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Handle the 'optimize' command."""
+    # Clear engine caches for a fresh optimization run
+    try:
+        from .foldx import clear_cache as foldx_clear_cache
+        foldx_clear_cache()
+    except ImportError:
+        pass
+    try:
+        from .camsol import clear_cache as camsol_clear_cache
+        camsol_clear_cache()
+    except ImportError:
+        pass
+    try:
+        from .immunogenicity import clear_cache as immunogenicity_clear_cache
+        immunogenicity_clear_cache()
+    except ImportError:
+        pass
+
     seq = _read_fasta(args.input)
 
     if len(seq) < 3:
@@ -361,8 +385,14 @@ def cmd_structure(args: argparse.Namespace) -> None:
             print(_error_msg("Error: --quality-only requires --pdb-file."), file=sys.stderr)
             sys.exit(1)
         from .structure.quality import compute_structure_quality
+        # Read PDB file content — compute_structure_quality expects a PDB string, not a path
+        if not os.path.isfile(pdb_file):
+            print(_error_msg(f"Error: PDB file not found: {pdb_file}"), file=sys.stderr)
+            sys.exit(1)
+        with open(pdb_file, "r") as f:
+            pdb_content = f.read()
         with _ProgressStep("Assessing structure quality", verbose=getattr(args, "verbose", False)):
-            report = compute_structure_quality(pdb_file)
+            report = compute_structure_quality(pdb_content)
         _print_structure_quality(report)
         return
 
@@ -723,16 +753,26 @@ def cmd_assess(args: argparse.Namespace) -> None:
         format_assessment_html,
     )
 
+    # If a PDB file path was given, read its content; assess_protein expects
+    # pdb_string (PDB content), not a file path.
+    pdb_content: str | None = None
+    if pdb_file:
+        if not os.path.isfile(pdb_file):
+            print(_error_msg(f"Error: PDB file not found: {pdb_file}"), file=sys.stderr)
+            sys.exit(1)
+        with open(pdb_file, "r") as f:
+            pdb_content = f.read()
+
     with _ProgressStep("Running comprehensive assessment",
                         verbose=getattr(args, "verbose", False)):
         report = assess_protein(
             protein,
             organism=organism,
-            pdb_file=pdb_file,
-            skip_structure=skip_structure,
-            skip_stability=skip_stability,
-            skip_solubility=skip_solubility,
-            skip_immunogenicity=skip_immunogenicity,
+            pdb_string=pdb_content,
+            run_structure=not skip_structure,
+            run_stability=not skip_stability,
+            run_solubility=not skip_solubility,
+            run_immunogenicity=not skip_immunogenicity,
         )
 
     # Format output
@@ -782,10 +822,10 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the BioCompiler CLI."""
     parser = argparse.ArgumentParser(
         prog="biocompiler",
-        description="BioCompiler v7.2.0 — Certified Gene Optimization with Formal Verification",
+        description=f"BioCompiler v{__version__} — Certified Gene Optimization with Formal Verification",
     )
     parser.add_argument(
-        "--version", action="version", version="BioCompiler v7.2.0",
+        "--version", action="version", version=f"BioCompiler v{__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 

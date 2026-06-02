@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS
 from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
-from .exceptions import BioCompilerError
+from .exceptions import ImmunogenicityError
 from .immunogenicity import (
     predict_mhc_i_binding,
     predict_mhc_ii_binding,
@@ -39,13 +39,15 @@ from .immunogenicity import (
 logger = logging.getLogger(__name__)
 
 
-# ────────────────────────────────────────────────────────────
-# Exceptions
-# ────────────────────────────────────────────────────────────
-
-class ImmunogenicityError(BioCompilerError):
-    """Raised when immunogenicity analysis or deimmunization fails."""
-    pass
+__all__ = [
+    "DeimmunizationResult",
+    "EpitopeMutation",
+    "compute_mutation_impact",
+    "deimmunize",
+    "find_epitope_disrupting_mutations",
+    "rank_deimmunization_mutations",
+    "validate_deimmunized_protein",
+]
 
 
 # ────────────────────────────────────────────────────────────
@@ -146,16 +148,41 @@ def _compute_binding_score_for_region(
     return max_score
 
 
-def _estimate_ddg(wildtype: str, mutant: str) -> float:
+def _estimate_ddg(
+    wildtype: str,
+    mutant: str,
+    protein: str | None = None,
+    position: int | None = None,
+) -> float:
     """Estimate ΔΔG from BLOSUM62 score and hydropathy change.
 
-    Uses the empirical correlation:
-      - Lower BLOSUM62 score -> higher ΔΔG (less conservative = more destabilizing)
-      - Large hydropathy change -> higher ΔΔG
+    Delegates to ``foldx.empirical_stability()`` when the full protein
+    context is available, comparing stability before and after the
+    substitution.  Falls back to a BLOSUM62-based heuristic otherwise.
+
+    Args:
+        wildtype: Wild-type amino acid.
+        mutant: Mutant amino acid.
+        protein: Full protein sequence (optional, for FoldX delegation).
+        position: 0-based position of the mutation (optional, for FoldX delegation).
 
     Returns:
         Estimated ΔΔG in kcal/mol (positive = destabilizing).
     """
+    # Delegate to FoldX when full protein context is available
+    if protein is not None and position is not None:
+        try:
+            from . import foldx as _foldx
+            mutated_protein = protein[:position] + mutant + protein[position + 1:]
+            orig_result = _foldx.empirical_stability(protein)
+            mut_result = _foldx.empirical_stability(mutated_protein)
+            return round(mut_result.stability_kcal - orig_result.stability_kcal, 3)
+        except ImportError:
+            logger.debug("FoldX module unavailable, falling back to BLOSUM62 heuristic")
+        except Exception:
+            logger.debug("FoldX empirical_stability failed, falling back to BLOSUM62 heuristic")
+
+    # Local BLOSUM62 heuristic fallback
     blosum = BLOSUM62.get(wildtype, {}).get(mutant, -4)
 
     # BLOSUM62-based estimate: map [-4, 4] -> [0, ~5] kcal/mol
@@ -179,15 +206,43 @@ def _estimate_ddg(wildtype: str, mutant: str) -> float:
     return round(ddg, 3)
 
 
-def _estimate_solubility_impact(wildtype: str, mutant: str) -> float:
-    """Estimate solubility impact of a substitution using CamSol-like heuristics.
+def _estimate_solubility_impact(
+    wildtype: str,
+    mutant: str,
+    protein: str | None = None,
+    position: int | None = None,
+) -> float:
+    """Estimate solubility impact of a substitution using CamSol.
 
-    Uses intrinsic solubility propensity based on hydropathy and charge.
+    Delegates to ``camsol.compute_intrinsic_solubility()`` when the
+    full protein context is available, computing the score before and
+    after the substitution.  Falls back to a hydropathy/charge heuristic.
+
     Negative values = decreased solubility, positive = increased.
+
+    Args:
+        wildtype: Wild-type amino acid.
+        mutant: Mutant amino acid.
+        protein: Full protein sequence (optional, for CamSol delegation).
+        position: 0-based position of the mutation (optional, for CamSol delegation).
 
     Returns:
         Estimated solubility change (arbitrary units).
     """
+    # Delegate to CamSol when full protein context is available
+    if protein is not None and position is not None:
+        try:
+            from .camsol import compute_intrinsic_solubility as _camsol_score
+            mutated_protein = protein[:position] + mutant + protein[position + 1:]
+            orig_score = _camsol_score(protein).intrinsic_score
+            mut_score = _camsol_score(mutated_protein).intrinsic_score
+            return round(mut_score - orig_score, 3)
+        except ImportError:
+            logger.debug("CamSol module unavailable, falling back to heuristic")
+        except Exception:
+            logger.debug("CamSol compute_intrinsic_solubility failed, falling back to heuristic")
+
+    # Local heuristic fallback
     # More negative hydropathy = more hydrophilic = better solubility
     hydro_wt = HYDROPATHY.get(wildtype, 0.0)
     hydro_mt = HYDROPATHY.get(mutant, 0.0)
@@ -293,10 +348,10 @@ def compute_mutation_impact(
     blosum = BLOSUM62[wildtype][mutant_aa]
 
     # Estimate ΔΔG
-    ddg = _estimate_ddg(wildtype, mutant_aa)
+    ddg = _estimate_ddg(wildtype, mutant_aa, protein, position)
 
     # Estimate solubility impact
-    sol_impact = _estimate_solubility_impact(wildtype, mutant_aa)
+    sol_impact = _estimate_solubility_impact(wildtype, mutant_aa, protein, position)
 
     # Compute binding impact: find all 9-mer epitopes overlapping this position
     binding_impact = []
@@ -406,10 +461,10 @@ def find_epitope_disrupting_mutations(
                 continue
 
             # Estimate ΔΔG
-            ddg = _estimate_ddg(wildtype, mutant)
+            ddg = _estimate_ddg(wildtype, mutant, protein, pos)
 
             # Estimate solubility impact
-            sol_impact = _estimate_solubility_impact(wildtype, mutant)
+            sol_impact = _estimate_solubility_impact(wildtype, mutant, protein, pos)
 
             # Find the 9-mer with highest binding score that includes this position
             best_score = 0.0
@@ -614,8 +669,8 @@ def _compute_solubility_score(protein: str) -> float:
         from biocompiler.camsol import compute_intrinsic_solubility
         result = compute_intrinsic_solubility(protein)
         # Handle SolubilityResult object (camsol module returns objects)
-        if hasattr(result, 'solubility_score'):
-            return result.solubility_score
+        if hasattr(result, 'overall_score'):
+            return result.overall_score
         return float(result)
     except ImportError:
         pass
@@ -652,6 +707,7 @@ def deimmunize(
     blosum62_min: int = 0,
     max_ddg: float = 2.0,
     preserve_positions: list[int] | None = None,
+    mhc_alleles: dict | None = None,
 ) -> DeimmunizationResult:
     """Iteratively reduce protein immunogenicity by disrupting T-cell epitopes.
 
@@ -673,6 +729,8 @@ def deimmunize(
         max_ddg: Maximum allowed ΔΔG per mutation (kcal/mol).
         preserve_positions: List of 0-based positions that must not be mutated
             (e.g., active site residues).
+        mhc_alleles: Optional dict mapping allele names to their details
+            (overrides organism-based defaults).
 
     Returns:
         DeimmunizationResult with optimized protein and detailed metrics.
@@ -683,18 +741,21 @@ def deimmunize(
     with EngineTimer() as timer:
         # Validate protein sequence
         try:
-            protein = validate_protein_sequence(protein, "deimmunization")
+            protein = validate_protein_sequence(protein, "Deimmunization")
         except ValueError as exc:
             raise ImmunogenicityError(str(exc)) from exc
 
         preserve_set = set(preserve_positions) if preserve_positions else set()
-        mhc_alleles = _get_mhc_alleles(organism)
+        if mhc_alleles is not None:
+            allele_list = list(mhc_alleles.keys()) if isinstance(mhc_alleles, dict) else list(mhc_alleles)
+        else:
+            allele_list = _get_mhc_alleles(organism)
 
         # Compute initial metrics
         original_immunogenicity = _compute_immunogenicity_score(
-            protein, organism, mhc_alleles
+            protein, organism, allele_list
         )
-        original_epitope_count = _count_t_cell_epitopes(protein, organism, mhc_alleles)
+        original_epitope_count = _count_t_cell_epitopes(protein, organism, allele_list)
 
         current_protein = protein
         mutations_applied: list[dict] = []
@@ -704,13 +765,13 @@ def deimmunize(
         while iteration < max_mutations:
             # Check if target is reached
             current_score = _compute_immunogenicity_score(
-                current_protein, organism, mhc_alleles
+                current_protein, organism, allele_list
             )
             if current_score <= target_score:
                 break
 
             # Find T-cell epitopes using predict_t_cell_epitopes
-            all_epitopes = predict_t_cell_epitopes(current_protein, mhc_alleles)
+            all_epitopes = predict_t_cell_epitopes(current_protein, allele_list)
             epitopes = _filter_binder_epitopes(all_epitopes)
             if not epitopes:
                 break
@@ -724,7 +785,7 @@ def deimmunize(
                 end = epitope["end"]
 
                 epi_mutations = find_epitope_disrupting_mutations(
-                    current_protein, start, end, mhc_alleles, blosum62_min
+                    current_protein, start, end, allele_list, blosum62_min
                 )
                 all_candidates.extend(epi_mutations)
 
@@ -815,10 +876,10 @@ def deimmunize(
 
         # Compute final metrics
         optimized_immunogenicity = _compute_immunogenicity_score(
-            current_protein, organism, mhc_alleles
+            current_protein, organism, allele_list
         )
         optimized_epitope_count = _count_t_cell_epitopes(
-            current_protein, organism, mhc_alleles
+            current_protein, organism, allele_list
         )
 
         # Check stability: all ΔΔG values summed < max_ddg * len(mutations)
@@ -850,7 +911,7 @@ def deimmunize(
         optimized_immunogenicity,
         original_epitope_count,
         optimized_epitope_count,
-        timer.elapsed,
+        round(timer.elapsed, 4),
     )
 
     return result
@@ -894,8 +955,8 @@ def validate_deimmunized_protein(
     """
     # Validate protein sequences
     try:
-        protein = validate_protein_sequence(protein, "deimmunization")
-        original_protein = validate_protein_sequence(original_protein, "deimmunization")
+        protein = validate_protein_sequence(protein, "Deimmunization")
+        original_protein = validate_protein_sequence(original_protein, "Deimmunization")
     except ValueError as exc:
         raise ImmunogenicityError(str(exc)) from exc
 

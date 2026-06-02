@@ -10,6 +10,7 @@ from biocompiler.foldx import (
     scan_all_mutations, scan_position, compute_conservation,
     rank_positions_by_mutability, identify_hotspot_regions,
     StabilityLandscape, AA_VOLUME, ConservationScore,
+    clear_cache as foldx_clear_cache,
 )
 from biocompiler.stability_predicates import (
     evaluate_stable_folding, evaluate_no_destabilizing_mutation,
@@ -17,6 +18,7 @@ from biocompiler.stability_predicates import (
     compute_hydrophobic_fraction, estimate_stability_empirical,
 )
 from biocompiler.types import Verdict, TypeCheckResult
+from biocompiler.exceptions import EngineError
 
 
 # ────────────────────────────────────────────────────────────
@@ -51,6 +53,36 @@ DUMMY_SEQ = "ATGAAA"
 
 class TestFoldXModule:
     """Tests for the foldx core module: dataclasses, availability, stability."""
+
+    def test_foldx_result_defaults(self):
+        """FoldXResult has defaults for success, error, execution_time_s."""
+        result = FoldXResult(
+            protein="MKTAY",
+            pdb_string=None,
+            stability_kcal=-12.5,
+            ddg_kcal=None,
+            interaction_energy=None,
+            backbone_hbond=None,
+            sidechain_hbond=None,
+            van_der_waals=None,
+            electrostatics=None,
+            solvation=None,
+            van_der_waals_clashes=None,
+            entropy_sidechain=None,
+            entropy_mainchain=None,
+            torsional_clash=None,
+            backbone_clash=None,
+            helix_dipole=None,
+            disulfide=None,
+            electrostatic_kon=None,
+            partial_covalent=None,
+            energy_ionisation=None,
+            method="empirical",
+        )
+        # After Agent 2 updates, these fields have defaults:
+        assert result.success is True
+        assert result.error is None
+        assert result.execution_time_s == 0.0
 
     def test_foldx_result_dataclass(self):
         """FoldXResult has expected fields and defaults."""
@@ -134,6 +166,27 @@ class TestFoldXModule:
         assert mr.engine == "foldx"
         assert mr.details["destabilizing"] is True
 
+    def test_mutation_result_from_engine_base(self):
+        """MutationResult imported from engine_base has unified fields."""
+        from biocompiler.engine_base import MutationResult as BaseMutationResult
+
+        mr = BaseMutationResult(
+            position=0,
+            original="M",
+            mutant="A",
+            score=0.5,
+            engine="foldx",
+            description="M1A mutation",
+            details={"ddg_kcal": -0.5, "stabilizing": True},
+        )
+        assert mr.position == 0
+        assert mr.original == "M"
+        assert mr.mutant == "A"
+        assert mr.score == 0.5
+        assert mr.engine == "foldx"
+        assert mr.description == "M1A mutation"
+        assert mr.details["stabilizing"] is True
+
     def test_mutation_result_stabilizing(self):
         """MutationResult with positive score is stabilising."""
         mr = MutationResult(
@@ -150,6 +203,13 @@ class TestFoldXModule:
         result = is_foldx_available()
         assert isinstance(result, bool)
 
+    def test_foldx_clear_cache(self):
+        """Module-level clear_cache() resets the FoldX result cache."""
+        foldx_clear_cache()
+        # Should not raise; cache is now empty
+        from biocompiler.foldx import _cache
+        assert len(_cache) == 0
+
     def test_empirical_stability_stable_protein(self):
         """Well-known stable protein should have negative stability_kcal."""
         result = empirical_stability(LYSOZYME_FRAGMENT)
@@ -157,6 +217,13 @@ class TestFoldXModule:
         assert result.stability_kcal < 0.0
         assert result.success is True
         assert result.method == "empirical"
+
+    def test_empirical_stability_with_organism(self):
+        """empirical_stability accepts an optional organism parameter."""
+        result = empirical_stability(LYSOZYME_FRAGMENT, organism="Homo_sapiens")
+        assert isinstance(result, FoldXResult)
+        assert result.success is True
+        assert result.stability_kcal < 0.0
 
     def test_empirical_stability_unstable_protein(self):
         """Poly-glycine should have positive stability_kcal (unstable)."""
@@ -210,6 +277,16 @@ class TestFoldXModule:
         err = FoldXError("test failure")
         assert isinstance(err, Exception)
         assert "test failure" in str(err)
+
+    def test_foldx_error_is_engine_error(self):
+        """FoldXError should be a subclass of EngineError."""
+        assert issubclass(FoldXError, EngineError), (
+            f"FoldXError should be a subclass of EngineError, "
+            f"got MRO: {FoldXError.__mro__}"
+        )
+        # Can be caught as EngineError
+        with pytest.raises(EngineError):
+            raise FoldXError("engine error test")
 
     def test_foldx_error_can_be_raised_and_caught(self):
         """FoldXError can be raised and caught."""

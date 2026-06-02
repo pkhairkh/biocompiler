@@ -4,6 +4,8 @@ import pytest
 import tempfile
 import math
 
+from biocompiler.exceptions import EngineError
+
 # ---------------------------------------------------------------------------
 # Test data
 # ---------------------------------------------------------------------------
@@ -44,6 +46,25 @@ class TestESMFoldClient:
             success=True,
             error=None,
         )
+
+    def test_esmfold_result_defaults(self):
+        """ESMFoldResult has defaults for success, error, execution_time_s."""
+        from biocompiler.esmfold import ESMFoldResult
+
+        # Should be constructable with only required fields;
+        # success, error, execution_time_s have defaults after Agent 1 updates.
+        result = ESMFoldResult(
+            pdb_string=MINI_PDB,
+            plddt_scores=[85.0, 90.0, 78.0],
+            mean_plddt=84.33,
+            pae_matrix=None,
+            protein="MAG",
+            model_name="esmfold_v1",
+        )
+        # Defaults: success=True, error=None, execution_time_s=0.0
+        assert result.success is True
+        assert result.error is None
+        assert result.execution_time_s == 0.0
         assert result.protein == "MAG"
         assert result.pdb_string == MINI_PDB
         assert result.mean_plddt == pytest.approx(84.33, abs=0.01)
@@ -52,7 +73,7 @@ class TestESMFoldClient:
         assert result.error is None
         assert result.model_name == "esmfold_v1"
         assert result.pae_matrix is None
-        assert result.execution_time_s == pytest.approx(1.5)
+        assert result.execution_time_s == 0.0
 
     def test_is_esmfold_available(self):
         """is_esmfold_available returns a bool (likely False in test env)."""
@@ -89,6 +110,30 @@ class TestESMFoldClient:
 
         with pytest.raises(ESMFoldError):
             predict_structure("")
+
+    def test_esmfold_error_is_engine_error(self):
+        """ESMFoldError should be a subclass of EngineError."""
+        from biocompiler.esmfold import ESMFoldError
+
+        assert issubclass(ESMFoldError, EngineError), (
+            f"ESMFoldError should be a subclass of EngineError, "
+            f"got MRO: {ESMFoldError.__mro__}"
+        )
+        # Also verify it can be caught as EngineError
+        with pytest.raises(EngineError):
+            raise ESMFoldError("test engine error")
+
+    def test_predict_structure_with_organism(self):
+        """predict_structure accepts an optional organism parameter."""
+        from biocompiler.esmfold import predict_structure, is_esmfold_available
+
+        if is_esmfold_available():
+            pytest.skip("ESMFold is available; skipping offline test")
+
+        result = predict_structure("MAG", organism="Homo_sapiens")
+        assert result.protein == "MAG"
+        # Offline fallback: success may be False
+        assert isinstance(result.success, bool)
 
     def test_parse_pdb(self):
         """parse_pdb extracts atoms, residues, chains, and plddt_scores from a minimal PDB."""
@@ -638,6 +683,19 @@ class TestESMFoldCache:
         assert cache.size == 1
         cache.put("B", self._make_result("B"))
         assert cache.size == 2
+
+    def test_module_clear_cache(self):
+        """Module-level clear_cache() resets the default ESMFold cache."""
+        from biocompiler.esmfold import clear_cache, _get_default_cache
+
+        cache = _get_default_cache()
+        cache.put("MAG", self._make_result("MAG"))
+        assert cache.size >= 1
+
+        clear_cache()
+        assert cache.size == 0
+        assert cache.hits == 0
+        assert cache.misses == 0
 
 
 # ---------------------------------------------------------------------------

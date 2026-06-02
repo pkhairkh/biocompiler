@@ -26,6 +26,14 @@ class TestStructurePipeline:
         assert report.mean_plddt > 0
         # verdict is a string like "PASS", "LIKELY_FAIL" etc.
         assert isinstance(report.verdict, str)
+        # After engine_base unification, StructureQualityReport should have
+        # success, error, execution_time_s fields with defaults
+        if hasattr(report, 'success'):
+            assert report.success is True
+        if hasattr(report, 'error'):
+            assert report.error is None
+        if hasattr(report, 'execution_time_s'):
+            assert isinstance(report.execution_time_s, float)
 
     def test_esmfold_offline_result(self):
         """ESMFold offline fallback returns valid result."""
@@ -36,6 +44,13 @@ class TestStructurePipeline:
         if result.success:
             assert result.pdb_string != ""
             assert result.mean_plddt > 0
+
+    def test_esmfold_offline_result_with_organism(self):
+        """ESMFold predict_structure accepts organism param."""
+        from biocompiler.esmfold import predict_structure, ESMFoldResult
+        result = predict_structure(HBB_PROTEIN, organism="Homo_sapiens")
+        assert isinstance(result, ESMFoldResult)
+        assert result.protein == HBB_PROTEIN
 
     def test_cache_integration(self):
         """Cache put/get round-trip works."""
@@ -89,6 +104,14 @@ class TestStabilityPipeline:
         )
         assert isinstance(pred, TypeCheckResult)
         assert pred.verdict in list(Verdict)
+
+    def test_empirical_stability_with_organism(self):
+        """empirical_stability accepts organism parameter."""
+        from biocompiler.foldx import empirical_stability
+
+        result = empirical_stability(HBB_PROTEIN, organism="Homo_sapiens")
+        assert result.success is True
+        assert result.stability_kcal != 0
 
     def test_stability_and_solubility_combined(self):
         """Analyze protein with both FoldX and CamSol."""

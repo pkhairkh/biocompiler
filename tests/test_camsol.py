@@ -28,7 +28,7 @@ from biocompiler.solubility_predicates import (
 )
 from biocompiler.type_system import Verdict, AA_TO_CODONS
 from biocompiler.types import TypeCheckResult
-from biocompiler.exceptions import CamSolError
+from biocompiler.exceptions import CamSolError, EngineError
 
 
 # ────────────────────────────────────────────────────────────
@@ -156,6 +156,16 @@ class TestCamSolIntrinsic:
         """Empty protein should raise CamSolError."""
         with pytest.raises(CamSolError, match="empty"):
             compute_intrinsic_solubility("")
+
+    def test_camsol_error_is_engine_error(self):
+        """CamSolError should be a subclass of EngineError."""
+        assert issubclass(CamSolError, EngineError), (
+            f"CamSolError should be a subclass of EngineError, "
+            f"got MRO: {CamSolError.__mro__}"
+        )
+        # Can be caught as EngineError
+        with pytest.raises(EngineError):
+            raise CamSolError("engine error test")
 
     def test_overall_score_equals_intrinsic_when_no_structure(self):
         """When no PDB is provided, overall_score should equal intrinsic_score."""

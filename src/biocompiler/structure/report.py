@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from ..engine_base import EngineTimer
 from ..type_system import Verdict, TypeCheckResult
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,10 @@ class ProteinAssessmentReport:
     predicate_results: list[dict] = field(default_factory=list)
     overall_verdict: str = "UNCERTAIN"
     recommendations: list[str] = field(default_factory=list)
+    # EngineResult protocol fields
+    success: bool = True
+    error: str | None = None
+    execution_time_s: float = 0.0
 
 
 # ────────────────────────────────────────────────────────────
@@ -115,96 +120,111 @@ def assess_protein(
 
     predicate_results: list[dict] = []
 
-    # --- Structure Quality ---
-    if run_structure:
-        try:
-            from .quality import compute_structure_quality
-            sq_result = compute_structure_quality(protein, pdb_string=pdb_string)
-            report.structure_quality = _to_dict(sq_result)
-            if isinstance(report.structure_quality, dict):
-                pred = report.structure_quality.get("predicate_result")
-                if pred is not None:
-                    predicate_results.append(_normalize_predicate(pred))
-        except ImportError:
-            logger.debug("structure_quality module not available, skipping")
-        except Exception as exc:
-            logger.warning("Structure quality analysis failed: %s", exc)
+    with EngineTimer() as timer:
+        # --- Structure Quality ---
+        if run_structure:
+            try:
+                from .quality import compute_structure_quality
+                sq_result = compute_structure_quality(protein, pdb_string=pdb_string)
+                report.structure_quality = _to_dict(sq_result)
+                if isinstance(report.structure_quality, dict):
+                    pred = report.structure_quality.get("predicate_result")
+                    if pred is not None:
+                        predicate_results.append(_normalize_predicate(pred))
+            except ImportError:
+                logger.debug("structure_quality module not available, skipping")
+            except Exception as exc:
+                logger.warning("Structure quality analysis failed: %s", exc)
+                report.success = False
+                report.error = str(exc)
 
-    # --- Stability (FoldX) ---
-    if run_stability:
-        try:
-            from biocompiler.foldx import empirical_stability
-            stab_result = empirical_stability(protein, pdb_string=pdb_string)
-            report.stability = _to_dict(stab_result)
-            if isinstance(report.stability, dict):
-                pred = report.stability.get("predicate_result")
-                if pred is not None:
-                    predicate_results.append(_normalize_predicate(pred))
-        except ImportError:
-            logger.debug("foldx module not available, skipping")
-        except Exception as exc:
-            logger.warning("Stability analysis failed: %s", exc)
+        # --- Stability (FoldX) ---
+        if run_stability:
+            try:
+                from biocompiler.foldx import empirical_stability
+                stab_result = empirical_stability(protein, pdb_string=pdb_string)
+                report.stability = _to_dict(stab_result)
+                if isinstance(report.stability, dict):
+                    pred = report.stability.get("predicate_result")
+                    if pred is not None:
+                        predicate_results.append(_normalize_predicate(pred))
+            except ImportError:
+                logger.debug("foldx module not available, skipping")
+            except Exception as exc:
+                logger.warning("Stability analysis failed: %s", exc)
+                report.success = False
+                report.error = str(exc)
 
-    # --- Solubility (CamSol) ---
-    if run_solubility:
-        try:
-            from biocompiler.camsol import compute_solubility
-            sol_result = compute_solubility(protein)
-            report.solubility = _to_dict(sol_result)
-            if isinstance(report.solubility, dict):
-                pred = report.solubility.get("predicate_result")
-                if pred is not None:
-                    predicate_results.append(_normalize_predicate(pred))
-        except ImportError:
-            logger.debug("camsol module not available, skipping")
-        except Exception as exc:
-            logger.warning("Solubility analysis failed: %s", exc)
+        # --- Solubility (CamSol) ---
+        if run_solubility:
+            try:
+                from biocompiler.camsol import compute_solubility
+                sol_result = compute_solubility(protein)
+                report.solubility = _to_dict(sol_result)
+                if isinstance(report.solubility, dict):
+                    pred = report.solubility.get("predicate_result")
+                    if pred is not None:
+                        predicate_results.append(_normalize_predicate(pred))
+            except ImportError:
+                logger.debug("camsol module not available, skipping")
+            except Exception as exc:
+                logger.warning("Solubility analysis failed: %s", exc)
+                report.success = False
+                report.error = str(exc)
 
-    # --- Immunogenicity (includes MHC binding + epitope) ---
-    if run_immunogenicity:
-        try:
-            from biocompiler.immunogenicity import compute_immunogenicity
-            imm_result = compute_immunogenicity(protein, organism=organism)
-            report.immunogenicity = _to_dict(imm_result)
-            if isinstance(report.immunogenicity, dict):
-                pred = report.immunogenicity.get("predicate_result")
-                if pred is not None:
-                    predicate_results.append(_normalize_predicate(pred))
-        except ImportError:
-            logger.debug("immunogenicity module not available, skipping")
-        except Exception as exc:
-            logger.warning("Immunogenicity analysis failed: %s", exc)
+        # --- Immunogenicity (includes MHC binding + epitope) ---
+        if run_immunogenicity:
+            try:
+                from biocompiler.immunogenicity import compute_immunogenicity
+                imm_result = compute_immunogenicity(protein, organism=organism)
+                report.immunogenicity = _to_dict(imm_result)
+                if isinstance(report.immunogenicity, dict):
+                    pred = report.immunogenicity.get("predicate_result")
+                    if pred is not None:
+                        predicate_results.append(_normalize_predicate(pred))
+            except ImportError:
+                logger.debug("immunogenicity module not available, skipping")
+            except Exception as exc:
+                logger.warning("Immunogenicity analysis failed: %s", exc)
+                report.success = False
+                report.error = str(exc)
 
-        try:
-            from biocompiler.immunogenicity import predict_all as predict_mhc_all
-            mhc_result = predict_mhc_all(protein, organism=organism)
-            report.mhc_binding = _to_dict(mhc_result)
-            if isinstance(report.mhc_binding, dict):
-                pred = report.mhc_binding.get("predicate_result")
-                if pred is not None:
-                    predicate_results.append(_normalize_predicate(pred))
-        except ImportError:
-            logger.debug("mhc_binding module not available, skipping")
-        except Exception as exc:
-            logger.warning("MHC binding prediction failed: %s", exc)
+            try:
+                from biocompiler.immunogenicity import predict_all as predict_mhc_all
+                mhc_result = predict_mhc_all(protein)
+                report.mhc_binding = _to_dict(mhc_result)
+                if isinstance(report.mhc_binding, dict):
+                    pred = report.mhc_binding.get("predicate_result")
+                    if pred is not None:
+                        predicate_results.append(_normalize_predicate(pred))
+            except ImportError:
+                logger.debug("mhc_binding module not available, skipping")
+            except Exception as exc:
+                logger.warning("MHC binding prediction failed: %s", exc)
+                report.success = False
+                report.error = str(exc)
 
-        try:
-            from biocompiler.immunogenicity import predict_epitopes
-            epi_result = predict_epitopes(protein, organism=organism)
-            report.epitope = _to_dict(epi_result)
-            if isinstance(report.epitope, dict):
-                pred = report.epitope.get("predicate_result")
-                if pred is not None:
-                    predicate_results.append(_normalize_predicate(pred))
-        except ImportError:
-            logger.debug("epitope module not available, skipping")
-        except Exception as exc:
-            logger.warning("Epitope prediction failed: %s", exc)
+            try:
+                from biocompiler.immunogenicity import predict_epitopes
+                epi_result = predict_epitopes(protein)
+                report.epitope = _to_dict(epi_result)
+                if isinstance(report.epitope, dict):
+                    pred = report.epitope.get("predicate_result")
+                    if pred is not None:
+                        predicate_results.append(_normalize_predicate(pred))
+            except ImportError:
+                logger.debug("epitope module not available, skipping")
+            except Exception as exc:
+                logger.warning("Epitope prediction failed: %s", exc)
+                report.success = False
+                report.error = str(exc)
 
-    # Store predicate results and compute overall verdict
-    report.predicate_results = predicate_results
-    report.overall_verdict = compute_overall_verdict(predicate_results)
-    report.recommendations = generate_recommendations(report)
+        # Store predicate results and compute overall verdict
+        report.predicate_results = predicate_results
+        report.overall_verdict = compute_overall_verdict(predicate_results)
+        report.recommendations = generate_recommendations(report)
+
+    report.execution_time_s = timer.elapsed
 
     return report
 
@@ -755,6 +775,9 @@ def _report_to_dict(report: ProteinAssessmentReport) -> dict:
         "predicate_results": _convert_verdicts(report.predicate_results),
         "overall_verdict": report.overall_verdict,
         "recommendations": report.recommendations,
+        "success": report.success,
+        "error": report.error,
+        "execution_time_s": report.execution_time_s,
     }
     return result
 

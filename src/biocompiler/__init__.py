@@ -284,6 +284,7 @@ try:
         estimate_contact_map, analyze_structure,
         validate_batch_input, estimate_batch_time,
         BatchStructureRequest, BatchStructureResult,
+        clear_cache as esmfold_clear_cache,
     )
 except ImportError:
     pass
@@ -547,6 +548,7 @@ __all__ = [
     "estimate_contact_map", "analyze_structure",
     "validate_batch_input", "estimate_batch_time",
     "BatchStructureRequest", "BatchStructureResult",
+    "esmfold_clear_cache",
 
     # ── Immunogenicity & MHC binding ─────────────────────────
     "ImmunogenicityResult",

@@ -41,7 +41,7 @@ from biocompiler.immunogenicity import (
     ANTIGENICITY_SCALE,
     ImmunogenicityResult,
 )
-from biocompiler.exceptions import ImmunogenicityError
+from biocompiler.exceptions import ImmunogenicityError, EngineError
 
 from biocompiler.immunogenicity import (
     predict_mhc_i_binding,
@@ -179,6 +179,16 @@ class TestImmunogenicity:
             assert isinstance(val, (int, float)), (
                 f"Non-numeric propensity for {aa}: {val!r}"
             )
+
+    def test_immunogenicity_error_is_engine_error(self):
+        """ImmunogenicityError should be a subclass of EngineError."""
+        assert issubclass(ImmunogenicityError, EngineError), (
+            f"ImmunogenicityError should be a subclass of EngineError, "
+            f"got MRO: {ImmunogenicityError.__mro__}"
+        )
+        # Can be caught as EngineError
+        with pytest.raises(EngineError):
+            raise ImmunogenicityError("engine error test")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

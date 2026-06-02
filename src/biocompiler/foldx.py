@@ -56,6 +56,18 @@ from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS, HYDROPHOBIC_AAS
 from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
 from .exceptions import BioCompilerError
 
+try:
+    from .exceptions import FoldXError
+except ImportError:
+    class FoldXError(BioCompilerError):  # type: ignore[no-redef]
+        """Raised when FoldX analysis fails."""
+        def __init__(self, reason: str, command: str | None = None):
+            self.command = command
+            msg = f"FoldX error: {reason}"
+            if command:
+                msg += f" (command: {command})"
+            super().__init__(msg)
+
 # Shared constants — fallback defaults if not yet present in constants module
 try:
     from .constants import DEFAULT_ENGINE_TIMEOUT, DEFAULT_BATCH_SIZE
@@ -64,6 +76,33 @@ except ImportError:
     DEFAULT_BATCH_SIZE: int = 8
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "is_foldx_available",
+    "run_foldx_stability",
+    "run_foldx_repair",
+    "run_foldx_mutation",
+    "empirical_stability",
+    "run_stability_batch",
+    "scan_mutations",
+    "find_stabilizing_mutations",
+    "scan_all_mutations",
+    "scan_position",
+    "compute_conservation",
+    "find_compensatory_mutations",
+    "rank_positions_by_mutability",
+    "identify_hotspot_regions",
+    "FoldXResult",
+    "MutationResult",
+    "FoldXError",
+    "StabilityLandscape",
+    "ConservationScore",
+    "FoldXCache",
+    "clear_cache",
+    "BLOSUM62",
+    "HYDROPATHY",
+    "AA_VOLUME",
+]
 
 # Positively charged residues
 POSITIVE_AAS: set[str] = {"K", "R", "H"}
@@ -88,20 +127,6 @@ _DESTABILIZING_THRESHOLD = 0.5
 # same order of magnitude as the BLOSUM and hydropathy terms, yielding
 # physically reasonable ΔΔG estimates (roughly -1 to +6 kcal/mol).
 _VOLUME_SCALE = 100.0
-
-
-# ────────────────────────────────────────────────────────────
-# Custom Exception
-# ────────────────────────────────────────────────────────────
-
-class FoldXError(BioCompilerError):
-    """Raised when FoldX analysis fails."""
-    def __init__(self, reason: str, command: str | None = None):
-        self.command = command
-        msg = f"FoldX error: {reason}"
-        if command:
-            msg += f" (command: {command})"
-        super().__init__(msg)
 
 
 # ────────────────────────────────────────────────────────────
@@ -158,9 +183,9 @@ class FoldXResult:
     electrostatic_kon: float | None
     partial_covalent: float | None
     energy_ionisation: float | None
-    execution_time_s: float
-    method: str
-    success: bool
+    execution_time_s: float = 0.0
+    method: str = ""
+    success: bool = True
     error: str | None = None
 
 
@@ -377,7 +402,7 @@ def run_foldx_stability(
             result = _make_failed_result(
                 "foldx_cli", "FoldX CLI not available on PATH",
                 pdb_string=pdb_string, protein=protein,
-                execution_time_s=timer.elapsed,
+                execution_time_s=round(timer.elapsed, 4),
             )
             _cache.put(pdb_string, "foldx_stability", result)
             return result
@@ -414,7 +439,7 @@ def run_foldx_stability(
                     "foldx_cli",
                     f"FoldX exited with code {proc_result.returncode}: {stderr}",
                     pdb_string=pdb_string, protein=protein,
-                    execution_time_s=timer.elapsed,
+                    execution_time_s=round(timer.elapsed, 4),
                 )
                 _cache.put(pdb_string, "foldx_stability", result)
                 return result
@@ -432,7 +457,7 @@ def run_foldx_stability(
                     result = _make_failed_result(
                         "foldx_cli", "FoldX output file (.fxout) not found",
                         pdb_string=pdb_string, protein=protein,
-                        execution_time_s=timer.elapsed,
+                        execution_time_s=round(timer.elapsed, 4),
                     )
                     _cache.put(pdb_string, "foldx_stability", result)
                     return result
@@ -440,7 +465,7 @@ def run_foldx_stability(
             parsed = _parse_stability_fxout(fxout_path)
             parsed["protein"] = protein
             parsed["pdb_string"] = pdb_string
-            parsed["execution_time_s"] = timer.elapsed
+            parsed["execution_time_s"] = round(timer.elapsed, 4)
             parsed["method"] = "foldx_cli"
             parsed["success"] = True
             parsed["error"] = None
@@ -453,7 +478,7 @@ def run_foldx_stability(
             result = _make_failed_result(
                 "foldx_cli", f"FoldX timed out after {timeout}s",
                 pdb_string=pdb_string, protein=protein,
-                execution_time_s=timer.elapsed,
+                execution_time_s=round(timer.elapsed, 4),
             )
             _cache.put(pdb_string, "foldx_stability", result)
             return result
@@ -462,7 +487,7 @@ def run_foldx_stability(
             result = _make_failed_result(
                 "foldx_cli", str(exc),
                 pdb_string=pdb_string, protein=protein,
-                execution_time_s=timer.elapsed,
+                execution_time_s=round(timer.elapsed, 4),
             )
             _cache.put(pdb_string, "foldx_stability", result)
             return result
@@ -500,7 +525,7 @@ def run_foldx_repair(
         if not is_foldx_available():
             result = _make_failed_result(
                 "foldx_cli", "FoldX CLI not available on PATH",
-                pdb_string=pdb_string, execution_time_s=timer.elapsed,
+                pdb_string=pdb_string, execution_time_s=round(timer.elapsed, 4),
             )
             return pdb_string, result
 
@@ -533,7 +558,7 @@ def run_foldx_repair(
                 result = _make_failed_result(
                     "foldx_cli",
                     f"FoldX RepairPDB exited with code {proc_result.returncode}: {stderr}",
-                    pdb_string=pdb_string, execution_time_s=timer.elapsed,
+                    pdb_string=pdb_string, execution_time_s=round(timer.elapsed, 4),
                 )
                 return pdb_string, result
 
@@ -573,7 +598,7 @@ def run_foldx_repair(
                 "electrostatic_kon": None,
                 "partial_covalent": None,
                 "energy_ionisation": None,
-                "execution_time_s": timer.elapsed,
+                "execution_time_s": round(timer.elapsed, 4),
                 "method": "foldx_cli",
                 "success": True,
                 "error": None,
@@ -600,14 +625,14 @@ def run_foldx_repair(
         except subprocess.TimeoutExpired:
             result = _make_failed_result(
                 "foldx_cli", f"FoldX RepairPDB timed out after {timeout}s",
-                pdb_string=pdb_string, execution_time_s=timer.elapsed,
+                pdb_string=pdb_string, execution_time_s=round(timer.elapsed, 4),
             )
             return pdb_string, result
         except Exception as exc:
             logger.error("FoldX RepairPDB failed: %s", exc)
             result = _make_failed_result(
                 "foldx_cli", str(exc),
-                pdb_string=pdb_string, execution_time_s=timer.elapsed,
+                pdb_string=pdb_string, execution_time_s=round(timer.elapsed, 4),
             )
             return pdb_string, result
         finally:
@@ -750,7 +775,13 @@ def run_foldx_mutation(
 # Empirical (Offline) Stability Estimation
 # ────────────────────────────────────────────────────────────
 
-def empirical_stability(protein: str) -> FoldXResult:
+def empirical_stability(
+    protein: str,
+    *,
+    pdb_string: str | None = None,
+    timeout: float | None = None,
+    organism: str = "Homo_sapiens",
+) -> FoldXResult:
     """Estimate protein stability using empirical heuristics.
 
     Uses multiple sequence-based heuristics to estimate ΔG:
@@ -775,18 +806,29 @@ def empirical_stability(protein: str) -> FoldXResult:
 
     Args:
         protein: Protein sequence (single-letter amino acid codes).
+        pdb_string: PDB file content. If provided, can be used for more
+            accurate calculations; if None, uses protein-only empirical
+            method.
+        timeout: Maximum execution time in seconds. Falls back to
+            ``DEFAULT_ENGINE_TIMEOUT`` if not specified.
+        organism: Target organism (for API consistency). Default:
+            ``"Homo_sapiens"``.
 
     Returns:
         FoldXResult with method="empirical".
     """
+    if timeout is None:
+        timeout = DEFAULT_ENGINE_TIMEOUT
+
     # Validate input
     try:
         protein = validate_protein_sequence(protein, "FoldX")
     except ValueError as e:
         return _make_failed_result("empirical", str(e))
 
-    # Check cache
-    cached = _cache.get(protein, "empirical")
+    # Check cache — include pdb_string in cache key if provided
+    cache_key = protein if pdb_string is None else protein + pdb_string
+    cached = _cache.get(cache_key, "empirical")
     if cached is not None:
         logger.info("Empirical stability: cache hit")
         return cached
@@ -896,7 +938,7 @@ def empirical_stability(protein: str) -> FoldXResult:
 
         result = FoldXResult(
             protein=protein,
-            pdb_string=None,
+            pdb_string=pdb_string,
             stability_kcal=round(stability_kcal, 2),
             ddg_kcal=None,
             interaction_energy=None,
@@ -921,7 +963,7 @@ def empirical_stability(protein: str) -> FoldXResult:
             error=None,
         )
 
-        _cache.put(protein, "empirical", result)
+        _cache.put(cache_key, "empirical", result)
         logger.info("Empirical stability computed for protein of length %d: %.2f kcal/mol", n, stability_kcal)
         return result
 
@@ -934,6 +976,8 @@ def run_stability_batch(
     sequences: list[str],
     max_workers: int | None = None,
     batch_size: int | None = None,
+    *,
+    organism: str = "Homo_sapiens",
     **kwargs,
 ) -> list[FoldXResult]:
     """Run empirical stability analysis on multiple sequences in parallel.
@@ -947,6 +991,8 @@ def run_stability_batch(
             ``DEFAULT_BATCH_SIZE``.
         batch_size: Alias for *max_workers* (kept for API compatibility).
             If both are given, *max_workers* takes precedence.
+        organism: Target organism (for API consistency). Default:
+            ``"Homo_sapiens"``.
         **kwargs: Additional keyword arguments forwarded to
             :func:`empirical_stability`.
 
@@ -964,7 +1010,7 @@ def run_stability_batch(
     results: list[FoldXResult] = [None] * len(sequences)  # type: ignore[list-item]
 
     def _process(index: int, seq: str) -> tuple[int, FoldXResult]:
-        return index, empirical_stability(seq, **kwargs)
+        return index, empirical_stability(seq, organism=organism, **kwargs)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -996,6 +1042,8 @@ def scan_mutations(
     protein: str,
     pdb_string: str | None = None,
     positions: list[int] | None = None,
+    *,
+    organism: str = "Homo_sapiens",
 ) -> list[MutationResult]:
     """Scan all possible single-point mutations and estimate ΔΔG.
 
@@ -1010,17 +1058,21 @@ def scan_mutations(
         pdb_string: PDB structure content, if available.
         positions: Specific 0-indexed positions to scan. If None,
             scans all positions.
+        organism: Target organism (for API consistency). Default:
+            ``"Homo_sapiens"``.
 
     Returns:
         List of MutationResult sorted by score descending
         (most stabilizing first).
+
+    Raises:
+        FoldXError: If the protein sequence fails validation.
     """
     # Validate input
     try:
         protein = validate_protein_sequence(protein, "FoldX")
     except ValueError as e:
-        logger.error("scan_mutations validation failed: %s", e)
-        return []
+        raise FoldXError(str(e)) from e
 
     seq = protein.upper()
     n = len(seq)
@@ -1062,6 +1114,8 @@ def find_stabilizing_mutations(
     protein: str,
     pdb_string: str | None = None,
     ddg_threshold: float = -1.0,
+    *,
+    organism: str = "Homo_sapiens",
 ) -> list[MutationResult]:
     """Find mutations predicted to stabilize the protein.
 
@@ -1073,12 +1127,14 @@ def find_stabilizing_mutations(
         pdb_string: PDB structure content, if available.
         ddg_threshold: ΔΔG threshold in kcal/mol. Only mutations
             with ΔΔG < threshold are returned. Default: -1.0.
+        organism: Target organism (for API consistency). Default:
+            ``"Homo_sapiens"``.
 
     Returns:
         List of stabilizing MutationResult, sorted by ΔΔG
         (most stabilizing first).
     """
-    all_mutations = scan_mutations(protein, pdb_string)
+    all_mutations = scan_mutations(protein, pdb_string, organism=organism)
     return [
         m for m in all_mutations
         if m.details.get("ddg_kcal", -m.score) < ddg_threshold

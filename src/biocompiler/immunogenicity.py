@@ -35,15 +35,46 @@ from dataclasses import dataclass, field
 
 from .constants import BLOSUM62, DEFAULT_MHC_PEPTIDE_LENGTH, HYDROPATHY, STANDARD_AAS
 from .engine_base import EngineTimer, MutationResult, validate_protein_sequence
+from .exceptions import ImmunogenicityError
 
-try:
-    from .exceptions import ImmunogenicityError
-except ImportError:
-    from .exceptions import BioCompilerError
-
-    class ImmunogenicityError(BioCompilerError):
-        """Raised when immunogenicity analysis encounters invalid input."""
-        pass
+__all__ = [
+    "ImmunogenicityError",
+    "MHCBindingResult",
+    "MHCPredictionResult",
+    "ImmunogenicityResult",
+    "EpitopeRegion",
+    "EpitopePredictionResult",
+    "DEFAULT_MHC_I_ALLELES",
+    "DEFAULT_MHC_II_ALLELES",
+    "POPULATION_COVERAGE",
+    "ANTIGENICITY_SCALE",
+    "PARKER_SCALE",
+    "CHOU_FASMAN_TURN",
+    "EMINI_SCALE",
+    "ALL_SCALES",
+    "MHC_I_PSSM",
+    "MHC_II_PSSM",
+    "clear_cache",
+    "score_peptide_pssm",
+    "binding_score_to_ic50",
+    "classify_binding",
+    "predict_mhc_i_binding",
+    "predict_mhc_ii_binding",
+    "predict_all",
+    "predict_t_cell_epitopes",
+    "predict_kolaskar_tongaonkar",
+    "predict_parker_hydrophilicity",
+    "predict_chou_fasman_beta_turn",
+    "predict_eea",
+    "predict_bepipred_like",
+    "predict_conformational_epitopes",
+    "predict_epitopes",
+    "compute_surface_accessibility_approx",
+    "predict_b_cell_epitopes",
+    "compute_immunogenicity",
+    "find_deimmunization_mutations",
+    "compute_immunogenicity_batch",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -462,13 +493,13 @@ _prediction_cache: dict[tuple[str, str, int], list[MHCBindingResult]] = {}
 
 
 def clear_cache() -> None:
-    """Clear the MHC binding prediction cache and PSSM cache."""
-    global _prediction_cache, MHC_I_PSSM, MHC_II_PSSM, _pssm_built
+    """Clear the MHC binding prediction cache.
+
+    PSSMs are built once and kept across cache clears.
+    """
+    global _prediction_cache
     _prediction_cache.clear()
-    MHC_I_PSSM = {}
-    MHC_II_PSSM = {}
-    _pssm_built = False
-    logger.info("Immunogenicity cache cleared")
+    logger.info("Immunogenicity prediction cache cleared")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -506,6 +537,7 @@ class MHCPredictionResult:
     non_binders: int
     binding_profile: dict[str, float]  # allele -> max binding score
     # EngineResult protocol fields
+    method: str = "immunogenicity_pssm"
     success: bool = True
     error: str | None = None
     execution_time_s: float = 0.0
@@ -746,7 +778,7 @@ def predict_mhc_i_binding(
         return []
 
     # Check cache
-    cache_key = (hashlib.md5(protein.encode()).hexdigest(), ",".join(alleles), peptide_length)
+    cache_key = (hashlib.sha256(protein.encode()).hexdigest(), ",".join(alleles), peptide_length)
     if cache_key in _prediction_cache:
         return _prediction_cache[cache_key]
 
@@ -836,7 +868,7 @@ def predict_mhc_ii_binding(
         return []
 
     # Check cache
-    cache_key = (hashlib.md5(protein.encode()).hexdigest(), ",".join(alleles), -peptide_length)
+    cache_key = (hashlib.sha256(protein.encode()).hexdigest(), ",".join(alleles), -peptide_length)
     if cache_key in _prediction_cache:
         return _prediction_cache[cache_key]
 
@@ -971,8 +1003,9 @@ def predict_all(
             weak_binders=weak_binders,
             non_binders=non_binders,
             binding_profile=binding_profile,
-            execution_time_s=timer.elapsed,
         )
+
+    result.execution_time_s = round(timer.elapsed, 4)
 
     logger.info(
         "predict_all: %d MHC-I, %d MHC-II results; "
@@ -999,7 +1032,7 @@ def _validate_protein(protein: str) -> str:
     raises ``ImmunogenicityError`` on failure instead of ``ValueError``.
     """
     try:
-        return validate_protein_sequence(protein, "immunogenicity")
+        return validate_protein_sequence(protein, "Immunogenicity")
     except ValueError as exc:
         raise ImmunogenicityError(str(exc)) from exc
 
@@ -2129,6 +2162,7 @@ class ImmunogenicityResult:
 def compute_immunogenicity(
     protein: str,
     mhc_alleles: list[str] | None = None,
+    organism: str = "Homo_sapiens",
 ) -> ImmunogenicityResult:
     """Compute combined immunogenicity score for a protein.
 
@@ -2221,7 +2255,7 @@ def compute_immunogenicity(
             t_cell_epitopes=t_epitopes,
             b_cell_epitopes=b_epitopes_converted,
             deimmunization_candidates=deimm_candidates,
-            execution_time_s=timer.elapsed,
+            execution_time_s=round(timer.elapsed, 4),
             method="immunogenicity_pssm",
         )
 
@@ -2235,6 +2269,7 @@ def find_deimmunization_mutations(
     protein: str,
     epitope_threshold: float = 0.7,
     blosum62_min: int = 0,
+    organism: str = "Homo_sapiens",
 ) -> list[MutationResult]:
     """Find mutations that may reduce immunogenicity.
 
@@ -2366,6 +2401,7 @@ def find_deimmunization_mutations(
 
 def compute_immunogenicity_batch(
     sequences: list[str],
+    max_workers: int | None = None,
     **kwargs,
 ) -> list[ImmunogenicityResult]:
     """Compute immunogenicity scores for multiple sequences in parallel.
@@ -2388,7 +2424,7 @@ def compute_immunogenicity_batch(
     logger.info("compute_immunogenicity_batch: processing %d sequences", len(sequences))
 
     results: list[ImmunogenicityResult] = []
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
             executor.submit(compute_immunogenicity, seq, **kwargs): i
             for i, seq in enumerate(sequences)
