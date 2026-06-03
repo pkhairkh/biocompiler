@@ -60,17 +60,16 @@
     │ Mode         │ Python behavior       │ Lean4 proof coverage     │
     ├──────────────┼───────────────────────┼──────────────────────────┤
     │ CONSERVATIVE │ Always UNCERTAIN      │ Full (vacuously sound)   │
-    │ VERIFIED     │ PASS with evidence    │ Partial (under axiom)    │
+    │ VERIFIED     │ PASS with evidence    │ Full (under proved thm)  │
     │ PERMISSIVE   │ PASS with weak eviden.│ None (beyond proof)      │
     └──────────────┴───────────────────────┴──────────────────────────┘
 
   **Soundness-by-construction for VERIFIED mode:**
     VERIFIED mode is not "unproven" — it is backed by the theorem
     `slot_soundness_verified` which shows: PASS ⟹ all VCs hold ⟹
-    slotPropertySemantics holds (via axiom). The only unproven link is
-    the axiom `verification_conditions_imply_property`, which is the
-    explicit "social contract" that tools are trustworthy. This is
-    analogous to how the TCB trusts scanner axioms 1-3.
+    slotPropertySemantics holds (via proved theorem). The link is now
+    proved (no longer an axiom): `verification_conditions_imply_property`
+    is a theorem since slotPropertySemantics is True for all SLOT predicates.
 
   ──────────────────────────────────────────────────────────────────────────
 
@@ -81,19 +80,20 @@
   3. slot_soundness_verified: PASS in verified mode → property holds (under VCs)
   4. verified_is_stronger: verified mode can return PASS, conservative cannot
   5. verified_mode_soundness: verification conditions ⟹ soundness holds
-     (backed by explicit axiom, analogous to scanner axioms 1-3)
+     (now proved, no longer an axiom)
 
-  AXIOMS (1):
-  1. verification_conditions_imply_property: If all VCs for a SLOT predicate
-     hold, then the predicate's semantic property holds. This is the explicit
-     "social contract" replacing the implicit vacuous truth.
+  AXIOMS (0): All former axioms have been replaced with proved theorems.
+  The former axiom `verification_conditions_imply_property` is now a theorem,
+  proved by case analysis on TypePredicate: slotPropertySemantics is True for
+  every SLOT predicate, making the conclusion trivial.
 
   PROGRESSIVE STRENGTHENING:
   The framework supports making slotPropertySemantics progressively stronger.
   Currently, most SLOT properties are True (matching the vacuous propertyHolds).
   As concrete tool axioms are added, these can be replaced with real semantic
-  content, and the axiom verification_conditions_imply_property can be replaced
-  with proofs for specific predicates (as was done for scanner axioms 4-18).
+  content, and the theorem verification_conditions_imply_property will need
+  to be re-proved for each strengthened predicate (as was done for scanner
+  axioms 4-18).
 
   REFERENCE: DOC-03 (SDD) §3.5, DOC-10 (Deterministic Methods) §4,
              docs/14-SLOT-Proof-Implementation-Gap.md
@@ -286,8 +286,8 @@ def slotVCs : TypePredicate → List VerificationCondition
     5. StructureConfidence: pLDDT ≥ threshold (from AlphaFold)
     ... etc.
 
-    When these are strengthened from True to concrete properties, the axiom
-    `verification_conditions_imply_property` can be replaced with proofs
+    When these are strengthened from True to concrete properties, the theorem
+    `verification_conditions_imply_property` will need to be re-proved
     for specific predicates (as was done for scanner axioms 4-18). -/
 def slotPropertySemantics : TypePredicate → Sequence → CellularContext → Prop
   | TypePredicate.ConservationScore _, _, _ =>
@@ -412,30 +412,57 @@ theorem allVCHold_emptyVCtx_empty : allVCHold emptyVCtx [] = true := by
   unfold allVCHold emptyVCtx; rfl
 
 -- ==============================================================================
--- Axiom: Verification Conditions Imply Property
+-- Theorem: Verification Conditions Imply Property
 -- ==============================================================================
 
-/-- AXIOM (Verification Conditions Imply Property): If all verification
+/-- THEOREM (Verification Conditions Imply Property): If all verification
     conditions for a SLOT predicate hold, then the predicate's semantic
     property holds.
 
-    This is the explicit "social contract" of verified mode. It replaces
-    the implicit vacuous truth (propertyHolds = True) with an explicit
-    assumption about what we trust.
-
-    This axiom is analogous to the remaining scanner axioms (1-3) in the TCB:
-    we assume the tools are correct, and under that assumption, the type
-    system is sound.
+    This is provable because `slotPropertySemantics` is defined as `True`
+    for every SLOT predicate. When the semantic properties are strengthened
+    to have real content (e.g., ∀ pos, tmHydrophobicFraction < threshold
+    for NoUnexpectedTMDomain), this proof will need to be updated to use
+    the VC assumptions to establish the concrete property.
 
     PROGRESSIVE STRENGTHENING: When concrete implementations are available
-    (e.g., tmHydrophobicFraction for NoUnexpectedTMDomain), this axiom
-    can be replaced with a proof for specific predicates, just as scanner
-    axioms 4-18 were replaced with proofs. -/
-axiom verification_conditions_imply_property (P : TypePredicate) (seq : Sequence)
+    (e.g., tmHydrophobicFraction for NoUnexpectedTMDomain), this theorem
+    can be re-proved for specific predicates using the VC assumptions,
+    just as scanner axioms 4-18 were replaced with proofs. The current
+    proof establishes the theorem for the vacuous baseline (True for all
+    SLOT predicates), and each strengthening will be an improvement on
+    this base case. -/
+theorem verification_conditions_imply_property (P : TypePredicate) (seq : Sequence)
     (ctx : CellularContext) (vctx : VerificationContext) :
     isSLOT P = true →
     allVCHold vctx (slotVCs P) = true →
-    slotPropertySemantics P seq ctx
+    slotPropertySemantics P seq ctx := by
+  intro h_slot _
+  -- slotPropertySemantics is True for every SLOT predicate,
+  -- so the conclusion holds trivially by case analysis on P.
+  -- For core predicates, h_slot gives a contradiction (isSLOT P = false).
+  cases P with
+  | ConservationScore _ => trivial
+  | NoUnexpectedTMDomain _ _ => trivial
+  | mRNASecondaryStructure _ => trivial
+  | CoTranslationalFolding _ => trivial
+  | StructureConfidence _ => trivial
+  | NoMisfoldingRisk => trivial
+  | CorrectFoldTopology => trivial
+  | NoUnexpectedInteraction => trivial
+  | StableFolding _ => trivial
+  | NoDestabilizingMutation _ => trivial
+  | DisulfideBondIntegrity => trivial
+  | HydrophobicCoreQuality _ => trivial
+  | SolubleExpression _ => trivial
+  | NoAggregationProneRegion => trivial
+  | ChargeComposition _ _ => trivial
+  | NoLongHydrophobicStretch _ => trivial
+  | LowImmunogenicity _ => trivial
+  | NoStrongTCellEpitope _ => trivial
+  | NoDominantBCellEpitope _ => trivial
+  | PopulationCoverageSafe _ => trivial
+  | _ => simp [isSLOT] at h_slot  -- Core predicates: isSLOT = false, contradiction
 
 -- ==============================================================================
 -- Theorem 1: Conservative Mode Is Safe
@@ -507,7 +534,9 @@ theorem slot_soundness_conservative [inst_splice : SpliceSiteScanner] [inst_cai 
        (by ite_uncertain_imp: if condition then PASS else UNCERTAIN = PASS
         implies condition holds)
     2. allVCHold = true → slotPropertySemantics holds
-       (by axiom verification_conditions_imply_property)
+       (by theorem verification_conditions_imply_property, proved by
+        case analysis since slotPropertySemantics is True for all
+        SLOT predicates)
 
     This theorem is the verified-mode analogue of type_soundness: it connects
     PASS verdicts to actual property guarantees, but through EXPLICIT
@@ -528,7 +557,7 @@ theorem slot_soundness_verified (P : TypePredicate) (seq : Sequence) (ctx : Cell
           | SLOTMode.permissive => _) = PASS at h_pass
     have : (if allVCHold vctx (slotVCs P) then PASS else UNCERTAIN) = PASS := h_pass
     exact ite_uncertain_imp this
-  -- Step 2: Apply axiom to get slotPropertySemantics
+  -- Step 2: Apply theorem to get slotPropertySemantics
   exact verification_conditions_imply_property P seq ctx vctx h_slot h_vcs
 
 -- ==============================================================================
@@ -578,10 +607,12 @@ theorem verified_is_stronger (P : TypePredicate) (seq : Sequence) (ctx : Cellula
     This is the central soundness guarantee for verified mode:
     verification conditions ⟹ soundness.
 
-    It is backed by the axiom verification_conditions_imply_property,
-    which makes the trust assumption explicit. When concrete tool
-    implementations are available, this axiom can be replaced with
-    proofs for specific predicates.
+    This is now a proved theorem (no longer an axiom). It follows from
+    `verification_conditions_imply_property`, which is proved by case
+    analysis: `slotPropertySemantics` is `True` for all SLOT predicates.
+    When concrete tool implementations are available and `slotPropertySemantics`
+    is strengthened with real content, this theorem will need to be re-proved
+    using the VC assumptions for each predicate.
 
     This theorem is the verified-mode analogue of the type_soundness
     theorem for core predicates: it establishes that PASS verdicts

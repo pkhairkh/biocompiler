@@ -40,10 +40,16 @@ class TestStructurePipeline:
         from biocompiler.esmfold import predict_structure, ESMFoldResult
         result = predict_structure(HBB_PROTEIN)
         assert isinstance(result, ESMFoldResult)
-        # In test env, API is likely unavailable → success may be False
+        # In test env, API is likely unavailable → heuristic fallback
+        # may be used (success=True but no PDB string)
         if result.success:
-            assert result.pdb_string != ""
-            assert result.mean_plddt > 0
+            if result.method == "heuristic_fallback":
+                # Heuristic fallback has no PDB string but has pLDDT scores
+                assert result.pdb_string == ""
+                assert result.mean_plddt > 0
+            else:
+                assert result.pdb_string != ""
+                assert result.mean_plddt > 0
 
     def test_esmfold_offline_result_with_organism(self):
         """ESMFold predict_structure accepts organism param."""

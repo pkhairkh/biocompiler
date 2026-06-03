@@ -37,9 +37,11 @@ Accuracy and Confidence
   - **Heuristic fallback** (heuristic_fallback): When both API and local
     esm are unavailable, uses sequence-based heuristics (hydrophobicity,
     charge distribution, secondary structure propensity) to produce a
-    low-confidence estimate.  Mean pLDDT is capped at 40.0 and confidence
-    is always < 0.5.  This is significantly less accurate than ESMFold
-    and should only be used as a last resort to avoid UNCERTAIN verdicts.
+    low-confidence estimate.  Mean pLDDT is calibrated per-residue based on
+    predicted secondary structure (helix: 45-55, sheet: 40-50, coil: 25-35)
+    with overall mean typically 35-50, capped at 55.0.  Confidence is always
+    < 0.5.  This is significantly less accurate than ESMFold and should only
+    be used as a last resort to avoid UNCERTAIN verdicts.
   - **Offline mode** (complete failure): Returns success=False with no
     prediction.  Only reached if the heuristic fallback itself fails.
 
@@ -47,7 +49,8 @@ Accuracy and Confidence
     - API/local mode, mean pLDDT >= 70: **HIGH**
     - API/local mode, mean pLDDT 50-70: **MEDIUM**
     - API/local mode, mean pLDDT < 50: **LOW**
-    - Heuristic fallback: **VERY LOW** (confidence < 0.5, pLDDT capped at 40)
+    - Heuristic fallback: **VERY LOW** (confidence < 0.5, per-residue pLDDT
+      based on SS prediction: helix 45-55, sheet 40-50, coil 25-35)
     - Offline mode (no prediction): **NONE**
 
 **Known limitations:**
@@ -859,8 +862,10 @@ def predict_structure(
       2. **Local esm** — ``import esm`` and run ESMFold locally (if installed).
       3. **Heuristic fallback** — Use sequence-based heuristics (hydrophobicity,
          charge distribution, secondary structure propensity) to produce a
-         low-confidence estimate.  Mean pLDDT is capped at 40.0 and confidence
-         is always < 0.5.  The ``method`` field is set to ``"heuristic_fallback"``.
+         low-confidence estimate.  Per-residue pLDDT is calibrated based on
+         predicted secondary structure (helix: 45-55, sheet: 40-50, coil: 25-35)
+         with mean typically 35-50, capped at 55.0.  Confidence is always < 0.5.
+         The ``method`` field is set to ``"heuristic_fallback"``.
          This is NOT a substitute for ESMFold — it exists so that structure
          predicates can return a tentative verdict instead of UNCERTAIN.
       4. **Complete failure** — Return ``ESMFoldResult(success=False)`` with

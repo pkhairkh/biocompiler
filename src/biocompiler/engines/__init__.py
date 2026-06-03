@@ -9,6 +9,7 @@ from .esmfold_fallback import (
     estimate_secondary_structure_from_sequence,
     compute_hydrophobicity_profile,
     compute_charge_profile,
+    compute_contact_density,
     HEURISTIC_MAX_CONFIDENCE,
 )
 
@@ -18,5 +19,6 @@ __all__ = [
     "estimate_secondary_structure_from_sequence",
     "compute_hydrophobicity_profile",
     "compute_charge_profile",
+    "compute_contact_density",
     "HEURISTIC_MAX_CONFIDENCE",
 ]

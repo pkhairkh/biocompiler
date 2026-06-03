@@ -95,7 +95,7 @@ class TestESMFoldClient:
         assert result.method == "heuristic_fallback"
         assert result.protein == "MAG"
         assert result.mean_plddt > 0.0
-        assert result.mean_plddt <= 40.0  # capped at HEURISTIC_MAX_CONFIDENCE
+        assert result.mean_plddt <= 55.0  # capped at HEURISTIC_MAX_CONFIDENCE
         assert len(result.plddt_scores) == 3
         assert result.confidence_level == "very_low"
 
