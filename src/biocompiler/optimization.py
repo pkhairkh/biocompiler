@@ -1545,10 +1545,16 @@ class BioOptimizer:
         # Step: Reoptimize (iterative until convergence)
         seq = self._step_reoptimize(seq)
 
+        # Step: Remove ATTTA Instability Motifs
+        seq = self._step_remove_instability_motifs(seq)
+
         # Step: CpG Reconciliation (aggressive, after CAI hill climb/reoptimize)
         seq = self._step_cpg_reconciliation(seq)
 
-        # Evaluate all 8 predicates
+        # Step: GT Reconciliation (fix avoidable GTs that may have been introduced)
+        seq = self._step_gt_reconciliation(seq)
+
+        # Evaluate all 12 predicates
         results = self._evaluate_all_predicates(seq)
 
         # Generate certificate
@@ -3334,6 +3340,130 @@ class BioOptimizer:
     _phase5_avoid_cpg_islands = _step_avoid_cpg_islands
 
     # ──────────────────────────────────────────────────────────
+    # Step: Remove ATTTA Instability Motifs
+    # ──────────────────────────────────────────────────────────
+    def _step_remove_instability_motifs(self, seq: str) -> str:
+        """Remove ATTTA mRNA instability motifs by synonymous codon substitution.
+
+        ATTTA motifs are associated with mRNA instability in eukaryotic genes.
+        This step identifies ATTTA pentamers and attempts to disrupt them by
+        swapping one of the overlapping codons to a synonymous alternative that
+        does not contain the motif, while preserving GT/CG/RS constraints where
+        possible. Falls back to accepting minor constraint relaxation if needed
+        to eliminate ATTTA (instability removal has higher priority).
+        """
+        from .restriction_sites import get_recognition_site as _get_site
+
+        for iteration in range(100):
+            pos = seq.find("ATTTA")
+            if pos == -1:
+                break
+
+            n_codons = len(seq) // 3
+            best_swap = None  # (test_seq, score) where lower score = better
+            # Score: 0 = perfect (ATTTA gone, no new issues), 1 = ATTTA gone + new RS, 2 = ATTTA gone + worse GT
+
+            # Try swapping each overlapping codon
+            for offset in range(5):
+                ci = (pos + offset) // 3
+                if ci < 0 or ci >= n_codons:
+                    continue
+                codon = seq[ci*3:ci*3+3]
+                aa = CODON_TABLE.get(codon, "")
+                if not aa or aa == "*":
+                    continue
+                alternatives = sorted(
+                    AA_TO_CODONS.get(aa, [codon]),
+                    key=lambda c: self.species_cai.get(c, 0.0),
+                    reverse=True,
+                )
+                for alt in alternatives:
+                    if alt == codon:
+                        continue
+                    test = seq[:ci*3] + alt + seq[ci*3+3:]
+                    if "ATTTA" not in test:
+                        # Check constraints
+                        rs_ok = all(
+                            not (_s := _get_site(enz)) or _s not in test
+                            for enz in self.enzymes
+                        )
+                        from .type_system import check_no_avoidable_gt as _check_gt
+                        gt_result = _check_gt(test)
+                        old_gt = _check_gt(seq)
+                        gt_ok = gt_result.passed or not (not gt_result.passed and old_gt.passed)
+
+                        if rs_ok and gt_ok:
+                            # Perfect swap — use immediately
+                            return self._step_remove_instability_motifs(test)
+                        elif gt_ok and not rs_ok:
+                            score = 1  # New RS but GT preserved (RS easier to fix later)
+                        elif rs_ok and not gt_ok:
+                            score = 2  # GT worsened but no new RS
+                        else:
+                            score = 3  # Both worsened
+
+                        if best_swap is None or score < best_swap[1]:
+                            best_swap = (test, score)
+
+            if best_swap is not None:
+                # Use the best available swap (even if not perfect)
+                # After applying, run a reconciliation pass to fix any introduced issues
+                seq = best_swap[0]
+                # Re-check and fix restriction sites
+                for enz in self.enzymes:
+                    site = _get_site(enz)
+                    if site and site in seq:
+                        ci_rs = seq.find(site) // 3
+                        if 0 <= ci_rs < n_codons:
+                            aa = CODON_TABLE.get(seq[ci_rs*3:ci_rs*3+3], "")
+                            current = seq[ci_rs*3:ci_rs*3+3]
+                            for alt in AA_TO_CODONS.get(aa, [current]):
+                                if alt != current:
+                                    test2 = seq[:ci_rs*3] + alt + seq[ci_rs*3+3:]
+                                    if site not in test2 and "ATTTA" not in test2:
+                                        seq = test2
+                                        break
+                continue
+
+            # No single-codon swap worked; try 2-codon coordinated swap
+            fixed = False
+            for offset1 in range(5):
+                ci1 = (pos + offset1) // 3
+                if ci1 < 0 or ci1 >= n_codons:
+                    continue
+                aa1 = CODON_TABLE.get(seq[ci1*3:ci1*3+3], "")
+                if not aa1 or aa1 == "*":
+                    continue
+                for offset2 in range(offset1 + 1, 5):
+                    ci2 = (pos + offset2) // 3
+                    if ci2 < 0 or ci2 >= n_codons or ci2 == ci1:
+                        continue
+                    aa2 = CODON_TABLE.get(seq[ci2*3:ci2*3+3], "")
+                    if not aa2 or aa2 == "*":
+                        continue
+                    for alt1 in AA_TO_CODONS.get(aa1, []):
+                        for alt2 in AA_TO_CODONS.get(aa2, []):
+                            test_list = list(seq)
+                            test_list[ci1*3:ci1*3+3] = list(alt1)
+                            test_list[ci2*3:ci2*3+3] = list(alt2)
+                            test = "".join(test_list)
+                            if "ATTTA" not in test:
+                                seq = test
+                                fixed = True
+                                break
+                        if fixed:
+                            break
+                    if fixed:
+                        break
+                if fixed:
+                    break
+
+            if not fixed:
+                break
+
+        return seq
+
+    # ──────────────────────────────────────────────────────────
     # Step: CpG Reconciliation (aggressive, runs after CAI hill climb)
     # ──────────────────────────────────────────────────────────
     def _step_cpg_reconciliation(self, seq: str) -> str:
@@ -4236,6 +4366,136 @@ class BioOptimizer:
                                 return test_list
 
         return None
+
+    # ──────────────────────────────────────────────────────────
+    # Step: GT Reconciliation (fix avoidable GTs introduced by ATTTA removal)
+    # ──────────────────────────────────────────────────────────
+    def _step_gt_reconciliation(self, seq: str) -> str:
+        """Fix avoidable GT dinucleotides that may have been introduced by
+        the ATTTA removal or CpG reconciliation steps.
+
+        Strategy: For each avoidable GT, try synonymous codon swaps that
+        eliminate the GT without reintroducing ATTTA, CpG islands, or
+        restriction sites.
+        """
+        from .type_system import check_no_avoidable_gt as _check_gt
+
+        for iteration in range(50):
+            gt_result = _check_gt(seq)
+            if gt_result.passed:
+                break
+
+            avoidable_positions = gt_result.positions
+            if not avoidable_positions:
+                break
+
+            fixed = False
+            for pos in avoidable_positions:
+                n_codons = len(seq) // 3
+                # Try codons overlapping the GT
+                for offset in [0, 1]:
+                    ci = (pos + offset) // 3
+                    if ci < 0 or ci >= n_codons:
+                        continue
+                    codon = seq[ci*3:ci*3+3]
+                    aa = CODON_TABLE.get(codon, "")
+                    if not aa or aa == "*":
+                        continue
+                    current = codon
+                    # Try GT-free alternatives first, then all alternatives sorted by CAI
+                    gt_free = [c for c in AA_TO_CODONS.get(aa, []) if "GT" not in c and c != current]
+                    other_alts = sorted(
+                        [c for c in AA_TO_CODONS.get(aa, []) if "GT" in c and c != current],
+                        key=lambda c: self.species_cai.get(c, 0.0),
+                        reverse=True,
+                    )
+                    alternatives = gt_free + other_alts
+
+                    for alt in alternatives:
+                        test = seq[:ci*3] + alt + seq[ci*3+3:]
+                        # Check GT improved
+                        new_gt = _check_gt(test)
+                        if new_gt.passed or len(new_gt.positions) < len(avoidable_positions):
+                            # Check no ATTTA reintroduced
+                            if "ATTTA" in test:
+                                continue
+                            # Check no new restriction sites
+                            from .restriction_sites import get_recognition_site as _get_site
+                            rs_ok = all(
+                                not (_s := _get_site(enz)) or _s not in test
+                                for enz in self.enzymes
+                            )
+                            if not rs_ok:
+                                continue
+                            # Check no CpG island created
+                            from .type_system import check_no_cpg_island as _check_cpg
+                            cpg_result = _check_cpg(test)
+                            if not cpg_result.passed:
+                                continue
+                            seq = test
+                            fixed = True
+                            break
+                    if fixed:
+                        break
+                if fixed:
+                    break
+
+            if not fixed:
+                # Try 2-codon coordinated swap for cross-codon GTs
+                for pos in avoidable_positions:
+                    left_ci = pos // 3
+                    right_ci = (pos + 1) // 3
+                    if left_ci == right_ci or left_ci < 0 or right_ci < 0:
+                        continue
+                    n_codons = len(seq) // 3
+                    if left_ci >= n_codons or right_ci >= n_codons:
+                        continue
+
+                    left_aa = CODON_TABLE.get(seq[left_ci*3:left_ci*3+3], "")
+                    right_aa = CODON_TABLE.get(seq[right_ci*3:right_ci*3+3], "")
+                    if not left_aa or not right_aa or left_aa == "*" or right_aa == "*":
+                        continue
+
+                    left_alts = AA_TO_CODONS.get(left_aa, [])
+                    right_alts = AA_TO_CODONS.get(right_aa, [])
+
+                    for left_alt in left_alts:
+                        for right_alt in right_alts:
+                            # Skip if GT still at boundary
+                            if left_alt[-1] == "G" and right_alt[0] == "T":
+                                continue
+                            test_list = list(seq)
+                            test_list[left_ci*3:left_ci*3+3] = list(left_alt)
+                            test_list[right_ci*3:right_ci*3+3] = list(right_alt)
+                            test = "".join(test_list)
+
+                            if "ATTTA" in test:
+                                continue
+                            new_gt = _check_gt(test)
+                            if not new_gt.passed and len(new_gt.positions) >= len(avoidable_positions):
+                                continue
+                            # Check RS and CpG
+                            from .restriction_sites import get_recognition_site as _get_site
+                            rs_ok = all(
+                                not (_s := _get_site(enz)) or _s not in test
+                                for enz in self.enzymes
+                            )
+                            if not rs_ok:
+                                continue
+                            from .type_system import check_no_cpg_island as _check_cpg
+                            if not _check_cpg(test).passed:
+                                continue
+                            seq = test
+                            fixed = True
+                            break
+                        if fixed:
+                            break
+                    if fixed:
+                        break
+                if not fixed:
+                    break
+
+        return seq
 
     # ──────────────────────────────────────────────────────────
     # Step: CAI Hill Climb
