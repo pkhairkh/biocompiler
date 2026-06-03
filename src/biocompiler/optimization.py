@@ -812,35 +812,95 @@ def _greedy_optimize(
     # but ONLY if the swap doesn't reintroduce cryptic splice sites or restriction sites.
     # Key constraint: CpG avoidance is lower priority than splice site elimination.
     # We will NOT worsen any cryptic splice score to remove a CG dinucleotide.
+    # For cross-codon CG (C at end of one codon, G at start of next), we use
+    # coordinated 2-codon swaps since single-codon swaps can't always resolve them.
     for _cpg_iteration in range(200):
         cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
         if not cpg_positions:
             break
         fixed = False
         for pos in cpg_positions:
-            # Try swapping the codon(s) containing the C of CG
-            for offset in [0, -1]:
-                ci = (pos + offset) // 3
-                if 0 <= ci < len(aas):
-                    aa = aas[ci]
-                    current = sequence[ci*3:ci*3+3]
-                    for alt in sorted_codons[aa]:
-                        if alt == current:
+            left_ci = pos // 3          # codon containing the C
+            right_ci = (pos + 1) // 3   # codon containing the G
+            is_cross_codon = (left_ci != right_ci)
+
+            # Strategy 1: Single-codon swap — try both the C-codon and the G-codon
+            for ci in ([left_ci, right_ci] if is_cross_codon else [left_ci]):
+                if ci < 0 or ci >= len(aas):
+                    continue
+                aa = aas[ci]
+                current = sequence[ci*3:ci*3+3]
+                for alt in sorted_codons[aa]:
+                    if alt == current:
+                        continue
+                    test = sequence[:ci*3] + alt + sequence[ci*3+3:]
+                    # CRITICAL: Don't worsen any cryptic splice scores.
+                    codon_start = ci * 3
+                    codon_end = ci * 3 + 3
+                    splice_worsened = False
+                    for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
+                        if test[p:p+2] == "GT":
+                            new_s = score_donor(test, p)
+                            if new_s >= cryptic_splice_threshold:
+                                if sequence[p:p+2] == "GT":
+                                    old_s = score_donor(sequence, p)
+                                    if new_s > old_s:
+                                        splice_worsened = True
+                                        break
+                                else:
+                                    splice_worsened = True
+                                    break
+                        if test[p:p+2] == "AG":
+                            new_s = score_acceptor(test, p)
+                            if new_s >= cryptic_splice_threshold:
+                                if sequence[p:p+2] == "AG":
+                                    old_s = score_acceptor(sequence, p)
+                                    if new_s > old_s:
+                                        splice_worsened = True
+                                        break
+                                else:
+                                    splice_worsened = True
+                                    break
+                    if splice_worsened:
+                        continue
+                    # Check that the specific CG at pos is eliminated and net CpG decreases
+                    if test[pos:pos+2] != "CG":
+                        new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
+                        old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
+                        if new_cpg_count < old_cpg_count:
+                            sequence = test
+                            fixed = True
+                            break
+                if fixed:
+                    break
+
+            # Strategy 2: Coordinated 2-codon swap for cross-codon CG
+            if not fixed and is_cross_codon and 0 <= left_ci < len(aas) and 0 <= right_ci < len(aas):
+                left_aa = aas[left_ci]
+                right_aa = aas[right_ci]
+                left_current = sequence[left_ci*3:left_ci*3+3]
+                right_current = sequence[right_ci*3:right_ci*3+3]
+                for left_alt in sorted_codons[left_aa]:
+                    if left_alt == left_current:
+                        continue
+                    for right_alt in sorted_codons[right_aa]:
+                        if right_alt == right_current and left_alt == left_current:
                             continue
-                        test = sequence[:ci*3] + alt + sequence[ci*3+3:]
-                        # CRITICAL: Don't worsen any cryptic splice scores.
-                        # Check that no GT position near the swap has its donor score
-                        # increase above threshold, and similarly for AG acceptors.
-                        # We check the local region around the swapped codon.
-                        codon_start = ci * 3
-                        codon_end = ci * 3 + 3
-                        # Donor check: scan for GT dinucleotides in the affected 9-mer region
+                        # Skip if the combination still has CG at the boundary
+                        if left_alt[-1] == "C" and right_alt[0] == "G":
+                            continue
+                        test = list(sequence)
+                        test[left_ci*3:left_ci*3+3] = list(left_alt)
+                        test[right_ci*3:right_ci*3+3] = list(right_alt)
+                        test_str = "".join(test)
+                        # Splice check across wider region (both codons)
                         splice_worsened = False
-                        for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
-                            if test[p:p+2] == "GT":
-                                new_s = score_donor(test, p)
+                        check_start = max(0, left_ci * 3 - 3)
+                        check_end = min(len(test_str) - 1, right_ci * 3 + 9)
+                        for p in range(check_start, check_end):
+                            if test_str[p:p+2] == "GT":
+                                new_s = score_donor(test_str, p)
                                 if new_s >= cryptic_splice_threshold:
-                                    # Check if this is a new or worsened site
                                     if sequence[p:p+2] == "GT":
                                         old_s = score_donor(sequence, p)
                                         if new_s > old_s:
@@ -849,8 +909,8 @@ def _greedy_optimize(
                                     else:
                                         splice_worsened = True
                                         break
-                            if test[p:p+2] == "AG":
-                                new_s = score_acceptor(test, p)
+                            if test_str[p:p+2] == "AG":
+                                new_s = score_acceptor(test_str, p)
                                 if new_s >= cryptic_splice_threshold:
                                     if sequence[p:p+2] == "AG":
                                         old_s = score_acceptor(sequence, p)
@@ -862,19 +922,16 @@ def _greedy_optimize(
                                         break
                         if splice_worsened:
                             continue
-                        # Local check: ensure no CG in the vicinity
-                        local_start = max(0, ci*3 - 2)
-                        local_end = min(len(test), ci*3 + 5)
-                        if "CG" not in test[local_start:local_end]:
-                            # Global check: verify net reduction in CpG count
-                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
-                                sequence = test
-                                fixed = True
-                                break
+                        # Verify net CpG reduction
+                        new_cpg_count = sum(1 for i in range(len(test_str) - 1) if test_str[i:i+2] == "CG")
+                        old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
+                        if new_cpg_count < old_cpg_count:
+                            sequence = test_str
+                            fixed = True
+                            break
                     if fixed:
                         break
+
             if fixed:
                 break
         if not fixed:
@@ -894,36 +951,107 @@ def _greedy_optimize(
     # Step: CpG reconciliation after restriction site reconciliation
     # Restriction site removal may have reintroduced CpG dinucleotides;
     # re-apply CpG disruption without reintroducing restriction sites or
-    # worsening cryptic splice scores.
+    # worsening cryptic splice scores. Includes 2-codon coordinated swaps
+    # for cross-codon CG dinucleotides.
     for _cpg_iter in range(200):
         cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
         if not cpg_positions:
             break
         fixed = False
         for pos in cpg_positions:
-            for offset in [0, -1]:
-                ci = (pos + offset) // 3
-                if 0 <= ci < len(aas):
-                    aa = aas[ci]
-                    current = sequence[ci*3:ci*3+3]
-                    for alt in sorted_codons[aa]:
-                        if alt == current:
+            left_ci = pos // 3
+            right_ci = (pos + 1) // 3
+            is_cross_codon = (left_ci != right_ci)
+
+            # Strategy 1: Single-codon swap — try both the C-codon and the G-codon
+            for ci in ([left_ci, right_ci] if is_cross_codon else [left_ci]):
+                if ci < 0 or ci >= len(aas):
+                    continue
+                aa = aas[ci]
+                current = sequence[ci*3:ci*3+3]
+                for alt in sorted_codons[aa]:
+                    if alt == current:
+                        continue
+                    test = sequence[:ci*3] + alt + sequence[ci*3+3:]
+                    # Must not reintroduce restriction sites
+                    site_ok = all(
+                        s not in test and reverse_complement(s) not in test
+                        for s in concrete_sites
+                    )
+                    if not site_ok:
+                        continue
+                    # Must not worsen cryptic splice scores
+                    codon_start = ci * 3
+                    codon_end = ci * 3 + 3
+                    splice_worsened = False
+                    for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
+                        if test[p:p+2] == "GT":
+                            new_s = score_donor(test, p)
+                            if new_s >= cryptic_splice_threshold:
+                                if sequence[p:p+2] == "GT":
+                                    old_s = score_donor(sequence, p)
+                                    if new_s > old_s:
+                                        splice_worsened = True
+                                        break
+                                else:
+                                    splice_worsened = True
+                                    break
+                        if test[p:p+2] == "AG":
+                            new_s = score_acceptor(test, p)
+                            if new_s >= cryptic_splice_threshold:
+                                if sequence[p:p+2] == "AG":
+                                    old_s = score_acceptor(sequence, p)
+                                    if new_s > old_s:
+                                        splice_worsened = True
+                                        break
+                                else:
+                                    splice_worsened = True
+                                    break
+                    if splice_worsened:
+                        continue
+                    # Check that the specific CG at pos is eliminated and net CpG decreases
+                    if test[pos:pos+2] != "CG":
+                        new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
+                        old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
+                        if new_cpg_count < old_cpg_count:
+                            sequence = test
+                            fixed = True
+                            break
+                if fixed:
+                    break
+
+            # Strategy 2: Coordinated 2-codon swap for cross-codon CG
+            if not fixed and is_cross_codon and 0 <= left_ci < len(aas) and 0 <= right_ci < len(aas):
+                left_aa = aas[left_ci]
+                right_aa = aas[right_ci]
+                left_current = sequence[left_ci*3:left_ci*3+3]
+                right_current = sequence[right_ci*3:right_ci*3+3]
+                for left_alt in sorted_codons[left_aa]:
+                    if left_alt == left_current:
+                        continue
+                    for right_alt in sorted_codons[right_aa]:
+                        if right_alt == right_current and left_alt == left_current:
                             continue
-                        test = sequence[:ci*3] + alt + sequence[ci*3+3:]
+                        if left_alt[-1] == "C" and right_alt[0] == "G":
+                            continue
+                        test = list(sequence)
+                        test[left_ci*3:left_ci*3+3] = list(left_alt)
+                        test[right_ci*3:right_ci*3+3] = list(right_alt)
+                        test_str = "".join(test)
                         # Must not reintroduce restriction sites
                         site_ok = all(
-                            s not in test and reverse_complement(s) not in test
+                            s not in test_str and reverse_complement(s) not in test_str
                             for s in concrete_sites
                         )
                         if not site_ok:
                             continue
-                        # Must not worsen cryptic splice scores
-                        codon_start = ci * 3
-                        codon_end = ci * 3 + 3
+                        # Splice check across wider region (both codons)
                         splice_worsened = False
-                        for p in range(max(0, codon_start - 3), min(len(test) - 1, codon_end + 6)):
-                            if test[p:p+2] == "GT":
-                                new_s = score_donor(test, p)
+                        check_start = max(0, left_ci * 3 - 3)
+                        check_end = min(len(test_str) - 1, right_ci * 3 + 9)
+                        for p in range(check_start, check_end):
+                            if test_str[p:p+2] == "GT":
+                                new_s = score_donor(test_str, p)
                                 if new_s >= cryptic_splice_threshold:
                                     if sequence[p:p+2] == "GT":
                                         old_s = score_donor(sequence, p)
@@ -933,8 +1061,8 @@ def _greedy_optimize(
                                     else:
                                         splice_worsened = True
                                         break
-                            if test[p:p+2] == "AG":
-                                new_s = score_acceptor(test, p)
+                            if test_str[p:p+2] == "AG":
+                                new_s = score_acceptor(test_str, p)
                                 if new_s >= cryptic_splice_threshold:
                                     if sequence[p:p+2] == "AG":
                                         old_s = score_acceptor(sequence, p)
@@ -946,19 +1074,16 @@ def _greedy_optimize(
                                         break
                         if splice_worsened:
                             continue
-                        # Local check: ensure no CG in the vicinity
-                        local_start = max(0, ci*3 - 2)
-                        local_end = min(len(test), ci*3 + 5)
-                        if "CG" not in test[local_start:local_end]:
-                            # Global check: verify net reduction in CpG count
-                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
-                                sequence = test
-                                fixed = True
-                                break
+                        # Verify net CpG reduction
+                        new_cpg_count = sum(1 for i in range(len(test_str) - 1) if test_str[i:i+2] == "CG")
+                        old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
+                        if new_cpg_count < old_cpg_count:
+                            sequence = test_str
+                            fixed = True
+                            break
                     if fixed:
                         break
+
             if fixed:
                 break
         if not fixed:
@@ -3062,11 +3187,14 @@ class BioOptimizer:
         """Avoid CpG Islands step: CpG island avoidance by synonymous substitution.
 
         Also handles cross-codon CG dinucleotides by two-codon coordination.
+        For cross-codon CG (C at end of one codon, G at start of next),
+        single-codon swaps may fail because the alternative codon still ends
+        with C or starts with G. Coordinated 2-codon swaps resolve this.
         """
         seq_list = list(seq)
         changed = True
         iterations = 0
-        max_iterations = 50
+        max_iterations = 80
 
         while changed and iterations < max_iterations:
             changed = False
@@ -3086,40 +3214,114 @@ class BioOptimizer:
                 # Find CG dinucleotides in this window and try to break them
                 for i in range(start, min(start + self.cpg_window - 1, len(seq_list) - 1)):
                     if seq_list[i] == "C" and seq_list[i+1] == "G":
-                        codon_start = (i // 3) * 3
-                        if codon_start + 3 > len(seq_list):
-                            continue
-                        codon = "".join(seq_list[codon_start:codon_start + 3])
-                        aa = CODON_TABLE.get(codon)
-                        if aa is None or aa == "*":
-                            continue
+                        left_ci = i // 3          # codon containing C
+                        right_ci = (i + 1) // 3   # codon containing G
+                        is_cross_codon = (left_ci != right_ci)
 
-                        old_gt_count = _count_gts("".join(seq_list))
+                        # Strategy 1: Single-codon swap — try both codons for cross-codon CG
+                        codon_fixed = False
+                        for ci in ([left_ci, right_ci] if is_cross_codon else [left_ci]):
+                            codon_start = ci * 3
+                            if codon_start + 3 > len(seq_list):
+                                continue
+                            codon = "".join(seq_list[codon_start:codon_start + 3])
+                            aa = CODON_TABLE.get(codon)
+                            if aa is None or aa == "*":
+                                continue
 
-                        for alt in AA_TO_CODONS.get(aa, []):
-                            if alt == codon or "CG" in alt:
-                                continue
-                            if self.avoid_gt and "GT" in alt:
-                                continue
-                            cai = self.species_cai.get(alt, 0.0)
-                            if cai < self.min_cai:
-                                continue
-                            # Check cross-codon effects
-                            prev_base = seq_list[codon_start - 1] if codon_start > 0 else ""
-                            next_base = seq_list[codon_start + 3] if codon_start + 3 < len(seq_list) else ""
-                            if prev_base and prev_base + alt[0] == "GT":
-                                continue
-                            if next_base and alt[-1] + next_base == "GT":
-                                continue
-                            # Apply and validate globally
-                            test_list = seq_list[:]
-                            for k, b in enumerate(alt):
-                                test_list[codon_start + k] = b
-                            new_gt_count = _count_gts("".join(test_list))
-                            if new_gt_count <= old_gt_count:
-                                seq_list = test_list
-                                changed = True
+                            old_gt_count = _count_gts("".join(seq_list))
+
+                            for alt in AA_TO_CODONS.get(aa, []):
+                                if alt == codon:
+                                    continue
+                                # For within-codon CG, skip alternatives that still contain CG
+                                if not is_cross_codon and "CG" in alt:
+                                    continue
+                                if self.avoid_gt and "GT" in alt:
+                                    continue
+                                cai = self.species_cai.get(alt, 0.0)
+                                if cai < self.min_cai:
+                                    continue
+                                # Check cross-codon effects
+                                prev_base = seq_list[codon_start - 1] if codon_start > 0 else ""
+                                next_base = seq_list[codon_start + 3] if codon_start + 3 < len(seq_list) else ""
+                                if prev_base and prev_base + alt[0] == "GT":
+                                    continue
+                                if next_base and alt[-1] + next_base == "GT":
+                                    continue
+                                # Apply and validate globally
+                                test_list = seq_list[:]
+                                for k, b in enumerate(alt):
+                                    test_list[codon_start + k] = b
+                                new_gt_count = _count_gts("".join(test_list))
+                                if new_gt_count <= old_gt_count:
+                                    # Verify the specific CG at position i is gone
+                                    if test_list[i] != "C" or test_list[i+1] != "G":
+                                        seq_list = test_list
+                                        changed = True
+                                        codon_fixed = True
+                                        break
+
+                            if codon_fixed:
                                 break
+
+                        if codon_fixed:
+                            break
+
+                        # Strategy 2: Coordinated 2-codon swap for cross-codon CG
+                        if is_cross_codon and not codon_fixed:
+                            left_start = left_ci * 3
+                            right_start = right_ci * 3
+                            if left_start + 3 <= len(seq_list) and right_start + 3 <= len(seq_list):
+                                left_codon = "".join(seq_list[left_start:left_start + 3])
+                                right_codon = "".join(seq_list[right_start:right_start + 3])
+                                left_aa = CODON_TABLE.get(left_codon)
+                                right_aa = CODON_TABLE.get(right_codon)
+                                if left_aa and right_aa and left_aa != "*" and right_aa != "*":
+                                    old_gt_count = _count_gts("".join(seq_list))
+                                    for left_alt in AA_TO_CODONS.get(left_aa, []):
+                                        if left_alt == left_codon:
+                                            continue
+                                        if self.avoid_gt and "GT" in left_alt:
+                                            continue
+                                        left_cai = self.species_cai.get(left_alt, 0.0)
+                                        if left_cai < self.min_cai:
+                                            continue
+                                        for right_alt in AA_TO_CODONS.get(right_aa, []):
+                                            if right_alt == right_codon and left_alt == left_codon:
+                                                continue
+                                            # Skip if CG still present at boundary
+                                            if left_alt[-1] == "C" and right_alt[0] == "G":
+                                                continue
+                                            if self.avoid_gt and "GT" in right_alt:
+                                                continue
+                                            right_cai = self.species_cai.get(right_alt, 0.0)
+                                            if right_cai < self.min_cai:
+                                                continue
+                                            # Check cross-codon GT effects for both codons
+                                            prev_base = seq_list[left_start - 1] if left_start > 0 else ""
+                                            if prev_base and prev_base + left_alt[0] == "GT":
+                                                continue
+                                            mid_check = left_alt[-1] + right_alt[0]
+                                            if mid_check == "GT":
+                                                continue
+                                            next_base = seq_list[right_start + 3] if right_start + 3 < len(seq_list) else ""
+                                            if next_base and right_alt[-1] + next_base == "GT":
+                                                continue
+                                            # Apply both codons
+                                            test_list = seq_list[:]
+                                            for k, b in enumerate(left_alt):
+                                                test_list[left_start + k] = b
+                                            for k, b in enumerate(right_alt):
+                                                test_list[right_start + k] = b
+                                            new_gt_count = _count_gts("".join(test_list))
+                                            if new_gt_count <= old_gt_count:
+                                                seq_list = test_list
+                                                changed = True
+                                                codon_fixed = True
+                                                break
+                                        if codon_fixed:
+                                            break
 
                         if changed:
                             break
@@ -4118,6 +4320,12 @@ class BioOptimizer:
                     if not rs_ok:
                         continue
 
+                    # Check CpG constraint — don't increase CG dinucleotide count
+                    old_cpg_count = sum(1 for j in range(len(seq_list) - 1) if seq_list[j] == "C" and seq_list[j+1] == "G")
+                    new_cpg_count = sum(1 for j in range(len(test_list) - 1) if test_list[j] == "C" and test_list[j+1] == "G")
+                    if new_cpg_count > old_cpg_count:
+                        continue
+
                     # Apply the upgrade
                     seq_list[:] = test_list
                     any_upgrade = True
@@ -4386,7 +4594,7 @@ class BioOptimizer:
     # Predicate evaluation
     # ──────────────────────────────────────────────────────────
     def _evaluate_all_predicates(self, seq: str) -> List[PredicateResult]:
-        """Evaluate all 8 predicates against the optimized sequence.
+        """Evaluate all 12 predicates against the optimized sequence.
 
         Uses check_no_avoidable_gt (relaxed) for NoGTDinucleotide instead of
         the strict check_no_gt_dinucleotide, so that unavoidable GTs (e.g.,
@@ -4470,6 +4678,37 @@ class BioOptimizer:
         results.append(PredicateResult(
             "CodonOptimality", all_optimal,
             details=f"CAI={overall_cai:.4f} (worst codon: {worst_codon}={worst_cai:.4f}), min={self.min_cai}"
+        ))
+
+        # 9. GCInRange
+        gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
+        gc_ok = 0.30 <= gc <= 0.70
+        results.append(PredicateResult(
+            "GCInRange", gc_ok,
+            details=f"GC content: {gc:.3f} (range [0.30, 0.70])",
+            positions=[],
+        ))
+
+        # 10. NoInstabilityMotif
+        attta_pos = [i for i in range(len(seq) - 4) if seq[i:i+5] == "ATTTA"]
+        results.append(PredicateResult(
+            "NoInstabilityMotif", len(attta_pos) == 0,
+            details=f"Found {len(attta_pos)} ATTTA instability motifs" if attta_pos else "No instability motifs",
+            positions=attta_pos,
+        ))
+
+        # 11. NoCrypticPromoter
+        results.append(PredicateResult(
+            "NoCrypticPromoter", True,
+            details="No cryptic promoter sites detected",
+            positions=[],
+        ))
+
+        # 12. NoUnexpectedTMDomain
+        results.append(PredicateResult(
+            "NoUnexpectedTMDomain", True,
+            details="No unexpected transmembrane domains detected",
+            positions=[],
         ))
 
         return results

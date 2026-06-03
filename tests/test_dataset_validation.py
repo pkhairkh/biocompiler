@@ -606,6 +606,9 @@ class TestDatasetEdgeCases:
         # Should produce a valid optimized sequence
         assert len(result.sequence) > 0, "TP53 optimization produced empty sequence"
         assert len(result.sequence) % 3 == 0, "TP53 sequence not divisible by 3"
+        assert len(result.sequence) == len(tp53["protein"]) * 3, (
+            "TP53 sequence length should match protein"
+        )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == tp53["protein"], (
             f"TP53: translation mismatch after optimization"

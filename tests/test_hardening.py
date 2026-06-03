@@ -486,8 +486,9 @@ class TestCLIEnhancements:
     def test_cli_version(self):
         """CLI --version should work."""
         import subprocess
+        import sys
         result = subprocess.run(
-            ["biocompiler", "--version"],
+            [sys.executable, "-m", "biocompiler", "--version"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -496,8 +497,9 @@ class TestCLIEnhancements:
     def test_cli_scan_smoke(self):
         """CLI scan should work with a basic sequence."""
         import subprocess
+        import sys
         result = subprocess.run(
-            ["biocompiler", "scan",
+            [sys.executable, "-m", "biocompiler", "scan",
              "--sequence", "ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAACGTGGATGAAGTTGGTGGTGAGGCCCTGGGCAG"],
             capture_output=True, text=True,
         )
@@ -507,8 +509,9 @@ class TestCLIEnhancements:
     def test_cli_help(self):
         """CLI --help should list all subcommands."""
         import subprocess
+        import sys
         result = subprocess.run(
-            ["biocompiler", "--help"],
+            [sys.executable, "-m", "biocompiler", "--help"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
