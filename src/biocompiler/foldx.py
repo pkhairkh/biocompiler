@@ -11,6 +11,28 @@ Also includes systematic mutation scanning and stability landscape analysis
 (merged from foldx_mutations). Identifies stabilizing/destabilizing mutations,
 conserved positions, compensatory mutations, and structural/functional hotspots.
 
+Accuracy and Confidence
+----------------------
+**FoldX CLI mode** (when FoldX is installed on PATH):
+  - Real FoldX achieves ±1 kcal/mol accuracy for ΔΔG predictions
+    (Schymkowitz et al., Nucleic Acids Res 2005).
+  - This is the gold standard for computational stability prediction.
+
+**Empirical mode** (offline heuristic, used when FoldX CLI is unavailable):
+  - MAE: ~3.4 kcal/mol overall (95% CI: 2.5–4.3 kcal/mol)
+  - Direction accuracy: 100% (correct stable vs unstable classification)
+  - Small proteins (<100 aa): MAE ~1.2 kcal/mol, 95% CI: 0.6–1.8 kcal/mol
+  - Medium proteins (100–300 aa): MAE ~3.2 kcal/mol
+  - Large proteins (>300 aa): MAE ~9.8 kcal/mol (heuristic does not scale)
+  - Pearson r ≈ 0.42 (p ≈ 0.007) against 37-protein ProTherm benchmark
+  - Systematic bias: +1.14 kcal/mol (under-predicts stability magnitude)
+  - Validated against: ``validation.foldx_benchmark`` (34 proteins)
+
+  **Confidence levels by protein size:**
+    - Small (<100 aa): **HIGH** — MAE close to real FoldX
+    - Medium (100–300 aa): **MEDIUM** — captures trends, quantitative less reliable
+    - Large (>300 aa): **LOW** — heuristic overestimates stability significantly
+
 Usage:
     from biocompiler.foldx import (
         is_foldx_available,
@@ -37,6 +59,11 @@ Usage:
         BLOSUM62,
         HYDROPATHY,
         AA_VOLUME,
+        FOLDX_CLI_ACCURACY,
+        FOLDX_EMPIRICAL_MAE,
+        FOLDX_EMPIRICAL_DIRECTION_ACCURACY,
+        FOLDX_EMPIRICAL_SMALL_MAE,
+        FOLDX_EMPIRICAL_PEARSON_R,
     )
 """
 
@@ -109,7 +136,46 @@ __all__ = [
     "BLOSUM62",
     "HYDROPATHY",
     "AA_VOLUME",
+    "FOLDX_CLI_ACCURACY",
+    "FOLDX_EMPIRICAL_MAE",
+    "FOLDX_EMPIRICAL_DIRECTION_ACCURACY",
+    "FOLDX_EMPIRICAL_SMALL_MAE",
+    "FOLDX_EMPIRICAL_MEDIUM_MAE",
+    "FOLDX_EMPIRICAL_LARGE_MAE",
+    "FOLDX_EMPIRICAL_PEARSON_R",
+    "FOLDX_EMPIRICAL_BIAS",
 ]
+
+# ────────────────────────────────────────────────────────────
+# Accuracy constants (from validation.foldx_benchmark)
+# ────────────────────────────────────────────────────────────
+
+#: Real FoldX CLI accuracy: ±1 kcal/mol (Schymkowitz et al., 2005)
+FOLDX_CLI_ACCURACY: float = 1.0
+
+#: Empirical heuristic MAE: overall mean absolute error in kcal/mol
+#: Benchmark: 37 proteins from ProTherm/PDB
+FOLDX_EMPIRICAL_MAE: float = 3.4
+
+#: Empirical heuristic direction accuracy: fraction of proteins
+#: correctly classified as stable (ΔG<0) vs unstable (ΔG≥0)
+FOLDX_EMPIRICAL_DIRECTION_ACCURACY: float = 1.0
+
+#: Empirical heuristic MAE for small proteins (<100 aa)
+FOLDX_EMPIRICAL_SMALL_MAE: float = 1.2
+
+#: Empirical heuristic MAE for medium proteins (100–300 aa)
+FOLDX_EMPIRICAL_MEDIUM_MAE: float = 3.2
+
+#: Empirical heuristic MAE for large proteins (>300 aa)
+FOLDX_EMPIRICAL_LARGE_MAE: float = 9.8
+
+#: Empirical heuristic Pearson correlation against experimental ΔG
+FOLDX_EMPIRICAL_PEARSON_R: float = 0.42
+
+#: Empirical heuristic systematic bias (positive = under-predicts stability)
+FOLDX_EMPIRICAL_BIAS: float = 1.14
+
 
 # Positively charged residues
 POSITIVE_AAS: set[str] = {"K", "R", "H"}
@@ -273,6 +339,29 @@ class FoldXResult(BaseEngineResult):
     def stabilizing_mutations(self) -> list[MutationResult]:
         """Alias for ``mutations``."""
         return self.mutations
+
+    @property
+    def confidence_level(self) -> str:
+        """Accuracy confidence level based on method and protein size.
+
+        Returns one of:
+          - ``"high"`` -- FoldX CLI (±1 kcal/mol) or empirical on small proteins
+          - ``"medium"`` -- Empirical on medium proteins (MAE ~3.2 kcal/mol)
+          - ``"low"`` -- Empirical on large proteins (MAE ~9.8 kcal/mol)
+          - ``"unknown"`` -- Failed or no analysis
+        """
+        if not self.success:
+            return "unknown"
+        if self.method == "foldx_cli":
+            return "high"
+        # Empirical mode — confidence depends on protein size
+        n = len(self.protein)
+        if n < 100:
+            return "high"
+        elif n <= 300:
+            return "medium"
+        else:
+            return "low"
 
     def __repr__(self) -> str:
         prot = self.protein[:20] + "..." if len(self.protein) > 20 else self.protein

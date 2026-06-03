@@ -9,7 +9,7 @@ for certified gene optimization: 12 DNA-level + 4 structure + 4 stability +
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Dict, Set, Optional, Tuple
-from .types import Verdict
+from .types import Verdict, SLOTMode
 
 # ────────────────────────────────────────────────────────────
 # Standard Genetic Code — CODON_TABLE (fixed: no invalid entries)
@@ -200,6 +200,7 @@ class PredicateResult:
     verdict: Optional[Verdict] = None  # used by NoCrypticSplice and others
     details: str = ""
     positions: List[int] = field(default_factory=list)
+    verification_evidence: Optional[dict] = None  # SLOT verification evidence
 
 
 # ────────────────────────────────────────────────────────────
@@ -1911,6 +1912,7 @@ def evaluate_all_predicates(
     mrna_dg_threshold: float = -15.0,
     folding_threshold: float = 0.3,
     domain_boundaries: List[int] | None = None,
+    slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> List[TypeCheckResult]:
     """Evaluate all 12 type predicates against a sequence.
 
@@ -1927,6 +1929,17 @@ def evaluate_all_predicates(
     10. NoUnexpectedTMDomain — no unexpected transmembrane domains
     11. mRNASecondaryStructure — no strong mRNA secondary structure
     12. CoTranslationalFolding — co-translational folding pause-site preservation
+
+    SLOT Mode:
+    Predicates 1, 4, 9, 10, 11, 12 are SLOT-dependent (rely on heuristic
+    scanners or external tools). Their behavior depends on slot_mode:
+
+    - CONSERVATIVE (default): SLOT predicates return UNCERTAIN, matching
+      the Lean4 formal model exactly.
+    - VERIFIED: SLOT predicates return PASS when verification conditions
+      are met (tool available + result meets threshold).
+    - PERMISSIVE: SLOT predicates return PASS with weaker evidence
+      thresholds.
 
     Args:
         seq: DNA sequence to evaluate.
@@ -1948,6 +1961,7 @@ def evaluate_all_predicates(
             site (used by CoTranslationalFolding predicate).
         domain_boundaries: Codon positions where protein domains start/end
             (used by CoTranslationalFolding predicate).
+        slot_mode: SLOT evaluation mode (default CONSERVATIVE).
 
     Returns:
         List of 12 TypeCheckResult objects.
@@ -1962,21 +1976,91 @@ def evaluate_all_predicates(
         enzymes = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
     # Map organism name to promoter organism key
     promoter_organism = "E_coli" if organism in ("E_coli", "ecoli", "Escherichia_coli") else "eukaryote"
+
+    # Import slot_verification lazily to avoid circular imports
+    from .slot_verification import is_slot_predicate, verify_slot_predicate
+
+    # Core (non-SLOT) predicates: always evaluate normally
     results: List[TypeCheckResult] = [
-        evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold, uncertain_lo),
         evaluate_splice_correct(seq, boundaries),
         evaluate_gc_in_range(seq, gc_lo, gc_hi),
-        evaluate_codon_adapted(seq, organism, cai_threshold),
         evaluate_no_restriction_site(seq, enzymes),
         evaluate_in_frame(seq, boundaries),
         evaluate_no_instability_motif(seq),
         evaluate_no_cpg_island(seq),
-        evaluate_no_cryptic_promoter(seq, promoter_organism, promoter_threshold),
-        evaluate_no_unexpected_tm_domain(seq, is_cytosolic, 19, tm_threshold),
-        evaluate_mrna_secondary_structure(seq, 0, mrna_window, mrna_dg_threshold),
-        evaluate_co_translational_folding(seq, organism, domain_boundaries, folding_threshold),
     ]
-    return results
+
+    # SLOT predicates: behavior depends on slot_mode
+    slot_predicates = [
+        ("NoCrypticSplice", lambda: evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold, uncertain_lo)),
+        ("CodonAdapted", lambda: evaluate_codon_adapted(seq, organism, cai_threshold)),
+        ("NoCrypticPromoter", lambda: evaluate_no_cryptic_promoter(seq, promoter_organism, promoter_threshold)),
+        ("NoUnexpectedTMDomain", lambda: evaluate_no_unexpected_tm_domain(seq, is_cytosolic, 19, tm_threshold)),
+        ("mRNASecondaryStructure", lambda: evaluate_mrna_secondary_structure(seq, 0, mrna_window, mrna_dg_threshold)),
+        ("CoTranslationalFolding", lambda: evaluate_co_translational_folding(seq, organism, domain_boundaries, folding_threshold)),
+    ]
+
+    for pred_name, eval_fn in slot_predicates:
+        if slot_mode == SLOTMode.CONSERVATIVE and is_slot_predicate(pred_name):
+            # CONSERVATIVE: always UNCERTAIN for SLOT predicates
+            result = eval_fn()
+            result.verdict = Verdict.UNCERTAIN
+            result.knowledge_gap = f"SLOT predicate: {pred_name} returns UNCERTAIN in CONSERVATIVE mode"
+            results.append(result)
+        elif slot_mode in (SLOTMode.VERIFIED, SLOTMode.PERMISSIVE) and is_slot_predicate(pred_name):
+            # VERIFIED/PERMISSIVE: use slot verification conditions
+            verdict, evidence = verify_slot_predicate(
+                pred_name,
+                slot_mode=slot_mode,
+                seq=seq,
+                low_thresh=uncertain_lo,
+                high_thresh=cryptic_threshold,
+                organism=promoter_organism,
+                threshold=promoter_threshold,
+                is_cytosolic=is_cytosolic,
+                window_end=mrna_window,
+                dg_threshold=mrna_dg_threshold,
+                domain_boundaries=domain_boundaries,
+                min_pause_cai=folding_threshold,
+            )
+            result = eval_fn()
+            result.verdict = verdict
+            result.knowledge_gap = f"SLOT predicate: {pred_name} evaluated in {slot_mode.value} mode"
+            if evidence.verified:
+                result.derivation = [{"evidence": evidence.to_dict()}]
+            results.append(result)
+        else:
+            # Non-SLOT predicate: evaluate normally
+            results.append(eval_fn())
+
+    # Reorder to match the expected predicate order:
+    # 1.NoCrypticSplice, 2.SpliceCorrect, 3.GCInRange, 4.CodonAdapted,
+    # 5.NoRestrictionSite, 6.InFrame, 7.NoInstabilityMotif, 8.NoCpGIsland,
+    # 9.NoCrypticPromoter, 10.NoUnexpectedTMDomain, 11.mRNASecondaryStructure,
+    # 12.CoTranslationalFolding
+    name_to_result = {r.predicate: r for r in results}
+    # Handle parameterized names (e.g., CodonAdapted(Homo_sapiens, 0.5))
+    ordered = []
+    for canonical in [
+        "NoCrypticSplice", "SpliceCorrect", "GCInRange", "CodonAdapted",
+        "NoRestrictionSite", "InFrame", "NoInstabilityMotif", "NoCpGIsland",
+        "NoCrypticPromoter", "NoUnexpectedTMDomain", "mRNASecondaryStructure",
+        "CoTranslationalFolding",
+    ]:
+        if canonical in name_to_result:
+            ordered.append(name_to_result[canonical])
+        else:
+            # Try prefix match for parameterized names
+            for name, result in name_to_result.items():
+                if name.startswith(canonical):
+                    ordered.append(result)
+                    break
+
+    # If ordering didn't work, fall back to original
+    if len(ordered) != 12:
+        ordered = results
+
+    return ordered
 
 
 # ════════════════════════════════════════════════════════════════

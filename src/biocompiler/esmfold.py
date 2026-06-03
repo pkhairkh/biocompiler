@@ -18,6 +18,44 @@ Pipeline integration point:
 All network calls include retry logic with exponential backoff.
 Individual batch failures are isolated — they never crash sibling
 predictions.
+
+Accuracy and Confidence
+----------------------
+**ESMFold pLDDT scores** (from real ESMFold model):
+  - Per-residue pLDDT has ~0.8 Pearson correlation with experimental
+    structure accuracy (Lin et al., Science 2023).
+  - pLDDT >= 90: Very high confidence (backbone accurate to ~1 Å)
+  - pLDDT 70-90: Confident (generally correct backbone)
+  - pLDDT 50-70: Low confidence (may have domain-level errors)
+  - pLDDT < 50: Very low (likely disordered or mispredicted)
+
+**Our implementation** depends on API availability:
+  - **API mode** (esmfold_api): Uses the ESM Atlas remote API, which
+    runs the real ESMFold v1 model.  pLDDT scores have full accuracy.
+  - **Local esm mode** (esmfold_local): Uses the locally-installed
+    ``esm`` Python package.  Same model accuracy as API mode.
+  - **Offline mode**: Returns success=False with no prediction.
+    No heuristic fallback is provided — structure prediction is not
+    amenable to simple heuristics.
+
+  **Confidence levels:**
+    - API/local mode, mean pLDDT >= 70: **HIGH**
+    - API/local mode, mean pLDDT 50-70: **MEDIUM**
+    - API/local mode, mean pLDDT < 50: **LOW**
+    - Offline mode (no prediction): **NONE**
+
+**Known limitations:**
+  - API availability is not guaranteed (ESM Atlas may be down or rate-limited)
+  - Local esm requires GPU for reasonable speed
+  - No offline heuristic — if both API and local esm are unavailable,
+    no prediction is returned
+  - ESMFold does not predict PAE (Predicted Aligned Error) via the API;
+    this field is always None in our results
+
+References
+----------
+- Lin et al., Science 2023; 379:1043 (ESMFold / ESM-2)
+- Jumper et al., Nature 2021; 596:583 (AlphaFold2 pLDDT methodology)
 """
 
 from __future__ import annotations
@@ -88,6 +126,7 @@ __all__ = [
     "validate_batch_input",
     "estimate_batch_time",
     "format_batch_report",
+    "ESMFOLD_PLDDT_CORRELATION",
 ]
 
 # ==============================================================================
@@ -95,6 +134,20 @@ __all__ = [
 # ==============================================================================
 
 STANDARD_AMINO_ACIDS: set[str] = set("ACDEFGHIKLMNPQRSTVWY")
+
+# ────────────────────────────────────────────────────────────
+# Accuracy constants
+# ────────────────────────────────────────────────────────────
+
+#: Pearson correlation between ESMFold pLDDT and experimental accuracy
+#: (Lin et al., Science 2023)
+ESMFOLD_PLDDT_CORRELATION: float = 0.8
+
+#: ESMFold pLDDT classification thresholds (from AlphaFold convention)
+#: pLDDT >= 90: Very high (experimental accuracy)
+#: pLDDT 70-90: Confident
+#: pLDDT 50-70: Low confidence
+#: pLDDT < 50: Very low
 
 # ESMFold-specific constants (timeout falls back to shared DEFAULT_ENGINE_TIMEOUT)
 DEFAULT_API_URL = "https://api.esmatlas.com/fetchPredictedStructure"
@@ -275,6 +328,26 @@ class ESMFoldResult(BaseEngineResult):
     @pae.setter
     def pae(self, value: list[list[float]] | None) -> None:
         self.pae_matrix = value
+
+    @property
+    def confidence_level(self) -> str:
+        """Accuracy confidence level for the structure prediction.
+
+        Returns one of:
+          - ``"high"`` -- successful prediction with mean pLDDT >= 70
+          - ``"medium"`` -- successful prediction with mean pLDDT 50-70
+          - ``"low"`` -- successful prediction with mean pLDDT < 50
+          - ``"none"`` -- failed prediction (no structure obtained)
+        """
+        if not self.success:
+            return "none"
+        score = self.primary_score  # mean pLDDT
+        if score >= 70:
+            return "high"
+        elif score >= 50:
+            return "medium"
+        else:
+            return "low"
 
 
 # ==============================================================================

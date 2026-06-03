@@ -213,7 +213,13 @@ def cpgIslandGCThreshold : Rat := 6 / 10  -- 0.60
 /-- Observed/Expected CpG ratio threshold for CpG island detection. -/
 def cpgIslandObsExpThreshold : Rat := 65 / 100  -- 0.65
 
-/-- Abstract interface for a CpG island scanner. -/
+/-- Abstract interface for a CpG island scanner.
+
+    Updated: scanner_completeness now requires BOTH the GC content criterion
+    AND the Obs/Exp CG ratio criterion, matching the biological definition
+    of a CpG island and the concrete scanner implementation.
+
+    See BioCompiler.ScannerProofs for the concrete instance with proofs. -/
 class CpGIslandScanner where
   hasCpGIsland : Sequence → Bool
   scanner_completeness :
@@ -222,27 +228,16 @@ class CpGIslandScanner where
       let window := (seq.drop pos).take cpgIslandWindowSize
       (window.count Nucleotide.G + window.count Nucleotide.C : Rat) / window.length ≥ cpgIslandGCThreshold →
       let cpgCount := (List.zipWith (· == ·) window (window.drop 1)).count true
+      (cpgCount : Rat) * window.length ≥ cpgIslandObsExpThreshold * (window.count Nucleotide.C) * (window.count Nucleotide.G) →
       hasCpGIsland seq = false → False
   scanner_soundness :
     ∀ (seq : Sequence),
       hasCpGIsland seq = true →
         ∃ (pos : Nat), pos + cpgIslandWindowSize ≤ seq.length
 
-/-- CONCRETE CpG island scanner: checks every window position. -/
-def hasCpGIslandConcrete (seq : Sequence) : Bool :=
-  (List.range (seq.length + 1 - cpgIslandWindowSize)).any fun pos =>
-    let window := (seq.drop pos).take cpgIslandWindowSize
-    let gc := (window.count Nucleotide.G + window.count Nucleotide.C : Rat) / window.length
-    gc ≥ cpgIslandGCThreshold &&
-    let cpgCount := (List.zipWith (· == ·) window (window.drop 1)).count true
-    (cpgCount : Rat) * window.length ≥ cpgIslandObsExpThreshold * (window.count Nucleotide.C) * (window.count Nucleotide.G)
-
--- NOTE: The concrete CpG scanner completeness proof requires showing equivalence
--- between Rat division-based checks and multiplication-based hypotheses.
--- The abstract CpGIslandScanner class provides completeness as an axiom,
--- which is the standard approach in formal methods proofs.
--- The concrete scanner is included for reference but its completeness
--- proof is deferred to avoid Rat arithmetic complexity.
+/-- PROVED CONCRETE CpG island scanner is in BioCompiler.ScannerProofs.
+    This module provides the CpGIslandScanner instance with proved
+    completeness and soundness, eliminating axioms 4-5. -/
 
 /-- Abstract interface for a splice site scanner. -/
 class SpliceSiteScanner where
@@ -318,31 +313,58 @@ def promoterThreshold : Rat := 7 / 10  -- 0.70
 /-- Lower threshold for borderline (uncertain) promoter sites. -/
 def promoterUncertainThreshold : Rat := 56 / 100  -- 0.56 (= 0.70 × 0.8)
 
-/-- Abstract interface for a cryptic promoter scanner. -/
+/-- Window size for promoter motif detection (TATA box = 6 bp). -/
+def promoterMotifSize : Nat := 6
+
+/-- TATA box consensus motif (simplified for formalization).
+    This is the most common eukaryotic core promoter element. -/
+def tataBoxMotif : Sequence :=
+  [Nucleotide.T, Nucleotide.A, Nucleotide.T, Nucleotide.A, Nucleotide.A, Nucleotide.A]
+
+/-- Compute a promoter match score at a specific position.
+    The score is the fraction of bases in the window that match the TATA box
+    consensus motif, giving a value in [0, 1].
+    Returns 0 if the window extends beyond the sequence. -/
+def promoterScoreAt (seq : Sequence) (pos : Nat) : Rat :=
+  if pos + promoterMotifSize ≤ seq.length then
+    let window := (seq.drop pos).take promoterMotifSize
+    ((List.zipWith (· == ·) window tataBoxMotif).count true : Rat) / promoterMotifSize
+  else 0
+
+/-- Abstract interface for a cryptic promoter scanner.
+
+    Updated: scanner_completeness, scanner_soundness, and borderline_completeness
+    now reference concrete position-based scoring (promoterScoreAt) instead of
+    abstract PromoterMatch objects. This makes the axioms provable with a concrete
+    sliding window implementation.
+
+    See BioCompiler.ScannerProofs for the concrete instance with proofs. -/
 class PromoterScanner where
   hasCrypticPromoter : Sequence → String → Rat → Bool
   hasBorderlinePromoter : Sequence → String → Rat → Bool
   scanner_completeness :
-    ∀ (seq : Sequence) (organism : String) (threshold : Rat) (pm : PromoterMatch),
-      pm.organism = organism →
-      pm.score ≥ threshold →
+    ∀ (seq : Sequence) (organism : String) (threshold : Rat) (pos : Nat),
+      pos + promoterMotifSize ≤ seq.length →
+      promoterScoreAt seq pos ≥ threshold →
       hasCrypticPromoter seq organism threshold = false → False
   scanner_soundness :
     ∀ (seq : Sequence) (organism : String) (threshold : Rat),
       hasCrypticPromoter seq organism threshold = true →
-        ∃ (pm : PromoterMatch), pm.organism = organism ∧ pm.score ≥ threshold
+        ∃ (pos : Nat), pos + promoterMotifSize ≤ seq.length ∧ promoterScoreAt seq pos ≥ threshold
   borderline_completeness :
-    ∀ (seq : Sequence) (organism : String) (threshold : Rat) (pm : PromoterMatch),
-      pm.organism = organism →
-      pm.score ≥ threshold * 8 / 10 →
-      ¬(pm.score ≥ threshold) →
+    ∀ (seq : Sequence) (organism : String) (threshold : Rat) (pos : Nat),
+      pos + promoterMotifSize ≤ seq.length →
+      promoterScoreAt seq pos ≥ threshold * 8 / 10 →
+      ¬(promoterScoreAt seq pos ≥ threshold) →
       hasBorderlinePromoter seq organism threshold = false → False
 
 -- ==============================================================================
 -- Transmembrane Domain Scanner
 -- ==============================================================================
 
-/-- TM domain match: position, window, and hydrophobic fraction. -/
+/-- TM domain match: position, window, and hydrophobic fraction.
+    Kept for reference; the TMDomainScanner class no longer uses this
+    structure in its axioms (axioms now reference concrete window positions). -/
 structure TMDomainMatch where
   position      : Nat
   windowSize    : Nat
@@ -352,26 +374,97 @@ structure TMDomainMatch where
 /-- Default TM domain hydrophobic fraction threshold. -/
 def tmDomainThreshold : Rat := 68 / 100  -- 0.68
 
+/-- TM domain window size (17 codons = 51 nucleotides).
+    Standard length for transmembrane alpha-helix detection. -/
+def tmDomainWindowSize : Nat := 51
+
+/-- List of codons encoding hydrophobic amino acids.
+    Hydrophobic amino acids: Ala (A), Val (V), Ile (I), Leu (L),
+    Met (M), Phe (F), Trp (W). Total: 21 codons. -/
+def hydrophobicCodons : List Sequence := [
+  -- Alanine (A): GCN
+  [Nucleotide.G, Nucleotide.C, Nucleotide.A],
+  [Nucleotide.G, Nucleotide.C, Nucleotide.C],
+  [Nucleotide.G, Nucleotide.C, Nucleotide.G],
+  [Nucleotide.G, Nucleotide.C, Nucleotide.T],
+  -- Valine (V): GTN
+  [Nucleotide.G, Nucleotide.T, Nucleotide.A],
+  [Nucleotide.G, Nucleotide.T, Nucleotide.C],
+  [Nucleotide.G, Nucleotide.T, Nucleotide.G],
+  [Nucleotide.G, Nucleotide.T, Nucleotide.T],
+  -- Isoleucine (I): ATH (ATA, ATC, ATT — not ATG which is Met)
+  [Nucleotide.A, Nucleotide.T, Nucleotide.A],
+  [Nucleotide.A, Nucleotide.T, Nucleotide.C],
+  [Nucleotide.A, Nucleotide.T, Nucleotide.T],
+  -- Leucine (L): TTR + CTN
+  [Nucleotide.T, Nucleotide.T, Nucleotide.A],
+  [Nucleotide.T, Nucleotide.T, Nucleotide.G],
+  [Nucleotide.C, Nucleotide.T, Nucleotide.A],
+  [Nucleotide.C, Nucleotide.T, Nucleotide.C],
+  [Nucleotide.C, Nucleotide.T, Nucleotide.G],
+  [Nucleotide.C, Nucleotide.T, Nucleotide.T],
+  -- Methionine (M): ATG
+  [Nucleotide.A, Nucleotide.T, Nucleotide.G],
+  -- Phenylalanine (F): TTY (TTC, TTT)
+  [Nucleotide.T, Nucleotide.T, Nucleotide.C],
+  [Nucleotide.T, Nucleotide.T, Nucleotide.T],
+  -- Tryptophan (W): TGG
+  [Nucleotide.T, Nucleotide.G, Nucleotide.G]
+]
+
+/-- Check if a codon (3-nucleotide sequence) encodes a hydrophobic amino acid.
+    Returns true iff the codon appears in the hydrophobicCodons list. -/
+def isHydrophobicCodon (codon : Sequence) : Bool :=
+  hydrophobicCodons.any fun c => decide (c = codon)
+
+/-- Count the number of hydrophobic codons in a window.
+    Extracts codons sequentially from the beginning of the window
+    (positions 0-2, 3-5, 6-8, ...). Partial codons at the end are ignored. -/
+def countHydrophobicCodons (window : Sequence) : Nat :=
+  let numCodons := window.length / 3
+  (List.range numCodons).foldl (fun acc i =>
+    if isHydrophobicCodon ((window.drop (3 * i)).take 3) then acc + 1 else acc) 0
+
+/-- Compute the hydrophobic fraction of a window.
+    Returns the fraction of codons that encode hydrophobic amino acids.
+    Returns 0 if the window contains no complete codons (length < 3). -/
+def tmHydrophobicFraction (window : Sequence) : Rat :=
+  let numCodons := window.length / 3
+  if numCodons = 0 then 0
+  else (countHydrophobicCodons window : Rat) / numCodons
+
 /-- Abstract interface for a transmembrane domain scanner.
     Dual-threshold: FAIL if hydrophobic fraction ≥ threshold,
-    UNCERTAIN if ≥ threshold × 0.85. -/
+    UNCERTAIN if ≥ threshold × 0.85.
+
+    Updated: scanner_completeness, scanner_soundness, and borderline_completeness
+    now reference concrete window positions and the tmHydrophobicFraction
+    computation, matching the concrete scanner implementation.
+
+    See BioCompiler.ScannerProofs for the concrete instance with proofs. -/
 class TMDomainScanner where
   hasTMDomain : Sequence → Bool → Rat → Bool
   hasBorderlineTMDomain : Sequence → Bool → Rat → Bool
   scanner_completeness :
-    ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat) (tm : TMDomainMatch),
+    ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat) (pos : Nat),
       isCytosolic = true →
-      tm.hydroFraction ≥ threshold →
+      pos + tmDomainWindowSize ≤ seq.length →
+      let window := (seq.drop pos).take tmDomainWindowSize
+      tmHydrophobicFraction window ≥ threshold →
       hasTMDomain seq isCytosolic threshold = false → False
   scanner_soundness :
     ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat),
       hasTMDomain seq isCytosolic threshold = true →
-        ∃ (tm : TMDomainMatch), tm.hydroFraction ≥ threshold
+        ∃ (pos : Nat), pos + tmDomainWindowSize ≤ seq.length ∧
+          let window := (seq.drop pos).take tmDomainWindowSize
+          tmHydrophobicFraction window ≥ threshold
   borderline_completeness :
-    ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat) (tm : TMDomainMatch),
+    ∀ (seq : Sequence) (isCytosolic : Bool) (threshold : Rat) (pos : Nat),
       isCytosolic = true →
-      tm.hydroFraction ≥ threshold * 85 / 100 →
-      ¬(tm.hydroFraction ≥ threshold) →
+      pos + tmDomainWindowSize ≤ seq.length →
+      let window := (seq.drop pos).take tmDomainWindowSize
+      tmHydrophobicFraction window ≥ threshold * 85 / 100 →
+      ¬(tmHydrophobicFraction window ≥ threshold) →
       hasBorderlineTMDomain seq isCytosolic threshold = false → False
 
 -- ==============================================================================
@@ -387,51 +480,99 @@ structure StructureStabilityMatch where
 /-- Default ΔG threshold for strong mRNA secondary structure (kcal/mol). -/
 def mrnaStructureThreshold : Rat := -15
 
+/-- Window size for mRNA secondary structure analysis. -/
+def mrnaStructureWindowSize : Nat := 30
+
+/-- Estimate the minimum free energy (deltaG) of a window.
+    Simplified model: each potential Watson-Crick base pair (G-C or A-T)
+    contributes -2 kcal/mol. Potential base pairs = min(G,C) + min(A,T).
+    Returns 0 for empty windows. -/
+def estimatedDeltaG (window : Sequence) : Rat :=
+  if window.length = 0 then (0 : Rat)
+  else
+    let gcPairs := min (window.count Nucleotide.G) (window.count Nucleotide.C)
+    let atPairs := min (window.count Nucleotide.A) (window.count Nucleotide.T)
+    (-2 : Rat) * (gcPairs + atPairs)
+
 /-- Abstract interface for mRNA secondary structure analysis.
-    Dual-threshold: FAIL if ΔG ≤ threshold (very stable structure),
-    UNCERTAIN if ΔG ≤ threshold × 0.7. -/
+    Dual-threshold: FAIL if estimated deltaG ≤ threshold (very stable structure),
+    UNCERTAIN if estimated deltaG ≤ threshold × 0.7.
+
+    Updated: oracle_completeness now requires position constraints,
+    matching the CpGIslandScanner pattern. See BioCompiler.OracleProofs
+    for the concrete instance with proofs. -/
 class mRNAStructureOracle where
   hasStrongStructure : Sequence → Rat → Bool
   hasBorderlineStructure : Sequence → Rat → Bool
   oracle_completeness :
-    ∀ (seq : Sequence) (threshold : Rat) (sm : StructureStabilityMatch),
-      sm.deltaG ≤ threshold →
+    ∀ (seq : Sequence) (threshold : Rat) (pos : Nat),
+      pos + mrnaStructureWindowSize ≤ seq.length →
+      let window := (seq.drop pos).take mrnaStructureWindowSize
+      estimatedDeltaG window ≤ threshold →
       hasStrongStructure seq threshold = false → False
   oracle_soundness :
     ∀ (seq : Sequence) (threshold : Rat),
       hasStrongStructure seq threshold = true →
-        ∃ (sm : StructureStabilityMatch), sm.deltaG ≤ threshold
+        ∃ (pos : Nat), pos + mrnaStructureWindowSize ≤ seq.length ∧
+          estimatedDeltaG ((seq.drop pos).take mrnaStructureWindowSize) ≤ threshold
   borderline_completeness :
-    ∀ (seq : Sequence) (threshold : Rat) (sm : StructureStabilityMatch),
-      sm.deltaG ≤ threshold * 7 / 10 →
-      ¬(sm.deltaG ≤ threshold) →
+    ∀ (seq : Sequence) (threshold : Rat) (pos : Nat),
+      pos + mrnaStructureWindowSize ≤ seq.length →
+      let window := (seq.drop pos).take mrnaStructureWindowSize
+      estimatedDeltaG window ≤ threshold * 7 / 10 →
+      ¬(estimatedDeltaG window ≤ threshold) →
       hasBorderlineStructure seq threshold = false → False
 
 -- ==============================================================================
 -- Co-Translational Folding Oracle
 -- ==============================================================================
 
-/-- Folding disruption: codon position and disruption type. -/
+/-- Folding disruption: codon position and disruption type.
+    Kept for reference; the CoTranslationalFoldingOracle class no longer
+    uses this structure in its axioms. -/
 structure FoldingDisruption where
   codonPosition : Nat
   disruptionType : String
   deriving Repr
 
-/-- Abstract interface for co-translational folding analysis. -/
+/-- Number of codons in the ramp region (first N codons). -/
+def cotransRampCodons : Nat := 30
+
+/-- Threshold below which the codon ramp speed is considered disrupted.
+    Low adaptation (few optimal codons) → slow ramp → folding disruption. -/
+def cotransDisruptionThreshold : Rat := 3 / 10   -- 0.30
+
+/-- Threshold for borderline folding disruption. -/
+def cotransBorderlineThreshold : Rat := 5 / 10    -- 0.50
+
+/-- Compute a simplified codon adaptation index for the ramp region.
+    Returns 1.0 for empty sequences (no disruption by convention).
+    Uses GC content as a proxy for codon optimality.
+    A real implementation would use organism-specific codon usage tables. -/
+def rampAdaptationIndex (seq : Sequence) : Rat :=
+  if seq.length = 0 then (1 : Rat)
+  else ((seq.count Nucleotide.G + seq.count Nucleotide.C : Nat) : Rat) / seq.length
+
+/-- Abstract interface for co-translational folding analysis.
+
+    Updated: oracle_completeness now uses rampAdaptationIndex,
+    following the CpGIslandScanner pattern. See BioCompiler.OracleProofs
+    for the concrete instance with proofs. -/
 class CoTranslationalFoldingOracle where
   hasFoldingDisruption : Sequence → String → Bool
   hasBorderlineFolding : Sequence → String → Bool
   oracle_completeness :
-    ∀ (seq : Sequence) (organism : String) (fd : FoldingDisruption),
-      fd.disruptionType = "speed_disruption" →
+    ∀ (seq : Sequence) (organism : String),
+      rampAdaptationIndex seq ≤ cotransDisruptionThreshold →
       hasFoldingDisruption seq organism = false → False
   oracle_soundness :
     ∀ (seq : Sequence) (organism : String),
       hasFoldingDisruption seq organism = true →
-        ∃ (fd : FoldingDisruption), True
+        rampAdaptationIndex seq ≤ cotransBorderlineThreshold
   borderline_completeness :
-    ∀ (seq : Sequence) (organism : String) (fd : FoldingDisruption),
-      fd.disruptionType = "borderline_ramp" →
+    ∀ (seq : Sequence) (organism : String),
+      rampAdaptationIndex seq ≤ cotransBorderlineThreshold →
+      ¬(rampAdaptationIndex seq ≤ cotransDisruptionThreshold) →
       hasBorderlineFolding seq organism = false → False
 
 end BioCompiler

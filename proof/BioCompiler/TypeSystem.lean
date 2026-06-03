@@ -317,8 +317,8 @@ def propertyHolds [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScanner]
   | TypePredicate.CodonOptimality org threshold, seq, _ =>
       CodonAdaptationIndex.computeCAI seq org ≥ threshold
   | TypePredicate.NoCrypticPromoter organism threshold, seq, _ =>
-      ∀ (pm : PromoterMatch), pm.organism = organism →
-        pm.score ≥ threshold * 8 / 10 → False
+      ∀ (pos : Nat), pos + promoterMotifSize ≤ seq.length →
+        promoterScoreAt seq pos ≥ threshold * 8 / 10 → False
   -- SLOT-dependent predicates: propertyHolds is True (vacuously) since evaluate
   -- never returns PASS
   | TypePredicate.ConservationScore _, _, _ => True
@@ -459,17 +459,38 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
       (bool_ne_true_iff_false _).mp h_not_true
     simp only [propertyHolds]
     intro pos h_pos
-    have h_em := Classical.em
+    -- For each window position, show: GC < threshold OR Obs/Exp < threshold
+    have h_em_gc := Classical.em
       (((((seq.drop pos).take cpgIslandWindowSize).count Nucleotide.G +
          ((seq.drop pos).take cpgIslandWindowSize).count Nucleotide.C : Rat) /
         ((seq.drop pos).take cpgIslandWindowSize).length) < cpgIslandGCThreshold)
-    cases h_em with
+    cases h_em_gc with
     | inl h_gc_lt => left; exact h_gc_lt
     | inr h_gc_not_lt =>
       right
       have h_gc_ge := Rat.not_lt_iff_le _ _ |>.mp h_gc_not_lt
-      have h_absurd := CpGIslandScanner.scanner_completeness seq pos h_pos h_gc_ge h_false
-      exact h_absurd.elim
+      -- GC ≥ threshold, so we must show Obs/Exp < threshold
+      -- If Obs/Exp ≥ threshold, both conditions hold and completeness gives contradiction
+      have h_em_obs := Classical.em
+        (let window := (seq.drop pos).take cpgIslandWindowSize
+         let cpgCount := (List.zipWith (· == ·) window (window.drop 1)).count true
+         (cpgCount : Rat) * window.length <
+           cpgIslandObsExpThreshold * (window.count Nucleotide.C) * (window.count Nucleotide.G))
+      cases h_em_obs with
+      | inl h_obs_lt =>
+        -- Obs/Exp < threshold: provide the witness
+        use (List.zipWith (· == ·) ((seq.drop pos).take cpgIslandWindowSize)
+              (((seq.drop pos).take cpgIslandWindowSize).drop 1)).count true
+        exact ⟨rfl, h_obs_lt⟩
+      | inr h_obs_not_lt =>
+        -- Obs/Exp ≥ threshold: both conditions hold, contradiction with scanner returning false
+        have h_obs_exp_ge :=
+          let window := (seq.drop pos).take cpgIslandWindowSize
+          let cpgCount := (List.zipWith (· == ·) window (window.drop 1)).count true
+          Rat.not_lt_iff_le (cpgCount * window.length)
+            (cpgIslandObsExpThreshold * (window.count Nucleotide.C) * (window.count Nucleotide.G)) |>.mp h_obs_not_lt
+        have h_absurd := CpGIslandScanner.scanner_completeness seq pos h_pos h_gc_ge h_obs_exp_ge h_false
+        exact h_absurd.elim
 
   | NoGTDinucleotide =>
     simp only [evaluate] at h_pass
@@ -516,11 +537,11 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
     have h_false_borderline : PromoterScanner.hasBorderlinePromoter seq organism threshold = false :=
       (bool_ne_true_iff_false _).mp h_not_borderline
     simp only [propertyHolds]
-    intro pm h_org h_ge
-    by_cases h_above : pm.score ≥ threshold
-    · have h_absurd := PromoterScanner.scanner_completeness seq organism threshold pm h_org h_above h_false_cryptic
+    intro pos h_pos h_ge
+    by_cases h_above : promoterScoreAt seq pos ≥ threshold
+    · have h_absurd := PromoterScanner.scanner_completeness seq organism threshold pos h_pos h_above h_false_cryptic
       exact h_absurd
-    · have h_absurd := PromoterScanner.borderline_completeness seq organism threshold pm h_org h_ge h_above h_false_borderline
+    · have h_absurd := PromoterScanner.borderline_completeness seq organism threshold pos h_pos h_ge h_above h_false_borderline
       exact h_absurd
 
   -- SLOT-dependent predicates: evaluate returns UNCERTAIN ≠ PASS, so vacuously true

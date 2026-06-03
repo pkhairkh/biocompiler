@@ -11,7 +11,22 @@ Extended with:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, Dict, List
+
+
+class SLOTMode(Enum):
+    """Controls how SLOT-dependent predicates are evaluated.
+
+    SLOT (Subject to Limited Oracles and Tools) predicates depend on heuristic
+    scanners or external tools that cannot be formally verified in the Lean4 model.
+
+    CONSERVATIVE: Always return UNCERTAIN for SLOT predicates (matches Lean4 model).
+    VERIFIED: Return PASS when verification conditions are met (tool available + result OK).
+    PERMISSIVE: Return PASS with weaker evidence thresholds.
+    """
+    CONSERVATIVE = "conservative"  # Always UNCERTAIN for SLOT predicates (current default)
+    VERIFIED = "verified"          # PASS when verification conditions met
+    PERMISSIVE = "permissive"      # PASS with weaker evidence
 
 
 class Verdict(str, Enum):

@@ -18,7 +18,7 @@ acceptable for their cloning workflow.
 import hashlib
 import logging
 from datetime import datetime, timezone
-from .types import Verdict, TypeCheckResult, Certificate, combined_verdict
+from .types import Verdict, TypeCheckResult, Certificate, combined_verdict, SLOTMode
 try:
     from .type_system import registry
 except ImportError:
@@ -46,6 +46,7 @@ def generate_certificate(
     input_params: dict,
     require_all_pass: bool = False,
     mutagenesis_substitutions: list[dict] | None = None,
+    slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> Certificate:
     """
     Generate a machine-checkable guarantee certificate.
@@ -114,6 +115,12 @@ def generate_certificate(
         "parameters": complete_params,
         "input_hash": seq_hash,
         "overall_status": overall_status,
+        "slot_mode": slot_mode.value,
+        "slot_mode_description": {
+            "conservative": "SLOT predicates always UNCERTAIN (matches Lean4 formal model)",
+            "verified": "SLOT predicates PASS when verification conditions met",
+            "permissive": "SLOT predicates PASS with weaker evidence thresholds",
+        }.get(slot_mode.value, "Unknown SLOT mode"),
     }
 
     # Include mutagenesis metadata if substitutions were applied
@@ -140,6 +147,7 @@ def generate_certificate(
                 "predicate": r.predicate,
                 "verdict": r.verdict.value,
                 "derivation": r.derivation,
+                "knowledge_gap": r.knowledge_gap,
             }
             for r in type_results
         ],
@@ -304,7 +312,7 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
 # ────────────────────────────────────────────────────────────
 # Originally in certificates.py — consolidated here.
 
-def compute_certificate(results: list[PredicateResult]) -> CertLevel:
+def compute_certificate(results: list[PredicateResult], slot_mode: SLOTMode = SLOTMode.CONSERVATIVE) -> CertLevel:
     """Compute certificate level from predicate results.
 
     GOLD:   All predicates satisfied by optimization alone
@@ -312,6 +320,11 @@ def compute_certificate(results: list[PredicateResult]) -> CertLevel:
             unavoidable constraints (e.g., Valine GT dinucleotides that
             can only be removed by AA substitution)
     BRONZE: Some predicates could not be fully satisfied
+
+    Note: A GOLD certificate with VERIFIED slot_mode is stronger than
+    a GOLD certificate with CONSERVATIVE slot_mode, because VERIFIED mode
+    provides actual evidence that SLOT predicates pass, while CONSERVATIVE
+    mode only guarantees that non-SLOT predicates pass.
     """
     has_mutagenesis = False
     has_unavoidable = False
@@ -333,9 +346,9 @@ def compute_certificate(results: list[PredicateResult]) -> CertLevel:
         return CertLevel.GOLD
 
 
-def format_certificate(results: list[PredicateResult], seq: str, species: str) -> str:
+def format_certificate(results: list[PredicateResult], seq: str, species: str, slot_mode: SLOTMode = SLOTMode.CONSERVATIVE) -> str:
     """Format a human-readable certificate report."""
-    cert = compute_certificate(results)
+    cert = compute_certificate(results, slot_mode)
     lines = [
         "=" * 60,
         "  BioCompiler v7.0.0 — Optimization Certificate",
@@ -343,6 +356,7 @@ def format_certificate(results: list[PredicateResult], seq: str, species: str) -
         f"  Sequence length: {len(seq)} bp",
         f"  Species:         {species}",
         f"  Certificate:     {cert.value}",
+        f"  SLOT Mode:       {slot_mode.value}",
         "-" * 60,
         "  Predicate Results:",
     ]
@@ -355,12 +369,20 @@ def format_certificate(results: list[PredicateResult], seq: str, species: str) -
             mutagenesis_marker = " [MUTAGENESIS]"
         elif "unavoidable" in r.details.lower() and r.passed:
             mutagenesis_marker = " [UNAVOIDABLE]"
-        lines.append(f"    [{status}{verdict_str}{mutagenesis_marker}] {r.predicate}: {r.details}")
+        # Mark SLOT predicates
+        from .slot_verification import is_slot_predicate
+        slot_marker = " [SLOT]" if is_slot_predicate(r.predicate) else ""
+        lines.append(f"    [{status}{verdict_str}{mutagenesis_marker}{slot_marker}] {r.predicate}: {r.details}")
     lines.append("=" * 60)
     lines.append("")
     lines.append("  Certificate Levels:")
     lines.append("    GOLD   — All constraints satisfied by synonymous optimization")
     lines.append("    SILVER — All constraints satisfied (some required AA substitution)")
     lines.append("    BRONZE — Some constraints could not be satisfied")
+    lines.append("")
+    lines.append("  SLOT Mode:")
+    lines.append("    CONSERVATIVE — SLOT predicates always UNCERTAIN (Lean4 model)")
+    lines.append("    VERIFIED     — SLOT predicates PASS when verification conditions met")
+    lines.append("    PERMISSIVE   — SLOT predicates PASS with weaker evidence")
     lines.append("=" * 60)
     return "\n".join(lines)

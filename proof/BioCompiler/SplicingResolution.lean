@@ -445,18 +445,51 @@ theorem extension_cannot_remove_gt (seq : Sequence) (extra : Sequence) :
   -- If seq has GT, then seq ++ extra also has GT (the GT in seq is preserved)
   exact hasPattern_prefix_preserved seq extra spliceDonorConsensus h_has_gt
 
-/-- Helper: If a pattern exists in a prefix, it exists in the extended sequence. -/
+/-- Helper: if n ≤ l.length, then (l ++ s).drop n = (l.drop n) ++ s.
+    Proved by induction on n: each step strips the head element. -/
+private theorem drop_append_of_le {α : Type} {l s : List α} {n : Nat} (h : n ≤ l.length) :
+    (l ++ s).drop n = (l.drop n) ++ s := by
+  induction n generalizing l with
+  | zero => simp
+  | succ n ih =>
+    cases l with
+    | nil => simp at h
+    | cons a l' => simp [List.drop]; exact ih (by omega)
+
+/-- Helper: if k ≤ l.length, then (l ++ s).take k = l.take k.
+    Proved by induction on k: each step takes the head element. -/
+private theorem take_append_of_le {α : Type} {l s : List α} {k : Nat} (h : k ≤ l.length) :
+    (l ++ s).take k = l.take k := by
+  induction k generalizing l with
+  | zero => simp
+  | succ k ih =>
+    cases l with
+    | nil => simp at h
+    | cons a l' => simp [List.take]; exact ih (by omega)
+
+/-- Helper: If a pattern exists in a prefix, it exists in the extended sequence.
+
+    Proof strategy: extract the witness position from the prefix match
+    (using hasPattern_sound), then show the same position works in the
+    extended sequence (using hasPattern_complete). The key List-theory
+    fact is that drop/take on (prefix ++ suffix) at a position entirely
+    within prefix gives the same result as on prefix alone. -/
 theorem hasPattern_prefix_preserved (prefix suffix : Sequence) (pattern : Sequence) :
     hasPattern prefix pattern = true → hasPattern (prefix ++ suffix) pattern = true := by
   intro h
-  -- If pattern is in prefix, it's definitely in prefix ++ suffix
-  -- because prefix is a prefix of prefix ++ suffix
-  unfold hasPattern at *
-  simp at *
-  -- hasPattern checks if any sublist equals the pattern
-  -- If prefix has a matching sublist, prefix ++ suffix does too
-  -- This follows from the fact that List.isSublist is monotonic under ++
-  sorry  -- Would need deeper List theory; the result is intuitively clear
+  -- Step 1: From hasPattern prefix pattern = true, obtain a witness position
+  obtain ⟨pos, h_pos, h_match⟩ := hasPattern_sound prefix pattern h
+  -- Step 2: Show the same position witnesses the pattern in prefix ++ suffix
+  apply hasPattern_complete (prefix ++ suffix) pattern pos
+  · -- pos + pattern.length ≤ (prefix ++ suffix).length
+    rw [List.length_append]; omega
+  · -- ((prefix ++ suffix).drop pos).take pattern.length = pattern
+    -- Since pos + pattern.length ≤ prefix.length, the pattern is entirely
+    -- within the prefix part of prefix ++ suffix, so drop/take is unchanged
+    have h_pos_le : pos ≤ prefix.length := by omega
+    have h_pat_le : pattern.length ≤ (prefix.drop pos).length := by
+      rw [List.length_drop]; omega
+    rw [drop_append_of_le h_pos_le, take_append_of_le h_pat_le, h_match]
 
 -- ==============================================================================
 -- Practical Splicing Resolution Summary

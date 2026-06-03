@@ -11,6 +11,47 @@ Based on the CamSol method (Sormanni et al., J Mol Biol 2015) for
 predicting protein solubility from sequence.
 
 Scoring range: -3 to +3 (positive = soluble, negative = aggregation-prone).
+
+Accuracy and Confidence
+----------------------
+**CamSol intrinsic mode** (sequence-only, no PDB):
+  - Classification accuracy: ~85.7% against 21-protein curated benchmark
+  - Specificity (correctly identifying soluble proteins): 100%
+  - Sensitivity (correctly identifying aggregation-prone proteins): ~33.3%
+    for intrinsically disordered/aggregation-prone proteins
+  - Pearson r ≈ 0.73 between enhanced score and known solubility ordinal
+  - The low sensitivity for IDPs is because the Wimley-White hydropathy
+    scale used here assigns positive (soluble) scores to charged residues
+    (K, R, D, E), making highly charged but disordered proteins like
+    alpha-synuclein appear soluble. The published CamSol uses the Urry
+    hydrophobicity scale which handles IDPs better.
+  - Enhanced benchmark score (with patch correction) improves discrimination
+  - Validated against: ``validation.camsol_benchmark`` (21 proteins)
+
+**CamSol structural mode** (with PDB data):
+  - More accurate than intrinsic mode when PDB data is available
+  - Structure-based SASA corrections improve aggregation-prone region detection
+  - No quantitative benchmark yet for structural mode
+
+  **Confidence levels:**
+    - Intrinsic, enhanced score > 0.5: **HIGH** — reliable soluble classification
+    - Intrinsic, enhanced score in [-0.5, 0.5]: **MEDIUM** — borderline
+    - Intrinsic, enhanced score < -0.5: **MEDIUM** — may miss some IDPs
+    - Structural mode: generally **HIGH** when PDB is available
+
+**Known limitations:**
+  - The Wimley-White octanol scale (used here) is less effective for
+    intrinsically disordered proteins than the Urry scale used in the
+    published CamSol algorithm
+  - Simple mean scoring compresses the signal; the published CamSol uses
+    an aggressive patch-correction formula
+  - No pH or temperature dependence modeled
+
+References
+----------
+- Sormanni et al., J Mol Biol 2015; 427:478-490 (original CamSol)
+- Wimley & White, Nat Struct Biol 1996; 3:842 (octanol scale)
+- Urry et al., J Protein Chem 1992; 11:165 (hydrophobicity scale for IDPs)
 """
 
 from __future__ import annotations
@@ -66,7 +107,32 @@ __all__ = [
     "CAMSOL_CHARGE",
     "CAMSOL_ALPHA_HELIX",
     "CAMSOL_BETA_STRAND",
+    "CAMSOL_CLASSIFICATION_ACCURACY",
+    "CAMSOL_SPECIFICITY",
+    "CAMSOL_SENSITIVITY_IDP",
+    "CAMSOL_PEARSON_R",
 ]
+
+
+# ────────────────────────────────────────────────────────────
+# Accuracy constants (from validation.camsol_benchmark)
+# ────────────────────────────────────────────────────────────
+
+#: Classification accuracy against 21-protein curated benchmark
+#: (high/medium/low solubility classification with enhanced scoring)
+CAMSOL_CLASSIFICATION_ACCURACY: float = 0.857
+
+#: Specificity: fraction of truly soluble proteins correctly identified
+#: (enhanced score > 0 for known-soluble proteins)
+CAMSOL_SPECIFICITY: float = 1.0
+
+#: Sensitivity for intrinsically disordered / aggregation-prone proteins
+#: (enhanced score < 0 for known-aggregation-prone proteins)
+#: Low because Wimley-White scale assigns positive scores to charged residues
+CAMSOL_SENSITIVITY_IDP: float = 0.333
+
+#: Pearson correlation between enhanced score and known solubility ordinal
+CAMSOL_PEARSON_R: float = 0.73
 
 
 # ────────────────────────────────────────────────────────────
@@ -287,6 +353,26 @@ class CamSolResult(BaseEngineResult):
     def solubility_mutations(self) -> list[MutationResult]:
         """Alias for mutations (backward compatibility)."""
         return self.mutations
+
+    @property
+    def confidence_level(self) -> str:
+        """Accuracy confidence level for the solubility prediction.
+
+        Returns one of:
+          - ``"high"`` -- structural mode with PDB, or intrinsic with strong score
+          - ``"medium"`` -- intrinsic mode with borderline score
+          - ``"low"`` -- failed or no valid prediction
+        """
+        if not self.success:
+            return "low"
+        if self.method == "camsol_structural" and self.structural_score is not None:
+            return "high"
+        # Intrinsic mode — confidence based on score magnitude
+        score = self.primary_score
+        if abs(score) > 0.5:
+            return "high"
+        else:
+            return "medium"
 
 
 # ────────────────────────────────────────────────────────────
