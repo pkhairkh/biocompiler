@@ -1,5 +1,5 @@
 """
-BioCompiler — Machine-Verified Gene Design  (v7.6.0)
+BioCompiler — Machine-Verified Gene Design  (v9.0.0)
 
 A compiler framework for human protein synthesis using intermediate
 representations. Pipeline:
@@ -8,7 +8,7 @@ representations. Pipeline:
 
 All computation is DETERMINISTIC: same input always produces identical output.
 
-v7.6.0 highlights:
+v9.0.0 highlights:
   - Unified engine API: BaseEngineResult, MutationResult, BatchResult
     shared across all 6 analysis engines (ESMFold, FoldX, CamSol,
     Immunogenicity, Deimmunization, Protein Design)
@@ -20,7 +20,7 @@ v7.6.0 highlights:
   - CpG reconciliation, CAI reconciliation, cross-codon coordination
 """
 
-__version__ = "7.6.0"
+__version__ = "9.0.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())

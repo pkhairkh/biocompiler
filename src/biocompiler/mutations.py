@@ -1,6 +1,6 @@
 """BioCompiler Mutations — Unified mutation types and utilities.
 
-v7.6.0 — Unified with MutationResult from engine_base.py
+v9.0.0 — Unified with MutationResult from engine_base.py
 
 Provides:
   - Mutation: backward-compatible subclass of MutationResult
@@ -34,16 +34,14 @@ class Mutation(MutationResult):
     MutationResult directly.  Mutation IS-A MutationResult, so any
     function accepting MutationResult also accepts Mutation.
 
-    Added fields (beyond MutationResult):
-      - confidence: how confident the engine is in this suggestion (0–1)
-      - source_engine: alias for the inherited `engine` field
+    Since v9.0.0, MutationResult has its own `confidence` field, so
+    Mutation no longer adds a separate one — it simply inherits it.
 
     Conversion:
       - to_mutation_result() → plain MutationResult copy
       - Mutation.from_mutation_result(mr) → Mutation copy from any MutationResult
     """
 
-    confidence: float = 1.0
     # source_engine is a backward-compat alias for the inherited `engine` field
 
     @property
@@ -88,6 +86,7 @@ class Mutation(MutationResult):
             engine=self.engine,
             recommendation=self.recommendation,
             description=self.description,
+            confidence=self.confidence,
             details=self.details,
         )
 
@@ -106,7 +105,7 @@ class Mutation(MutationResult):
             engine=mr.engine,
             recommendation=mr.recommendation,
             description=mr.description,
-            details=mr.details,
+            confidence=mr.confidence,
             **overrides,
         )
 

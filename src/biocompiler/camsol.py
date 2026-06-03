@@ -1,5 +1,5 @@
 """
-BioCompiler CamSol Solubility Module v7.6.0
+BioCompiler CamSol Solubility Module v9.0.0
 =============================================
 CamSol-inspired solubility prediction algorithm in pure Python.
 

@@ -1,4 +1,4 @@
-# BioCompiler v7.6.0
+# BioCompiler v9.0.0
 
 A compiler framework for human protein synthesis using intermediate representations — with a machine-verified soundness proof.
 
@@ -58,9 +58,9 @@ Existing gene design tools (GeneDesign, DNAWorks, IDT codon optimizer, SpliceAI)
 
 ---
 
-## 28-Predicate Type System (v7.6.0)
+## 28-Predicate Type System (v9.0.0)
 
-BioCompiler v7.6.0 extends the type system from 8 to 28 predicates, organized into five domains. The Lean4 soundness proof covers all 28 predicates: 13 core predicates produce PASS/FAIL verdicts (individually proved sound), and 19 SLOT-dependent predicates always return UNCERTAIN (vacuously sound — they never produce PASS, so the implication `evaluate(P) = PASS → propertyHolds(P)` holds trivially).
+BioCompiler v9.0.0 extends the type system from 8 to 28 predicates, organized into five domains. The Lean4 soundness proof covers all 28 predicates: 13 core predicates produce PASS/FAIL verdicts (individually proved sound), and 19 SLOT-dependent predicates always return UNCERTAIN (vacuously sound — they never produce PASS, so the implication `evaluate(P) = PASS → propertyHolds(P)` holds trivially).
 
 ### DNA-Level Predicates (12)
 
@@ -119,7 +119,7 @@ BioCompiler v7.6.0 extends the type system from 8 to 28 predicates, organized in
 
 ---
 
-## Unified Engine API (v7.6.0)
+## Unified Engine API (v9.0.0)
 
 All six analysis engines (ESMFold, FoldX, CamSol, Immunogenicity, Deimmunization, Protein Design) now share a unified result type hierarchy:
 
@@ -373,7 +373,7 @@ If you use this work, please cite:
                Using Intermediate Representations with a Machine-Verified Soundness Proof},
   author    = {Khairkhah, Pouya},
   year      = {2026},
-  note      = {v7.6.0 — unified engine API, 28-predicate type system, SLOT architecture, HBB full pass},
+  note      = {v9.0.0 — unified engine API, 28-predicate type system, SLOT architecture, HBB full pass},
   url       = {https://github.com/pkhairkh/biocompiler}
 }
 ```

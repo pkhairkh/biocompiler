@@ -1,4 +1,4 @@
-"""BioCompiler Batch Processing Module v7.6.0
+"""BioCompiler Batch Processing Module v9.0.0
 
 Unified batch processing for all BioCompiler analysis engines.
 

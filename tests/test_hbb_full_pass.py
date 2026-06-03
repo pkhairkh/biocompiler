@@ -1,5 +1,5 @@
 """
-BioCompiler v7.6.0 — HBB Full-Pass Test
+BioCompiler v9.0.0 — HBB Full-Pass Test
 ========================================
 
 Verifies that HBB (hemoglobin beta) passes ALL 8 original type predicates

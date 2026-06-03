@@ -21,7 +21,7 @@ import math
 import logging
 from typing import Optional
 
-from biocompiler.type_system import Verdict, TypeCheckResult
+from .type_system import Verdict, TypeCheckResult
 from .constants import HYDROPHOBIC_AAS
 
 logger = logging.getLogger(__name__)

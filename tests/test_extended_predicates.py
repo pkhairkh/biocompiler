@@ -1,5 +1,5 @@
 """
-BioCompiler v7.6.0 Extended Predicate Tests
+BioCompiler v9.0.0 Extended Predicate Tests
 =============================================
 Tests for the 20 extended predicates (predicates 9–28) plus the
 foundational check_ functions (1, 5–8) that they build upon.

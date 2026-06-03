@@ -4,6 +4,7 @@ pyproject.toml
 src/biocompiler/__init__.py
 src/biocompiler/__main__.py
 src/biocompiler/api.py
+src/biocompiler/batch.py
 src/biocompiler/benchmark.py
 src/biocompiler/biopython_compat.py
 src/biocompiler/camsol.py
@@ -26,6 +27,7 @@ src/biocompiler/import_seq.py
 src/biocompiler/jupyter.py
 src/biocompiler/maxentscan.py
 src/biocompiler/mutagenesis.py
+src/biocompiler/mutations.py
 src/biocompiler/optimization.py
 src/biocompiler/organism_db.py
 src/biocompiler/protein_design.py
@@ -60,14 +62,18 @@ src/biocompiler/structure/parser.py
 src/biocompiler/structure/predicates.py
 src/biocompiler/structure/quality.py
 src/biocompiler/structure/report.py
+tests/test_batch_apis.py
 tests/test_biocompiler_unified.py
 tests/test_camsol.py
 tests/test_certificates.py
 tests/test_dataset_validation.py
+tests/test_edge_cases.py
 tests/test_enhancements.py
 tests/test_esmfold.py
+tests/test_extended_predicates.py
 tests/test_foldx.py
 tests/test_hardening.py
+tests/test_hbb_full_pass.py
 tests/test_immunogenicity.py
 tests/test_improvements.py
 tests/test_mutagenesis.py
@@ -79,3 +85,4 @@ tests/test_species.py
 tests/test_splice.py
 tests/test_tier1_predicates.py
 tests/test_type_system.py
+tests/test_unified_api.py

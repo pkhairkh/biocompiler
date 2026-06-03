@@ -1,6 +1,6 @@
 """BioCompiler Engine Base — Unified base types for all analysis engines.
 
-v7.6.0 — Complete API unification foundation
+v9.0.0 — Complete API unification foundation
 
 All analysis engines (ESMFold, FoldX, CamSol, Immunogenicity) share:
   - BaseEngineResult: concrete base class with unified field names
@@ -142,6 +142,7 @@ class MutationResult:
         ('foldx', 'camsol', 'immunogenicity', 'deimmunization')
       recommendation: human-readable category
         ('stabilizing', 'solubility_improving', 'deimmunizing')
+      confidence: confidence score (0.0-1.0) for this suggestion
       details: engine-specific extra data
     """
     position: int
@@ -152,12 +153,14 @@ class MutationResult:
     engine: str = ""  # 'foldx', 'camsol', 'immunogenicity', 'deimmunization'
     recommendation: str = ""  # 'stabilizing', 'solubility_improving', 'deimmunizing'
     description: str = ""
+    confidence: float = 1.0
     details: dict = field(default_factory=dict)
 
     def __init__(self, *, score: Optional[float] = None, delta_score: Optional[float] = None,
                  position: int = 0, original: str = "", mutant: str = "",
                  score_type: str = "", engine: str = "",
                  recommendation: str = "", description: str = "",
+                 confidence: float = 1.0,
                  details: Optional[dict] = None,
                  # Old field name aliases for backward compat
                  original_aa: Optional[str] = None, mutant_aa: Optional[str] = None,
@@ -181,6 +184,7 @@ class MutationResult:
         self.engine = engine
         self.recommendation = recommendation
         self.description = description
+        self.confidence = confidence
         self.details = details if details is not None else {}
 
     # Backward compatibility: 'score' property alias for delta_score

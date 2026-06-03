@@ -1,5 +1,5 @@
 """
-BioCompiler FoldX Stability Analysis Module v7.6.0
+BioCompiler FoldX Stability Analysis Module v9.0.0
 ====================================================
 Provides both online (FoldX CLI wrapper) and offline (empirical scoring)
 modes for protein stability analysis, mutation scanning, and stabilization.

@@ -1,5 +1,5 @@
 """
-BioCompiler Benchmark Module v7.6.0
+BioCompiler Benchmark Module v9.0.0
 =====================================
 Built-in benchmark sequences, performance measurement, comprehensive
 benchmarking, ablation studies, and head-to-head tool comparisons for
