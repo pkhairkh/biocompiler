@@ -83,19 +83,21 @@ class TestESMFoldClient:
         assert isinstance(result, bool)
 
     def test_predict_structure_offline(self):
-        """Without ESMFold installed/API, predict_structure returns success=False."""
+        """Without ESMFold installed/API, predict_structure uses heuristic fallback."""
         from biocompiler.esmfold import predict_structure, is_esmfold_available
 
         if is_esmfold_available():
             pytest.skip("ESMFold is available; skipping offline test")
 
         result = predict_structure("MAG")
-        assert result.success is False
-        assert result.error is not None
+        # With heuristic fallback, success should be True with method=heuristic_fallback
+        assert result.success is True
+        assert result.method == "heuristic_fallback"
         assert result.protein == "MAG"
-        assert result.pdb_string == ""
-        assert result.plddt_scores == []
-        assert result.mean_plddt == 0.0
+        assert result.mean_plddt > 0.0
+        assert result.mean_plddt <= 40.0  # capped at HEURISTIC_MAX_CONFIDENCE
+        assert len(result.plddt_scores) == 3
+        assert result.confidence_level == "very_low"
 
     def test_predict_structure_invalid_protein_raises(self):
         """Non-standard amino acids should raise ESMFoldError."""

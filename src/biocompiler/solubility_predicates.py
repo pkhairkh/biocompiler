@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from biocompiler.type_system import Verdict, TypeCheckResult
+from .type_system import Verdict, TypeCheckResult
 
 logger = logging.getLogger(__name__)
 

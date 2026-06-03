@@ -25,6 +25,74 @@ Verification Evidence:
   - tool_result: what the tool reported
   - threshold_used: the threshold applied
   - mode: which SLOTMode was used
+
+──────────────────────────────────────────────────────────────────────────────
+PROOF-IMPLEMENTATION GAP (DELBERATE DESIGN CHOICE)
+──────────────────────────────────────────────────────────────────────────────
+
+This Python module extends the Lean4 formal model in ways that go beyond what
+is formally proven. This is a DELIBERATE engineering choice, documented here
+for full transparency.
+
+**Lean4 formal model (SLOTVerification.lean):**
+  The formal model treats all 19 SLOT predicates as always returning UNCERTAIN
+  in conservative mode. The soundness proof (slot_soundness_conservative) is
+  vacuously true: since PASS is never produced for SLOT predicates, the
+  implication "PASS → property holds" holds trivially. This is the strongest
+  formal guarantee — it cannot be wrong because it never makes a positive claim.
+
+  In verified mode, the formal model shows (via slot_soundness_verified) that
+  PASS implies all verification conditions hold, which (under the axiom
+  verification_conditions_imply_property) implies the semantic property holds.
+  This is sound under the axiom that external tools are trustworthy.
+
+**This Python implementation:**
+  This module operates in three modes that map to the formal model as follows:
+
+  - CONSERVATIVE: Always returns UNCERTAIN for SLOT predicates. This matches
+    the Lean4 model EXACTLY. The Lean4 soundness proof covers this mode
+    perfectly (vacuously sound).
+
+  - VERIFIED: Can return PASS when external tool evidence exceeds the PASS
+    threshold. This is sound-by-construction: if the external tool is wrong,
+    the predicate's PASS verdict may be wrong, but it will NEVER claim PASS
+    without evidence. The tool's output IS the evidence. This mode corresponds
+    to the Lean4 verified mode under the axiom
+    `verification_conditions_imply_property` — the unproven link is the trust
+    in external tool correctness, which is made explicit in the VerificationEvidence.
+
+  - PERMISSIVE: Returns PASS with weaker evidence (relaxed thresholds, UNCERTAIN
+    promoted to PASS). This mode goes BEYOND what is formally proven in the
+    Lean4 model. It provides practical utility at the cost of formal guarantees.
+
+**Formal coverage summary:**
+  ┌──────────────┬───────────────────────┬──────────────────────────┐
+  │ Mode         │ Python behavior       │ Lean4 proof coverage     │
+  ├──────────────┼───────────────────────┼──────────────────────────┤
+  │ CONSERVATIVE │ Always UNCERTAIN      │ Full (vacuously sound)   │
+  │ VERIFIED     │ PASS with evidence    │ Partial (under axiom)    │
+  │ PERMISSIVE   │ PASS with weak eviden.│ None (beyond proof)      │
+  └──────────────┴───────────────────────┴──────────────────────────┘
+
+**Why this gap is deliberate:**
+  Users want USEFUL results, not just vacuously true soundness. A system that
+  always says "UNCERTAIN" for 19 of 32 predicates is formally impeccable but
+  practically useless. The VERIFIED mode provides a practical middle ground:
+  it returns PASS only when there is positive evidence from a trusted tool,
+  and the Lean4 proof establishes that under the explicit axiom, this is sound.
+
+**Mitigations for the gap:**
+  1. Every PASS verdict in VERIFIED/PERMISSIVE mode carries a VerificationEvidence
+     object documenting exactly what tool was used and what threshold was applied.
+  2. Property-based tests (test_property_predicates.py, test_property_three_valued.py)
+     verify that the Python implementation satisfies the same algebraic properties
+     proven in Lean4.
+  3. The refinement mapping (docs/11-Refinement-Mapping.md) explicitly documents
+     all 7 known refinement gaps between the Lean4 model and Python implementation.
+  4. The default mode is CONSERVATIVE, requiring explicit opt-in for stronger modes.
+
+**Reference:** proof/BioCompiler/SLOTVerification.lean, docs/14-SLOT-Proof-Implementation-Gap.md
+──────────────────────────────────────────────────────────────────────────────
 """
 
 from dataclasses import dataclass, field

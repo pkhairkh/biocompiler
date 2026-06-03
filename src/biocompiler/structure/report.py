@@ -141,7 +141,7 @@ def assess_protein(
         # --- Stability (FoldX) ---
         if run_stability:
             try:
-                from biocompiler.foldx import empirical_stability
+                from ..foldx import empirical_stability
                 stab_result = empirical_stability(protein, pdb_string=pdb_string)
                 report.stability = _to_dict(stab_result)
                 if isinstance(report.stability, dict):
@@ -158,7 +158,7 @@ def assess_protein(
         # --- Solubility (CamSol) ---
         if run_solubility:
             try:
-                from biocompiler.camsol import compute_solubility
+                from ..camsol import compute_solubility
                 sol_result = compute_solubility(protein)
                 report.solubility = _to_dict(sol_result)
                 if isinstance(report.solubility, dict):
@@ -175,7 +175,7 @@ def assess_protein(
         # --- Immunogenicity (includes MHC binding + epitope) ---
         if run_immunogenicity:
             try:
-                from biocompiler.immunogenicity import compute_immunogenicity
+                from ..immunogenicity import compute_immunogenicity
                 imm_result = compute_immunogenicity(protein, organism=organism)
                 report.immunogenicity = _to_dict(imm_result)
                 if isinstance(report.immunogenicity, dict):
@@ -190,7 +190,7 @@ def assess_protein(
                 report.error = str(exc)
 
             try:
-                from biocompiler.immunogenicity import predict_all as predict_mhc_all
+                from ..immunogenicity import predict_all as predict_mhc_all
                 mhc_result = predict_mhc_all(protein)
                 report.mhc_binding = _to_dict(mhc_result)
                 if isinstance(report.mhc_binding, dict):
@@ -205,7 +205,7 @@ def assess_protein(
                 report.error = str(exc)
 
             try:
-                from biocompiler.immunogenicity import predict_epitopes
+                from ..immunogenicity import predict_epitopes
                 epi_result = predict_epitopes(protein)
                 report.epitope = _to_dict(epi_result)
                 if isinstance(report.epitope, dict):

@@ -34,21 +34,28 @@ Accuracy and Confidence
     runs the real ESMFold v1 model.  pLDDT scores have full accuracy.
   - **Local esm mode** (esmfold_local): Uses the locally-installed
     ``esm`` Python package.  Same model accuracy as API mode.
-  - **Offline mode**: Returns success=False with no prediction.
-    No heuristic fallback is provided — structure prediction is not
-    amenable to simple heuristics.
+  - **Heuristic fallback** (heuristic_fallback): When both API and local
+    esm are unavailable, uses sequence-based heuristics (hydrophobicity,
+    charge distribution, secondary structure propensity) to produce a
+    low-confidence estimate.  Mean pLDDT is capped at 40.0 and confidence
+    is always < 0.5.  This is significantly less accurate than ESMFold
+    and should only be used as a last resort to avoid UNCERTAIN verdicts.
+  - **Offline mode** (complete failure): Returns success=False with no
+    prediction.  Only reached if the heuristic fallback itself fails.
 
   **Confidence levels:**
     - API/local mode, mean pLDDT >= 70: **HIGH**
     - API/local mode, mean pLDDT 50-70: **MEDIUM**
     - API/local mode, mean pLDDT < 50: **LOW**
+    - Heuristic fallback: **VERY LOW** (confidence < 0.5, pLDDT capped at 40)
     - Offline mode (no prediction): **NONE**
 
 **Known limitations:**
   - API availability is not guaranteed (ESM Atlas may be down or rate-limited)
   - Local esm requires GPU for reasonable speed
-  - No offline heuristic — if both API and local esm are unavailable,
-    no prediction is returned
+  - Heuristic fallback is significantly less accurate than ESMFold;
+    it uses simple sequence-based rules and cannot capture long-range
+    interactions.  Results should be treated as tentative estimates only.
   - ESMFold does not predict PAE (Predicted Aligned Error) via the API;
     this field is always None in our results
 
@@ -337,10 +344,14 @@ class ESMFoldResult(BaseEngineResult):
           - ``"high"`` -- successful prediction with mean pLDDT >= 70
           - ``"medium"`` -- successful prediction with mean pLDDT 50-70
           - ``"low"`` -- successful prediction with mean pLDDT < 50
+          - ``"very_low"`` -- heuristic fallback prediction (pLDDT < 50,
+            method is ``"heuristic_fallback"``)
           - ``"none"`` -- failed prediction (no structure obtained)
         """
         if not self.success:
             return "none"
+        if self.method == "heuristic_fallback":
+            return "very_low"
         score = self.primary_score  # mean pLDDT
         if score >= 70:
             return "high"
@@ -846,7 +857,14 @@ def predict_structure(
     Strategy priority:
       1. **API** — POST the sequence to ESM Atlas and parse the PDB response.
       2. **Local esm** — ``import esm`` and run ESMFold locally (if installed).
-      3. **Offline** — Return ``ESMFoldResult(success=False)`` with an error.
+      3. **Heuristic fallback** — Use sequence-based heuristics (hydrophobicity,
+         charge distribution, secondary structure propensity) to produce a
+         low-confidence estimate.  Mean pLDDT is capped at 40.0 and confidence
+         is always < 0.5.  The ``method`` field is set to ``"heuristic_fallback"``.
+         This is NOT a substitute for ESMFold — it exists so that structure
+         predicates can return a tentative verdict instead of UNCERTAIN.
+      4. **Complete failure** — Return ``ESMFoldResult(success=False)`` with
+         an error (only if the heuristic fallback itself raises an exception).
 
     Retry logic: up to 3 attempts with exponential backoff on transient
     API errors (network, 5xx, 429 rate-limit).  Invalid protein input
@@ -882,7 +900,33 @@ def predict_structure(
             result.execution_time_s = round(timer.elapsed, 4)
             return result
 
-    # --- Strategy 3: Offline fallback ------------------------------------------
+    # --- Strategy 3: Heuristic fallback (offline) ------------------------------
+    try:
+        from .engines.esmfold_fallback import predict_structure_heuristic
+        heuristic = predict_structure_heuristic(protein)
+        result = ESMFoldResult(
+            pdb_string="",
+            plddt_scores=heuristic["plddt_scores"],
+            mean_plddt=heuristic["mean_plddt"],
+            pae_matrix=None,
+            protein=protein,
+            model_name=heuristic["model_name"],
+            execution_time_s=round(timer.elapsed, 4),
+            success=True,
+            error=None,
+            method=heuristic["method"],
+        )
+        logger.info(
+            "ESMFold API/local unavailable; used heuristic fallback "
+            "(estimated pLDDT=%.1f, confidence=%.2f)",
+            heuristic["mean_plddt"],
+            heuristic["confidence"],
+        )
+        return result
+    except Exception as exc:
+        logger.warning("Heuristic fallback also failed: %s", exc)
+
+    # --- Strategy 4: Complete failure -----------------------------------------
     return ESMFoldResult(
         pdb_string="",
         plddt_scores=[],

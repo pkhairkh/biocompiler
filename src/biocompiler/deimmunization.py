@@ -739,7 +739,7 @@ def _compute_solubility_score(protein: str) -> float:
         Solubility score (arbitrary units, higher = more soluble).
     """
     try:
-        from biocompiler.camsol import compute_intrinsic_solubility
+        from .camsol import compute_intrinsic_solubility
         result = compute_intrinsic_solubility(protein)
         # Handle SolubilityResult object (camsol module returns objects)
         if hasattr(result, 'overall_score'):

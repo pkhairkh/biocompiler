@@ -1036,7 +1036,7 @@ async def structure_predict(input_data: StructurePredictInput):
     Returns 503 if ESMFold is not available.
     """
     try:
-        from biocompiler.esmfold import predict_structure, is_esmfold_available
+        from .esmfold import predict_structure, is_esmfold_available
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1103,7 +1103,7 @@ async def structure_quality(input_data: QualityAssessInput):
     Returns 400 if PDB string is malformed.
     """
     try:
-        from biocompiler.structure.quality import compute_structure_quality
+        from .structure.quality import compute_structure_quality
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1177,7 +1177,7 @@ async def structure_batch(input_data: BatchStructureInput):
     Returns 503 if ESMFold is not available.
     """
     try:
-        from biocompiler.esmfold import predict_structure, is_esmfold_available
+        from .esmfold import predict_structure, is_esmfold_available
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1247,7 +1247,7 @@ async def structure_batch(input_data: BatchStructureInput):
 
 def _structure_batch_single(item: StructurePredictInput) -> BatchStructureResultItem:
     """Process a single structure prediction item for batch processing."""
-    from biocompiler.esmfold import predict_structure
+    from .esmfold import predict_structure
 
     result = predict_structure(
         protein=item.protein,
@@ -1292,7 +1292,7 @@ async def stability_analyze(input_data: StabilityInput):
     available.
     """
     try:
-        from biocompiler.foldx import empirical_stability
+        from .foldx import empirical_stability
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1359,7 +1359,7 @@ async def stability_mutations(input_data: MutationScanInput):
     may take several minutes.
     """
     try:
-        from biocompiler.foldx import scan_mutations
+        from .foldx import scan_mutations
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1433,7 +1433,7 @@ async def solubility_analyze(input_data: SolubilityInput):
     Returns 400 for invalid protein or PDB input.
     """
     try:
-        from biocompiler.camsol import compute_solubility
+        from .camsol import compute_solubility
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1479,7 +1479,7 @@ async def solubility_mutations(input_data: SolubilityInput):
     Returns a list of proposed mutations with predicted solubility impact.
     """
     try:
-        from biocompiler.camsol import find_solubility_mutations
+        from .camsol import find_solubility_mutations
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1541,7 +1541,7 @@ async def immunogenicity_analyze(input_data: ImmunogenicityInput):
     specified organism are used.
     """
     try:
-        from biocompiler.immunogenicity import compute_immunogenicity
+        from .immunogenicity import compute_immunogenicity
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1602,7 +1602,7 @@ async def immunogenicity_deimmunize(input_data: DeimmunizeInput):
     Returns the optimized protein, applied mutations, and before/after scores.
     """
     try:
-        from biocompiler.deimmunization import deimmunize
+        from .deimmunization import deimmunize
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -1672,7 +1672,7 @@ async def assessment_full(input_data: FullAssessmentInput):
         if pdb_str is None:
             # Predict structure first
             try:
-                from biocompiler.esmfold import predict_structure, is_esmfold_available
+                from .esmfold import predict_structure, is_esmfold_available
 
                 if is_esmfold_available():
                     pred = predict_structure(
@@ -1705,7 +1705,7 @@ async def assessment_full(input_data: FullAssessmentInput):
         # Assess structure quality if we have a PDB string
         if pdb_str is not None:
             try:
-                from biocompiler.structure.quality import compute_structure_quality
+                from .structure.quality import compute_structure_quality
 
                 quality = compute_structure_quality(pdb_string=pdb_str)
                 structure_quality_result = quality
@@ -1733,7 +1733,7 @@ async def assessment_full(input_data: FullAssessmentInput):
     # ── Stability Analysis ─────────────────────────────────────────
     if input_data.run_stability:
         try:
-            from biocompiler.foldx import empirical_stability
+            from .foldx import empirical_stability
 
             stab = empirical_stability(
                 protein=input_data.protein,
@@ -1775,7 +1775,7 @@ async def assessment_full(input_data: FullAssessmentInput):
     # ── Solubility Analysis ────────────────────────────────────────
     if input_data.run_solubility:
         try:
-            from biocompiler.camsol import compute_solubility
+            from .camsol import compute_solubility
 
             sol = compute_solubility(
                 protein=input_data.protein,
@@ -1811,7 +1811,7 @@ async def assessment_full(input_data: FullAssessmentInput):
     # ── Immunogenicity Analysis ────────────────────────────────────
     if input_data.run_immunogenicity:
         try:
-            from biocompiler.immunogenicity import compute_immunogenicity
+            from .immunogenicity import compute_immunogenicity
 
             imm = compute_immunogenicity(
                 protein=input_data.protein,
@@ -1855,7 +1855,7 @@ async def assessment_full(input_data: FullAssessmentInput):
 
     # ── Predicate Results ──────────────────────────────────────────
     try:
-        from biocompiler.structure.report import assess_protein
+        from .structure.report import assess_protein
 
         report = assess_protein(
             protein=input_data.protein,
@@ -1866,8 +1866,8 @@ async def assessment_full(input_data: FullAssessmentInput):
     except ImportError:
         # Fallback: try type system directly
         try:
-            from biocompiler.translation import translate, compute_cai
-            from biocompiler.optimization import optimize_sequence
+            from .translation import translate, compute_cai
+            from .optimization import optimize_sequence
 
             opt_result = optimize_sequence(
                 target_protein=input_data.protein,
@@ -2059,7 +2059,7 @@ async def stability_batch(input_data: BatchStabilityInput):
 def _stability_batch_single(item: StabilityInput) -> dict[str, Any]:
     """Process a single stability analysis item for batch processing."""
     try:
-        from biocompiler.foldx import empirical_stability
+        from .foldx import empirical_stability
         result = empirical_stability(
             protein=item.protein,
         )
@@ -2163,7 +2163,7 @@ async def solubility_batch(input_data: BatchSolubilityInput):
 def _solubility_batch_single(item: SolubilityInput) -> dict[str, Any]:
     """Process a single solubility analysis item for batch processing."""
     try:
-        from biocompiler.camsol import compute_solubility
+        from .camsol import compute_solubility
         result = compute_solubility(
             protein=item.protein,
             pdb_string=item.pdb_string,
@@ -2250,7 +2250,7 @@ async def immunogenicity_batch(input_data: BatchImmunogenicityInput):
 def _immunogenicity_batch_single(item: ImmunogenicityInput) -> dict[str, Any]:
     """Process a single immunogenicity analysis item for batch processing."""
     try:
-        from biocompiler.immunogenicity import compute_immunogenicity
+        from .immunogenicity import compute_immunogenicity
         result = compute_immunogenicity(
             protein=item.protein,
             mhc_alleles=item.mhc_alleles,

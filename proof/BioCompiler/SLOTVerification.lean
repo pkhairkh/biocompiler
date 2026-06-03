@@ -19,6 +19,61 @@
   but they're EXPLICIT assumptions about tool behavior, not hidden.
   This is philosophically cleaner than the current vacuous truth.
 
+  ──────────────────────────────────────────────────────────────────────────
+  PROOF-IMPLEMENTATION GAP (DELBERATE DESIGN CHOICE)
+  ──────────────────────────────────────────────────────────────────────────
+
+  There is an intentional gap between this formal model and the Python
+  implementation in `slot_verification.py`. This gap exists by design and
+  is documented here for full transparency.
+
+  **Formal model (this file):**
+    All 19 SLOT predicates always return UNCERTAIN in conservative mode.
+    The soundness proof (`slot_soundness_conservative`) is vacuously true:
+    since PASS is never produced for SLOT predicates, the implication
+    "PASS → property holds" holds trivially. This is the STRONGEST formal
+    guarantee — it cannot be wrong because it never makes a positive claim.
+
+  **Python implementation (`slot_verification.py`):**
+    The Python code operates in three modes:
+    - CONSERVATIVE: Always UNCERTAIN — matches this formal model EXACTLY.
+      The Lean4 soundness proof covers this mode perfectly.
+    - VERIFIED: Can return PASS when (1) the required external tool is
+      available, (2) the tool produced a result, and (3) the result meets
+      the PASS threshold. This is sound-by-construction: if the tool is
+      wrong, the predicate may be wrong, but it will NEVER claim PASS
+      without evidence. The tool's output IS the evidence.
+    - PERMISSIVE: Returns PASS with weaker evidence (relaxed thresholds,
+      UNCERTAIN promoted to PASS). This goes beyond what is formally proven.
+
+  **Why this gap is deliberate:**
+    Users want USEFUL results, not just vacuously true soundness. A system
+    that always says "UNCERTAIN" is formally impeccable but practically
+    useless. The VERIFIED mode provides a practical middle ground: it
+    returns PASS only when there is positive evidence from a trusted tool,
+    and the Lean4 proof in this file (`slot_soundness_verified`) establishes
+    that under the axiom `verification_conditions_imply_property`, PASS in
+    verified mode implies the semantic property holds.
+
+  **Formal coverage summary:**
+    ┌──────────────┬───────────────────────┬──────────────────────────┐
+    │ Mode         │ Python behavior       │ Lean4 proof coverage     │
+    ├──────────────┼───────────────────────┼──────────────────────────┤
+    │ CONSERVATIVE │ Always UNCERTAIN      │ Full (vacuously sound)   │
+    │ VERIFIED     │ PASS with evidence    │ Partial (under axiom)    │
+    │ PERMISSIVE   │ PASS with weak eviden.│ None (beyond proof)      │
+    └──────────────┴───────────────────────┴──────────────────────────┘
+
+  **Soundness-by-construction for VERIFIED mode:**
+    VERIFIED mode is not "unproven" — it is backed by the theorem
+    `slot_soundness_verified` which shows: PASS ⟹ all VCs hold ⟹
+    slotPropertySemantics holds (via axiom). The only unproven link is
+    the axiom `verification_conditions_imply_property`, which is the
+    explicit "social contract" that tools are trustworthy. This is
+    analogous to how the TCB trusts scanner axioms 1-3.
+
+  ──────────────────────────────────────────────────────────────────────────
+
   THEOREMS (all sorry-free):
   1. conservative_is_safe: conservative mode never returns PASS for SLOT predicates
   2. slot_soundness_conservative: PASS in conservative mode → property holds
@@ -40,7 +95,8 @@
   content, and the axiom verification_conditions_imply_property can be replaced
   with proofs for specific predicates (as was done for scanner axioms 4-18).
 
-  REFERENCE: DOC-03 (SDD) §3.5, DOC-10 (Deterministic Methods) §4
+  REFERENCE: DOC-03 (SDD) §3.5, DOC-10 (Deterministic Methods) §4,
+             docs/14-SLOT-Proof-Implementation-Gap.md
 -/
 
 import BioCompiler.ThreeValued
