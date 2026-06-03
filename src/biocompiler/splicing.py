@@ -312,7 +312,8 @@ def compute_splice_isoforms(
             break
         before = seq[:d_pos]
         after = seq[a_pos + 2:]
-        if len(before) > 0 and len(after) > 0:
+        # Guard: both exon segments must be non-empty and boundaries valid
+        if len(before) > 0 and len(after) > 0 and d_pos > 0 and a_pos + 2 <= len(seq) and a_pos + 2 > d_pos:
             cryptic_seq = before + after
             isoforms.append(SpliceIsoform(
                 sequence=cryptic_seq,
@@ -337,6 +338,9 @@ def compute_splice_isoforms(
         for alt_d in alt_donors[:max_alt_sites]:
             if len(isoforms) >= max_isoforms:
                 break
+            # Guard: alternative donor must not move past the exon start
+            if alt_d.position <= known_exon_boundaries[i][0]:
+                continue
             alt_exons = list(known_exon_boundaries)
             alt_exons[i] = (alt_exons[i][0], alt_d.position)
             alt_seq = "".join(seq[start:end] for start, end in alt_exons)
@@ -358,8 +362,12 @@ def compute_splice_isoforms(
         for alt_a in alt_acceptors[:max_alt_sites]:
             if len(isoforms) >= max_isoforms:
                 break
+            new_start = alt_a.position + 2
+            # Guard: alternative acceptor must not move past the exon end
+            if new_start >= known_exon_boundaries[i + 1][1]:
+                continue
             alt_exons = list(known_exon_boundaries)
-            alt_exons[i + 1] = (alt_a.position + 2, alt_exons[i + 1][1])
+            alt_exons[i + 1] = (new_start, alt_exons[i + 1][1])
             alt_seq = "".join(seq[start:end] for start, end in alt_exons)
             isoforms.append(SpliceIsoform(
                 sequence=alt_seq,
