@@ -20,6 +20,10 @@ from typing import Any, Optional, Protocol
 class SolverBackend(Enum):
     """Available solver backends for constraint satisfaction.
 
+    NONE:
+        No backend was used. Used for fallback results when all backends
+        are unavailable or infeasible.
+
     ORTOOLS:
         Google OR-Tools CP-SAT solver. Primary backend.
         Supports automaton constraints for forbidden substrings (restriction
@@ -37,6 +41,7 @@ class SolverBackend(Enum):
         guarantee, but always available.
     """
 
+    NONE = "none"
     ORTOOLS = "ortools"
     Z3 = "z3"
     GREEDY_FALLBACK = "greedy"
@@ -298,6 +303,8 @@ class SolverResult:
         solved: Whether a valid solution satisfying all hard constraints
             was found.
         backend_used: Which solver backend produced this result.
+        protein: The input amino acid sequence.
+        organism: The target organism name.
         cai: Codon Adaptation Index of the result sequence.
         gc_content: GC fraction of the result sequence.
         solve_time_seconds: Wall-clock time spent solving.
@@ -309,11 +316,14 @@ class SolverResult:
         fallback_used: Whether the greedy fallback was used because the
             primary solver was unavailable or timed out.
         warnings: Non-fatal diagnostic messages.
+        metadata: Additional key-value metadata (e.g. reason for fallback).
     """
 
     sequence: str
     solved: bool
     backend_used: SolverBackend
+    protein: str = ""
+    organism: str = ""
     cai: float = 0.0
     gc_content: float = 0.0
     solve_time_seconds: float = 0.0
@@ -324,6 +334,7 @@ class SolverResult:
     num_variables: int = 0
     fallback_used: bool = False
     warnings: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

@@ -1040,7 +1040,8 @@ class MHCflurryClient:
         try:
             return allele in self._affinity_predictor.supported_alleles
         except AttributeError:
-            # Fallback: try a dummy prediction
+            # Older MHCflurry versions may not expose supported_alleles.
+            # Attempt a real prediction with a test peptide to check allele support.
             try:
                 df = self._affinity_predictor.predict(
                     peptides=["AAAAAAAAA"],
@@ -1048,4 +1049,8 @@ class MHCflurryClient:
                 )
                 return not df.empty
             except Exception:
+                logger.debug(
+                    "Cannot determine allele support for %r via prediction probe",
+                    allele,
+                )
                 return False

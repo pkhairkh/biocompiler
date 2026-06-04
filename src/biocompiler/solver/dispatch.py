@@ -37,6 +37,7 @@ from ..constants import AA_TO_CODONS
 from ..organisms import SPECIES
 
 from .types import (
+    ConstraintStrictness,
     ConstraintViolation,
     CSPModel,
     SolverBackend,
@@ -85,18 +86,29 @@ def is_csp_available() -> dict[str, bool]:
     return {"ortools": ortools_ok, "z3": z3_ok, "any": ortools_ok or z3_ok}
 
 
+def is_solver_available() -> bool:
+    """Check whether any CSP solver backend is available.
+
+    Returns
+    -------
+    bool
+        True if at least one backend (OR-Tools or Z3) is importable.
+    """
+    return is_csp_available()["any"]
+
+
 def _make_fallback_result(
     protein: str, organism: str, solve_time: float, reason: str,
 ) -> SolverResult:
     """Construct a SolverResult that signals the greedy path should be used."""
     return SolverResult(
         sequence="",
+        solved=False,
+        backend_used=SolverBackend.NONE,
         protein=protein,
         organism=organism,
-        backend=SolverBackend.NONE,
-        feasible=False,
         fallback_used=True,
-        solve_time=solve_time,
+        solve_time_seconds=solve_time,
         violations=[],
         metadata={"reason": reason},
     )
@@ -119,9 +131,9 @@ def solve_with_csp(
     organism : str
         Target organism name.
     config : SolverConfig | None
-        Full solver configuration.  If ``None``, one is built from *kwargs*.
+        Full solver configuration.  If ``None``, a default is constructed.
     **kwargs
-        Forwarded to ``SolverConfig`` when *config* is ``None``.
+        Ignored when *config* is provided; otherwise reserved for future use.
 
     Returns
     -------
@@ -148,8 +160,7 @@ def solve_with_csp(
 
     # Build configuration
     if config is None:
-        merged: dict[str, Any] = {"protein": protein, "organism": organism, **kwargs}
-        config = SolverConfig.from_dict(merged)
+        config = SolverConfig()
 
     # Build CSP model
     logger.info("Building CSP model for protein (%d aa), organism=%s", len(protein), organism)
@@ -170,8 +181,8 @@ def solve_with_csp(
         try:
             engine = _ORTOOLSEngine(config)
             result = engine.solve(model)
-            if result is not None and result.feasible:
-                result.backend = SolverBackend.ORTOOLS
+            if result is not None and result.solved:
+                result.backend_used = SolverBackend.ORTOOLS
                 logger.info("OR-Tools solved successfully.")
             else:
                 logger.info("OR-Tools returned infeasible; trying next backend.")
@@ -186,8 +197,8 @@ def solve_with_csp(
         try:
             engine = _Z3Engine(config)
             result = engine.solve(model)
-            if result is not None and result.feasible:
-                result.backend = SolverBackend.Z3
+            if result is not None and result.solved:
+                result.backend_used = SolverBackend.Z3
                 logger.info("Z3 solved successfully.")
             else:
                 logger.info("Z3 returned infeasible.")
@@ -215,7 +226,7 @@ def solve_with_csp(
             )
 
     result.fallback_used = False
-    result.solve_time = time.monotonic() - start
+    result.solve_time_seconds = time.monotonic() - start
     return result
 
 
@@ -259,29 +270,24 @@ def csp_optimize(
     timeout_seconds : float
         Solver wall-clock timeout.
     **kwargs
-        Additional keyword arguments forwarded to ``SolverConfig``.
+        Additional keyword arguments (reserved for future use).
 
     Returns
     -------
     SolverResult
         CSP solution, or a fallback indicator on failure.
     """
-    config_kwargs: dict[str, Any] = {
-        "protein": protein,
-        "organism": organism,
-        "gc_lo": gc_lo,
-        "gc_hi": gc_hi,
-        "restriction_sites": restriction_sites,
-        "cryptic_splice_threshold": cryptic_splice_threshold,
-        "avoid_cpg": avoid_cpg,
-        "avoid_attta": avoid_attta,
-        "max_homopolymer": max_homopolymer,
-        "timeout_seconds": timeout_seconds,
-        **kwargs,
-    }
-
     try:
-        config = SolverConfig.from_dict(config_kwargs)
+        config = SolverConfig(
+            gc_lo=gc_lo,
+            gc_hi=gc_hi,
+            cryptic_splice_threshold=cryptic_splice_threshold,
+            restriction_sites=restriction_sites or [],
+            avoid_cpg=avoid_cpg,
+            avoid_attta=avoid_attta,
+            avoid_t_runs=max_homopolymer >= 6,
+            timeout_seconds=timeout_seconds,
+        )
     except Exception:
         logger.warning("Failed to build SolverConfig; returning fallback result.", exc_info=True)
         return _make_fallback_result(protein, organism, 0.0, "SolverConfig construction failed")
@@ -326,9 +332,10 @@ def validate_csp_solution(
 
     if not sequence:
         violations.append(ConstraintViolation(
-            constraint="non_empty_sequence",
-            message="Sequence is empty — nothing to validate.",
-            severity="critical",
+            constraint_name="non_empty_sequence",
+            constraint_type=ConstraintStrictness.HARD,
+            description="Sequence is empty — nothing to validate.",
+            severity=1.0,
         ))
         return violations
 
@@ -340,17 +347,19 @@ def validate_csp_solution(
             satisfied = constraint.check(sequence)
         except Exception as exc:
             violations.append(ConstraintViolation(
-                constraint=constraint.name,
-                message=f"Constraint check raised {type(exc).__name__}: {exc}",
-                severity="error",
+                constraint_name=constraint.name,
+                constraint_type=ConstraintStrictness.HARD,
+                description=f"Constraint check raised {type(exc).__name__}: {exc}",
+                severity=0.5,
             ))
             continue
 
         if not satisfied:
             violations.append(ConstraintViolation(
-                constraint=constraint.name,
-                message=f"Constraint '{constraint.name}' is not satisfied by the solution.",
-                severity="warning",
+                constraint_name=constraint.name,
+                constraint_type=ConstraintStrictness.HARD,
+                description=f"Constraint '{constraint.name}' is not satisfied by the solution.",
+                severity=0.8,
             ))
 
     # Extra sanity: translation fidelity
@@ -358,12 +367,13 @@ def validate_csp_solution(
 
     if len(sequence) != len(protein) * 3:
         violations.append(ConstraintViolation(
-            constraint="sequence_length",
-            message=(
+            constraint_name="sequence_length",
+            constraint_type=ConstraintStrictness.HARD,
+            description=(
                 f"Sequence length ({len(sequence)}) does not equal "
                 f"protein length × 3 ({len(protein) * 3})."
             ),
-            severity="critical",
+            severity=1.0,
         ))
     else:
         codons = [sequence[i:i + 3] for i in range(0, len(sequence), 3)]
@@ -371,9 +381,10 @@ def validate_csp_solution(
             actual_aa = CODON_TABLE.get(codon)
             if actual_aa != expected_aa:
                 violations.append(ConstraintViolation(
-                    constraint="translation_fidelity",
-                    message=f"Codon {idx} ({codon}) translates to '{actual_aa}', expected '{expected_aa}'.",
-                    severity="critical",
+                    constraint_name="translation_fidelity",
+                    constraint_type=ConstraintStrictness.HARD,
+                    description=f"Codon {idx} ({codon}) translates to '{actual_aa}', expected '{expected_aa}'.",
+                    severity=1.0,
                 ))
 
     return violations

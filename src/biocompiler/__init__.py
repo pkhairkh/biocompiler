@@ -20,7 +20,7 @@ v9.2.0 highlights:
   - CpG reconciliation, CAI reconciliation, cross-codon coordination
 """
 
-__version__ = "9.0.0"
+__version__ = "9.2.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -113,7 +113,10 @@ from .type_system import (
 try:
     from .certificate import generate_certificate, verify_certificate, compute_certificate, format_certificate
 except ImportError:
-    pass
+    generate_certificate = None
+    verify_certificate = None
+    compute_certificate = None
+    format_certificate = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # MaxEntScan splice scoring
@@ -125,7 +128,11 @@ try:
         max_donor_score, max_acceptor_score,
     )
 except ImportError:
-    pass
+    score_donor = None
+    score_acceptor = None
+    scan_splice_sites = None
+    max_donor_score = None
+    max_acceptor_score = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Optimization
@@ -140,17 +147,23 @@ from .optimization import BioOptimizer, optimize_sequence, OptimizationResult
 try:
     from .grammar_loader import load_grammar, grammar_to_predicate_params, load_builtin_grammar, list_builtin_grammars
 except ImportError:
-    pass
+    load_grammar = None
+    grammar_to_predicate_params = None
+    load_builtin_grammar = None
+    list_builtin_grammars = None
 
 try:
     from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta
 except ImportError:
-    pass
+    export_fasta = None
+    export_genbank = None
+    export_genbank_with_certificate = None
+    export_multi_fasta = None
 
 try:
     from .report import generate_report
 except ImportError:
-    pass
+    generate_report = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Benchmark (merged from comprehensive_benchmark.py & tool_comparison.py)
@@ -187,7 +200,12 @@ try:
         SPECIES, ECOLI_CAI, HUMAN_CAI, compute_cai_weights,
     )
 except ImportError:
-    pass
+    OrganismDatabase = None
+    get_database = None
+    SPECIES = {}
+    ECOLI_CAI = None
+    HUMAN_CAI = None
+    compute_cai_weights = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tissue data
@@ -196,7 +214,9 @@ except ImportError:
 try:
     from .tissue_data import get_tissue_weights, list_available_tissues, add_custom_tissue
 except ImportError:
-    pass
+    get_tissue_weights = None
+    list_available_tissues = None
+    add_custom_tissue = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # DNA Chisel compatibility
@@ -215,7 +235,8 @@ except ImportError:
 try:
     from .dataset_validation import run_dataset_validation, DatasetValidationReport
 except ImportError:
-    pass
+    run_dataset_validation = None
+    DatasetValidationReport = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Sequence import / BioPython compat / Jupyter
@@ -224,17 +245,25 @@ except ImportError:
 try:
     from .import_seq import import_fasta, import_genbank, import_sequence
 except ImportError:
-    pass
+    import_fasta = None
+    import_genbank = None
+    import_sequence = None
 
 try:
     from .biopython_compat import to_seqrecord, from_seqrecord, optimize_to_seqrecord
 except ImportError:
-    pass
+    to_seqrecord = None
+    from_seqrecord = None
+    optimize_to_seqrecord = None
 
 try:
     from .jupyter import display_sequence, display_optimization_result, display_type_check, plot_gc_content, plot_codon_usage
 except ImportError:
-    pass
+    display_sequence = None
+    display_optimization_result = None
+    display_type_check = None
+    plot_gc_content = None
+    plot_codon_usage = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Mutagenesis
@@ -251,7 +280,19 @@ try:
         apply_substitution,
     )
 except ImportError:
-    pass
+    MutagenesisResult = None
+    AASubstitution = None
+    GT_MANDATORY_AAS = None
+    AG_MANDATORY_AAS = None
+    is_gt_mandatory = None
+    is_ag_mandatory = None
+    diagnose_optimizer_weakness = None
+    force_gt_free_reoptimization = None
+    type_directed_mutagenesis = None
+    find_unrepairable_cryptic_donors = None
+    find_unrepairable_cryptic_acceptors = None
+    propose_substitutions = None
+    apply_substitution = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Solubility (Camsol + predicates)
@@ -270,7 +311,19 @@ try:
         CAMSOL_BETA_STRAND,
     )
 except ImportError:
-    pass
+    compute_intrinsic_solubility = None
+    compute_solubility = None
+    compute_structural_solubility = None
+    classify_solubility = None
+    find_solubility_mutations = None
+    generate_solubility_recommendations = None
+    compute_solubility_batch = None
+    camsol_clear_cache = None
+    SolubilityResult = None
+    CAMSOL_HYDROPATHY = None
+    CAMSOL_CHARGE = None
+    CAMSOL_ALPHA_HELIX = None
+    CAMSOL_BETA_STRAND = None
 
 try:
     from .solubility_predicates import (
@@ -280,7 +333,14 @@ try:
         find_hydrophobic_stretches, PKA_VALUES,
     )
 except ImportError:
-    pass
+    evaluate_soluble_expression = None
+    evaluate_no_aggregation_prone_region = None
+    evaluate_charge_composition = None
+    evaluate_no_long_hydrophobic_stretch = None
+    compute_approximate_pI = None
+    compute_net_charge = None
+    find_hydrophobic_stretches = None
+    PKA_VALUES = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Structure prediction (ESMFold — merged from esmfold_batch.py & esmfold_cache.py)
@@ -298,7 +358,25 @@ try:
         clear_cache as esmfold_clear_cache,
     )
 except ImportError:
-    pass
+    ESMFoldResult = None
+    ESMFoldError = None
+    ESMFoldCache = None
+    is_esmfold_available = None
+    predict_structure = None
+    predict_structure_batch = None
+    predict_batch = None
+    predict_proteins = None
+    format_batch_report = None
+    parse_pdb = None
+    compute_backbone_dihedrals = None
+    classify_plddt = None
+    estimate_contact_map = None
+    analyze_structure = None
+    validate_batch_input = None
+    estimate_batch_time = None
+    BatchStructureRequest = None
+    BatchStructureResult = None
+    esmfold_clear_cache = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Immunogenicity (merged from mhc_binding.py & epitope.py)
@@ -329,7 +407,41 @@ try:
         CHOU_FASMAN_TURN, EMINI_SCALE,
     )
 except ImportError:
-    pass
+    ImmunogenicityResult = None
+    predict_t_cell_epitopes = None
+    predict_b_cell_epitopes = None
+    compute_surface_accessibility_approx = None
+    compute_immunogenicity = None
+    find_deimmunization_mutations = None
+    compute_immunogenicity_batch = None
+    immunogenicity_clear_cache = None
+    MHCBindingResult = None
+    MHCPredictionResult = None
+    predict_mhc_i_binding = None
+    predict_mhc_ii_binding = None
+    score_peptide_pssm = None
+    binding_score_to_ic50 = None
+    classify_binding = None
+    predict_mhc_binding = None
+    MHC_I_PSSM = None
+    MHC_II_PSSM = None
+    POPULATION_COVERAGE = None
+    DEFAULT_MHC_I_ALLELES = None
+    DEFAULT_MHC_II_ALLELES = None
+    EpitopeRegion = None
+    EpitopePredictionResult = None
+    predict_kolaskar_tongaonkar = None
+    predict_parker_hydrophilicity = None
+    predict_chou_fasman_beta_turn = None
+    predict_eea = None
+    predict_bepipred_like = None
+    predict_conformational_epitopes = None
+    predict_epitopes = None
+    ALL_SCALES = None
+    ANTIGENICITY_SCALE = None
+    PARKER_SCALE = None
+    CHOU_FASMAN_TURN = None
+    EMINI_SCALE = None
 
 # Deprecated aliases removed in v7.5.0:
 # MHC_I_PREFERENCES → use MHC_I_PSSM
@@ -351,7 +463,13 @@ try:
         compute_mutation_impact,
     )
 except ImportError:
-    pass
+    DeimmunizationResult = None
+    EpitopeMutation = None
+    deimmunize = None
+    find_epitope_disrupting_mutations = None
+    rank_deimmunization_mutations = None
+    validate_deimmunized_protein = None
+    compute_mutation_impact = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Structure (consolidated from structure/, structure_quality, structure_predicates, structure_report)
@@ -381,7 +499,41 @@ try:
         plot_plddt_bar_svg, plot_solubility_profile_svg,
     )
 except ImportError:
-    pass
+    Atom = None
+    Residue = None
+    Chain = None
+    ProteinStructure = None
+    parse_pdb = None
+    parse_pdb_file = None
+    compute_dihedral = None
+    compute_ramachandran = None
+    secondary_structure_estimate = None
+    THREE_TO_ONE = None
+    ONE_TO_THREE = None
+    StructureQualityReport = None
+    assess_plddt = None
+    assess_ramachandran = None
+    compute_clash_score = None
+    compute_packing_density = None
+    compute_exposed_hydrophobic = None
+    compute_structure_quality = None
+    find_low_confidence_regions = None
+    compute_sasa_approximation = None
+    KYTE_DOOLITTLE = None
+    VDW_RADII = None
+    evaluate_structure_confidence = None
+    evaluate_no_misfolding_risk = None
+    evaluate_correct_fold_topology = None
+    evaluate_no_unexpected_interaction = None
+    ProteinAssessmentReport = None
+    assess_protein = None
+    format_assessment_text = None
+    format_assessment_json = None
+    format_assessment_html = None
+    generate_recommendations = None
+    compute_overall_verdict = None
+    plot_plddt_bar_svg = None
+    plot_solubility_profile_svg = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # FoldX stability (merged from foldx_mutations.py)
@@ -401,7 +553,26 @@ try:
         identify_hotspot_regions,
     )
 except ImportError:
-    pass
+    FoldXResult = None
+    FoldXError = None
+    FoldXCache = None
+    StabilityLandscape = None
+    ConservationScore = None
+    is_foldx_available = None
+    run_foldx_stability = None
+    run_foldx_repair = None
+    run_foldx_mutation = None
+    empirical_stability = None
+    run_stability_batch = None
+    foldx_clear_cache = None
+    scan_mutations = None
+    find_stabilizing_mutations = None
+    scan_all_mutations = None
+    scan_position = None
+    compute_conservation = None
+    find_compensatory_mutations = None
+    rank_positions_by_mutability = None
+    identify_hotspot_regions = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Engine base — unified types for all analysis engines
@@ -414,7 +585,14 @@ try:
         classify_score,
     )
 except ImportError:
-    pass
+    EngineResult = None
+    BaseEngineResult = None
+    MutationResult = None
+    BatchResult = None
+    EngineTimer = None
+    EngineConfig = None
+    validate_protein_sequence = None
+    classify_score = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Protein design
@@ -429,7 +607,15 @@ try:
         find_proline_substitution_sites,
     )
 except ImportError:
-    pass
+    DesignResult = None
+    DesignConstraints = None
+    design_thermostable = None
+    design_soluble = None
+    design_low_immunogenicity = None
+    design_multi_objective = None
+    score_mutation = None
+    find_disulfide_opportunities = None
+    find_proline_substitution_sites = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # CSP/SMT Solver (constraint-based gene optimization)
@@ -439,7 +625,13 @@ try:
     from .solver import CSPSolver, SolverConfig, SolverResult, SolverBackend
     from .solver.dispatch import solve_with_csp, is_solver_available, csp_optimize
 except ImportError:
-    pass
+    CSPSolver = None
+    SolverConfig = None
+    SolverResult = None
+    SolverBackend = None
+    solve_with_csp = None
+    is_solver_available = None
+    csp_optimize = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # ViennaRNA (mRNA secondary structure prediction)
@@ -449,7 +641,8 @@ try:
     from . import viennarna
     from . import viennarna_fallback
 except ImportError:
-    pass
+    viennarna = None  # type: ignore[assignment]
+    viennarna_fallback = None  # type: ignore[assignment]
 
 # ═══════════════════════════════════════════════════════════════════════
 # MHCflurry (offline MHC-I binding prediction)
@@ -459,7 +652,8 @@ try:
     from . import mhcflurry_adapter
     from . import mhcflurry_population
 except ImportError:
-    pass
+    mhcflurry_adapter = None  # type: ignore[assignment]
+    mhcflurry_population = None  # type: ignore[assignment]
 
 # ═══════════════════════════════════════════════════════════════════════
 # Public API — organized by domain

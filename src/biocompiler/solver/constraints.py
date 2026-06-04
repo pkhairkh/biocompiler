@@ -867,9 +867,9 @@ class MinimizeMRNADG(SoftConstraint):
     can block ribosome binding and reduce translation efficiency.  This
     objective prefers sequences with weaker 5' structure (less negative dG).
 
-    Currently uses a simplified nearest-neighbor approximation.  When
-    ViennaRNA is available, it will be swapped in for accurate dG
-    computation via the ViennaRNA integration (subagent B1-B8).
+    Uses ViennaRNA via ``compute_5prime_dg()`` when available for accurate
+    thermodynamic folding.  Falls back to a simplified nearest-neighbor
+    approximation when ViennaRNA is not installed.
 
     Attributes:
         window_start: Start of the analysis window (default 0).
@@ -921,59 +921,37 @@ class MinimizeMRNADG(SoftConstraint):
     def score(self, sequence: str) -> float:
         """Return negated |dG| approximation (higher = weaker structure = better).
 
-        Uses a simplified nearest-neighbor dG estimate based on potential
-        base pairs in the 5' window.  This is a placeholder — the real
-        computation should use ViennaRNA when available.
-
-        The approximation counts potential base pairs in a hairpin-like
-        folding of the window region:
-
-            dG ~ -1.5 * GC_pairs - 0.5 * AU_pairs - 0.3 * GU_pairs
+        Uses ViennaRNA when available for accurate MFE computation.
+        Falls back to a simplified nearest-neighbor dG estimate based on
+        potential base pairs in the 5' window when ViennaRNA is not installed.
         """
-        sequence = sequence.upper()
-        effective_end = min(self._window_end, len(sequence))
-        window_seq = sequence[self._window_start : effective_end]
-
-        if len(window_seq) < 4:
-            return 0.0
-
-        # Convert DNA to RNA for pairing analysis
-        rna = window_seq.replace("T", "U")
-
-        # Simplified hairpin stem: pair first half with reversed second half
-        half = len(rna) // 2
-        first_half = rna[:half]
-        second_half = rna[half : 2 * half]
-
-        gc_pairs = 0
-        au_pairs = 0
-        gu_pairs = 0
-
-        for i in range(min(len(first_half), len(second_half))):
-            j = len(second_half) - 1 - i
-            if j < 0:
-                break
-            base_5 = first_half[i]
-            base_3 = second_half[j]
-            if (base_5 == "G" and base_3 == "C") or (base_5 == "C" and base_3 == "G"):
-                gc_pairs += 1
-            elif (base_5 == "A" and base_3 == "U") or (base_5 == "U" and base_3 == "A"):
-                au_pairs += 1
-            elif (base_5 == "G" and base_3 == "U") or (base_5 == "U" and base_3 == "G"):
-                gu_pairs += 1
-
-        dg = -1.5 * gc_pairs - 0.5 * au_pairs - 0.3 * gu_pairs
-
+        dg = self.compute_dg(sequence)
         # We want to MAXIMIZE, so return the negated |dG|
         # (less stable structure = higher score = better)
         return -abs(dg)
 
     def compute_dg(self, sequence: str) -> float:
-        """Return the estimated dG value (more negative = more stable structure).
+        """Return the dG value (more negative = more stable structure).
 
-        This is a placeholder.  When ViennaRNA is integrated, this method
-        will call ``RNA.fold()`` and return the actual MFE.
+        Uses ViennaRNA via ``compute_5prime_dg`` when available for accurate
+        MFE computation.  Falls back to a simplified nearest-neighbor
+        approximation when ViennaRNA is not installed.
         """
+        # --- Try ViennaRNA first ---
+        try:
+            from ..viennarna import compute_5prime_dg, is_viennarna_available
+            if is_viennarna_available():
+                window_len = self._window_end - self._window_start
+                # compute_5prime_dg folds the first `window` nt from the
+                # given sequence; we slice our window out first.
+                window_seq = sequence[self._window_start : self._window_end]
+                return compute_5prime_dg(window_seq, window=window_len)
+        except ImportError:
+            pass  # ViennaRNA module not importable — fall through
+        except Exception:
+            pass  # ViennaRNA failed — fall through to approximation
+
+        # --- Fallback: simplified nearest-neighbor approximation ---
         sequence = sequence.upper()
         effective_end = min(self._window_end, len(sequence))
         window_seq = sequence[self._window_start : effective_end]
