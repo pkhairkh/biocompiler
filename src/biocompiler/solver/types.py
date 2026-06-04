@@ -867,17 +867,42 @@ class CSPModel:
         codon_domains: Mapping from position index to list of allowed codons.
         constraints: Ordered list of constraints to satisfy.
         config: Solver configuration.
+        organism: Target organism name (e.g. ``"Homo_sapiens"``).
     """
 
     protein_sequence: str
     codon_domains: dict[int, list[str]]
     constraints: list[ConstraintSpec]
     config: SolverConfig = field(default_factory=SolverConfig)
+    organism: str = ""
 
     @property
     def length(self) -> int:
         """Number of codon positions."""
         return len(self.protein_sequence)
+
+    @property
+    def protein(self) -> str:
+        """Alias for :attr:`protein_sequence` — compatibility with other CSPModel variants."""
+        return self.protein_sequence
+
+    @property
+    def hard_constraints(self) -> list[ConstraintSpec]:
+        """Hard constraints derived from :attr:`constraints`.
+
+        Provides compatibility with :class:`constraints.CSPModel` which
+        stores hard and soft constraints separately.
+        """
+        return [c for c in self.constraints if c.strictness == ConstraintStrictness.HARD]
+
+    @property
+    def soft_constraints(self) -> list[ConstraintSpec]:
+        """Soft constraints derived from :attr:`constraints`.
+
+        Provides compatibility with :class:`constraints.CSPModel` which
+        stores hard and soft constraints separately.
+        """
+        return [c for c in self.constraints if c.strictness == ConstraintStrictness.SOFT]
 
 
 # ---------------------------------------------------------------------------

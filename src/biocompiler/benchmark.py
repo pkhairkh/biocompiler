@@ -52,7 +52,7 @@ except ImportError:
 from .optimization import optimize_sequence
 
 from .certificate import compute_certificate
-from .organisms import CODON_ADAPTIVENESS_TABLES, SPECIES
+from .organisms import CODON_ADAPTIVENESS_TABLES, SPECIES, get_species_cai_weights
 from .translation import translate, compute_cai
 from .scanner import gc_content
 from .constants import AA_TO_CODONS, RESTRICTION_ENZYMES, reverse_complement
@@ -209,7 +209,7 @@ def run_benchmark(
                 optimized, pred_results, cert_text = opt.optimize(gene_seq)
             elapsed = _bench_timer.elapsed
 
-            species_cai = SPECIES.get(species, SPECIES["ecoli"])
+            species_cai = get_species_cai_weights(species)
 
             cai_before = _compute_cai(gene_seq, species_cai)
             cai_after = _compute_cai(optimized, species_cai)
@@ -718,7 +718,7 @@ MAX_CONSTRAINTS = 5
 
 def _build_best_codon_sequence(protein: str, species: str = "human") -> str:
     """Build initial DNA sequence using highest-CAI codons (species-key based)."""
-    usage = SPECIES.get(species, SPECIES["ecoli"])
+    usage = get_species_cai_weights(species)
     result = []
     for aa in protein:
         codons = AA_TO_CODONS.get(aa, [])
@@ -924,7 +924,7 @@ def optimize_random(
     t0 = time.perf_counter()
     try:
         rng = random.Random(seed)
-        usage = SPECIES.get(species, SPECIES["ecoli"])
+        usage = get_species_cai_weights(species)
         seq_chars = []
         for aa in protein:
             codons = AA_TO_CODONS.get(aa, [])

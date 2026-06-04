@@ -79,6 +79,7 @@ __all__: list[str] = [
     "YEAST",
     # Legacy backward-compatible API
     "SPECIES",
+    "get_species_cai_weights",
     "ECOLI_CAI",
     "HUMAN_CAI",
     "MOUSE_CAI",
@@ -318,6 +319,20 @@ SPECIES: dict[str, SpeciesEntry] = {
     "cho": {"cai_weights": CHO_CAI, "codon_usage_validation": True},
     "yeast": {"cai_weights": YEAST_CAI, "codon_usage_validation": True},
 }
+
+
+def get_species_cai_weights(species_key: str) -> dict[str, float]:
+    """Return the flat codon→weight dict for *species_key*, falling back to ecoli.
+
+    Args:
+        species_key: Short species name used as a SPECIES dict key
+            (e.g. ``"ecoli"``, ``"human"``).
+
+    Returns:
+        Dict mapping codon strings to their CAI weight values.
+    """
+    entry = SPECIES.get(species_key, SPECIES["ecoli"])
+    return entry["cai_weights"]
 
 # ────────────────────────────────────────────────────────────
 # Sharp & Li (1987) CAI reference set (E. coli)

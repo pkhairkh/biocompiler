@@ -53,7 +53,7 @@ __all__ = [
 _CODON_LENGTH: int = 3
 """Number of nucleotides in a codon."""
 
-_FALLBACK_ORGANISMS: list[str] = ["Homo_sapiens", "E_coli"]
+_FALLBACK_ORGANISMS: list[str] = ["Homo_sapiens", "Escherichia_coli"]
 """Organisms tried in order when the requested one has no adaptiveness table."""
 
 _UNKNOWN_CODON_PLACEHOLDER: str = "NNN"
@@ -111,10 +111,10 @@ class GreedyEngine(SolverBackendProtocol):
         protein: str = model.protein_sequence.upper()
 
         # Determine the target organism from the config or model
-        target_organism: str = getattr(model.config, "_organism", None) or _FALLBACK_ORGANISMS[0]
-        if not hasattr(model.config, "_organism"):
+        target_organism: str = getattr(model.config, "organism", None) or _FALLBACK_ORGANISMS[0]
+        if not hasattr(model.config, "organism"):
             logger.debug(
-                "Config has no '_organism' attribute; defaulting to %s",
+                "Config has no 'organism' attribute; defaulting to %s",
                 target_organism,
             )
 

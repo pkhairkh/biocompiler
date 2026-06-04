@@ -131,6 +131,7 @@ class ORTOOLSEngine:
                 and objective weights.
         """
         self.config = config
+        self._unavailable_reason: str = ""
 
     # ------------------------------------------------------------------
     # Static availability check
@@ -147,6 +148,32 @@ class ORTOOLSEngine:
             from ortools.sat.python import cp_model  # noqa: F401
             return True
         except ImportError:
+            return False
+        except Exception:
+            # OR-Tools may be installed but have a broken native extension
+            # (e.g. ABI mismatch, missing shared library).  Catch broadly
+            # so the engine degrades gracefully instead of crashing.
+            return False
+
+    def _check_available(self) -> bool:
+        """Check availability and store the reason if unavailable.
+
+        Unlike the static :meth:`is_available`, this method stores the
+        unavailability reason on ``self._unavailable_reason`` so that
+        callers can diagnose why the engine is not usable.
+
+        Returns:
+            True if OR-Tools is usable, False otherwise.
+        """
+        try:
+            from ortools.sat.python import cp_model  # noqa: F401
+            self._unavailable_reason = ""
+            return True
+        except ImportError as exc:
+            self._unavailable_reason = f"ImportError: {exc}"
+            return False
+        except Exception as exc:
+            self._unavailable_reason = f"{type(exc).__name__}: {exc}"
             return False
 
     # ------------------------------------------------------------------
@@ -176,21 +203,51 @@ class ORTOOLSEngine:
         """
         start_time = time.monotonic()
 
-        if not self.is_available():
+        # ── Availability check (stores reason for diagnostics) ────────
+        if not self._check_available():
+            logger.error("OR-Tools not available: %s", self._unavailable_reason)
             return SolverResult(
                 sequence="",
                 solved=False,
                 backend_used=SolverBackend.ORTOOLS,
                 fallback_used=True,
                 solve_time_seconds=time.monotonic() - start_time,
-                warnings=["OR-Tools not installed; cannot solve with CP-SAT backend"],
+                warnings=[
+                    f"OR-Tools not available: {self._unavailable_reason}; "
+                    "cannot solve with CP-SAT backend"
+                ],
             )
 
         from ortools.sat.python import cp_model as ortools_cp
 
-        protein = model.protein
-        organism = model.organism
+        # ── Safe attribute access with fallbacks ──────────────────────
+        protein = getattr(model, "protein", None)
+        if protein is None:
+            # types.CSPModel uses protein_sequence instead of protein
+            protein = getattr(model, "protein_sequence", "")
+        organism = getattr(model, "organism", "") or getattr(self.config, "organism", "unknown")
+
+        if not protein:
+            logger.error("OR-Tools solve called with empty/missing protein attribute")
+            return SolverResult(
+                sequence="",
+                solved=False,
+                backend_used=SolverBackend.ORTOOLS,
+                solve_time_seconds=time.monotonic() - start_time,
+                warnings=["Model has no protein sequence (model.protein is empty/missing)"],
+            )
+
         n_codons = len(protein)
+
+        # ── Diagnostic logging ────────────────────────────────────────
+        hard_constraints = getattr(model, "hard_constraints", [])
+        logger.info(
+            "OR-Tools solving: protein_len=%d organism=%s "
+            "hard_constraints=%d config.avoid_cpg=%s config.avoid_t_runs=%s",
+            n_codons, organism,
+            len(hard_constraints) if hard_constraints else 0,
+            self.config.avoid_cpg, self.config.avoid_t_runs,
+        )
 
         if n_codons == 0:
             return SolverResult(
@@ -202,6 +259,11 @@ class ORTOOLSEngine:
             )
 
         if n_codons > self.config.max_codons:
+            logger.warning(
+                "Protein length (%d) exceeds max_codons (%d); "
+                "CP-SAT model too large, use greedy fallback",
+                n_codons, self.config.max_codons,
+            )
             return SolverResult(
                 sequence="",
                 solved=False,
@@ -214,6 +276,16 @@ class ORTOOLSEngine:
                 ],
             )
 
+        # CP-SAT practical limit warning: models with >2000 codons can
+        # exhaust memory or take unreasonably long even with parallel
+        # workers.  Log a warning but still attempt to solve.
+        if n_codons > 2000:
+            logger.warning(
+                "Large protein (%d codons): CP-SAT solve may be slow "
+                "or exceed memory; consider greedy fallback",
+                n_codons,
+            )
+
         # Build sorted codon lists per amino acid (CAI-descending order)
         adaptiveness = CODON_ADAPTIVENESS_TABLES.get(organism, {})
         sorted_codons_per_aa: dict[str, list[str]] = {}
@@ -223,56 +295,81 @@ class ORTOOLSEngine:
                 codons, key=lambda c: adaptiveness.get(c, 0.0), reverse=True
             )
 
-        # ── 1. Create CP-SAT model and decision variables ──────────────
-        cp_model = ortools_cp.CpModel()
-        codon_vars: list[ortools_cp.IntVar] = []
-        codon_domains: list[list[str]] = []  # parallel to codon_vars
+        try:
+            # ── 1. Create CP-SAT model and decision variables ──────────
+            cp_model = ortools_cp.CpModel()
+            codon_vars: list[ortools_cp.IntVar] = []
+            codon_domains: list[list[str]] = []  # parallel to codon_vars
 
-        for i, aa in enumerate(protein):
-            domain = sorted_codons_per_aa.get(aa, AA_TO_CODONS.get(aa, []))
-            if not domain:
-                return SolverResult(
-                    sequence="",
-                    solved=False,
-                    backend_used=SolverBackend.ORTOOLS,
-                    solve_time_seconds=time.monotonic() - start_time,
-                    warnings=[f"No codons for amino acid '{aa}' at position {i}"],
-                )
-            var = cp_model.NewIntVar(0, len(domain) - 1, f"codon_{i}")
-            codon_vars.append(var)
-            codon_domains.append(domain)
+            for i, aa in enumerate(protein):
+                domain = sorted_codons_per_aa.get(aa, AA_TO_CODONS.get(aa, []))
+                if not domain:
+                    return SolverResult(
+                        sequence="",
+                        solved=False,
+                        backend_used=SolverBackend.ORTOOLS,
+                        solve_time_seconds=time.monotonic() - start_time,
+                        warnings=[f"No codons for amino acid '{aa}' at position {i}"],
+                    )
+                var = cp_model.NewIntVar(0, len(domain) - 1, f"codon_{i}")
+                codon_vars.append(var)
+                codon_domains.append(domain)
 
-        # ── 2. Build nucleotide variables via element constraints ──────
-        nucleotide_vars = self._build_nucleotide_variables(
-            cp_model, codon_vars, codon_domains, protein
-        )
+            # ── 2. Build nucleotide variables via element constraints ──
+            nucleotide_vars = self._build_nucleotide_variables(
+                cp_model, codon_vars, codon_domains, protein
+            )
 
-        # ── 3. Add GC constraint ──────────────────────────────────────
-        gc_count_var = self._add_gc_constraint(
-            cp_model, codon_vars, codon_domains, n_codons
-        )
+            # ── 3. Add GC constraint ──────────────────────────────────
+            gc_count_var = self._add_gc_constraint(
+                cp_model, codon_vars, codon_domains, n_codons
+            )
 
-        # ── 4. Add composite automaton constraint (restriction + ATTTA + T-run) ──
-        # Combine all forbidden-nucleotide-pattern DFAs into ONE automaton
-        # constraint for better solver performance and feasibility.
-        num_constraints = self._add_composite_automaton_constraint(
-            cp_model, nucleotide_vars, n_codons
-        )
+            # ── 4. Add composite automaton constraint (restriction + ATTTA + T-run) ──
+            # Combine all forbidden-nucleotide-pattern DFAs into ONE automaton
+            # constraint for better solver performance and feasibility.
+            num_constraints = self._add_composite_automaton_constraint(
+                cp_model, nucleotide_vars, n_codons
+            )
 
-        # ── 5. Add splice site constraints ────────────────────────────
-        num_constraints += self._add_splice_constraints(
-            cp_model, codon_vars, codon_domains, protein
-        )
+            # ── 5. Add splice site constraints ────────────────────────
+            num_constraints += self._add_splice_constraints(
+                cp_model, codon_vars, codon_domains, protein
+            )
 
-        # ── 6. Add CpG avoidance constraints ──────────────────────────
-        num_constraints += self._add_cpg_constraints(
-            cp_model, codon_vars, codon_domains, protein
-        )
+            # ── 6. Add CpG avoidance constraints ──────────────────────
+            num_constraints += self._add_cpg_constraints(
+                cp_model, codon_vars, codon_domains, protein
+            )
 
-        # ── 9. Set CAI maximization objective ─────────────────────────
-        self._set_cai_objective(cp_model, codon_vars, codon_domains, organism)
+            # ── 9. Set CAI maximization objective ─────────────────────
+            self._set_cai_objective(cp_model, codon_vars, codon_domains, organism)
+
+        except Exception as build_exc:
+            logger.error(
+                "OR-Tools model construction failed: %s: %s",
+                type(build_exc).__name__, build_exc, exc_info=True,
+            )
+            return SolverResult(
+                sequence="",
+                solved=False,
+                backend_used=SolverBackend.ORTOOLS,
+                fallback_used=True,
+                solve_time_seconds=time.monotonic() - start_time,
+                warnings=[
+                    f"OR-Tools model construction failed "
+                    f"({type(build_exc).__name__}: {build_exc}); "
+                    "fall back to greedy optimizer"
+                ],
+            )
 
         # ── 10. Solve ─────────────────────────────────────────────────
+        logger.info(
+            "OR-Tools CP-SAT model built: %d variables, %d constraints, "
+            "solving with timeout=%.1fs",
+            n_codons, num_constraints, self.config.timeout_seconds,
+        )
+
         solver = ortools_cp.CpSolver()
         solver.parameters.max_time_in_seconds = self.config.timeout_seconds
         solver.parameters.num_workers = _DEFAULT_NUM_WORKERS  # Use parallel search
@@ -280,9 +377,32 @@ class ORTOOLSEngine:
         if self.config.verbose:
             solver.parameters.log_search_progress = True
 
-        status = solver.Solve(cp_model)
+        try:
+            status = solver.Solve(cp_model)
+        except Exception as solve_exc:
+            logger.error(
+                "OR-Tools Solve() raised %s: %s",
+                type(solve_exc).__name__, solve_exc, exc_info=True,
+            )
+            return SolverResult(
+                sequence="",
+                solved=False,
+                backend_used=SolverBackend.ORTOOLS,
+                fallback_used=True,
+                solve_time_seconds=time.monotonic() - start_time,
+                num_constraints=num_constraints,
+                num_variables=n_codons,
+                warnings=[
+                    f"OR-Tools Solve() raised {type(solve_exc).__name__}: {solve_exc}; "
+                    "fall back to greedy optimizer"
+                ],
+            )
 
         solve_time = time.monotonic() - start_time
+        logger.info(
+            "OR-Tools solve completed: status=%s time=%.2fs",
+            status, solve_time,
+        )
 
         # ── 11. Process result ────────────────────────────────────────
         if status == ortools_cp.OPTIMAL or status == ortools_cp.FEASIBLE:

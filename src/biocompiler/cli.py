@@ -372,8 +372,8 @@ def cmd_check(args: argparse.Namespace) -> None:
     ))
 
     # CodonOptimality
-    from .organisms import SPECIES
-    species_cai = SPECIES.get(args.species, SPECIES["ecoli"])
+    from .organisms import get_species_cai_weights
+    species_cai = get_species_cai_weights(args.species)
     import math
     log_sum = 0.0
     count = 0

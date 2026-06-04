@@ -179,11 +179,20 @@ def _try_backend(
             result.backend_used = backend_enum
             logger.info("%s solved successfully.", backend_name)
             return result
+        elif result is not None and result.fallback_used:
+            # Backend returned a fallback result (e.g. Z3 unavailable) —
+            # treat as failure so dispatch can try the next backend.
+            logger.info(
+                "%s returned fallback (reason: %s); trying next backend.",
+                backend_name,
+                result.metadata.get("reason", "unknown"),
+            )
+            return None
         else:
             logger.info("%s returned infeasible; trying next backend.", backend_name)
             return None
-    except Exception:
-        logger.warning("%s backend raised an exception", backend_name, exc_info=True)
+    except Exception as e:
+        logger.warning("%s backend raised %s: %s", backend_name, type(e).__name__, e)
         return None
 
 
@@ -235,7 +244,14 @@ def solve_with_csp(
     invalid = set(ch for ch in protein if ch not in valid_aas)
     if invalid:
         raise ValueError(f"Invalid amino-acid codes in protein: {invalid}.")
-    if organism not in SPECIES:
+    # Map scientific organism name to SPECIES short key
+    _SPECIES_KEY_MAP = {
+        "Homo_sapiens": "human", "Escherichia_coli": "ecoli",
+        "Mus_musculus": "mouse", "CHO_K1": "cho",
+        "Saccharomyces_cerevisiae": "yeast",
+    }
+    species_key = _SPECIES_KEY_MAP.get(organism, organism)
+    if species_key not in SPECIES:
         logger.warning("Organism %r not found in SPECIES; using default weights.", organism)
 
     # Build configuration
@@ -315,18 +331,61 @@ def solve_with_csp(
     # Try backends in priority order
     result: SolverResult | None = None
 
-    if _ortools_engine is not None:
-        result = _try_backend(_ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS)
+    # If the user explicitly requested GREEDY_FALLBACK, skip OR-Tools and Z3
+    skip_csp_backends = config.backend == SolverBackend.GREEDY_FALLBACK
 
-    if result is None and _z3_engine is not None:
-        result = _try_backend(_z3_engine, model, config, "Z3", SolverBackend.Z3)
+    # Respect explicit backend selection.  When the user requests a
+    # specific backend (Z3 or ORTOOLS), try that one first.  If it
+    # fails, fall through to the other CSP backend before going to
+    # greedy.  This ensures that ``config.backend=Z3`` actually uses
+    # Z3 when it's available, rather than always trying OR-Tools first.
+    if config.backend == SolverBackend.Z3:
+        # User explicitly requested Z3 — try it first
+        if not skip_csp_backends and _z3_engine is not None:
+            result = _try_backend(_z3_engine, model, config, "Z3", SolverBackend.Z3)
+        if result is None and not skip_csp_backends and _ortools_engine is not None:
+            result = _try_backend(_ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS)
+    else:
+        # Default priority: OR-Tools → Z3
+        if not skip_csp_backends and _ortools_engine is not None:
+            result = _try_backend(_ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS)
+        if not skip_csp_backends and result is None and _z3_engine is not None:
+            result = _try_backend(_z3_engine, model, config, "Z3", SolverBackend.Z3)
 
-    # Handle total failure → fallback
+    # If CSP backends failed or were skipped, try greedy fallback engine
     if result is None:
-        logger.warning("All CSP backends failed; falling back to greedy.")
+        logger.info(
+            "Attempting greedy fallback engine for organism=%s protein_len=%d",
+            organism, len(protein),
+        )
+        try:
+            from .engine_greedy import GreedyEngine
+            greedy_engine = GreedyEngine(config)
+            result = greedy_engine.solve(model)
+            if result is not None and result.solved:
+                logger.info(
+                    "Greedy fallback engine solved successfully for organism=%s",
+                    organism,
+                )
+            else:
+                logger.warning("Greedy fallback engine returned unsolved result")
+        except Exception as e:
+            logger.error(
+                "Greedy fallback engine raised %s: %s",
+                type(e).__name__, e,
+            )
+
+    # Handle total failure (even greedy failed)
+    if result is None or not result.solved:
+        logger.error(
+            "All solver backends (including greedy) failed for organism=%s protein_len=%d. "
+            "OR-Tools available: %s, Z3 available: %s",
+            organism, len(protein),
+            _ortools_engine is not None, _z3_engine is not None,
+        )
         result = _make_fallback_result(
             protein, organism, time.monotonic() - start,
-            "All CSP backends unavailable or infeasible",
+            "All solver backends (including greedy) unavailable or infeasible",
         )
         if provenance_records:
             result.metadata["conflict_provenance"] = provenance_records
@@ -351,7 +410,9 @@ def solve_with_csp(
                 )
                 provenance_records.extend(violation_provenance)
 
-    result.fallback_used = False
+    # Preserve fallback_used=True from greedy engine; CSP backends set False
+    if result.backend_used != SolverBackend.GREEDY_FALLBACK:
+        result.fallback_used = False
     result.solve_time_seconds = time.monotonic() - start
 
     # Store provenance in result metadata (if any records were captured)

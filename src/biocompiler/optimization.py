@@ -30,7 +30,7 @@ from .type_system import (
     check_valid_coding_seq,
     find_cross_codon_gt, find_cross_codon_cg, find_cross_codon_restriction,
 )
-from .organisms import SPECIES, CODON_ADAPTIVENESS_TABLES
+from .organisms import SPECIES, CODON_ADAPTIVENESS_TABLES, get_species_cai_weights
 from .constants import reverse_complement
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
 from .certificate import format_certificate
@@ -1665,6 +1665,8 @@ def optimize_sequence(
         min_cai=cai_threshold,
         strategy=strategy,
         avoid_gt=effective_avoid_gt,
+        organism_name=organism,
+        organism_domain="prokaryote" if is_prokaryote else "eukaryote",
     )
 
     # Attach provenance collector to optimizer for codon-level tracking
@@ -2048,7 +2050,7 @@ def _organism_to_species_key(organism: str) -> str:
 
 def _back_translate_protein(protein: str, species_key: str) -> str:
     """Back-translate a protein to DNA using highest-CAI codons."""
-    species_cai = SPECIES.get(species_key, SPECIES["ecoli"])
+    species_cai = get_species_cai_weights(species_key)
     codons = []
     for aa in protein:
         if aa == "*":
@@ -2148,6 +2150,15 @@ def _codon_creates_boundary_gt(
 class BioOptimizer:
     """Certified gene sequence optimizer with multi-step CAI-maximizing pipeline."""
 
+    # Map species key to organism name
+    _SPECIES_TO_ORGANISM = {
+        "ecoli": "Escherichia_coli",
+        "human": "Homo_sapiens",
+        "mouse": "Mus_musculus",
+        "cho": "CHO_K1",
+        "yeast": "Saccharomyces_cerevisiae",
+    }
+
     def __init__(
         self,
         species: str = "ecoli",
@@ -2161,9 +2172,10 @@ class BioOptimizer:
         avoid_gt: bool = True,
         strategy: str = "constraint_first",
         optimize_mrna_stability: bool = True,
+        **kwargs,
     ) -> None:
         self.species = species
-        self.species_cai: Dict[str, float] = SPECIES.get(species, SPECIES["ecoli"])
+        self.species_cai: Dict[str, float] = get_species_cai_weights(species)
         self.enzymes: List[str] = enzymes or []
         self.splice_low = splice_low
         self.splice_high = splice_high
@@ -2174,6 +2186,23 @@ class BioOptimizer:
         self.avoid_gt = avoid_gt
         self.strategy = strategy  # "constraint_first" or "cai_first"
         self.optimize_mrna_stability = optimize_mrna_stability
+
+        # Organism-aware attributes
+        from .organism_config import is_eukaryotic_organism
+
+        self.organism_name: str = kwargs.get(
+            "organism_name",
+            self._SPECIES_TO_ORGANISM.get(species, "Homo_sapiens"),
+        )
+        self.organism_domain: str = kwargs.get("organism_domain", "auto")
+        if self.organism_domain == "auto":
+            self.organism_domain = (
+                "eukaryote" if is_eukaryotic_organism(self.organism_name) else "prokaryote"
+            )
+
+        # Auto-set avoid_gt for prokaryotes unless explicitly overridden
+        if "avoid_gt" not in kwargs and self.organism_domain == "prokaryote":
+            self.avoid_gt = False
         # Track positions where GT is unavoidable (e.g., Valine codons)
         self._unavoidable_gt_positions: Set[int] = set()
         # Track mutagenesis proposals that were applied
@@ -3039,9 +3068,8 @@ class BioOptimizer:
 
         # Record codon decisions for provenance if collector is attached
         if self._provenance_collector is not None:
-            # Resolve the actual CAI weights dict from species_cai
-            # (species_cai may be a SpeciesEntry with nested 'cai_weights',
-            #  or a flat codon→CAI dict for backward compat)
+            # species_cai is now always a flat codon→CAI dict thanks to
+            # get_species_cai_weights(), but keep isinstance guard for safety.
             _provenance_cai = self.species_cai  # type: ignore[assignment]
             if isinstance(_provenance_cai, dict) and 'cai_weights' in _provenance_cai:
                 _provenance_cai = _provenance_cai['cai_weights']  # type: ignore[assignment]
@@ -3474,7 +3502,8 @@ class BioOptimizer:
 
             # Record codon decision for provenance if collector is attached
             if self._provenance_collector is not None:
-                # Resolve the actual CAI weights dict from species_cai
+                # species_cai is now always a flat codon→CAI dict thanks to
+                # get_species_cai_weights(), but keep isinstance guard for safety.
                 _prov_cai = self.species_cai
                 if isinstance(_prov_cai, dict) and 'cai_weights' in _prov_cai:
                     _prov_cai = _prov_cai['cai_weights']
@@ -5840,24 +5869,30 @@ class BioOptimizer:
         # 1. NoStopCodons
         results.append(check_no_stop_codons(seq))
 
-        # 2. NoCrypticSplice
-        results.append(check_no_cryptic_splice(seq, self.splice_low, self.splice_high))
+        # 2. NoCrypticSplice (eukaryote-only — prokaryotes have no spliceosomes)
+        if self.organism_domain != "prokaryote":
+            results.append(check_no_cryptic_splice(seq, self.splice_low, self.splice_high))
+        else:
+            results.append(PredicateResult("NoCrypticSplice", True, details="Skipped for prokaryotic organism"))
 
-        # 3. NoCpGIsland
-        results.append(check_no_cpg_island(seq, self.cpg_window, self.cpg_threshold))
+        # 3. NoCpGIsland (pass organism so prokaryotes are skipped automatically)
+        results.append(check_no_cpg_island(seq, self.cpg_window, self.cpg_threshold, organism=self.organism_name))
 
         # 4. NoRestrictionSite
         results.append(check_no_restriction_site(seq, self.enzymes))
 
-        # 5. NoGTDinucleotide — use relaxed (avoidable-only) check
-        gt_result = check_no_avoidable_gt(seq)
-        if self._applied_mutagenesis:
-            mut_details = "; ".join(
-                f"pos {m['position']}:{m['original_aa']}→{m['new_aa']} (BLOSUM={m['blosum']})"
-                for m in self._applied_mutagenesis
-            )
-            gt_result.details += f" [mutagenesis applied: {mut_details}]"
-        results.append(gt_result)
+        # 5. NoGTDinucleotide (eukaryote-only — GT avoidance is for splice donor prevention)
+        if self.organism_domain != "prokaryote":
+            gt_result = check_no_avoidable_gt(seq)
+            if self._applied_mutagenesis:
+                mut_details = "; ".join(
+                    f"pos {m['position']}:{m['original_aa']}→{m['new_aa']} (BLOSUM={m['blosum']})"
+                    for m in self._applied_mutagenesis
+                )
+                gt_result.details += f" [mutagenesis applied: {mut_details}]"
+            results.append(gt_result)
+        else:
+            results.append(PredicateResult("NoGTDinucleotide", True, details="Skipped for prokaryotic organism"))
 
         # 6. ValidCodingSeq
         results.append(check_valid_coding_seq(seq))

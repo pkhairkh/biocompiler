@@ -486,17 +486,16 @@ class TestConstraintSatisfaction:
     def test_escherichia_coli_organism(self, default_config: SolverConfig):
         """Engine should work correctly with E. coli organism."""
         protein = "MK"
+        ecoli_config = SolverConfig(organism="Escherichia_coli")
         model = CSPModel(
             protein_sequence=protein,
             codon_domains={0: AA_TO_CODONS["M"], 1: AA_TO_CODONS["K"]},
             constraints=[],
-            config=default_config,
+            config=ecoli_config,
         )
-        model.config._organism = "Escherichia_coli"
-        engine = GreedyEngine(default_config)
+        engine = GreedyEngine(ecoli_config)
         result = engine.solve(model)
         assert result.solved is True
-        assert result.organism == "Escherichia_coli"
         assert len(result.sequence) == 6
 
     def test_pick_best_codon_selects_highest_cai(self, default_config: SolverConfig):

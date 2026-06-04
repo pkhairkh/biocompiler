@@ -141,16 +141,33 @@ class TestZ3EngineConstruction:
         assert hasattr(z3_engine, "solve")
         assert callable(z3_engine.solve)
 
-    def test_import_error_when_z3_unavailable(self):
-        """If _Z3_AVAILABLE is False, Z3Engine.__init__ raises ImportError."""
+    def test_no_import_error_when_z3_unavailable(self):
+        """If _Z3_AVAILABLE is False, Z3Engine.__init__ no longer raises ImportError.
+
+        The constructor used to raise ImportError, which was caught by
+        _try_backend and silently returned None — making the Z3 backend
+        appear unavailable even when z3-solver was installed.  Now the
+        constructor always succeeds and the availability check is
+        deferred to solve(), which returns an unsolved SolverResult.
+        """
         import biocompiler.solver.engine_z3 as z3_mod
-        original = z3_mod._Z3_AVAILABLE
+        original_available = z3_mod._Z3_AVAILABLE
+        original_error = getattr(z3_mod, "_Z3_IMPORT_ERROR", "")
         try:
             z3_mod._Z3_AVAILABLE = False
-            with pytest.raises(ImportError, match="z3-solver"):
-                Z3Engine(SolverConfig())
+            z3_mod._Z3_IMPORT_ERROR = "mock: z3 not available"
+            # Constructor should NOT raise ImportError
+            engine = Z3Engine(SolverConfig())
+            assert engine is not None
+            # solve() should return an unsolved SolverResult with fallback_used
+            model = _make_model(SHORT_PROTEIN)
+            result = engine.solve(model)
+            assert isinstance(result, SolverResult)
+            assert not result.solved
+            assert result.fallback_used
         finally:
-            z3_mod._Z3_AVAILABLE = original
+            z3_mod._Z3_AVAILABLE = original_available
+            z3_mod._Z3_IMPORT_ERROR = original_error
 
 
 # ======================================================================

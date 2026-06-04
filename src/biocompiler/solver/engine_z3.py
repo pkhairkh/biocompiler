@@ -68,8 +68,12 @@ try:
         unknown,
     )
     _Z3_AVAILABLE = True
-except ImportError:
+except ImportError as _z3_import_err:
     _Z3_AVAILABLE = False
+    _Z3_IMPORT_ERROR = str(_z3_import_err)
+    logger.debug("Z3 import failed: %s", _z3_import_err)
+else:
+    _Z3_IMPORT_ERROR = ""
 
 from .types import (
     SolverConfig,
@@ -180,19 +184,27 @@ class Z3Engine(SolverBackendProtocol):
                 Defaults to ``0``.  Use the same seed for reproducible
                 results across runs.
 
-        Raises:
-            ImportError: If z3-solver is not installed (check
-                :meth:`is_available` first to avoid this).
+        Note:
+            Unlike previous versions, the constructor no longer raises
+            ``ImportError`` when z3-solver is unavailable.  Instead,
+            :meth:`solve` returns an unsolved ``SolverResult`` with
+            ``fallback_used=True``.  This avoids silent failures in
+            the dispatch layer where ``ImportError`` was caught and
+            the entire backend silently skipped.
         """
-        if not _Z3_AVAILABLE:
-            raise ImportError(
-                "z3-solver package is not installed. "
-                "Install with: pip install z3-solver"
-            )
+        # Derive organism from config if the default was used and config
+        # carries a different organism.
+        if organism == "Homo_sapiens" and config.organism != "Homo_sapiens":
+            organism = config.organism
         self.config = config
         self.organism = organism
         self._seed: int = seed
         self._optimizer: Optional[Optimize] = None
+        logger.debug(
+            "Z3Engine initialized: organism=%s, seed=%d, "
+            "z3_available=%s, timeout=%.1fs",
+            organism, seed, _Z3_AVAILABLE, config.timeout_seconds,
+        )
 
     # -------------------------------------------------------------------
     # Availability check
@@ -226,8 +238,44 @@ class Z3Engine(SolverBackendProtocol):
             an UNSAT/timeout/error report on failure.
         """
         start_time = time.perf_counter()
-        config = model.config
-        protein = model.protein_sequence.upper()
+
+        # ── Availability guard ──────────────────────────────────────────
+        # Return an unsolved result instead of raising ImportError so the
+        # dispatch layer can fall back gracefully.
+        if not _Z3_AVAILABLE:
+            logger.warning(
+                "Z3Engine.solve() called but z3-solver is not available: %s",
+                _Z3_IMPORT_ERROR,
+            )
+            return SolverResult(
+                sequence="",
+                solved=False,
+                backend_used=SolverBackend.Z3,
+                fallback_used=True,
+                solve_time_seconds=time.perf_counter() - start_time,
+                warnings=[
+                    "z3-solver package is not installed. "
+                    "Install with: pip install z3-solver"
+                ],
+            )
+
+        # ── Extract model attributes with getattr fallbacks ─────────────
+        # Different CSPModel types (types.CSPModel vs constraints.CSPModel)
+        # expose different attribute names. Use getattr with fallbacks so
+        # the engine works with either model type.
+        config = getattr(model, "config", None) or self.config
+        protein = (
+            getattr(model, "protein_sequence", None)
+            or getattr(model, "protein", "")
+        ).upper()
+        organism = getattr(model, "organism", None) or self.organism
+
+        logger.info(
+            "Z3: Starting solve for %d aa protein, organism=%s, "
+            "gc=[%.2f,%.2f], timeout=%.1fs",
+            len(protein), organism,
+            config.gc_lo, config.gc_hi, config.timeout_seconds,
+        )
 
         if not protein:
             return SolverResult(

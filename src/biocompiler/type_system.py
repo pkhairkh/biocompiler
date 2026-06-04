@@ -387,7 +387,7 @@ def check_no_cryptic_promoter(seq: str, organism: str = "E_coli", threshold: flo
     )
 
 
-def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> PredicateResult:
+def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0, organism: str = "") -> PredicateResult:
     """Predicate 2: No cryptic splice sites (dual-threshold PASS/UNCERTAIN/FAIL).
 
     Uses the proper MaxEntScan log-odds scoring model (Yeo & Burge 2004) from
@@ -396,7 +396,21 @@ def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: floa
       - score < low_thresh  → PASS
       - low_thresh ≤ score < high_thresh → UNCERTAIN
       - score ≥ high_thresh → FAIL
+
+    Skipped for prokaryotic organisms (splice sites are a eukaryote-specific
+    concern).
     """
+    # Skip cryptic splice check for prokaryotic organisms
+    if organism and _is_prokaryotic_organism(organism):
+        logger.info(
+            "Cryptic splice check skipped for prokaryotic organism '%s'",
+            organism,
+        )
+        return PredicateResult(
+            "NoCrypticSplice", True, verdict=Verdict.PASS,
+            details=f"Cryptic splice check skipped for prokaryotic organism '{organism}'",
+        )
+
     from .maxentscan import score_donor, score_acceptor
 
     seq = seq.upper()
@@ -560,7 +574,7 @@ def check_no_gt_dinucleotide(seq: str) -> PredicateResult:
     return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS, details="No GT dinucleotides found")
 
 
-def check_no_avoidable_gt(seq: str) -> PredicateResult:
+def check_no_avoidable_gt(seq: str, organism: str = "") -> PredicateResult:
     """Predicate 5 (relaxed): No avoidable GT dinucleotides.
 
     A GT is "unavoidable" if ALL synonymous codons for that amino acid
@@ -573,7 +587,21 @@ def check_no_avoidable_gt(seq: str) -> PredicateResult:
       also contains "GT" (e.g., Valine GTN where all 4 codons start with GT)
     - Cross-codon GT: unavoidable if no combination of synonymous codons
       for the two adjacent AAs eliminates the boundary GT
+
+    Skipped for prokaryotic organisms (GT splice donor sites are a
+    eukaryote-specific concern).
     """
+    # Skip GT dinucleotide check for prokaryotic organisms
+    if organism and _is_prokaryotic_organism(organism):
+        logger.info(
+            "GT dinucleotide check skipped for prokaryotic organism '%s'",
+            organism,
+        )
+        return PredicateResult(
+            "NoGTDinucleotide", True, verdict=Verdict.PASS,
+            details=f"GT dinucleotide check skipped for prokaryotic organism '{organism}'",
+        )
+
     gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
     if not gt_positions:
         return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS, details="No GT dinucleotides found")
@@ -963,6 +991,22 @@ _ORGANISM_TO_SPECIES_KEY: Dict[str, str] = {
     "CHO_K1": "human",       # fallback — closest available
     "Saccharomyces_cerevisiae": "ecoli",  # fallback — closest available
 }
+
+
+def _resolve_species_cai(key: str) -> Dict[str, float]:
+    """Resolve an organism name or SPECIES key to a flat codon→CAI-weight dict.
+
+    Tries *key* as a SPECIES key first via :func:`get_species_cai_weights`.
+    If that fails (KeyError), maps common organism names (e.g. ``"Homo_sapiens"``)
+    to their SPECIES key and falls back to ``"ecoli"``.
+    """
+    from .organisms import get_species_cai_weights
+
+    try:
+        return get_species_cai_weights(key)
+    except (KeyError, TypeError):
+        species_key = _ORGANISM_TO_SPECIES_KEY.get(key, "ecoli")
+        return get_species_cai_weights(species_key)
 
 
 def _compute_codon_ramp_score(seq: str, species_cai: Dict[str, float]) -> Dict[str, Any]:
@@ -1959,8 +2003,6 @@ def analyze_codon_at_position(
     Returns:
         Dict with keys: codon, amino_acid, cai, alternatives, position.
     """
-    from .organisms import SPECIES
-
     codon_start = (position // 3) * 3
     if codon_start + 3 > len(seq):
         return {"codon": "N/A", "amino_acid": "N/A", "cai": 0.0, "alternatives": [], "position": codon_start}
@@ -1968,7 +2010,7 @@ def analyze_codon_at_position(
     seq = seq.upper()
     codon = seq[codon_start:codon_start + 3]
     aa = CODON_TABLE.get(codon, "?")
-    species_cai = SPECIES.get(organism, SPECIES.get("ecoli", {}))
+    species_cai = _resolve_species_cai(organism)
     cai = species_cai.get(codon, 0.0)
 
     alternatives = []
@@ -2021,13 +2063,10 @@ def evaluate_co_translational_folding(
     Returns:
         TypeCheckResult with PASS/LIKELY_PASS/UNCERTAIN/LIKELY_FAIL/FAIL verdict.
     """
-    from .organisms import SPECIES
-
     seq = seq.upper()
 
-    # Resolve organism name to SPECIES dict key
-    species_key = _ORGANISM_TO_SPECIES_KEY.get(organism, "human")
-    species_cai = SPECIES.get(species_key, SPECIES.get("human", {}))
+    # Resolve organism name to flat codon→CAI-weight dict
+    species_cai = _resolve_species_cai(organism)
 
     # Run the low-level predicate check
     result = check_co_translational_folding(
