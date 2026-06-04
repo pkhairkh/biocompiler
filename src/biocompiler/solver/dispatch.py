@@ -50,6 +50,10 @@ from .types import (
 from .constraints import build_csp_model, HardConstraint, SoftConstraint
 from .mus import compute_mus, quick_feasibility_check, FeasibilityReport
 from .scoring import ConstraintScorer
+from .conflict_provenance import (
+    ConflictProvenance,
+    ConflictResolverWithProvenance,
+)
 
 if TYPE_CHECKING:
     # These imports exist ONLY for TYPE_CHECKING — they provide type
@@ -187,6 +191,7 @@ def solve_with_csp(
     protein: str,
     organism: str = "Homo_sapiens",
     config: SolverConfig | None = None,
+    track_provenance: bool = False,
     **kwargs: Any,
 ) -> SolverResult:
     """Main entry point for CSP-based codon optimization.
@@ -201,6 +206,12 @@ def solve_with_csp(
         Target organism name.
     config : SolverConfig | None
         Full solver configuration.  If ``None``, a default is constructed.
+    track_provenance : bool
+        Whether to record conflict resolution provenance.  When ``True``,
+        every conflict and its resolution is tracked and stored in
+        ``result.metadata["conflict_provenance"]`` as a list of
+        :class:`ConflictProvenance` instances.  Defaults to ``False``
+        for backward compatibility.
     **kwargs
         Ignored when *config* is provided; otherwise reserved for future use.
 
@@ -235,12 +246,45 @@ def solve_with_csp(
     logger.info("Building CSP model for protein (%d aa), organism=%s", len(protein), organism)
     model = build_csp_model(protein, organism, config)
 
+    # Provenance tracker (no-op when track_provenance=False)
+    provenance_resolver = ConflictResolverWithProvenance(
+        track_provenance=track_provenance,
+        organism=organism,
+    )
+    provenance_records: list[ConflictProvenance] = []
+
     # Quick feasibility check
     report = quick_feasibility_check(model)
     if not report.feasible:
         reason = "; ".join(report.impossible_constraints) if report.impossible_constraints else "Model infeasible"
         logger.warning("CSP model infeasible: %s", reason)
-        return _make_fallback_result(protein, organism, time.monotonic() - start, reason)
+
+        # Record provenance for each impossible constraint as a
+        # relaxation tradeoff
+        if track_provenance:
+            for impossible_name in report.impossible_constraints:
+                provenance_records.append(
+                    provenance_resolver.record_relaxation_provenance(
+                        relaxed_constraint_name=impossible_name,
+                        kept_constraint_name="<model_feasibility>",
+                        positions_affected=[],
+                        sequence="",
+                        resolution_method="csp_backtrack",
+                    )
+                )
+
+        result = _make_fallback_result(protein, organism, time.monotonic() - start, reason)
+        if provenance_records:
+            result.metadata["conflict_provenance"] = provenance_records
+        return result
+
+    # Detect and record conflicts before solving (provenance)
+    if track_provenance:
+        constraints = list(getattr(model, "constraints", []))
+        _, conflict_provenance = provenance_resolver.resolve_conflicts(
+            constraints, "",  # no sequence yet
+        )
+        provenance_records.extend(conflict_provenance)
 
     # Try backends in priority order
     result: SolverResult | None = None
@@ -254,10 +298,13 @@ def solve_with_csp(
     # Handle total failure → fallback
     if result is None:
         logger.warning("All CSP backends failed; falling back to greedy.")
-        return _make_fallback_result(
+        result = _make_fallback_result(
             protein, organism, time.monotonic() - start,
             "All CSP backends unavailable or infeasible",
         )
+        if provenance_records:
+            result.metadata["conflict_provenance"] = provenance_records
+        return result
 
     # Post-solve validation (returns violations + composite enforcement score)
     if result.sequence:
@@ -270,9 +317,21 @@ def solve_with_csp(
                 "composite_score=%.4f — solver may be incorrect.",
                 len(violations), composite_score,
             )
+            # Record provenance for each violation — these represent
+            # constraints that were implicitly relaxed by the solver
+            if track_provenance:
+                violation_provenance = provenance_resolver.record_violation_provenance(
+                    violations, result.sequence,
+                )
+                provenance_records.extend(violation_provenance)
 
     result.fallback_used = False
     result.solve_time_seconds = time.monotonic() - start
+
+    # Store provenance in result metadata (if any records were captured)
+    if provenance_records:
+        result.metadata["conflict_provenance"] = provenance_records
+
     return result
 
 

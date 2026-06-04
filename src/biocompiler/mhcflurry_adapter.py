@@ -53,7 +53,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from typing import Sequence
 
-from .immunogenicity import MHCBindingResult, classify_binding
+from .immunogenicity import MHCBindingResult, classify_binding, score_peptide_pssm, binding_score_to_ic50
 
 __all__ = [
     "MHCflurryClient",
@@ -514,6 +514,7 @@ def _mhcflurry_result_to_binding_result(
         binding_class=binding_class,
         anchor_residues=anchor_residues,
         anchor_scores={k: round(v, 6) for k, v in anchor_scores.items()},
+        method=method,
     )
 
 
@@ -553,12 +554,13 @@ class MHCflurryClient:
     True
     """
 
-    def __init__(self, models_dir: str | None = None) -> None:
+    def __init__(self, models_dir: str | None = None, allow_offline_fallback: bool = True) -> None:
         self._models_dir = models_dir or _DEFAULT_MODELS_DIR
         self._affinity_predictor = None
         self._presentation_predictor = None
         self._cache = _LRUCache()
         self._models_loaded = False
+        self.allow_offline_fallback = allow_offline_fallback
 
     # ── lazy model loading ────────────────────────────────────────
 
@@ -640,6 +642,19 @@ class MHCflurryClient:
     ) -> MHCBindingResult:
         """Predict MHC-I binding affinity for a single peptide-allele pair.
 
+        Prediction follows a fallback chain:
+
+        1. **MHCflurry** — neural-network ensemble (AUC 0.80–0.85)
+        2. **Pre-computed database** — curated IEDB/SYFPEITHI entries +
+           PSSM-derived predictions
+        3. **PSSM-based prediction** — position-specific scoring matrix
+           heuristic (AUC 0.60–0.75)
+
+        Only if **all** methods fail *and* ``allow_offline_fallback`` is
+        ``False`` is a :class:`RuntimeError` raised.  When the fallback
+        chain is enabled (the default), the method always returns a
+        result.
+
         Parameters
         ----------
         peptide : str
@@ -656,8 +671,8 @@ class MHCflurryClient:
         Raises
         ------
         RuntimeError
-            If MHCflurry models cannot be loaded, or if the prediction
-            fails (e.g. unsupported allele, internal MHCflurry error).
+            If MHCflurry is not available and offline fallback is
+            disabled, or if *all* prediction methods fail.
         ValueError
             If the peptide contains non-standard amino acids.
         """
@@ -669,39 +684,86 @@ class MHCflurryClient:
             logger.debug("Cache hit for %s / %s", allele, peptide)
             return cached
 
-        self._ensure_models()
-
-        try:
-            # MHCflurry predict returns a DataFrame
-            df = self._affinity_predictor.predict(
-                peptides=[peptide],
-                alleles=[allele],
-            )
-            if df.empty:
-                raise RuntimeError(
-                    f"MHCflurry returned no prediction for allele "
-                    f"{allele!r} / peptide {peptide!r}. The allele may "
-                    f"not be supported by the installed models."
+        # --- 1. Try MHCflurry first ------------------------------------------
+        if is_mhcflurry_available() and self._affinity_predictor is not None:
+            try:
+                self._ensure_models()
+                df = self._affinity_predictor.predict(
+                    peptides=[peptide],
+                    alleles=[allele],
                 )
-            # The DataFrame has columns: peptide, allele, prediction
-            ic50_nm = float(df.iloc[0]["prediction"])
-            result = _mhcflurry_result_to_binding_result(
-                peptide=peptide,
-                allele=allele,
-                start_position=0,
-                end_position=len(peptide) - 1,
-                ic50_nm=ic50_nm,
+                if not df.empty:
+                    ic50_nm = float(df.iloc[0]["prediction"])
+                    result = _mhcflurry_result_to_binding_result(
+                        peptide=peptide,
+                        allele=allele,
+                        start_position=0,
+                        end_position=len(peptide) - 1,
+                        ic50_nm=ic50_nm,
+                    )
+                    self._cache.put(peptide, allele, result)
+                    return result
+                logger.debug(
+                    "MHCflurry returned no prediction for %s / %s "
+                    "— trying offline fallback", allele, peptide,
+                )
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "MHCflurry prediction failed for %s / %s: %s "
+                    "— trying offline fallback", allele, peptide, exc,
+                )
+        elif is_mhcflurry_available():
+            # MHCflurry is installed but models are not yet loaded;
+            # try loading them.
+            try:
+                self._ensure_models()
+                # Retry after loading
+                return self.predict_binding(peptide, allele)
+            except Exception as exc:
+                logger.debug(
+                    "MHCflurry model loading failed: %s "
+                    "— trying offline fallback", exc,
+                )
+        else:
+            logger.debug(
+                "MHCflurry not available — using offline fallback "
+                "for %s / %s", allele, peptide,
             )
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            raise RuntimeError(
-                f"MHCflurry prediction failed for allele "
-                f"{allele!r} / peptide {peptide!r}: {exc}"
-            ) from exc
 
-        self._cache.put(peptide, allele, result)
-        return result
+        # --- 2. Fallback to pre-computed database ----------------------------
+        if self.allow_offline_fallback:
+            record = self._lookup_precomputed(peptide, allele)
+            if record is not None:
+                logger.info(
+                    "Using pre-computed binding data for %s/%s (source: %s)",
+                    allele, peptide, record.source,
+                )
+                result = MHCBindingResult(
+                    allele=allele,
+                    peptide=peptide,
+                    start_position=0,
+                    end_position=len(peptide) - 1,
+                    binding_score=round(record.binding_score, 6),
+                    ic50_nm=round(record.ic50_nm, 2),
+                    binding_class=record.binding_class,
+                    anchor_residues=record.anchor_residues,
+                    anchor_scores={k: round(v, 6) for k, v in record.anchor_scores.items()},
+                    method="precomputed_lookup",
+                )
+                self._cache.put(peptide, allele, result)
+                return result
+            else:
+                logger.warning(
+                    "No pre-computed data for %s/%s, using PSSM prediction",
+                    allele, peptide,
+                )
+                return self._pssm_predict(peptide, allele)
+
+        raise RuntimeError(
+            "MHCflurry not available and offline fallback disabled"
+        )
 
     # ── batch prediction ──────────────────────────────────────────
 
@@ -984,6 +1046,78 @@ class MHCflurryClient:
             len(results), len(alleles), len(protein), epitope_lengths,
         )
         return results
+
+    # ── offline fallback helpers ────────────────────────────────────
+
+    def _lookup_precomputed(self, peptide: str, allele: str) -> object | None:
+        """Look up a peptide-allele pair in the pre-computed binding database.
+
+        Returns a :class:`~biocompiler.mhc_binding_db.PrecomputedEntry`
+        if found, or ``None`` otherwise.
+        """
+        try:
+            from .mhc_binding_db import get_database
+            db = get_database(allele)
+            if db is None:
+                return None
+            return db.lookup(peptide)
+        except Exception as exc:
+            logger.debug(
+                "Pre-computed database lookup failed for %s/%s: %s",
+                allele, peptide, exc,
+            )
+            return None
+
+    def _pssm_predict(self, peptide: str, allele: str) -> MHCBindingResult:
+        """Predict binding using the PSSM-based heuristic from immunogenicity.
+
+        This is the lowest-accuracy fallback (AUC 0.60–0.75) but is
+        always available offline without any external dependencies.
+        """
+        try:
+            pssm_score = score_peptide_pssm(peptide, allele)
+            ic50_nm = binding_score_to_ic50(pssm_score)
+            binding_class = classify_binding(ic50_nm)
+
+            # Compute anchor residues using the PSSM
+            anchor_residues: dict[int, str] = {}
+            anchor_scores: dict[int, float] = {}
+            from .immunogenicity import _get_mhc_i_pssms, _identify_anchor_positions
+            pssm_data = _get_mhc_i_pssms().get(allele)
+            if pssm_data is not None and len(peptide) == len(pssm_data):
+                anchor_residues, anchor_scores = _identify_anchor_positions(
+                    peptide, pssm_data
+                )
+            else:
+                # Fallback: use canonical MHC-I anchor positions
+                if len(peptide) >= 2:
+                    anchor_residues[1] = peptide[1]  # P2
+                    anchor_scores[1] = pssm_score
+                if len(peptide) >= 1:
+                    last_idx = len(peptide) - 1
+                    anchor_residues[last_idx] = peptide[last_idx]
+                    anchor_scores[last_idx] = pssm_score
+
+            result = MHCBindingResult(
+                allele=allele,
+                peptide=peptide,
+                start_position=0,
+                end_position=len(peptide) - 1,
+                binding_score=round(pssm_score, 6),
+                ic50_nm=round(ic50_nm, 2),
+                binding_class=binding_class,
+                anchor_residues=anchor_residues,
+                anchor_scores={k: round(v, 6) for k, v in anchor_scores.items()},
+                method="pssm_fallback",
+            )
+            self._cache.put(peptide, allele, result)
+            return result
+        except Exception as exc:
+            raise RuntimeError(
+                f"All prediction methods failed for allele "
+                f"{allele!r} / peptide {peptide!r}: MHCflurry unavailable, "
+                f"pre-computed data not found, and PSSM fallback error: {exc}"
+            ) from exc
 
     # ── cache management ──────────────────────────────────────────
 

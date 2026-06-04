@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -76,6 +77,12 @@ from .organisms import SUPPORTED_ORGANISMS, CODON_USAGE_TABLES
 from .exceptions import (
     BioCompilerError, InvalidSequenceError, CertificateGenerationError,
     CertificateVerificationError, UnsupportedOrganismError, InvalidProteinError,
+)
+from .provenance import (
+    ProvenanceTracker,
+    OptimizationProvenance,
+    OptimizationRecord,
+    generate_provenance_report,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,6 +133,18 @@ __all__ = [
     "ImmunogenicityResponse",
     "DeimmunizeResponse",
     "FullAssessmentResponse",
+    # Benchmark / Validation / WhatIf
+    "BenchmarkInput",
+    "BenchmarkResponse",
+    "ValidateCAIInput",
+    "ValidateCAIResponse",
+    "ValidateMaxEntScanResponse",
+    "WhatIfInput",
+    "WhatIfResponse",
+    # Provenance
+    "ProvenanceResponse",
+    "ProvenanceExplainResponse",
+    "ProvenanceReportResponse",
 ]
 
 # ─── API Key Authentication ─────────────────────────────────────────
@@ -253,6 +272,7 @@ class ProteinInput(BaseModel):
     cai_threshold: float = Field(0.2, description="Minimum CAI threshold")
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to avoid")
     cryptic_splice_threshold: float = Field(3.0, description="Cryptic splice site threshold")
+    track_provenance: bool = Field(True, description="Track provenance for this optimization")
 
     @field_validator("protein")
     @classmethod
@@ -315,6 +335,7 @@ class OptimizeResponse(BaseModel):
     satisfied_predicates: list[str]
     failed_predicates: list[str]
     fallback_used: bool
+    provenance_id: Optional[str] = Field(None, description="Provenance trail ID if tracking was enabled")
 
 
 class VerifyResponse(BaseModel):
@@ -625,6 +646,44 @@ def _export_single(item: BatchExportItem) -> str:
         )
     else:
         raise ValueError(f"Unsupported export format: {item.format}")
+
+
+# ─── Provenance Pydantic Models ─────────────────────────────────────
+
+class ProvenanceResponse(BaseModel):
+    """Response from provenance retrieval."""
+    id: str = Field(..., description="Provenance trail ID")
+    seed: int = Field(..., description="RNG seed used")
+    decision_count: int = Field(..., description="Number of decisions recorded")
+    decisions: list[dict] = Field(default_factory=list, description="Decision records")
+    optimization_records: list[dict] = Field(default_factory=list, description="Optimization summary records")
+
+
+class ProvenanceExplainResponse(BaseModel):
+    """Response from provenance explain at a specific position."""
+    id: str = Field(..., description="Provenance trail ID")
+    position: int = Field(..., description="Queried nucleotide position")
+    decisions: list[dict] = Field(default_factory=list, description="Decisions at this position")
+    explanation: str = Field(..., description="Human-readable explanation")
+
+
+class ProvenanceReportResponse(BaseModel):
+    """Response from provenance report generation."""
+    id: str = Field(..., description="Provenance trail ID")
+    format: str = Field(..., description="Report format: text, markdown, or json")
+    report: str = Field(..., description="Generated report content")
+
+
+# ─── In-Memory Provenance Store ─────────────────────────────────────
+
+_provenance_store: dict[str, ProvenanceTracker] = {}
+
+
+def _store_provenance(tracker: ProvenanceTracker) -> str:
+    """Store a provenance tracker and return its ID."""
+    prov_id = str(uuid.uuid4())
+    _provenance_store[prov_id] = tracker
+    return prov_id
 
 
 # ─── Protein Analysis Constants ─────────────────────────────────────

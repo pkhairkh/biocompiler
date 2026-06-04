@@ -5,13 +5,18 @@ Source: Kazusa Codon Usage Database
 K-12 MG1655, high-expression genes
 """
 
+from __future__ import annotations
+
 from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
 
 __all__ = [
     "E_COLI_CODON_USAGE",
     "E_COLI_CODON_ADAPTIVENESS",
     "E_COLI_PREFERRED_CODONS",
+    "E_COLI_CODON_PAIR_BIAS",
+    "E_COLI_EXPRESSION_OPTIMIZATION_PARAMS",
     "ECOLI_CODON_USAGE",
+    "compute_codon_pair_bias",
 ]
 
 E_COLI_CODON_USAGE: CodonUsageTable = {
@@ -114,4 +119,147 @@ ECOLI_CODON_USAGE: dict[str, float] = {
     "CGT": 20.0, "CGC": 21.5, "CGA": 3.5, "CGG": 5.4, "AGA": 2.1, "AGG": 1.2,
     "GGT": 24.5, "GGC": 28.6, "GGA": 8.0, "GGG": 6.8,
     "TAA": 2.0, "TAG": 0.3, "TGA": 1.1,
+}
+
+# ────────────────────────────────────────────────────────────
+# Codon Pair Bias (CPB)
+#
+# CPB = log2(observed_frequency / expected_frequency)
+# Positive CPB → over-represented pair (favoured for expression)
+# Negative CPB → under-represented pair (disfavoured for expression)
+#
+# Sources:
+#   Irwin et al. (1995) J Mol Evol 40:502-507
+#   Coleman et al. (2008) J Mol Evol 66:529-538
+# ────────────────────────────────────────────────────────────
+E_COLI_CODON_PAIR_BIAS: dict[str, float] = {
+    # ── Over-represented pairs (positive CPB) ──
+    "CTG-CTG": 0.45,  # Leu-Leu   most common E. coli codon pair
+    "ATG-CTG": 0.38,  # Met-Leu   start-proximal Leu bias
+    "CTG-ATG": 0.35,  # Leu-Met
+    "CTG-GAA": 0.32,  # Leu-Glu
+    "GAA-CTG": 0.30,  # Glu-Leu
+    "CTG-GCG": 0.28,  # Leu-Ala
+    "GCG-CTG": 0.27,  # Ala-Leu
+    "ATG-ATG": 0.25,  # Met-Met
+    "CTG-CAG": 0.24,  # Leu-Gln
+    "CAG-CTG": 0.23,  # Gln-Leu
+    "GAA-GAA": 0.22,  # Glu-Glu
+    "GAA-GCT": 0.20,  # Glu-Ala
+    "AAA-GAA": 0.19,  # Lys-Glu
+    "GAA-AAA": 0.18,  # Glu-Lys
+    "GCT-GAA": 0.17,  # Ala-Glu
+    "CTG-GAC": 0.16,  # Leu-Asp
+    "GAC-CTG": 0.15,  # Asp-Leu
+    "ACC-CTG": 0.14,  # Thr-Leu
+    "CTG-ACC": 0.13,  # Leu-Thr
+    "GCG-GCG": 0.12,  # Ala-Ala
+    "CGT-CTG": 0.11,  # Arg-Leu
+    "CTG-GGT": 0.10,  # Leu-Gly
+    "ATG-GCG": 0.09,  # Met-Ala
+    "AAA-CTG": 0.08,  # Lys-Leu
+    "GAA-GAC": 0.07,  # Glu-Asp
+    # ── Under-represented pairs (negative CPB) ──
+    "CUA-ATA": -0.50,  # Leu(rare)-Ile(rare)
+    "ATA-CUA": -0.48,  # Ile(rare)-Leu(rare)
+    "AGG-AGA": -0.45,  # Arg(rare)-Arg(rare)
+    "AGA-AGG": -0.43,  # Arg(rare)-Arg(rare)
+    "CUA-CUA": -0.42,  # Leu(rare)-Leu(rare)
+    "ATA-ATA": -0.40,  # Ile(rare)-Ile(rare)
+    "AGG-CUA": -0.38,  # Arg(rare)-Leu(rare)
+    "CUA-AGG": -0.36,  # Leu(rare)-Arg(rare)
+    "AGA-AGA": -0.35,  # Arg(rare)-Arg(rare)
+    "CUA-AGA": -0.33,  # Leu(rare)-Arg(rare)
+    "AGA-CUA": -0.32,  # Arg(rare)-Leu(rare)
+    "ATA-AGG": -0.30,  # Ile(rare)-Arg(rare)
+    "AGG-ATA": -0.28,  # Arg(rare)-Ile(rare)
+    "CUA-CCC": -0.26,  # Leu(rare)-Pro(uncommon)
+    "CCC-CUA": -0.24,  # Pro(uncommon)-Leu(rare)
+    "TCG-ATA": -0.22,  # Ser(uncommon)-Ile(rare)
+    "ATA-TCG": -0.20,  # Ile(rare)-Ser(uncommon)
+    "AGG-TGG": -0.18,  # Arg(rare)-Trp
+    "TCG-CUA": -0.17,  # Ser(uncommon)-Leu(rare)
+    "CUA-TCG": -0.16,  # Leu(rare)-Ser(uncommon)
+    "ATA-AGA": -0.15,  # Ile(rare)-Arg(rare)
+    "AGA-ATA": -0.14,  # Arg(rare)-Ile(rare)
+    "CCG-CCC": -0.13,  # Pro-Pro(uncommon)
+    "CCC-CCG": -0.12,  # Pro(uncommon)-Pro
+    "CGA-CGA": -0.11,  # Arg(rare)-Arg(rare)
+}
+
+
+def compute_codon_pair_bias(dna: str, organism: str) -> float:
+    """Compute the mean codon pair bias score for a DNA sequence.
+
+    Codon pair bias (CPB) measures the over/under-representation of
+    consecutive codon pairs.  A positive mean CPB indicates the sequence
+    uses over-represented (favoured) codon pairs; a negative mean CPB
+    indicates disfavoured pairs.
+
+    Unknown codon pairs (not in the organism's bias table) receive a
+    score of 0.0 (neutral).
+
+    Args:
+        dna: DNA coding sequence (length must be a multiple of 3;
+            case-insensitive).
+        organism: Organism identifier.  Currently only
+            ``"Escherichia_coli"`` / ``"e_coli"`` is supported.
+
+    Returns:
+        Mean codon pair bias score.  Higher is better.  Returns 0.0
+        for sequences shorter than two codons.
+
+    Raises:
+        ValueError: If the DNA length is not a multiple of 3.
+        ValueError: If the organism has no codon pair bias data.
+    """
+    dna = dna.upper().strip()
+
+    if len(dna) % 3 != 0:
+        raise ValueError(
+            f"DNA sequence length ({len(dna)}) is not a multiple of 3"
+        )
+
+    # Need at least two codons to form a pair
+    if len(dna) < 6:
+        return 0.0
+
+    # Select the bias table for the requested organism
+    _organism_key = organism.lower().replace(" ", "_")
+    if _organism_key in ("escherichia_coli", "e_coli"):
+        bias_table = E_COLI_CODON_PAIR_BIAS
+    else:
+        raise ValueError(
+            f"No codon pair bias data available for organism '{organism}'"
+        )
+
+    # Extract codons
+    codons = [dna[i : i + 3] for i in range(0, len(dna), 3)]
+
+    # Score each consecutive pair
+    scores: list[float] = []
+    for i in range(len(codons) - 1):
+        pair_key = f"{codons[i]}-{codons[i + 1]}"
+        scores.append(bias_table.get(pair_key, 0.0))
+
+    return sum(scores) / len(scores) if scores else 0.0
+
+
+# ────────────────────────────────────────────────────────────
+# Expression optimisation parameters for E. coli
+# ────────────────────────────────────────────────────────────
+E_COLI_EXPRESSION_OPTIMIZATION_PARAMS: dict[str, object] = {
+    # Preferred UTR sequences
+    "preferred_5utr": "TAAGGAGGT",          # Shine-Dalgarno + spacing
+    "preferred_3utr": "TTATTTT",            # Common terminator
+    # Rare-codon limits
+    "max_consecutive_rare_codons": 2,        # >2 risks ribosome stalling
+    "rare_codon_threshold": 0.10,            # Fraction < 10% → "rare"
+    # GC content targets
+    "gc_content_target": 0.50,
+    "gc_content_min": 0.30,
+    "gc_content_max": 0.70,
+    # Motifs to avoid
+    "avoid_motifs": ["ATTTA", "TTATTTT"],    # mRNA instability motifs
+    "max_t_run": 6,                          # Max consecutive T's
 }

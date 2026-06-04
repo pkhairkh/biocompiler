@@ -723,6 +723,7 @@ class MHCBindingResult:
     binding_class: str  # "strong_binder" | "moderate_binder" | "weak_binder" | "non_binder"
     anchor_residues: dict[int, str]  # position -> AA at anchor positions
     anchor_scores: dict[int, float]  # position -> binding contribution
+    method: str = "pssm"  # prediction method: "pssm" | "mhcflurry" | "mhcflurry_presentation" | "precomputed_lookup" | "pssm_fallback"
 
     # Removed in v7.5.0: score (alias for binding_score), position (alias
     # for start_position) backward-compat properties.

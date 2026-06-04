@@ -1,21 +1,55 @@
 """
 BioCompiler MaxEntScan — Splice Site Scoring
+=============================================
 
 Maximum entropy model for splice site scoring based on Yeo & Burge (2004).
-"Maximum entropy modeling of short sequence motifs with applications to RNA splicing"
-Journal of Computational Biology 11(2-3):377-94.
 
-PWM values derived from the published training data:
-- Donor: 9-mer model (positions -3 to +6 relative to intron start)
-  Trained on ~8,000 verified human donor sites from Chromosomes 20-22
-- Acceptor: 23-mer model (positions -20 to +3 relative to intron end)
-  Trained on ~8,000 verified human acceptor sites
+This module implements the MaxEntScan algorithm for evaluating donor and
+acceptor splice sites using position weight matrices (PWMs) trained on
+verified human splice sites.  It is the primary tool within BioCompiler
+for detecting and eliminating cryptic splice sites during gene optimization.
 
-These are the ACTUAL trained position weight matrix parameters from the
-MaxEntScan algorithm, not hand-crafted approximations. The log-odds scores
-are comparable to the original Perl implementation outputs.
+The scoring model computes a log-odds ratio for each candidate splice site:
+log2(P(motif | splice model) / P(motif | background)), where the splice
+model is encoded as a position-specific probability matrix and the background
+is uniform (0.25 per base).  Higher scores indicate stronger, more canonical
+splice sites; scores below the threshold (default 3.0) are considered
+weak or cryptic.
+
+The PWM values are derived from the published Yeo & Burge (2004) training
+data: the donor model is a 9-mer (positions −3 to +6 relative to the GT
+dinucleotide) trained on ~8,000 verified human donor sites, and the acceptor
+model is a 23-mer (positions −20 to +3 relative to the AG dinucleotide)
+trained on ~8,000 verified human acceptor sites.  These are the actual trained
+parameters, not hand-crafted approximations; the log-odds scores are comparable
+to the original Perl implementation outputs.
+
+Usage::
+
+    from biocompiler.maxentscan import scan_splice_sites, score_donor, score_acceptor
+
+    # Scan an entire sequence for cryptic splice sites
+    dna = "ATGGCCAGGTGAGTCCGCTAGGTCAGGCCCCAGATCTGG"
+    sites = scan_splice_sites(dna, donor_threshold=3.0, acceptor_threshold=3.0)
+    for position, site_type, score in sites:
+        print(f"  {site_type} at pos {position}: score={score:.2f}")
+
+    # Score a single donor site
+    gt_pos = 9  # position of 'G' in 'GT' dinucleotide
+    donor_score = score_donor(dna, gt_pos)
+    print(f"Donor score at {gt_pos}: {donor_score:.2f}")
+
+    # Score a single acceptor site
+    ag_pos = 22  # position of 'A' in 'AG' dinucleotide
+    acceptor_score = score_acceptor(dna, ag_pos)
+    print(f"Acceptor score at {ag_pos}: {acceptor_score:.2f}")
 
 Deterministic: same input always produces same output.
+
+References:
+  Yeo, G. & Burge, C.B. (2004). "Maximum entropy modeling of short sequence
+  motifs with applications to RNA splicing." *Journal of Computational Biology*
+  11(2-3):377–394. doi:10.1089/1066527041410418
 """
 
 from __future__ import annotations

@@ -12,6 +12,8 @@ __all__ = [
     "YEAST_CODON_USAGE",
     "YEAST_CODON_ADAPTIVENESS",
     "YEAST_PREFERRED_CODONS",
+    "YEAST_CODON_PAIR_BIAS",
+    "YEAST_EXPRESSION_OPTIMIZATION_PARAMS",
 ]
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
@@ -87,3 +89,80 @@ YEAST_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(YEAST_CO
 
 # Preferred (highest-frequency) codon for each amino acid
 YEAST_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(YEAST_CODON_USAGE)
+
+# ---------------------------------------------------------------------------
+# Codon Pair Bias (CPB) for S. cerevisiae
+# ---------------------------------------------------------------------------
+# Codon pair bias reflects the non-random pairing of consecutive codons.
+# Positive values indicate over-represented (favored) pairs; negative values
+# indicate under-represented (disfavored) pairs.  Values are log-odds ratios
+# derived from highly expressed S. cerevisiae genes.
+# Reference: rare-codon clustering and CPB effects on translational efficiency
+# in yeast (based on Coleman et al. and follow-up studies).
+# ---------------------------------------------------------------------------
+YEAST_CODON_PAIR_BIAS: dict[str, float] = {
+    # Favored pairs (positive bias)
+    "AAA_AAA": 0.32,   # Lys-Lys, A-rich, common in yeast genes
+    "GAA_GAA": 0.28,   # Glu-Glu, highly expressed gene signature
+    "GAA_GAT": 0.21,   # Glu-Asp
+    "GAT_GAA": 0.19,   # Asp-Glu
+    "AAA_GAA": 0.18,   # Lys-Glu
+    "GAA_AAA": 0.17,   # Glu-Lys
+    "AAT_GAT": 0.14,   # Asn-Asp
+    "TTT_GAA": 0.12,   # Phe-Glu
+    "GAT_AAA": 0.11,   # Asp-Lys
+    "GCT_GCT": 0.09,   # Ala-Ala
+    "ATT_GAA": 0.08,   # Ile-Glu
+    "TCT_GCT": 0.07,   # Ser-Ala
+    "GAA_AAT": 0.06,   # Glu-Asn
+    "CCT_GAA": 0.05,   # Pro-Glu
+    "AGA_AGA": 0.04,   # Arg-Arg (AGA is preferred Arg in yeast)
+    # Neutral / slight bias
+    "GTT_GCT": 0.00,   # Val-Ala
+    "ACT_ACT": -0.01,  # Thr-Thr
+    # Disfavored pairs (negative bias)
+    "CGG_CGG": -0.35,  # Arg-Arg, CGG is rare in yeast
+    "CTC_CTC": -0.28,  # Leu-Leu, CTC rare in yeast
+    "CGC_CGC": -0.26,  # Arg-Arg, CGC rare in yeast
+    "CCG_CCG": -0.24,  # Pro-Pro, CCG rare in yeast
+    "GCG_GCG": -0.22,  # Ala-Ala, GCG rare in yeast
+    "CGG_CGC": -0.20,  # Arg-Arg, rare codon pairing
+    "CTC_CTA": -0.19,  # Leu-Leu, non-preferred pair
+    "TCG_TCG": -0.17,  # Ser-Ser, TCG rare in yeast
+    "ATA_ATA": -0.15,  # Ile-Ile, ATA is minor Ile codon
+    "CGA_CGG": -0.14,  # Arg-Arg, rare pair
+    "ACG_ACG": -0.12,  # Thr-Thr, ACG rare in yeast
+    "GGG_GGG": -0.10,  # Gly-Gly, GGG rare in yeast
+    "CAT_CGC": -0.09,  # His-Arg, includes rare Arg codon
+    "CTA_CTC": -0.08,  # Leu-Leu, non-preferred pair
+}
+
+# ---------------------------------------------------------------------------
+# Expression Optimization Parameters for S. cerevisiae
+# ---------------------------------------------------------------------------
+# These parameters guide codon optimization algorithms when targeting
+# yeast as an expression host.  S. cerevisiae has a notably AT-rich genome
+# (~62% AT) which drives its codon preferences toward A/T-ending codons.
+# ---------------------------------------------------------------------------
+YEAST_EXPRESSION_OPTIMIZATION_PARAMS: dict = {
+    # 5' UTR context: consensus for efficient translation initiation in yeast
+    "preferred_5utr": "AAATATCTTT",
+    # Promoter elements: TATA-box and transcription start site context
+    "preferred_promoter": "TATA-box + transcription start",
+    # Maximum number of consecutive rare codons before optimization intervenes
+    "max_consecutive_rare_codons": 2,
+    # Fraction threshold below which a codon is considered "rare"
+    "rare_codon_threshold": 0.10,
+    # Target GC content for the coding sequence (S. cerevisiae ~38% GC)
+    "gc_content_target": 0.38,
+    # Minimum acceptable GC content
+    "gc_content_min": 0.25,
+    # Maximum acceptable GC content
+    "gc_content_max": 0.55,
+    # Sequence motifs to avoid (instability / degradation signals)
+    "avoid_motifs": ["ATTTA"],
+    # Maximum length of consecutive T runs (polypyrimidine tract effects)
+    "max_t_run": 6,
+    # Whether codon pair bias should be considered during optimization
+    "codon_pair_awareness": True,
+}

@@ -30,14 +30,21 @@ from .type_system import (
     check_valid_coding_seq,
     find_cross_codon_gt, find_cross_codon_cg, find_cross_codon_restriction,
 )
-from .organisms import SPECIES
+from .organisms import SPECIES, CODON_ADAPTIVENESS_TABLES
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
 from .certificate import format_certificate
 from .exceptions import InvalidProteinError, UnsupportedOrganismError
+from .decision_provenance import (
+    CodonDecision,
+    ConstraintDecision,
+    DecisionProvenanceCollector,
+    OptimizationDecisionTrail,
+)
 
 
 __all__ = [
     "OptimizationResult",
+    "FullConstructResult",
     "optimize_sequence",
     "protein_to_aa_list",
     "BioOptimizer",
@@ -89,8 +96,21 @@ class OptimizationResult:
     satisfied_predicates: list = field(default_factory=list)
     aa_substitutions: list = field(default_factory=list)
     mutagenesis_applied: bool = False
+    # mRNA stability metrics (populated when optimize_mrna_stability=True)
+    mrna_stability_score: float | None = None
+    destabilizing_motifs_removed: int = 0
+    stability_improvement: float | None = None
     # Provenance: OptimizationRecord for this run (populated by optimize_sequence)
     provenance: Any = field(default=None, repr=False)
+    # Codon pair bias metric (populated when consider_codon_pair_bias=True)
+    codon_pair_bias: float | None = None
+    # UTR suggestions (populated when include_utr=True)
+    suggested_5utr: str | None = None
+    suggested_3utr: str | None = None
+    utr_score_5: float | None = None
+    utr_score_3: float | None = None
+    # Decision-level provenance trail (populated when track_provenance=True)
+    decision_trail: OptimizationDecisionTrail | None = None
 
     def __post_init__(self):
         """Validate OptimizationResult invariants."""
@@ -104,6 +124,67 @@ class OptimizationResult:
         if self.mutagenesis_applied:
             assert self.aa_substitutions is not None and len(self.aa_substitutions) > 0, (
                 "Mutagenesis applied but no substitutions recorded"
+            )
+        if self.utr_score_5 is not None:
+            assert 0.0 <= self.utr_score_5 <= 1.0, (
+                f"UTR 5' score must be in [0, 1], got {self.utr_score_5}"
+            )
+        if self.utr_score_3 is not None:
+            assert 0.0 <= self.utr_score_3 <= 1.0, (
+                f"UTR 3' score must be in [0, 1], got {self.utr_score_3}"
+            )
+
+
+@dataclass
+class FullConstructResult:
+    """Complete expression construct: 5' UTR + CDS + 3' UTR.
+
+    This represents what a biologist would actually order from a gene
+    synthesis company — the full DNA construct ready for cloning or
+    direct expression in the target organism.
+
+    The CDS is the optimized coding sequence. The UTRs are suggested
+    (not enforced) and should be evaluated by the user before ordering.
+
+    Attributes:
+        utr5: 5' UTR sequence (empty string if not provided).
+        cds: Optimized coding sequence (starts with ATG, ends with stop codon).
+        utr3: 3' UTR sequence (empty string if not provided).
+        full_construct: Concatenated 5'UTR + CDS + 3'UTR.
+        organism: Target organism for this construct.
+        gc_content: GC fraction of the full construct.
+        cai: Codon Adaptation Index of the CDS.
+        utr_score_5: Expression suitability score for the 5' UTR (0.0–1.0).
+        utr_score_3: Expression suitability score for the 3' UTR (0.0–1.0).
+        protein: Amino acid sequence encoded by the CDS.
+    """
+    utr5: str
+    cds: str
+    utr3: str
+    full_construct: str
+    organism: str
+    gc_content: float
+    cai: float
+    utr_score_5: float | None = None
+    utr_score_3: float | None = None
+    protein: str = ""
+
+    def __post_init__(self):
+        """Validate FullConstructResult invariants."""
+        assert self.full_construct == self.utr5 + self.cds + self.utr3, (
+            "full_construct must equal utr5 + cds + utr3"
+        )
+        assert 0.0 <= self.gc_content <= 1.0, (
+            f"GC content must be in [0, 1], got {self.gc_content}"
+        )
+        assert 0.0 <= self.cai <= 1.0, f"CAI must be in [0, 1], got {self.cai}"
+        if self.utr_score_5 is not None:
+            assert 0.0 <= self.utr_score_5 <= 1.0, (
+                f"UTR 5' score must be in [0, 1], got {self.utr_score_5}"
+            )
+        if self.utr_score_3 is not None:
+            assert 0.0 <= self.utr_score_3 <= 1.0, (
+                f"UTR 3' score must be in [0, 1], got {self.utr_score_3}"
             )
 
 
@@ -286,6 +367,7 @@ def _greedy_optimize(
     restriction_sites: list[str] | None = None,
     cryptic_splice_threshold: float = 3.0,
     seed: int | None = None,
+    provenance_collector: DecisionProvenanceCollector | None = None,
 ) -> tuple[str, list[str]]:
     """
     Greedy multi-objective codon optimization with coordinated constraint solving.
@@ -343,7 +425,72 @@ def _greedy_optimize(
         sorted_codons[aa] = codons_sorted
 
     # Step: Maximize CAI — Best codon per position (maximize CAI)
-    sequence = "".join(sorted_codons[aa][0] for aa in aas)
+    if provenance_collector is not None:
+        # Expanded loop with per-codon provenance tracking
+        chosen_codons: list[str] = []
+        for pos, aa in enumerate(aas):
+            candidates = sorted_codons[aa]
+            chosen = candidates[0]
+
+            # Build alternatives list for provenance (excluding chosen codon)
+            alternatives: list[dict[str, Any]] = []
+            chosen_cai = usage.get(chosen, 0.0)
+            for codon in candidates:
+                if codon == chosen:
+                    continue  # chosen codon is already in chosen_codon field
+                cai_val = usage.get(codon, 0.0)
+                gc_bases = sum(1 for b in codon if b in "GC")
+                gc_contribution = gc_bases / 3.0
+                # Check constraint violations for this codon
+                violates: list[str] = []
+                if "GT" in codon:
+                    violates.append("cryptic_splice_donor")
+                if "AG" in codon:
+                    violates.append("cryptic_splice_acceptor")
+                gc_bases_total = sum(1 for b in codon if b in "GC")
+                if gc_bases_total == 0 and gc_lo > 0.5:
+                    violates.append("gc_too_low")
+                elif gc_bases_total == 3 and gc_hi < 0.5:
+                    violates.append("gc_too_high")
+                # Determine rejection reason
+                rejected_because: str | None = None
+                if violates:
+                    rejected_because = f"Violates: {', '.join(violates)}"
+                elif cai_val < chosen_cai:
+                    rejected_because = "Lower CAI"
+                else:
+                    rejected_because = "Lower CAI"
+                alternatives.append({
+                    "codon": codon,
+                    "cai_contribution": round(cai_val, 4),
+                    "gc_contribution": round(gc_contribution, 2),
+                    "violates_constraints": violates,
+                    "rejected_because": rejected_because,
+                })
+
+            # Compute confidence: 1.0 if the best codon is clearly better,
+            # lower if alternatives are close in CAI
+            if len(candidates) > 1:
+                second_best_cai = usage.get(candidates[1], 0.0)
+                confidence = min(1.0, 0.5 + (chosen_cai - second_best_cai) * 5)
+                confidence = max(0.0, confidence)
+            else:
+                confidence = 1.0
+
+            provenance_collector.record_codon_decision(CodonDecision(
+                position=pos,
+                amino_acid=aa,
+                original_codon=None,
+                chosen_codon=chosen,
+                alternatives_considered=alternatives,
+                constraint_reason="Maximize CAI while maintaining GC in range",
+                confidence=round(confidence, 4),
+            ))
+            chosen_codons.append(chosen)
+        sequence = "".join(chosen_codons)
+    else:
+        # Original fast path (no provenance overhead)
+        sequence = "".join(sorted_codons[aa][0] for aa in aas)
     assert len(sequence) == len(aas) * 3, "Maximize CAI step: sequence length mismatch"
 
     # Step: Remove Restriction Sites (HIGHEST PRIORITY — multi-codon coordinated)
@@ -1285,7 +1432,11 @@ def optimize_sequence(
     enzymes: list | None = None,
     strategy: str = "constraint_first",
     use_csp_solver: bool = False,
+    optimize_mrna_stability: bool = True,
     seed: int | None = None,
+    include_utr: bool = True,
+    consider_codon_pair_bias: bool = False,
+    track_provenance: bool = True,
     **kwargs,
 ) -> OptimizationResult:
     """Optimize a protein sequence for expression in the target organism.
@@ -1308,12 +1459,33 @@ def optimize_sequence(
         enzymes: List of restriction enzyme names to avoid.
         strategy: Optimization strategy ('constraint_first' or 'cai_first').
         use_csp_solver: If True, try CSP/SMT solver before greedy (default False).
+        optimize_mrna_stability: If True, run a soft mRNA stability improvement
+            pass after CAI optimization. Identifies destabilizing motifs (ATTTA,
+            extended AREs, long A/T runs) and suggests synonymous codon changes
+            to remove them without breaking hard constraints. Defaults to True.
         seed: Deterministic seed for reproducibility. Currently unused as the
             greedy optimizer is fully deterministic, but reserved for future
             randomized optimization strategies (e.g., Monte Carlo, genetic
             algorithms). If provided, ``random.seed(seed)`` is called at the
             start of optimization to ensure reproducible behavior when
             randomized steps are added.
+        include_utr: If True, generate organism-appropriate 5' and 3' UTR
+            suggestions and include them in the result. The UTRs are SUGGESTED
+            but not enforced — they're for the user to consider when ordering
+            a synthesis construct. Defaults to True.
+        consider_codon_pair_bias: If True, run a soft codon pair bias (CPB)
+            improvement pass after the CAI optimization pass.  For each
+            adjacent codon pair, check if there's a synonymous pair with
+            higher combined CAI+CPB score (70% CAI / 30% CPB by default)
+            that doesn't violate hard constraints (restriction sites, GC
+            range, splice sites).  The result will include a
+            ``codon_pair_bias`` field with the mean CPB score.  Defaults to
+            False.
+        track_provenance: If True, collect decision-level provenance for
+            every codon choice made during optimization.  The result will
+            include a ``decision_trail`` field with the full audit trail.
+            If False, skip provenance collection entirely (zero overhead).
+            Defaults to True.
         **kwargs: Additional arguments (e.g., splice_low, splice_high).
 
     Returns:
@@ -1346,6 +1518,21 @@ def optimize_sequence(
     invalid = set(target_protein) - valid_aas
     if invalid:
         raise InvalidProteinError(target_protein, invalid)
+
+    # Initialize decision provenance collector if tracking is enabled
+    _provenance_collector: DecisionProvenanceCollector | None = None
+    if track_provenance:
+        _provenance_collector = DecisionProvenanceCollector()
+        _provenance_collector.start_optimization(
+            protein=target_protein,
+            organism=organism,
+            constraints=[
+                "GCInRange", "NoRestrictionSite", "NoCrypticSplice",
+                "NoStopCodons", "CodonAdapted",
+            ],
+            solver_backend="csp" if use_csp_solver else "greedy",
+            seed=seed,
+        )
 
     # ── CSP Solver path ─────────────────────────────────────────────
     if use_csp_solver:
@@ -1390,6 +1577,34 @@ def optimize_sequence(
                         organism, exc_info=True,
                     )
                     cai_val = solver_result.cai
+                # UTR suggestions for CSP solver path
+                _utr5_seq: str | None = None
+                _utr3_seq: str | None = None
+                _utr_score5: float | None = None
+                _utr_score3: float | None = None
+                if include_utr:
+                    from .utr_models import suggest_5utr as _s5, suggest_3utr as _s3
+                    from .utr_models import score_5utr as _sc5, score_3utr as _sc3
+                    try:
+                        _utr5_seq = _s5(organism)
+                        _utr_score5 = _sc5(_utr5_seq, organism)
+                    except ValueError:
+                        logger.debug("No 5' UTR suggestion for organism '%s'", organism)
+                    try:
+                        _utr3_seq = _s3(organism)
+                        _utr_score3 = _sc3(_utr3_seq, organism)
+                    except ValueError:
+                        logger.debug("No 3' UTR suggestion for organism '%s'", organism)
+
+                # Compute CPB if requested (CSP solver path)
+                _cpb_val: float | None = None
+                if consider_codon_pair_bias:
+                    try:
+                        from .codon_pair_scoring import compute_cpb as _compute_cpb
+                        _cpb_val = round(_compute_cpb(seq, organism), 6)
+                    except Exception:
+                        logger.debug("CPB computation failed for CSP solver path", exc_info=True)
+
                 return OptimizationResult(
                     sequence=seq,
                     gc_content=round(gc, 4),
@@ -1400,6 +1615,11 @@ def optimize_sequence(
                     protein=target_protein,
                     fallback_used=False,
                     satisfied_predicates=["CSP_SOLVER"],
+                    codon_pair_bias=_cpb_val,
+                    suggested_5utr=_utr5_seq,
+                    suggested_3utr=_utr3_seq,
+                    utr_score_5=_utr_score5,
+                    utr_score_3=_utr_score3,
                 )
         except Exception:
             logger.warning(
@@ -1420,6 +1640,10 @@ def optimize_sequence(
         min_cai=cai_threshold,
         strategy=strategy,
     )
+
+    # Attach provenance collector to optimizer for codon-level tracking
+    if _provenance_collector is not None:
+        opt._provenance_collector = _provenance_collector
 
     # Back-translate protein to DNA for the optimizer
     from .translation import compute_cai
@@ -1447,6 +1671,199 @@ def optimize_sequence(
 
     # Detect if mutagenesis fallback was used (any V->I or similar)
     fallback = bool(opt._applied_mutagenesis)
+
+    # ── mRNA stability improvement pass ────────────────────────────
+    mrna_stability_score: float | None = None
+    destabilizing_motifs_removed: int = 0
+    stability_improvement: float | None = None
+
+    if optimize_mrna_stability:
+        from .mrna_stability import score_mrna_stability, suggest_mutations_for_stability
+
+        initial_stability = score_mrna_stability(optimized_seq, organism)
+        suggestions = suggest_mutations_for_stability(optimized_seq, organism)
+
+        # Apply suggestions that don't violate hard constraints (soft optimization)
+        for suggestion in suggestions:
+            pos = suggestion['position']
+            # The mrna_stability module returns 'position' (0-based
+            # nucleotide index of the codon start), not 'codon_index'.
+            # Compute codon index from the nucleotide position.
+            ci = pos // 3
+            new_codon = suggestion['suggested_codon']
+            codon_start = ci * 3
+
+            # Safety check: ensure codon index is in range
+            if codon_start + 3 > len(optimized_seq):
+                continue
+
+            # Apply the change and verify no hard constraints are broken
+            test_seq = optimized_seq[:codon_start] + new_codon + optimized_seq[codon_start + 3:]
+
+            # Verify: same protein (synonymous)
+            test_protein = BioOptimizer._translate(test_seq)
+            orig_protein = BioOptimizer._translate(optimized_seq)
+            if test_protein != orig_protein:
+                continue
+
+            # Verify: GC still in range
+            test_gc = (test_seq.count("G") + test_seq.count("C")) / max(len(test_seq), 1)
+            if not (gc_lo <= test_gc <= gc_hi):
+                continue
+
+            # Verify: no new restriction sites
+            from .restriction_sites import get_recognition_site as _get_site
+            rs_violated = False
+            for enz in (enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]):
+                site = _get_site(enz)
+                if site and site in test_seq and site not in optimized_seq:
+                    rs_violated = True
+                    break
+            if rs_violated:
+                continue
+
+            # Verify: no new stop codons
+            from .type_system import check_no_stop_codons as _check_stops
+            stop_result = _check_stops(test_seq)
+            if not stop_result.passed:
+                continue
+
+            # Safe to apply
+            optimized_seq = test_seq
+            destabilizing_motifs_removed += 1
+            logger.debug(
+                "mRNA stability: replaced %s->%s at codon %d (removing %s)",
+                suggestion.get('original_codon', '???'), new_codon, ci,
+                suggestion.get('motif_removed', suggestion.get('motif', '???')),
+            )
+
+        final_stability = score_mrna_stability(optimized_seq, organism)
+        # score_mrna_stability returns an MRNAStabilityScore dataclass
+        # with an overall_score attribute; extract the float
+        init_score = initial_stability.overall_score if hasattr(initial_stability, 'overall_score') else float(initial_stability)
+        final_score = final_stability.overall_score if hasattr(final_stability, 'overall_score') else float(final_stability)
+        mrna_stability_score = final_score
+        if init_score > 0:
+            stability_improvement = round(final_score - init_score, 6)
+        else:
+            stability_improvement = round(final_score, 6)
+
+        logger.info(
+            "mRNA stability: initial=%.4f final=%.4f improvement=%.4f motifs_removed=%d",
+            init_score, final_score, stability_improvement,
+            destabilizing_motifs_removed,
+        )
+    # ── End mRNA stability pass ────────────────────────────────────
+
+    # ── Codon pair bias improvement pass ──────────────────────────
+    cpb_score: float | None = None
+
+    if consider_codon_pair_bias:
+        from .codon_pair_scoring import (
+            compute_cpb as _compute_cpb,
+            suggest_better_pair as _suggest_better_pair,
+        )
+
+        initial_cpb = _compute_cpb(optimized_seq, organism)
+        logger.info("Codon pair bias: initial CPB=%.4f", initial_cpb)
+
+        # Iterate over adjacent codon pairs and try to improve
+        aas = protein_to_aa_list(target_protein)
+        max_cpb_iterations = 3
+        for _cpb_iter in range(max_cpb_iterations):
+            any_improved = False
+            for ci in range(len(aas) - 1):
+                codon_start1 = ci * 3
+                codon_start2 = (ci + 1) * 3
+                current_c1 = optimized_seq[codon_start1:codon_start1 + 3]
+                current_c2 = optimized_seq[codon_start2:codon_start2 + 3]
+                aa1 = aas[ci]
+                aa2 = aas[ci + 1]
+
+                # Look up CAI weights for this organism
+                cai_weights = CODON_ADAPTIVENESS_TABLES.get(organism)
+
+                better = _suggest_better_pair(
+                    current_c1, current_c2, aa1, aa2, organism,
+                    cai_weights=cai_weights,
+                    cai_weight=0.7,
+                    cpb_weight=0.3,
+                )
+                if better is None:
+                    continue
+
+                new_c1, new_c2 = better
+
+                # Apply the swap and verify hard constraints
+                test_seq = (
+                    optimized_seq[:codon_start1]
+                    + new_c1
+                    + optimized_seq[codon_start1 + 3:codon_start2]
+                    + new_c2
+                    + optimized_seq[codon_start2 + 3:]
+                )
+
+                # Verify: same protein (synonymous)
+                test_protein = BioOptimizer._translate(test_seq)
+                orig_protein = BioOptimizer._translate(optimized_seq)
+                if test_protein != orig_protein:
+                    continue
+
+                # Verify: GC still in range
+                test_gc = (test_seq.count("G") + test_seq.count("C")) / max(len(test_seq), 1)
+                if not (gc_lo <= test_gc <= gc_hi):
+                    continue
+
+                # Verify: no new restriction sites
+                from .restriction_sites import get_recognition_site as _get_site
+                rs_violated = False
+                for enz in (enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]):
+                    site = _get_site(enz)
+                    if site and site in test_seq and site not in optimized_seq:
+                        rs_violated = True
+                        break
+                if rs_violated:
+                    continue
+
+                # Verify: no new stop codons
+                from .type_system import check_no_stop_codons as _check_stops
+                stop_result = _check_stops(test_seq)
+                if not stop_result.passed:
+                    continue
+
+                # Verify: no new cryptic splice sites (if threshold specified)
+                cryptic_splice_threshold_cpb = kwargs.get("splice_low", 3.0)
+                try:
+                    from .maxentscan import max_donor_score, max_acceptor_score
+                    old_max_d = max_donor_score(optimized_seq)
+                    old_max_a = max_acceptor_score(optimized_seq)
+                    new_max_d = max_donor_score(test_seq)
+                    new_max_a = max_acceptor_score(test_seq)
+                    if (new_max_d > old_max_d and new_max_d >= cryptic_splice_threshold_cpb):
+                        continue
+                    if (new_max_a > old_max_a and new_max_a >= cryptic_splice_threshold_cpb):
+                        continue
+                except Exception:
+                    pass  # maxentscan may not be available
+
+                # Safe to apply
+                optimized_seq = test_seq
+                any_improved = True
+                logger.debug(
+                    "CPB: swapped %s-%s -> %s-%s at codon pair %d-%d",
+                    current_c1, current_c2, new_c1, new_c2, ci, ci + 1,
+                )
+
+            if not any_improved:
+                break
+
+        final_cpb = _compute_cpb(optimized_seq, organism)
+        cpb_score = round(final_cpb, 6)
+        logger.info(
+            "Codon pair bias: initial=%.4f final=%.4f improvement=%.4f",
+            initial_cpb, final_cpb, final_cpb - initial_cpb,
+        )
+    # ── End Codon pair bias pass ──────────────────────────────────
 
     # Build provenance record for reproducibility
     from .provenance import OptimizationRecord as _OptimizationRecord
@@ -1481,7 +1898,78 @@ def optimize_sequence(
         seed_used=seed,
         timestamp=datetime.now(timezone.utc).isoformat(),
         biocompiler_version=_get_version(),
+        mrna_stability_score=mrna_stability_score,
+        destabilizing_motifs_removed=destabilizing_motifs_removed,
+        stability_improvement=stability_improvement,
     )
+
+    # ── UTR suggestions ─────────────────────────────────────────────
+    utr5_seq: str | None = None
+    utr3_seq: str | None = None
+    utr_score5: float | None = None
+    utr_score3: float | None = None
+
+    if include_utr:
+        from .utr_models import suggest_5utr, suggest_3utr, score_5utr, score_3utr
+        try:
+            utr5_seq = suggest_5utr(organism)
+            utr_score5 = score_5utr(utr5_seq, organism)
+        except ValueError:
+            logger.debug("No 5' UTR suggestion for organism '%s'", organism)
+        try:
+            utr3_seq = suggest_3utr(organism)
+            utr_score3 = score_3utr(utr3_seq, organism)
+        except ValueError:
+            logger.debug("No 3' UTR suggestion for organism '%s'", organism)
+
+    # Record constraint decisions if provenance tracking is enabled
+    if _provenance_collector is not None:
+        try:
+            # Build constraint decisions from predicate results
+            for _pr in pred_results:
+                _action = "satisfied" if _pr.passed else "conflicted"
+                # Estimate CAI impact (negative if constraint reduced CAI)
+                _cai_impact = 0.0
+                if not _pr.passed:
+                    _cai_impact = -0.01  # Conservative estimate for failed constraints
+                elif _pr.predicate in ("NoRestrictionSite", "NoCrypticSplice", "GCInRange"):
+                    # These constraints typically have some CAI cost even when satisfied
+                    _cai_impact = -0.005
+
+                # Determine positions affected (best effort)
+                _positions_affected: list[int] = []
+                _details = getattr(_pr, "details", "") or ""
+                if "position" in _details.lower():
+                    # Try to extract position info from details
+                    import re as _re
+                    _pos_matches = _re.findall(r'pos(?:ition)?[:\s]+(\d+)', _details, _re.IGNORECASE)
+                    _positions_affected = [int(p) for p in _pos_matches[:10]]
+
+                _tradeoff = _details if _details else f"Constraint {_pr.predicate} was {_action}"
+
+                _provenance_collector.record_constraint_decision(ConstraintDecision(
+                    constraint_name=_pr.predicate,
+                    constraint_type="hard",
+                    action_taken=_action,
+                    positions_affected=_positions_affected,
+                    tradeoff_description=_tradeoff,
+                    impact_on_cai=_cai_impact,
+                ))
+        except Exception:
+            logger.debug("Constraint provenance recording failed", exc_info=True)
+
+    # Finalize decision provenance trail if tracking is enabled
+    _decision_trail: OptimizationDecisionTrail | None = None
+    if _provenance_collector is not None:
+        try:
+            _decision_trail = _provenance_collector.finalize(
+                output_dna=optimized_seq,
+                cai=cai_val,
+                gc=gc,
+            )
+        except Exception:
+            logger.debug("Provenance finalization failed", exc_info=True)
+            _decision_trail = None
 
     return OptimizationResult(
         sequence=optimized_seq,
@@ -1494,7 +1982,16 @@ def optimize_sequence(
         fallback_used=fallback,
         satisfied_predicates=satisfied,
         aa_substitutions=opt._applied_mutagenesis,
+        mrna_stability_score=mrna_stability_score,
+        destabilizing_motifs_removed=destabilizing_motifs_removed,
+        stability_improvement=stability_improvement,
         provenance=provenance_record,
+        codon_pair_bias=cpb_score,
+        suggested_5utr=utr5_seq,
+        suggested_3utr=utr3_seq,
+        utr_score_5=utr_score5,
+        utr_score_3=utr_score3,
+        decision_trail=_decision_trail,
     )
 
 
@@ -1637,6 +2134,7 @@ class BioOptimizer:
         min_cai: float = 0.0,
         avoid_gt: bool = True,
         strategy: str = "constraint_first",
+        optimize_mrna_stability: bool = True,
     ) -> None:
         self.species = species
         self.species_cai: Dict[str, float] = SPECIES.get(species, SPECIES["ecoli"])
@@ -1649,12 +2147,19 @@ class BioOptimizer:
         self.min_cai = min_cai
         self.avoid_gt = avoid_gt
         self.strategy = strategy  # "constraint_first" or "cai_first"
+        self.optimize_mrna_stability = optimize_mrna_stability
         # Track positions where GT is unavoidable (e.g., Valine codons)
         self._unavoidable_gt_positions: Set[int] = set()
         # Track mutagenesis proposals that were applied
         self._applied_mutagenesis: List[Dict[str, Any]] = []
         # Store original input protein for conservation scoring
         self._original_protein: str = ""
+        # Track mRNA stability metrics from the last optimization run
+        self._mrna_stability_score: float | None = None
+        self._destabilizing_motifs_removed: int = 0
+        self._stability_improvement: float | None = None
+        # Decision provenance collector (set externally for codon-level tracking)
+        self._provenance_collector: DecisionProvenanceCollector | None = None
 
     def optimize(self, seq: str, strategy: Optional[str] = None) -> Tuple[str, List[PredicateResult], str]:
         """Run the full optimization pipeline.
@@ -1675,6 +2180,10 @@ class BioOptimizer:
         self._unavoidable_gt_positions = set()
         self._applied_mutagenesis = []
         self._original_protein = self._translate(seq)
+        # Reset mRNA stability metrics
+        self._mrna_stability_score = None
+        self._destabilizing_motifs_removed = 0
+        self._stability_improvement = None
 
         if effective_strategy == "cai_first":
             return self._optimize_cai_first(seq)
@@ -1719,6 +2228,9 @@ class BioOptimizer:
 
         # Step: GT Reconciliation (fix avoidable GTs that may have been introduced)
         seq = self._step_gt_reconciliation(seq)
+
+        # Step: mRNA Stability Improvement (soft optimization — remove destabilizing motifs)
+        seq = self._step_mrna_stability_improvement(seq)
 
         # Evaluate all 12 predicates
         results = self._evaluate_all_predicates(seq)
@@ -1828,6 +2340,9 @@ class BioOptimizer:
                 if _is_unavoidable_gt(seq, i):
                     codon_start = (i // 3) * 3
                     self._unavoidable_gt_positions.add(i)
+
+        # Step: mRNA Stability Improvement (soft optimization)
+        seq = self._step_mrna_stability_improvement(seq)
 
         # Evaluate all predicates
         results = self._evaluate_all_predicates(seq)
@@ -2485,6 +3000,77 @@ class BioOptimizer:
             codons_result[i] = codon if codon is not None else "NNN"
             current_char = prev_char
 
+        # Record codon decisions for provenance if collector is attached
+        if self._provenance_collector is not None:
+            # Resolve the actual CAI weights dict from species_cai
+            # (species_cai may be a SpeciesEntry with nested 'cai_weights',
+            #  or a flat codon→CAI dict for backward compat)
+            _provenance_cai = self.species_cai  # type: ignore[assignment]
+            if isinstance(_provenance_cai, dict) and 'cai_weights' in _provenance_cai:
+                _provenance_cai = _provenance_cai['cai_weights']  # type: ignore[assignment]
+            for pos_idx in range(n):
+                aa = protein[pos_idx]
+                if aa == "*" or not AA_TO_CODONS.get(aa, []):
+                    continue
+                chosen = codons_result[pos_idx]
+                if chosen is None:
+                    continue
+                candidates_sorted = sorted(
+                    AA_TO_CODONS[aa],
+                    key=lambda c: _provenance_cai.get(c, 0.0),
+                    reverse=True,
+                )
+                best_cai = _provenance_cai.get(chosen, 0.0)
+                alternatives: list[dict[str, Any]] = []
+                for codon in candidates_sorted:
+                    if codon == chosen:
+                        continue  # chosen codon is already in chosen_codon field
+                    cai_val = _provenance_cai.get(codon, 0.0)
+                    gc_bases = sum(1 for b in codon if b in "GC")
+                    gc_contribution = gc_bases / 3.0
+                    # Check constraint violations for this codon
+                    violates: list[str] = []
+                    if "GT" in codon and aa != 'V':
+                        violates.append("cryptic_splice_donor")
+                    if "AG" in codon:
+                        violates.append("cryptic_splice_acceptor")
+                    # Determine rejection reason
+                    rejected_because: str | None = None
+                    if violates:
+                        rejected_because = f"Violates: {', '.join(violates)}"
+                    elif cai_val < best_cai:
+                        rejected_because = "Lower CAI"
+                    else:
+                        rejected_because = "Lower CAI (DP-optimal path chose alternative)"
+                    alternatives.append({
+                        "codon": codon,
+                        "cai_contribution": round(cai_val, 4),
+                        "gc_contribution": round(gc_contribution, 2),
+                        "violates_constraints": violates,
+                        "rejected_because": rejected_because,
+                    })
+
+                # Compute confidence
+                if len(candidates_sorted) > 1:
+                    # Use second-best CAI as baseline
+                    second_best_cai = _provenance_cai.get(candidates_sorted[0], 0.0)
+                    if candidates_sorted[0] == chosen and len(candidates_sorted) > 1:
+                        second_best_cai = _provenance_cai.get(candidates_sorted[1], 0.0)
+                    confidence = min(1.0, 0.5 + (best_cai - second_best_cai) * 5)
+                    confidence = max(0.0, confidence)
+                else:
+                    confidence = 1.0
+
+                self._provenance_collector.record_codon_decision(CodonDecision(
+                    position=pos_idx,
+                    amino_acid=aa,
+                    original_codon=None,
+                    chosen_codon=chosen,
+                    alternatives_considered=alternatives,
+                    constraint_reason="DP max-CAI with avoidable-GT avoidance",
+                    confidence=round(confidence, 4),
+                ))
+
         return "".join(codons_result)
 
     # Deprecated alias — use _step_backtranslate_cai instead
@@ -2845,6 +3431,62 @@ class BioOptimizer:
                             if gt_count + cross_gt < best_gt_count + best_cross_gt:
                                 best = codon
                                 break
+
+            # Record codon decision for provenance if collector is attached
+            if self._provenance_collector is not None:
+                # Resolve the actual CAI weights dict from species_cai
+                _prov_cai = self.species_cai
+                if isinstance(_prov_cai, dict) and 'cai_weights' in _prov_cai:
+                    _prov_cai = _prov_cai['cai_weights']
+                best_cai = _prov_cai.get(best, 0.0)
+                alternatives: list[dict[str, Any]] = []
+                for codon in candidates_sorted:
+                    if codon == best:
+                        continue  # chosen codon is already in chosen_codon field
+                    cai_val = _prov_cai.get(codon, 0.0)
+                    gc_bases = sum(1 for b in codon if b in "GC")
+                    gc_contribution = gc_bases / 3.0
+                    # Check constraint violations for this codon
+                    violates: list[str] = []
+                    if "GT" in codon:
+                        violates.append("cryptic_splice_donor")
+                    if prev_codon_end and prev_codon_end + codon[0] == "GT":
+                        violates.append("cross_codon_gt")
+                    if "AG" in codon:
+                        violates.append("cryptic_splice_acceptor")
+                    # Determine rejection reason
+                    rejected_because: str | None = None
+                    if violates:
+                        rejected_because = f"Violates: {', '.join(violates)}"
+                    elif cai_val < best_cai:
+                        rejected_because = "Lower CAI"
+                    else:
+                        rejected_because = "Lower CAI"
+                    alternatives.append({
+                        "codon": codon,
+                        "cai_contribution": round(cai_val, 4),
+                        "gc_contribution": round(gc_contribution, 2),
+                        "violates_constraints": violates,
+                        "rejected_because": rejected_because,
+                    })
+
+                # Compute confidence
+                if len(candidates_sorted) > 1:
+                    second_best_cai = _prov_cai.get(candidates_sorted[1], 0.0)
+                    confidence = min(1.0, 0.5 + (best_cai - second_best_cai) * 5)
+                    confidence = max(0.0, confidence)
+                else:
+                    confidence = 1.0
+
+                self._provenance_collector.record_codon_decision(CodonDecision(
+                    position=i,
+                    amino_acid=aa,
+                    original_codon=None,
+                    chosen_codon=best,
+                    alternatives_considered=alternatives,
+                    constraint_reason="Maximize CAI while avoiding GT dinucleotides",
+                    confidence=round(confidence, 4),
+                ))
 
             codons.append(best)
             prev_codon_end = best[-1]
@@ -5015,6 +5657,130 @@ class BioOptimizer:
 
     # Deprecated alias — use _step_reoptimize instead
     _phase7_reoptimize = _step_reoptimize
+
+    # ──────────────────────────────────────────────────────────
+    # Step: mRNA Stability Improvement (soft optimization)
+    # ──────────────────────────────────────────────────────────
+    def _step_mrna_stability_improvement(self, seq: str) -> str:
+        """Soft mRNA stability improvement pass.
+
+        Identifies destabilizing motifs (ATTTA, extended AREs, long A/T runs)
+        and applies synonymous codon changes to remove them, WITHOUT breaking
+        any hard constraints (restriction sites, GC range, stop codons,
+        cryptic splice sites).
+
+        This step runs after all other optimization steps, so hard constraints
+        are already satisfied.  We only apply changes that preserve all
+        existing constraint satisfaction.
+
+        Updates ``self._mrna_stability_score``, ``self._destabilizing_motifs_removed``,
+        and ``self._stability_improvement`` for provenance tracking.
+        """
+        if not self.optimize_mrna_stability:
+            self._mrna_stability_score = None
+            self._destabilizing_motifs_removed = 0
+            self._stability_improvement = None
+            return seq
+
+        from .mrna_stability import score_mrna_stability, suggest_mutations_for_stability
+        from .restriction_sites import get_recognition_site as _get_site
+        from .type_system import check_no_stop_codons as _check_stops
+
+        # Map species key back to organism name for the stability module
+        species_to_organism = {
+            "human": "Homo_sapiens",
+            "ecoli": "Escherichia_coli",
+            "mouse": "Mus_musculus",
+            "cho": "CHO_K1",
+            "yeast": "Saccharomyces_cerevisiae",
+        }
+        organism = species_to_organism.get(self.species, "Homo_sapiens")
+
+        initial_stability = score_mrna_stability(seq, organism)
+        suggestions = suggest_mutations_for_stability(seq, organism)
+
+        motifs_removed = 0
+        for suggestion in suggestions:
+            pos = suggestion['position']
+            # The mrna_stability module returns 'position' as 0-based
+            # nucleotide index of the codon start.  Use it directly.
+            codon_start = pos
+            new_codon = suggestion['suggested_codon']
+
+            # Safety check: ensure codon start is in range
+            if codon_start + 3 > len(seq):
+                continue
+
+            # Apply the change and verify no hard constraints are broken
+            test_seq = seq[:codon_start] + new_codon + seq[codon_start + 3:]
+
+            # Verify: same protein (synonymous)
+            test_protein = self._translate(test_seq)
+            orig_protein = self._translate(seq)
+            if test_protein != orig_protein:
+                continue
+
+            # Verify: GC still in reasonable range (0.30–0.70)
+            test_gc = (test_seq.count("G") + test_seq.count("C")) / max(len(test_seq), 1)
+            if not (0.30 <= test_gc <= 0.70):
+                continue
+
+            # Verify: no new restriction sites introduced
+            rs_violated = False
+            for enz in self.enzymes:
+                site = _get_site(enz)
+                if site and site in test_seq and site not in seq:
+                    rs_violated = True
+                    break
+            if rs_violated:
+                continue
+
+            # Verify: no new stop codons
+            stop_result = _check_stops(test_seq)
+            if not stop_result.passed:
+                continue
+
+            # Verify: no worsening of cryptic splice scores
+            try:
+                from .maxentscan import max_donor_score, max_acceptor_score
+                old_max_d = max_donor_score(seq)
+                old_max_a = max_acceptor_score(seq)
+                new_max_d = max_donor_score(test_seq)
+                new_max_a = max_acceptor_score(test_seq)
+                if new_max_d > old_max_d + 0.1 or new_max_a > old_max_a + 0.1:
+                    continue
+            except (ImportError, Exception):
+                pass  # If MaxEntScan unavailable, skip splice check
+
+            # Safe to apply
+            seq = test_seq
+            motifs_removed += 1
+            logger.debug(
+                "mRNA stability: replaced %s->%s at codon %d (removing %s)",
+                suggestion.get('original_codon', '???'), new_codon,
+                codon_start // 3,
+                suggestion.get('motif_removed', suggestion.get('motif', '???')),
+            )
+
+        final_stability = score_mrna_stability(seq, organism)
+        # score_mrna_stability returns an MRNAStabilityScore dataclass;
+        # extract the float overall_score
+        init_score = initial_stability.overall_score if hasattr(initial_stability, 'overall_score') else float(initial_stability)
+        final_score = final_stability.overall_score if hasattr(final_stability, 'overall_score') else float(final_stability)
+        self._mrna_stability_score = final_score
+        # _destabilizing_motifs_removed was already incremented in the loop above
+        if init_score > 0:
+            self._stability_improvement = round(final_score - init_score, 6)
+        else:
+            self._stability_improvement = round(final_score, 6)
+
+        logger.info(
+            "mRNA stability: initial=%.4f final=%.4f improvement=%.4f motifs_removed=%d",
+            init_score, final_score, self._stability_improvement,
+            self._destabilizing_motifs_removed,
+        )
+
+        return seq
 
     # ──────────────────────────────────────────────────────────
     # Predicate evaluation

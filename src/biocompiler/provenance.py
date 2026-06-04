@@ -1,8 +1,58 @@
 """
 BioCompiler Provenance — Decision Audit Trail & Output Provenance
+==================================================================
 
 Provides a structured record of every decision made during gene optimization,
 enabling full reproducibility, debugging, and regulatory traceability.
+
+Every gene optimization involves a sequence of decisions — which codon to
+choose at each position, which mutations to apply, when to relax constraints.
+This module captures all of those decisions as ``DecisionRecord`` instances
+and organizes them via the ``ProvenanceTracker``.  The tracker supports
+position-based querying, full audit trail retrieval, and serialization to
+dict/JSON for persistence.
+
+At the run level, ``OptimizationProvenance`` ties together the input protein,
+solver configuration, all decisions, and the final output into a single
+snapshot.  ``OptimizationRecord`` provides a lightweight summary with
+reproducibility metadata (seed, biocompiler version, timestamps).  The
+``generate_provenance_report`` function produces a human-readable text report
+from a list of optimization records.
+
+Usage::
+
+    from biocompiler.provenance import (
+        DecisionRecord, ProvenanceTracker, OptimizationRecord,
+        generate_provenance_report,
+    )
+    from datetime import datetime, timezone
+
+    # Create a tracker for an optimization run
+    tracker = ProvenanceTracker(seed=42)
+
+    # Record decisions during optimization
+    tracker.record_decision(DecisionRecord(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        decision_type="codon_selected",
+        position=12,
+        chosen_value="GTC",
+        alternatives_considered=["GTG", "GTA", "GTT"],
+        rationale="Highest CAI codon for Valine in Homo_sapiens",
+        constraint_context={"cai": 0.92, "gc": 0.54},
+    ))
+
+    # Query decisions by position
+    decisions_at_12 = tracker.get_decisions_for_position(12)
+
+    # Get the full audit trail
+    trail = tracker.get_full_audit_trail()
+
+    # Serialize for persistence
+    json_str = tracker.to_json()
+
+    # Generate a report from optimization records
+    report = generate_provenance_report(tracker.get_optimization_records())
+    print(report)
 
 Key components:
 - DecisionRecord: immutable record of a single solver decision
@@ -454,6 +504,27 @@ def _get_biocompiler_version() -> str:
         return "unknown"
 
 
+def _coerce_stability_score(value: Any) -> float | None:
+    """Coerce an MRNAStabilityScore object (or plain float) to a plain float.
+
+    The optimizer may populate ``mrna_stability_score`` with an
+    ``MRNAStabilityScore`` dataclass instead of a plain float.  This helper
+    normalises it for JSON serialization and report formatting.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    # MRNAStabilityScore or similar objects with an overall_score attribute
+    if hasattr(value, "overall_score"):
+        return float(value.overall_score)
+    # Fallback: try to cast
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class OptimizationRecord:
     """Summary record of a single optimization run for reproducibility auditing.
@@ -490,6 +561,10 @@ class OptimizationRecord:
     seed_used: int | None
     timestamp: str
     biocompiler_version: str
+    # mRNA stability provenance (optional — populated when optimize_mrna_stability=True)
+    mrna_stability_score: float | None = None
+    destabilizing_motifs_removed: int = 0
+    stability_improvement: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize this record to a JSON-compatible dict."""
@@ -504,6 +579,9 @@ class OptimizationRecord:
             "seed_used": self.seed_used,
             "timestamp": self.timestamp,
             "biocompiler_version": self.biocompiler_version,
+            "mrna_stability_score": _coerce_stability_score(self.mrna_stability_score),
+            "destabilizing_motifs_removed": self.destabilizing_motifs_removed,
+            "stability_improvement": _coerce_stability_score(self.stability_improvement),
         }
 
     @classmethod
@@ -540,6 +618,9 @@ class OptimizationRecord:
             seed_used=data["seed_used"],
             timestamp=data["timestamp"],
             biocompiler_version=data["biocompiler_version"],
+            mrna_stability_score=data.get("mrna_stability_score"),
+            destabilizing_motifs_removed=data.get("destabilizing_motifs_removed", 0),
+            stability_improvement=data.get("stability_improvement"),
         )
 
     def to_json(self) -> str:
@@ -600,6 +681,15 @@ def generate_provenance_report(records: list[OptimizationRecord]) -> str:
         lines.append(f"  Output length:        {len(rec.output_sequence)} chars")
         lines.append(f"  Constraints applied:  {', '.join(rec.constraints_applied) or '(none)'}")
         lines.append(f"  Mutations made:       {', '.join(rec.mutations_made) or '(none)'}")
+        if rec.mrna_stability_score is not None:
+            score_val = _coerce_stability_score(rec.mrna_stability_score)
+            if score_val is not None:
+                lines.append(f"  mRNA stability score: {score_val:.4f}")
+            lines.append(f"  Motifs removed:       {rec.destabilizing_motifs_removed}")
+            if rec.stability_improvement is not None:
+                imp_val = _coerce_stability_score(rec.stability_improvement)
+                if imp_val is not None:
+                    lines.append(f"  Stability improvement: {imp_val:+.4f}")
         lines.append("")
 
     # Summary statistics

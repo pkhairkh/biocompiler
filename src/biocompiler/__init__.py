@@ -141,7 +141,7 @@ except ImportError:
 # Optimization
 # ═══════════════════════════════════════════════════════════════════════
 
-from .optimization import BioOptimizer, optimize_sequence, OptimizationResult
+from .optimization import BioOptimizer, optimize_sequence, OptimizationResult, FullConstructResult
 
 # ═══════════════════════════════════════════════════════════════════════
 # Grammar, Export, Report
@@ -157,13 +157,14 @@ except ImportError:
     list_builtin_grammars = None
 
 try:
-    from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta
+    from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta, export_full_construct
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
     export_fasta = None
     export_genbank = None
     export_genbank_with_certificate = None
     export_multi_fasta = None
+    export_full_construct = None
 
 try:
     from .report import generate_report
@@ -728,6 +729,151 @@ except ImportError:
     get_organism_config = None
 
 # ═══════════════════════════════════════════════════════════════════════
+# UTR Models
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .utr_models import (
+        UTRConfig, suggest_5utr, suggest_3utr,
+        score_5utr, score_3utr,
+        ORGANISM_UTR_CONFIGS, AVAILABLE_ORGANISMS,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    UTRConfig = None
+    suggest_5utr = None
+    suggest_3utr = None
+    score_5utr = None
+    score_3utr = None
+    ORGANISM_UTR_CONFIGS = None
+    AVAILABLE_ORGANISMS = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Benchmarking sub-package (structured head-to-head comparison)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .benchmarking import BenchmarkRunner, BenchmarkResult, BenchmarkReport
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    BenchmarkRunner = None
+    BenchmarkResult = None  # may already be set from .benchmarking.comparison
+    # BenchmarkReport may already be defined from .benchmark; don't clobber
+    try:
+        BenchmarkReport
+    except NameError:
+        BenchmarkReport = None
+
+try:
+    from .benchmarking.cai_validated import compute_cai_sharp_li
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compute_cai_sharp_li = None
+
+try:
+    from .benchmarking.maxentscan_validated import score_donor_maxentscan, score_acceptor_maxentscan
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    score_donor_maxentscan = None
+    score_acceptor_maxentscan = None
+
+try:
+    from .benchmarking.metrics import compute_all_metrics, BenchmarkMetrics
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compute_all_metrics = None
+    BenchmarkMetrics = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# MHC Binding Database
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .mhc_binding_db import MHCBindingDatabase, MHCBindingRecord
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    MHCBindingDatabase = None
+    MHCBindingRecord = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# UTR Models
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .utr_models import UTRConfig, ORGANISM_UTR_CONFIGS, suggest_5utr, suggest_3utr, score_5utr, score_3utr
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    UTRConfig = None
+    ORGANISM_UTR_CONFIGS = None
+    suggest_5utr = None
+    suggest_3utr = None
+    score_5utr = None
+    score_3utr = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# mRNA Stability
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .mrna_stability import score_mrna_stability, MRNAStabilityScore, suggest_mutations_for_stability
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    score_mrna_stability = None
+    MRNAStabilityScore = None
+    suggest_mutations_for_stability = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Decision Provenance (granular optimization audit trail)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .decision_provenance import (
+        OptimizationDecisionTrail, CodonDecision, ConstraintDecision,
+        DecisionProvenanceCollector,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    OptimizationDecisionTrail = None
+    CodonDecision = None
+    ConstraintDecision = None
+    DecisionProvenanceCollector = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provenance Reporting
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .provenance_reporting import ProvenanceQuery, ProvenanceReport
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    ProvenanceQuery = None
+    ProvenanceReport = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# What-If Analysis
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .whatif_analysis import WhatIfAnalyzer, WhatIfScenario
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    WhatIfAnalyzer = None
+    WhatIfScenario = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Codon Pair Scoring
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .codon_pair_scoring import compute_cpb, score_codon_pair, get_codon_pair_data, suggest_better_pair
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compute_cpb = None
+    score_codon_pair = None
+    get_codon_pair_data = None
+    suggest_better_pair = None
+
+# ═══════════════════════════════════════════════════════════════════════
 # Public API — organized by domain
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -781,14 +927,14 @@ __all__ = [
     "max_donor_score", "max_acceptor_score",
 
     # ── Optimization ─────────────────────────────────────────
-    "BioOptimizer", "optimize_sequence", "OptimizationResult",
+    "BioOptimizer", "optimize_sequence", "OptimizationResult", "FullConstructResult",
 
     # ── Grammar ──────────────────────────────────────────────
     "load_grammar", "grammar_to_predicate_params",
     "load_builtin_grammar", "list_builtin_grammars",
 
     # ── Export ───────────────────────────────────────────────
-    "export_fasta", "export_genbank", "export_genbank_with_certificate", "export_multi_fasta",
+    "export_fasta", "export_genbank", "export_genbank_with_certificate", "export_multi_fasta", "export_full_construct",
 
     # ── Report ───────────────────────────────────────────────
     "generate_report",
@@ -941,4 +1087,39 @@ __all__ = [
 
     # ── Organism configuration ───────────────────────────────
     "OrganismConfig", "ORGANISM_CONFIGS", "get_organism_config",
+
+    # ── UTR Models ──────────────────────────────────────────
+    "UTRConfig", "suggest_5utr", "suggest_3utr",
+    "score_5utr", "score_3utr",
+    "ORGANISM_UTR_CONFIGS", "AVAILABLE_ORGANISMS",
+
+    # ── Benchmarking sub-package ────────────────────────────
+    "BenchmarkRunner", "BenchmarkResult", "BenchmarkReport",
+    "compute_cai_sharp_li",
+    "score_donor_maxentscan", "score_acceptor_maxentscan",
+    "compute_all_metrics", "BenchmarkMetrics",
+
+    # ── MHC Binding Database ────────────────────────────────
+    "MHCBindingDatabase", "MHCBindingRecord",
+
+    # ── UTR Models ──────────────────────────────────────────
+    "UTRConfig", "ORGANISM_UTR_CONFIGS",
+    "suggest_5utr", "suggest_3utr", "score_5utr", "score_3utr",
+
+    # ── mRNA Stability ──────────────────────────────────────
+    "score_mrna_stability", "MRNAStabilityScore",
+    "suggest_mutations_for_stability",
+
+    # ── Decision Provenance ─────────────────────────────────
+    "OptimizationDecisionTrail", "CodonDecision", "ConstraintDecision",
+    "DecisionProvenanceCollector",
+
+    # ── Provenance Reporting ────────────────────────────────
+    "ProvenanceQuery", "ProvenanceReport",
+
+    # ── What-If Analysis ────────────────────────────────────
+    "WhatIfAnalyzer", "WhatIfScenario",
+
+    # ── Codon Pair Scoring ──────────────────────────────────
+    "compute_cpb", "score_codon_pair",
 ]

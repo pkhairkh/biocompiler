@@ -25,6 +25,7 @@ Module structure:
         enforcement.py         — Constraint enforcement mechanics
         scoring.py             — Constraint enforcement scoring & soft constraint scoring & Pareto analysis
         conflict_resolution.py — Hard constraint conflict detection & resolution
+        conflict_provenance.py  — Constraint conflict resolution provenance tracking
 
 All public symbols from sub-modules are re-exported here so that downstream
 code can import from ``biocompiler.solver`` directly::
@@ -150,6 +151,14 @@ from .conflict_resolution import (
     ConstraintConflict,
     ConflictResolver,
     prioritize_constraints,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Conflict provenance (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
+from .conflict_provenance import (
+    ConflictProvenance,
+    ConflictResolverWithProvenance,
 )
 
 logger = logging.getLogger(__name__)
@@ -394,6 +403,10 @@ __all__ = [
     "ConstraintConflict",
     "ConflictResolver",
     "prioritize_constraints",
+
+    # ── Conflict provenance (from .conflict_provenance) ──────
+    "ConflictProvenance",
+    "ConflictResolverWithProvenance",
 
     # ── Convenience functions ───────────────────────────────
     "solve",

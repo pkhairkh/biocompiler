@@ -19,6 +19,7 @@ __all__ = [
     "export_genbank",
     "export_genbank_with_certificate",
     "export_multi_fasta",
+    "export_full_construct",
     "GENBANK_MAX_LINE",
     "GENBANK_SEQ_LINE",
     "GENBANK_SEQ_GROUP",
@@ -501,3 +502,211 @@ def _reconstruct_type_results(certificate: Certificate) -> list[TypeCheckResult]
             violation=None if verdict == Verdict.PASS else "See certificate",
         ))
     return results
+
+
+def _format_full_construct_features(
+    seq_len: int,
+    utr5_len: int,
+    cds_len: int,
+    utr3_len: int,
+    gene_name: Optional[str],
+    protein: Optional[str],
+) -> list[str]:
+    """Format the FEATURE TABLE for a full expression construct.
+
+    The full construct is structured as:
+    [5'UTR][CDS][3'UTR]
+
+    GenBank coordinates are 1-based, inclusive.
+
+    Args:
+        seq_len: Total length of the full construct.
+        utr5_len: Length of the 5' UTR.
+        cds_len: Length of the CDS.
+        utr3_len: Length of the 3' UTR.
+        gene_name: Optional gene name.
+        protein: Optional protein translation.
+
+    Returns:
+        List of GenBank FEATURE TABLE lines.
+    """
+    lines: list[str] = []
+
+    lines.append("FEATURES             Location/Qualifiers")
+
+    # Compute 1-based coordinates
+    utr5_start = 1
+    utr5_end = utr5_len
+    cds_start = utr5_len + 1
+    cds_end = utr5_len + cds_len
+    utr3_start = utr5_len + cds_len + 1
+    utr3_end = seq_len
+
+    # Gene feature spanning the entire construct
+    if gene_name:
+        lines.append(f"     gene            1..{seq_len}")
+        lines.append(f'                     /gene="{gene_name}"')
+        lines.append(f'                     /note="Full expression construct designed by BioCompiler"')
+
+    # 5' UTR feature
+    if utr5_len > 0:
+        lines.append(f"     5'UTR           {utr5_start}..{utr5_end}")
+        if gene_name:
+            lines.append(f'                     /gene="{gene_name}"')
+        lines.append(f'                     /note="5-prime UTR — suggested for expression in target organism"')
+        lines.append(f'                     /label="5UTR"')
+
+    # CDS feature (the optimized coding sequence)
+    if cds_len > 0:
+        lines.append(f"     CDS             {cds_start}..{cds_end}")
+        if gene_name:
+            lines.append(f'                     /gene="{gene_name}"')
+        lines.append(f'                     /note="Codon-optimized CDS designed by BioCompiler"')
+        lines.append(f'                     /codon_start=1')
+        lines.append(f'                     /transl_table=1')
+        if protein:
+            prot_chunks = [protein[i:i + 40] for i in range(0, len(protein), 40)]
+            lines.append(f'                     /translation="{prot_chunks[0]}"')
+            for chunk in prot_chunks[1:]:
+                lines.append(f'                     "{chunk}"')
+
+    # 3' UTR feature
+    if utr3_len > 0:
+        lines.append(f"     3'UTR           {utr3_start}..{utr3_end}")
+        if gene_name:
+            lines.append(f'                     /gene="{gene_name}"')
+        lines.append(f'                     /note="3-prime UTR — suggested for expression in target organism"')
+        lines.append(f'                     /label="3UTR"')
+
+    # mRNA feature spanning the transcript
+    if utr5_len > 0 or utr3_len > 0:
+        lines.append(f"     mRNA            1..{seq_len}")
+        if gene_name:
+            lines.append(f'                     /gene="{gene_name}"')
+        # Build exon structure for the mRNA
+        if utr5_len > 0 and utr3_len > 0:
+            lines.append(f'                     /note="5UTR:{utr5_start}..{utr5_end} CDS:{cds_start}..{cds_end} 3UTR:{utr3_start}..{utr3_end}"')
+        elif utr5_len > 0:
+            lines.append(f'                     /note="5UTR:{utr5_start}..{utr5_end} CDS:{cds_start}..{cds_end}"')
+        else:
+            lines.append(f'                     /note="CDS:{cds_start}..{cds_end} 3UTR:{utr3_start}..{utr3_end}"')
+
+    return lines
+
+
+def export_full_construct(
+    utr5: str,
+    cds: str,
+    utr3: str,
+    organism: str = "Homo_sapiens",
+    locus_name: str = "BIOCOMPILER",
+    definition: str = "BioCompiler full expression construct",
+    gene_name: Optional[str] = None,
+    molecule_type: str = "DNA",
+    topology: str = "linear",
+) -> str:
+    """Export a complete expression construct (5'UTR + CDS + 3'UTR) as GenBank.
+
+    This produces a fully annotated GenBank record for a complete expression
+    construct — exactly what a biologist would order from a gene synthesis
+    company (e.g., IDT, Twist Bioscience, GenScript). The record includes:
+
+    - LOCUS, DEFINITION, ACCESSION, VERSION headers
+    - SOURCE and ORGANISM with taxonomy lineage
+    - FEATURE TABLE with 5'UTR, CDS, 3'UTR, and mRNA annotations
+    - ORIGIN section with numbered full construct sequence
+
+    The CDS feature includes the protein translation. The UTR features are
+    annotated as suggested elements for expression optimization.
+
+    Args:
+        utr5: 5' UTR sequence (empty string if no 5' UTR).
+        cds: Coding sequence (optimized, starts with ATG, ends with stop codon).
+        utr3: 3' UTR sequence (empty string if no 3' UTR).
+        organism: Target organism name (e.g., 'Homo_sapiens').
+        locus_name: GenBank LOCUS name (max 16 chars, uppercase).
+        definition: DEFINITION line text.
+        gene_name: Optional gene name for feature annotations.
+        molecule_type: Molecule type (DNA, RNA, mRNA).
+        topology: circular or linear.
+
+    Returns:
+        GenBank-formatted string for the full expression construct.
+
+    Example::
+
+        from biocompiler import optimize_sequence, export_full_construct
+
+        result = optimize_sequence("MVHLTPEEK", organism="Homo_sapiens")
+        gb = export_full_construct(
+            utr5=result.suggested_5utr or "",
+            cds=result.sequence,
+            utr3=result.suggested_3utr or "",
+            organism="Homo_sapiens",
+            gene_name="HBB",
+        )
+        # Write to file for ordering from synthesis company
+        with open("construct.gb", "w") as f:
+            f.write(gb)
+    """
+    # Normalize sequences
+    utr5_clean = utr5.upper().replace(" ", "")
+    cds_clean = cds.upper().replace(" ", "")
+    utr3_clean = utr3.upper().replace(" ", "")
+
+    full_seq = utr5_clean + cds_clean + utr3_clean
+    if not full_seq:
+        raise ValueError("Full construct sequence is empty — provide at least a CDS")
+    if not cds_clean:
+        raise ValueError("CDS is required for a full expression construct")
+
+    gc = gc_content(full_seq)
+    now = datetime.now(timezone.utc)
+    protein = translate(cds_clean)
+
+    # Truncate locus name to 16 chars (GenBank requirement)
+    locus = locus_name[:16].upper()
+
+    # Date in DD-MON-YYYY format
+    date_str = now.strftime("%d-%b-%Y").upper()
+
+    # Generate accession
+    acc = _generate_accession()
+
+    # ─── Assemble GenBank record ──────────────────────────────────
+    lines: list[str] = []
+
+    # Header
+    lines.extend(_format_genbank_header(
+        locus, len(full_seq), molecule_type, topology, date_str,
+        definition, acc, organism, gc, protein, None, None,
+    ))
+
+    # UTR-specific comment
+    comments: list[str] = []
+    comments.append(f"Construct layout: 5'UTR({len(utr5_clean)}bp) + CDS({len(cds_clean)}bp) + 3'UTR({len(utr3_clean)}bp)")
+    comments.append(f"Total length: {len(full_seq)} bp")
+    if utr5_clean:
+        comments.append(f"5' UTR: suggested sequence for {organism} (user should verify before ordering)")
+    if utr3_clean:
+        comments.append(f"3' UTR: suggested sequence for {organism} (user should verify before ordering)")
+    comments.append("UTR sequences are SUGGESTED but not enforced — evaluate before ordering")
+
+    lines.append("COMMENT     " + comments[0])
+    for c in comments[1:]:
+        lines.append("            " + c)
+
+    # Features with UTR/CDS/mRNA annotations
+    lines.extend(_format_full_construct_features(
+        seq_len=len(full_seq),
+        utr5_len=len(utr5_clean),
+        cds_len=len(cds_clean),
+        utr3_len=len(utr3_clean),
+        gene_name=gene_name,
+        protein=protein,
+    ))
+
+    # Sequence
+    lines.extend(_format_genbank_sequence(full_seq))
+
+    return "\n".join(lines)

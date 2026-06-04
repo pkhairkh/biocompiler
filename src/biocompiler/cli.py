@@ -4,26 +4,31 @@ BioCompiler CLI
 Command-line interface for certified gene optimization and protein analysis.
 
 Commands:
-  optimize        Read FASTA, run full multi-step optimization, write optimized FASTA + certificate
-  check           Read FASTA, evaluate all 8 predicates, print certificate
-  benchmark       Run built-in benchmarks (eGFP, mCherry, LacZ)
-  scan            Scan a DNA sequence for features
-  serve           Start the REST API server
-  structure       Predict and assess protein structure
-  stability       Analyze protein stability
-  solubility      Analyze protein solubility
-  immunogenicity  Analyze and reduce immunogenicity
-  assess          Full protein assessment
+  optimize            Read FASTA, run full multi-step optimization, write optimized FASTA + certificate
+  check               Read FASTA, evaluate all 8 predicates, print certificate
+  benchmark           Run built-in benchmarks (eGFP, mCherry, LacZ) or named gene sets
+  scan                Scan a DNA sequence for features
+  serve               Start the REST API server
+  structure           Predict and assess protein structure
+  stability           Analyze protein stability
+  solubility          Analyze protein solubility
+  immunogenicity      Analyze and reduce immunogenicity
+  assess              Full protein assessment
+  validate-cai        Validate CAI against published ground-truth values
+  validate-maxentscan Validate MaxEntScan scores against published values
+  whatif              Run what-if analysis on a protein sequence
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import random
 import sys
 import time
+import uuid
 from typing import List, Optional
 
 __all__ = [
@@ -40,6 +45,11 @@ __all__ = [
     "cmd_solubility",
     "cmd_immunogenicity",
     "cmd_assess",
+    "cmd_validate_cai",
+    "cmd_validate_maxentscan",
+    "cmd_whatif",
+    "cmd_explain",
+    "cmd_report",
 ]
 
 logger = logging.getLogger(__name__)
@@ -295,6 +305,35 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     print()
     print(cert_text)
 
+    # Provenance tracking
+    if getattr(args, "provenance", False):
+        from .provenance import ProvenanceTracker, DecisionRecord, OptimizationRecord
+        from datetime import datetime, timezone as _tz
+        from . import __version__ as _ver
+
+        tracker = ProvenanceTracker(seed=seed or 0)
+        input_base_pv = os.path.splitext(args.input)[0]
+        out_provenance = f"{input_base_pv}_provenance.json"
+
+        opt_record = OptimizationRecord(
+            input_sequence=seq,
+            output_sequence=optimized,
+            organism=args.species,
+            constraints_applied=[p.name for p in pred_results],
+            mutations_made=[],
+            solver_backend="greedy",
+            solve_time=0.0,
+            seed_used=seed,
+            timestamp=datetime.now(_tz.utc).isoformat(),
+            biocompiler_version=_ver,
+        )
+        tracker.add_optimization_record(opt_record)
+
+        with open(out_provenance, "w") as f:
+            f.write(tracker.to_json())
+
+        print(f"  Provenance:  {out_provenance}")
+
 
 # ── Command: check ───────────────────────────────────────────────────────────
 
@@ -363,19 +402,89 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         random.seed(seed)
         logger.info("Random seed set to %d for reproducible benchmark", seed)
 
-    from .benchmark import run_benchmark, compare_tools
+    from .benchmark import (
+        run_benchmark, compare_tools,
+        REFERENCE_GENES, GENE_PANEL,
+        run_structured_benchmarks,
+        format_benchmark_report_text, format_benchmark_report_json,
+    )
+
+    # ── List gene sets ──
+    if getattr(args, "list_gene_sets", False):
+        print()
+        print(_section_header("Available Gene Sets"))
+        print(f"  DEFAULT           Built-in eGFP, mCherry, LacZ (both human & ecoli)")
+        print(f"  REFERENCE_GENES   {', '.join(REFERENCE_GENES.keys())}")
+        print(f"  HUMAN_THERAPEUTIC {', '.join(k for k, v in GENE_PANEL.items() if v[1] == 'Homo_sapiens')}")
+        print(f"  GENE_PANEL        {', '.join(GENE_PANEL.keys())}")
+        print()
+        return
 
     enzymes: List[str] = []
     if args.enzymes:
         enzymes = [e.strip() for e in args.enzymes.split(",") if e.strip()]
 
-    run_benchmark(
-        enzymes=enzymes if enzymes else None,
-        splice_low=args.splice_low,
-        splice_high=args.splice_high,
-    )
+    gene_set = getattr(args, "gene_set", None)
+    output_file = getattr(args, "output", None)
 
-    compare_tools()
+    if gene_set:
+        # Run structured benchmark for a named gene set
+        gene_set_upper = gene_set.upper()
+        if gene_set_upper == "REFERENCE_GENES":
+            report = run_structured_benchmarks(gene_names=list(REFERENCE_GENES.keys()))
+            text = format_benchmark_report_text(report)
+            print(text)
+        elif gene_set_upper in ("HUMAN_THERAPEUTIC", "GENE_PANEL"):
+            # Run comprehensive benchmark on GENE_PANEL
+            from .benchmark import run_multi_gene_comparison
+            results = run_multi_gene_comparison(
+                enzymes=enzymes if enzymes else None,
+            )
+            # Print summary table
+            print()
+            print(_section_header("═" * 80))
+            print(_section_header(f"  Benchmark: {gene_set}"))
+            print(_section_header("═" * 80))
+            for r in results:
+                tool = r.get("tool", "?")
+                gene = r.get("gene", "?")
+                cai = r.get("cai", 0.0)
+                gc = r.get("gc_content", 0.0)
+                violations = r.get("constraint_violations", "?")
+                success = r.get("success", False)
+                status = _success_msg("OK") if success else _error_msg("FAIL")
+                print(f"  {tool:<20s} {gene:<12s} CAI={cai:.4f} GC={gc:.4f} violations={violations} {status}")
+        else:
+            print(_error_msg(f"Unknown gene set: {gene_set}"), file=sys.stderr)
+            print(_dim("  Use --list-gene-sets to see available gene sets."), file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Default: run classic benchmark
+        run_benchmark(
+            enzymes=enzymes if enzymes else None,
+            splice_low=args.splice_low,
+            splice_high=args.splice_high,
+        )
+
+        compare_tools()
+
+    # Save to CSV if requested
+    if output_file:
+        try:
+            from .benchmark import run_structured_benchmarks, format_benchmark_report_json
+            report = run_structured_benchmarks()
+            import csv as csv_mod
+            with open(output_file, "w", newline="") as csvfile:
+                writer = csv_mod.writer(csvfile)
+                writer.writerow(["gene", "test", "passed", "expected", "actual", "time_ms"])
+                for r in report.results:
+                    writer.writerow([
+                        r.gene_name, r.test_name, r.passed,
+                        r.expected, r.actual, r.execution_time_ms,
+                    ])
+            print(_success_msg(f"Benchmark results saved to {output_file}"), file=sys.stderr)
+        except Exception as exc:
+            print(_error_msg(f"Error saving benchmark results: {exc}"), file=sys.stderr)
 
 
 # ── Command: scan ────────────────────────────────────────────────────────────
@@ -825,6 +934,240 @@ def cmd_assess(args: argparse.Namespace) -> None:
             print(_success_msg(f"Text report saved to {output}"), file=sys.stderr)
 
 
+# ── Command: validate-cai ─────────────────────────────────────────────────
+
+def cmd_validate_cai(args: argparse.Namespace) -> None:
+    """Validate CAI computation against published ground-truth values."""
+    organism = _get_organism(args)
+
+    try:
+        from .validation.ground_truth import GROUND_TRUTH_DATA, validate_against_ground_truth
+    except ImportError:
+        print(_error_msg("Error: validation.ground_truth module not available."), file=sys.stderr)
+        sys.exit(1)
+
+    print()
+    print(_section_header("═" * 60))
+    print(_section_header("  CAI Validation Against Published Values"))
+    print(_section_header("═" * 60))
+    print(f"  Organism : {organism}")
+    print()
+
+    # Filter entries by organism
+    entries = [e for e in GROUND_TRUTH_DATA if e.organism == organism]
+    if not entries:
+        available = sorted(set(e.organism for e in GROUND_TRUTH_DATA))
+        print(_error_msg(f"No ground-truth entries for organism '{organism}'."))
+        print(_dim(f"  Available organisms: {', '.join(available)}"))
+        sys.exit(1)
+
+    all_pass = True
+    for entry in entries:
+        result = validate_against_ground_truth(
+            optimized_sequence=entry.published_sequence,
+            gene_name=entry.gene_name,
+            organism=entry.organism,
+        )
+        status = _success_msg("PASS") if result.matches_expected else _error_msg("FAIL")
+        print(f"  {entry.gene_name:<15s} {status}")
+        print(f"    CAI diff: {result.cai_difference:.4f}, GC diff: {result.gc_difference:.4f}")
+        if not result.matches_expected:
+            all_pass = False
+
+    print()
+    if all_pass:
+        print(_summary_box("CAI Validation", _verdict_symbol("PASS")))
+    else:
+        print(_summary_box("CAI Validation", _verdict_symbol("FAIL")))
+
+
+# ── Command: validate-maxentscan ──────────────────────────────────────────
+
+def cmd_validate_maxentscan(args: argparse.Namespace) -> None:
+    """Validate MaxEntScan scoring against published splice-site scores."""
+    try:
+        from .maxentscan import score_donor, score_acceptor, max_donor_score, max_acceptor_score
+    except ImportError:
+        print(_error_msg("Error: maxentscan module not available."), file=sys.stderr)
+        sys.exit(1)
+
+    # Known canonical donor / acceptor sequences with their published
+    # MaxEntScan scores (Yeo & Burge 2004, Table 1 representative values).
+    # These are well-characterized splice-site 9-mers / 23-mers.
+    donor_tests = [
+        # (9-mer, position of G in GT, expected score range)
+        ("CAGGTAAGT", 3, (3.0, 12.0)),   # Strong canonical donor
+        ("AAGGTGAGT", 2, (3.0, 12.0)),   # Canonical donor
+        ("TTGGTAAAT", 2, (0.0, 8.0)),    # Weaker donor
+    ]
+
+    acceptor_tests = [
+        # (23-mer, position of A in AG, expected score range)
+        # Typical strong acceptor: polypyrimidine tract + CAG
+        ("TTTTTTTTTTTTTTTTTTTTCAGG", 20, (3.0, 14.0)),
+        ("CCCCCCCCCCCCCCCCCCCCCAGA", 20, (0.0, 10.0)),
+    ]
+
+    print()
+    print(_section_header("═" * 60))
+    print(_section_header("  MaxEntScan Validation"))
+    print(_section_header("═" * 60))
+    print()
+
+    all_pass = True
+
+    # Donor validation
+    print(_section_header("  Donor Site Scoring"))
+    for seq, pos, (lo, hi) in donor_tests:
+        score = score_donor(seq, pos)
+        in_range = lo <= score <= hi
+        status = _success_msg("PASS") if in_range else _error_msg("FAIL")
+        print(f"  {seq}  pos={pos}  score={score:.2f}  expected=[{lo},{hi}]  {status}")
+        if not in_range:
+            all_pass = False
+
+    # Acceptor validation
+    print()
+    print(_section_header("  Acceptor Site Scoring"))
+    for seq, pos, (lo, hi) in acceptor_tests:
+        score = score_acceptor(seq, pos)
+        in_range = lo <= score <= hi
+        status = _success_msg("PASS") if in_range else _error_msg("FAIL")
+        print(f"  {seq[:10]}...  pos={pos}  score={score:.2f}  expected=[{lo},{hi}]  {status}")
+        if not in_range:
+            all_pass = False
+
+    # Edge-case validation: impossible scores for non-sites
+    print()
+    print(_section_header("  Edge-Case Validation"))
+    # Non-GT site at the donor position should return a very low score
+    non_donor_score = score_donor("CAGATACGT", 3)
+    non_donor_ok = non_donor_score < 3.0
+    status = _success_msg("PASS") if non_donor_ok else _error_msg("FAIL")
+    print(f"  Non-donor (no GT)  score={non_donor_score:.2f}  expected<3.0  {status}")
+    if not non_donor_ok:
+        all_pass = False
+
+    print()
+    if all_pass:
+        print(_summary_box("MaxEntScan Validation", _verdict_symbol("PASS")))
+    else:
+        print(_summary_box("MaxEntScan Validation", _verdict_symbol("FAIL")))
+
+
+# ── Command: whatif ───────────────────────────────────────────────────────
+
+def cmd_whatif(args: argparse.Namespace) -> None:
+    """Run what-if analysis on a protein sequence."""
+    protein = _resolve_protein(args)
+    organism = _get_organism(args)
+
+    print()
+    print(_section_header("═" * 60))
+    print(_section_header("  What-If Analysis"))
+    print(_section_header("═" * 60))
+    print(f"  Protein length : {len(protein)} aa")
+    print(f"  Organism       : {organism}")
+    print()
+
+    # 1. Codon optimization what-if
+    try:
+        from .optimization import optimize_sequence
+        with _ProgressStep("Running codon optimization what-if",
+                            verbose=getattr(args, "verbose", False)):
+            opt_result = optimize_sequence(
+                target_protein=protein,
+                organism=organism,
+            )
+        print(_section_header("  Codon Optimization What-If"))
+        print(f"  CAI            : {getattr(opt_result, 'cai', 'N/A')}")
+        print(f"  GC content     : {getattr(opt_result, 'gc_content', 'N/A')}")
+        print(f"  Fallback used  : {getattr(opt_result, 'fallback_used', False)}")
+        satisfied = getattr(opt_result, 'satisfied_predicates', [])
+        failed = getattr(opt_result, 'failed_predicates', [])
+        print(f"  Satisfied      : {len(satisfied)} predicates")
+        print(f"  Failed         : {len(failed)} predicates")
+        if failed:
+            print(f"  Failed list    : {', '.join(failed)}")
+        print()
+    except ImportError:
+        print(_dim("  Codon optimization module not available; skipping."))
+        print()
+
+    # 2. Stability what-if
+    try:
+        from .foldx import empirical_stability
+        with _ProgressStep("Running stability what-if",
+                            verbose=getattr(args, "verbose", False)):
+            stab_result = empirical_stability(protein, organism=organism)
+        dg = getattr(stab_result, "delta_g", None)
+        print(_section_header("  Stability What-If"))
+        print(f"  ΔG (kcal/mol)  : {dg if dg is not None else 'N/A'}")
+        print()
+    except ImportError:
+        print(_dim("  Stability module not available; skipping."))
+        print()
+
+    # 3. Solubility what-if
+    try:
+        from .camsol import compute_solubility
+        with _ProgressStep("Running solubility what-if",
+                            verbose=getattr(args, "verbose", False)):
+            sol_result = compute_solubility(protein, organism=organism)
+        camsol_score = getattr(sol_result, "camsol_score", None)
+        agg_regions = getattr(sol_result, "aggregation_prone_regions", [])
+        print(_section_header("  Solubility What-If"))
+        print(f"  CamSol score   : {camsol_score if camsol_score is not None else 'N/A'}")
+        print(f"  Agg-prone regions: {len(agg_regions)}")
+        print()
+    except ImportError:
+        print(_dim("  Solubility module not available; skipping."))
+        print()
+
+    # 4. Immunogenicity what-if
+    try:
+        from .immunogenicity import compute_immunogenicity
+        with _ProgressStep("Running immunogenicity what-if",
+                            verbose=getattr(args, "verbose", False)):
+            imm_result = compute_immunogenicity(protein, organism=organism)
+        imm_score = getattr(imm_result, "immunogenicity_score", None)
+        epitopes = getattr(imm_result, "epitopes", [])
+        print(_section_header("  Immunogenicity What-If"))
+        print(f"  Score          : {imm_score if imm_score is not None else 'N/A'}")
+        print(f"  Epitopes found : {len(epitopes)}")
+        print()
+    except ImportError:
+        print(_dim("  Immunogenicity module not available; skipping."))
+        print()
+
+    # 5. Literature validation what-if
+    try:
+        from .literature_validation import evaluate_case, ALL_LITERATURE_CASES
+        # Find matching cases for this protein
+        matching = [c for c in ALL_LITERATURE_CASES
+                     if c.sequence_type == "protein" and c.sequence.strip().upper() == protein.upper()]
+        if matching:
+            print(_section_header("  Literature Validation What-If"))
+            print(f"  Matching literature cases: {len(matching)}")
+            for case in matching:
+                result = evaluate_case(case)
+                tp = "TP" if result.true_positive else ""
+                fn = "FN" if result.false_negative else ""
+                fp = "FP" if result.false_positive else ""
+                tn = "TN" if result.true_negative else ""
+                cls = tp or fn or fp or tn or "?"
+                print(f"    {case.case_id}: {case.name[:50]}  [{cls}]")
+            print()
+        else:
+            print(_dim("  No matching literature cases for this protein sequence."))
+            print()
+    except ImportError:
+        print(_dim("  Literature validation module not available; skipping."))
+        print()
+
+    print(_summary_box("What-If Complete", _verdict_symbol("PASS")))
+
+
 # ── Argument parser ──────────────────────────────────────────────────────────
 
 def _add_protein_args(parser: argparse.ArgumentParser) -> None:
@@ -901,6 +1244,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed", type=int, default=None, metavar="INT",
         help="Deterministic seed for reproducible optimization (default: None)",
     )
+    opt_parser.add_argument(
+        "--provenance", action="store_true", default=False,
+        help="Track provenance and save decision trail as JSON",
+    )
 
     # ── check ──
     check_parser = subparsers.add_parser(
@@ -932,7 +1279,19 @@ def build_parser() -> argparse.ArgumentParser:
     # ── benchmark ──
     bench_parser = subparsers.add_parser(
         "benchmark",
-        help="Run built-in benchmarks (eGFP, mCherry, LacZ)",
+        help="Run built-in benchmarks (eGFP, mCherry, LacZ) or named gene sets",
+    )
+    bench_parser.add_argument(
+        "--gene-set", metavar="NAME",
+        help="Named gene set to benchmark (e.g., HUMAN_THERAPEUTIC, REFERENCE_GENES, GENE_PANEL)",
+    )
+    bench_parser.add_argument(
+        "--list-gene-sets", action="store_true",
+        help="List available gene sets and exit",
+    )
+    bench_parser.add_argument(
+        "--output", metavar="FILE",
+        help="Save benchmark results to CSV file",
     )
     bench_parser.add_argument(
         "--enzymes", default="",
@@ -963,6 +1322,34 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument(
         "--enzymes", default="",
         help="Comma-separated restriction enzymes to scan for",
+    )
+
+    # ── explain ──
+    explain_parser = subparsers.add_parser(
+        "explain",
+        help="Explain why a specific codon was chosen in a previous optimization",
+    )
+    explain_parser.add_argument(
+        "file",
+        help="Provenance JSON file from a previous optimization",
+    )
+    explain_parser.add_argument(
+        "--position", type=int, required=True, metavar="INT",
+        help="0-based nucleotide position to explain",
+    )
+
+    # ── report ──
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Generate provenance report from saved trail",
+    )
+    report_parser.add_argument(
+        "file",
+        help="Provenance JSON file from a previous optimization",
+    )
+    report_parser.add_argument(
+        "--format", default="text", choices=["text", "markdown", "json"],
+        help="Output format (default: text)",
     )
 
     # ── serve ──
@@ -1120,7 +1507,162 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show timing information",
     )
 
+    # ── validate-cai ──
+    vcai_parser = subparsers.add_parser(
+        "validate-cai",
+        help="Validate CAI against published ground-truth values",
+        description="Validate BioCompiler's CAI computation by comparing against "
+                    "published codon-optimized sequences and their reported CAI values.",
+    )
+    vcai_parser.add_argument(
+        "--organism", metavar="TEXT", default="Escherichia_coli",
+        help="Organism to validate (default: Escherichia_coli)",
+    )
+
+    # ── validate-maxentscan ──
+    vmes_parser = subparsers.add_parser(
+        "validate-maxentscan",
+        help="Validate MaxEntScan scores against published values",
+        description="Validate BioCompiler's MaxEntScan splice-site scoring by "
+                    "comparing against known canonical and non-canonical splice sites.",
+    )
+
+    # ── whatif ──
+    whatif_parser = subparsers.add_parser(
+        "whatif",
+        help="Run what-if analysis on a protein sequence",
+        description="Run a comprehensive what-if analysis: codon optimization, "
+                    "stability, solubility, and immunogenicity predictions for a "
+                    "given protein sequence.",
+    )
+    _add_protein_args(whatif_parser)
+    whatif_parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Show timing information",
+    )
+
     return parser
+
+
+# ── Command: explain ───────────────────────────────────────────────────────
+
+def cmd_explain(args: argparse.Namespace) -> None:
+    """Explain why a specific codon was chosen in a previous optimization."""
+    from .provenance import ProvenanceTracker
+
+    if not os.path.isfile(args.file):
+        print(_error_msg(f"Error: File not found: {args.file}"), file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.file, "r") as f:
+        data = json.load(f)
+
+    tracker = ProvenanceTracker.from_dict(data)
+    position = args.position
+
+    decisions = tracker.get_decisions_for_position(position)
+
+    print()
+    print(_section_header("═" * 60))
+    print(_section_header("  Provenance Explanation"))
+    print(_section_header("═" * 60))
+    print(f"  Position:  {position}")
+    print(f"  File:      {args.file}")
+    print()
+
+    if not decisions:
+        print(_dim(f"  No decisions recorded for position {position}."))
+        print(_dim("  This may indicate the position was not modified during optimization"))
+        print(_dim("  or provenance tracking was not enabled for that position."))
+    else:
+        print(_section_header(f"  Decisions at position {position}"))
+        print(f"  {'Type':<22s}  {'Chosen':<10s}  {'Alternatives':<30s}")
+        print(f"  {'─' * 22}  {'─' * 10}  {'─' * 30}")
+        for d in decisions:
+            alts = ", ".join(d.alternatives_considered[:5])
+            if len(d.alternatives_considered) > 5:
+                alts += f" (+{len(d.alternatives_considered) - 5} more)"
+            print(f"  {d.decision_type:<22s}  {d.chosen_value:<10s}  {alts}")
+        print()
+        print(_section_header("  Rationale"))
+        for d in decisions:
+            print(f"  [{d.decision_type}] {d.rationale}")
+            if d.constraint_context:
+                ctx_parts = [f"{k}={v}" for k, v in d.constraint_context.items()]
+                print(_dim(f"    Context: {', '.join(ctx_parts)}"))
+
+    print()
+
+
+# ── Command: report ────────────────────────────────────────────────────────
+
+def cmd_report(args: argparse.Namespace) -> None:
+    """Generate provenance report from saved trail."""
+    from .provenance import ProvenanceTracker, generate_provenance_report
+
+    if not os.path.isfile(args.file):
+        print(_error_msg(f"Error: File not found: {args.file}"), file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.file, "r") as f:
+        data = json.load(f)
+
+    tracker = ProvenanceTracker.from_dict(data)
+    records = tracker.get_optimization_records()
+    fmt = getattr(args, "format", "text") or "text"
+
+    print()
+    print(_section_header("═" * 60))
+    print(_section_header("  Provenance Report"))
+    print(_section_header("═" * 60))
+    print(f"  Source:      {args.file}")
+    print(f"  Seed:        {tracker.seed}")
+    print(f"  Decisions:   {len(tracker.get_full_audit_trail())}")
+    print(f"  Opt records: {len(records)}")
+    print()
+
+    if fmt == "json":
+        print(json.dumps(data, indent=2, sort_keys=True))
+    elif fmt == "markdown":
+        # Generate markdown report
+        print("# BioCompiler Provenance Report\n")
+        print(f"- **Source file**: `{args.file}`")
+        print(f"- **Seed**: {tracker.seed}")
+        print(f"- **Decisions recorded**: {len(tracker.get_full_audit_trail())}")
+        print(f"- **Optimization runs**: {len(records)}\n")
+        for idx, rec in enumerate(records, 1):
+            print(f"## Run {idx}\n")
+            print(f"| Field | Value |")
+            print(f"|-------|-------|")
+            print(f"| Timestamp | {rec.timestamp} |")
+            print(f"| Organism | {rec.organism} |")
+            print(f"| Solver | {rec.solver_backend} |")
+            print(f"| Seed | {rec.seed_used} |")
+            print(f"| Solve time | {rec.solve_time:.3f}s |")
+            print(f"| Version | {rec.biocompiler_version} |")
+            print(f"| Input length | {len(rec.input_sequence)} |")
+            print(f"| Output length | {len(rec.output_sequence)} |")
+            print(f"| Mutations | {', '.join(rec.mutations_made) or '(none)'} |")
+            print(f"| Constraints | {', '.join(rec.constraints_applied) or '(none)'} |")
+            print()
+        # Decision trail table
+        trail = tracker.get_full_audit_trail()
+        if trail:
+            print("## Decision Trail\n")
+            print("| # | Type | Position | Chosen | Alternatives | Rationale |")
+            print("|---|------|----------|--------|-------------|-----------|")
+            for i, d in enumerate(trail, 1):
+                alts = ", ".join(d.alternatives_considered[:3])
+                if len(d.alternatives_considered) > 3:
+                    alts += "..."
+                # Escape pipes in rationale for markdown
+                rationale = d.rationale.replace("|", "\\|")
+                print(f"| {i} | {d.decision_type} | {d.position} | {d.chosen_value} | {alts} | {rationale} |")
+            print()
+    else:
+        # Text format
+        report_text = generate_provenance_report(records)
+        print(report_text)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -1154,6 +1696,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         cmd_immunogenicity(args)
     elif args.command == "assess":
         cmd_assess(args)
+    elif args.command == "validate-cai":
+        cmd_validate_cai(args)
+    elif args.command == "validate-maxentscan":
+        cmd_validate_maxentscan(args)
+    elif args.command == "explain":
+        cmd_explain(args)
+    elif args.command == "report":
+        cmd_report(args)
+    elif args.command == "whatif":
+        cmd_whatif(args)
     else:
         parser.print_help()
         sys.exit(1)
