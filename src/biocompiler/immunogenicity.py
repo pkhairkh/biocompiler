@@ -82,7 +82,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from typing import List, Optional
+from typing import List, Optional, TypedDict
 
 from .constants import BLOSUM62, DEFAULT_MHC_PEPTIDE_LENGTH, HYDROPATHY, STANDARD_AAS
 
@@ -102,6 +102,8 @@ __all__ = [
     "ImmunogenicityResult",
     "EpitopeRegion",
     "EpitopePredictionResult",
+    "TCellEpitopeDict",
+    "BCellEpitopeDict",
     "DEFAULT_MHC_I_ALLELES",
     "DEFAULT_MHC_II_ALLELES",
     "POPULATION_COVERAGE",
@@ -137,6 +139,32 @@ __all__ = [
     "IMMUNOGENICITY_NETMHCPAN_AUC_ROC_LOW",
     "IMMUNOGENICITY_NETMHCPAN_AUC_ROC_HIGH",
     "IMMUNOGENICITY_BCELL_AUC_ROC",
+    # Binding classification thresholds (nM)
+    "IC50_STRONG_BINDER_THRESHOLD",
+    "IC50_MODERATE_BINDER_THRESHOLD",
+    "IC50_WEAK_BINDER_THRESHOLD",
+    # IC50 mapping constants
+    "IC50_LOG_INTERCEPT",
+    "IC50_LOG_SLOPE",
+    # PSSM scoring constants
+    "PSSM_UNKNOWN_AA_SCORE",
+    "PSSM_CONTRAST_POWER",
+    # Hydrophobicity normalization
+    "HYDROPHOBICITY_OFFSET",
+    "HYDROPHOBICITY_RANGE",
+    # Immunogenicity scoring weights
+    "T_CELL_WEIGHT",
+    "B_CELL_WEIGHT",
+    # Immunogenicity classification thresholds
+    "IMMUNOGENICITY_LOW_THRESHOLD",
+    "IMMUNOGENICITY_HIGH_THRESHOLD",
+    # Deimmunization limits
+    "MAX_DEIMMUNIZATION_CANDIDATES",
+    # MHC-II core peptide length
+    "MHC_II_CORE_LENGTH",
+    # Conformational epitope constants
+    "CONF_EPITOPE_NEIGHBOR_CUTOPT_ANGSTROM",
+    "CONF_EPITOPE_MAX_NEIGHBORS",
 ]
 
 logger = logging.getLogger(__name__)
@@ -162,6 +190,73 @@ IMMUNOGENICITY_NETMHCPAN_AUC_ROC_HIGH: float = 0.95
 #: Expected AUC-ROC for B-cell epitope prediction (classical scales)
 #: Linear epitope methods typically perform poorly
 IMMUNOGENICITY_BCELL_AUC_ROC: float = 0.60
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MHC binding classification & scoring constants
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: IC50 threshold (nM) for strong binder classification
+IC50_STRONG_BINDER_THRESHOLD: float = 50.0
+
+#: IC50 threshold (nM) for moderate binder classification
+IC50_MODERATE_BINDER_THRESHOLD: float = 500.0
+
+#: IC50 threshold (nM) for weak binder classification
+IC50_WEAK_BINDER_THRESHOLD: float = 5000.0
+
+#: Log-linear IC50 mapping intercept (IC50 = 10^(intercept - slope * score))
+IC50_LOG_INTERCEPT: float = 3.949
+
+#: Log-linear IC50 mapping slope
+IC50_LOG_SLOPE: float = 2.5
+
+#: Default PSSM score for amino acids not present in a position row
+PSSM_UNKNOWN_AA_SCORE: float = 0.3
+
+#: Power exponent applied to normalised PSSM score to increase contrast
+PSSM_CONTRAST_POWER: float = 2.0
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Hydrophobicity & immunogenicity scoring constants
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Offset used to normalise hydrophobicity scores to [0, 1]
+HYDROPHOBICITY_OFFSET: float = 4.5
+
+#: Range divisor used to normalise hydrophobicity scores to [0, 1]
+HYDROPHOBICITY_RANGE: float = 9.0
+
+#: Weight of T-cell epitope contribution in overall immunogenicity score
+T_CELL_WEIGHT: float = 0.6
+
+#: Weight of B-cell epitope contribution in overall immunogenicity score
+B_CELL_WEIGHT: float = 0.4
+
+#: Overall immunogenicity score below which risk class is "low"
+IMMUNOGENICITY_LOW_THRESHOLD: float = 0.3
+
+#: Overall immunogenicity score at or above which risk class is "high"
+IMMUNOGENICITY_HIGH_THRESHOLD: float = 0.6
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Deimmunization & MHC-II constants
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Maximum number of deimmunization mutation candidates to return
+MAX_DEIMMUNIZATION_CANDIDATES: int = 200
+
+#: Core peptide length for MHC-II binding prediction (9-mer core)
+MHC_II_CORE_LENGTH: int = 9
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Conformational epitope prediction constants
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: C-alpha neighbor distance cutoff (Angstrom) for surface residue identification
+CONF_EPITOPE_NEIGHBOR_CUTOPT_ANGSTROM: float = 12.0
+
+#: Maximum C-alpha neighbors before a residue is classified as buried
+CONF_EPITOPE_MAX_NEIGHBORS: int = 15
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Amino-acid constants — derived from shared constants.py
@@ -593,6 +688,29 @@ def clear_cache() -> None:
 
 
 @dataclass
+class TCellEpitopeDict(TypedDict, total=False):
+    """Structured type for T-cell epitope prediction results."""
+
+    start: int
+    end: int
+    peptide: str
+    score: float
+    allele: str
+    binding_class: str
+
+
+class BCellEpitopeDict(TypedDict, total=False):
+    """Structured type for B-cell epitope prediction results (backward-compat)."""
+
+    start: int
+    end: int
+    peptide: str
+    score: float
+    method: str
+    antigenic: bool
+
+
+@dataclass
 class MHCBindingResult:
     """Result of a single peptide-MHC binding prediction."""
 
@@ -719,7 +837,7 @@ def score_peptide_pssm(
     for i, aa in enumerate(peptide):
         aa_upper = aa.upper()
         if aa_upper not in pssm[i]:
-            scores.append(0.3)
+            scores.append(PSSM_UNKNOWN_AA_SCORE)
         else:
             scores.append(pssm[i][aa_upper])
 
@@ -743,8 +861,7 @@ def score_peptide_pssm(
     raw = (geo_mean - min_geo_mean) / (max_geo_mean - min_geo_mean)
     raw = max(0.0, min(1.0, raw))
 
-    CONTRAST_POWER = 2.0
-    normalised = raw ** CONTRAST_POWER
+    normalised = raw ** PSSM_CONTRAST_POWER
 
     return max(0.0, min(1.0, normalised))
 
@@ -764,13 +881,13 @@ def binding_score_to_ic50(score: float) -> float:
 
     Notes
     -----
-    Effective formula: IC50 = 10 ** (3.949 - 2.5 * score), calibrated so:
+    Effective formula: IC50 = 10 ** (IC50_LOG_INTERCEPT - IC50_LOG_SLOPE * score), calibrated so:
       - score ~0.9 -> ~50 nM (strong)
       - score ~0.5 -> ~500 nM (moderate)
       - score ~0.1 -> ~5000 nM (weak)
     """
     clamped = max(0.0, min(1.0, score))
-    return 10.0 ** (3.949 - 2.5 * clamped)
+    return 10.0 ** (IC50_LOG_INTERCEPT - IC50_LOG_SLOPE * clamped)
 
 
 def classify_binding(ic50: float) -> str:
@@ -787,11 +904,11 @@ def classify_binding(ic50: float) -> str:
         One of ``"strong_binder"``, ``"moderate_binder"``,
         ``"weak_binder"``, ``"non_binder"``.
     """
-    if ic50 < 50:
+    if ic50 < IC50_STRONG_BINDER_THRESHOLD:
         return "strong_binder"
-    elif ic50 <= 500:
+    elif ic50 <= IC50_MODERATE_BINDER_THRESHOLD:
         return "moderate_binder"
-    elif ic50 <= 5000:
+    elif ic50 <= IC50_WEAK_BINDER_THRESHOLD:
         return "weak_binder"
     else:
         return "non_binder"
@@ -1080,8 +1197,6 @@ def predict_mhc_ii_binding(
     if cache_key in _prediction_cache:
         return _prediction_cache[cache_key]
 
-    core_length = 9
-
     results: list[MHCBindingResult] = []
     mhc_ii_pssms = _get_mhc_ii_pssms()
 
@@ -1091,11 +1206,11 @@ def predict_mhc_ii_binding(
             logger.debug("No PSSM for allele %s — skipping", allele)
             continue
 
-        if len(pssm) != core_length:
+        if len(pssm) != MHC_II_CORE_LENGTH:
             logger.debug(
                 "PSSM length %d != core length %d for %s — skipping",
                 len(pssm),
-                core_length,
+                MHC_II_CORE_LENGTH,
                 allele,
             )
             continue
@@ -1107,11 +1222,11 @@ def predict_mhc_ii_binding(
                 continue
 
             best_score = 0.0
-            best_core = peptide[:core_length]
+            best_core = peptide[:MHC_II_CORE_LENGTH]
             best_core_offset = 0
 
-            for core_start in range(peptide_length - core_length + 1):
-                core = peptide[core_start : core_start + core_length]
+            for core_start in range(peptide_length - MHC_II_CORE_LENGTH + 1):
+                core = peptide[core_start : core_start + MHC_II_CORE_LENGTH]
                 score = score_peptide_pssm(core, pssm)
                 if score > best_score:
                     best_score = score
@@ -1265,7 +1380,7 @@ def _peptide_hydrophobicity_score(peptide: str) -> float:
     if not core:
         return 0.0
     avg_hydro = sum(HYDROPATHY.get(aa, 0.0) for aa in core) / len(core)
-    normalised = (avg_hydro + 4.5) / 9.0
+    normalised = (avg_hydro + HYDROPHOBICITY_OFFSET) / HYDROPHOBICITY_RANGE
     return max(0.0, min(1.0, normalised))
 
 
@@ -1311,7 +1426,7 @@ def predict_t_cell_epitopes(
     protein: str,
     mhc_alleles: list[str] | None = None,
     peptide_length: int = DEFAULT_MHC_PEPTIDE_LENGTH,
-) -> list[dict]:
+) -> list[TCellEpitopeDict]:
     """Predict T-cell epitopes in a protein sequence.
 
     Uses PSSM-based scoring for MHC-I (9-mers) and MHC-II
@@ -1330,7 +1445,7 @@ def predict_t_cell_epitopes(
 
     Returns
     -------
-    list[dict]
+    list[TCellEpitopeDict]
         Each dict contains: start, end, peptide, score, allele,
         binding_class.
     """
@@ -1349,33 +1464,33 @@ def predict_t_cell_epitopes(
         mhc_i_alleles = DEFAULT_MHC_I_ALLELES
         mhc_ii_alleles = DEFAULT_MHC_II_ALLELES
 
-    epitopes: list[dict] = []
+    epitopes: list[TCellEpitopeDict] = []
 
     # MHC-I predictions
     if mhc_i_alleles:
         mhc_i_results = predict_mhc_i_binding(protein, mhc_i_alleles, peptide_length)
         for r in mhc_i_results:
-            epitopes.append({
-                "start": r.start_position,
-                "end": r.end_position + 1,  # exclusive
-                "peptide": r.peptide,
-                "score": round(r.binding_score, 4),
-                "allele": r.allele,
-                "binding_class": r.binding_class,
-            })
+            epitopes.append(TCellEpitopeDict(
+                start=r.start_position,
+                end=r.end_position + 1,  # exclusive
+                peptide=r.peptide,
+                score=round(r.binding_score, 4),
+                allele=r.allele,
+                binding_class=r.binding_class,
+            ))
 
     # MHC-II predictions
     if mhc_ii_alleles:
         mhc_ii_results = predict_mhc_ii_binding(protein, mhc_ii_alleles)
         for r in mhc_ii_results:
-            epitopes.append({
-                "start": r.start_position,
-                "end": r.end_position + 1,  # exclusive
-                "peptide": r.peptide,
-                "score": round(r.binding_score, 4),
-                "allele": r.allele,
-                "binding_class": r.binding_class,
-            })
+            epitopes.append(TCellEpitopeDict(
+                start=r.start_position,
+                end=r.end_position + 1,  # exclusive
+                peptide=r.peptide,
+                score=round(r.binding_score, 4),
+                allele=r.allele,
+                binding_class=r.binding_class,
+            ))
 
     epitopes.sort(key=lambda e: e["score"], reverse=True)
     return epitopes
@@ -1920,7 +2035,10 @@ def predict_conformational_epitopes(
             x = float(line[30:38].strip())
             y = float(line[38:46].strip())
             z = float(line[46:54].strip())
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as exc:
+            logger.debug(
+                "Skipping malformed PDB ATOM line (resnum/coords): %s", exc,
+            )
             continue
 
         resname = line[17:20].strip() if len(line) >= 20 else ""
@@ -1934,9 +2052,6 @@ def predict_conformational_epitopes(
         )
         return []
 
-    neighbor_cutoff = 12.0
-    max_neighbors = 15
-
     surface_indices: set[int] = set()
     for i, (_, xi, yi, zi, _) in enumerate(ca_atoms):
         neighbors = 0
@@ -1944,11 +2059,11 @@ def predict_conformational_epitopes(
             if i == j:
                 continue
             dist_sq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
-            if dist_sq <= neighbor_cutoff ** 2:
+            if dist_sq <= CONF_EPITOPE_NEIGHBOR_CUTOPT_ANGSTROM ** 2:
                 neighbors += 1
-                if neighbors >= max_neighbors:
+                if neighbors >= CONF_EPITOPE_MAX_NEIGHBORS:
                     break
-        if neighbors < max_neighbors:
+        if neighbors < CONF_EPITOPE_MAX_NEIGHBORS:
             surface_indices.add(i)
 
     if not surface_indices:
@@ -2279,7 +2394,7 @@ def compute_surface_accessibility_approx(protein: str) -> list[float]:
 def predict_b_cell_epitopes(
     protein: str,
     method: str = "kolaskar_tongaonkar",
-) -> list[dict]:
+) -> list[BCellEpitopeDict]:
     """Predict B-cell epitopes.
 
     .. deprecated::
@@ -2295,7 +2410,7 @@ def predict_b_cell_epitopes(
 
     Returns
     -------
-    list[dict]
+    list[BCellEpitopeDict]
         Each dict: start, end, peptide, score, antigenic.
     """
     protein = _validate_protein(protein)
@@ -2309,45 +2424,23 @@ def predict_b_cell_epitopes(
     regions = predict_kolaskar_tongaonkar(protein)
 
     # Convert EpitopeRegion objects to dicts for backward compatibility
-    result: list[dict] = []
+    result: list[BCellEpitopeDict] = []
     for r in regions:
         avg_prop = r.score
-        result.append({
-            "start": r.start,
-            "end": r.end,
-            "peptide": r.peptide,
-            "score": round(avg_prop, 4),
-            "antigenic": avg_prop >= 0.5,
-        })
+        result.append(BCellEpitopeDict(
+            start=r.start,
+            end=r.end,
+            peptide=r.peptide,
+            score=round(avg_prop, 4),
+            antigenic=avg_prop >= 0.5,
+        ))
 
     if not result:
-        # Fallback: return windows even if below threshold
-        window_size = 7
-        n = len(protein)
-        if n < window_size:
-            avg_prop = sum(ANTIGENICITY_SCALE.get(aa, 0.5) for aa in protein) / n
-            return [
-                {
-                    "start": 0,
-                    "end": n,
-                    "peptide": protein,
-                    "score": round(avg_prop, 4),
-                    "antigenic": avg_prop >= 1.0,
-                }
-            ]
-        fallback: list[dict] = []
-        for i in range(n - window_size + 1):
-            window = protein[i : i + window_size]
-            avg_prop = sum(ANTIGENICITY_SCALE.get(aa, 0.5) for aa in window) / window_size
-            fallback.append({
-                "start": i,
-                "end": i + window_size,
-                "peptide": window,
-                "score": round(avg_prop, 4),
-                "antigenic": avg_prop >= 1.0,
-            })
-        fallback.sort(key=lambda e: e["score"], reverse=True)
-        return fallback[:10]
+        logger.info(
+            "predict_b_cell_epitopes: no antigenic regions found above threshold "
+            "for protein of length %d — returning empty list",
+            len(protein),
+        )
 
     return result
 
@@ -2383,8 +2476,8 @@ class ImmunogenicityResult(BaseEngineResult):
     # Engine-specific fields
     t_cell_score: float = 0.0  # T-cell epitope contribution
     b_cell_score: float = 0.0  # B-cell epitope contribution
-    t_cell_epitopes: List[dict] = field(default_factory=list)  # predicted T-cell epitopes
-    b_cell_epitopes: List[dict] = field(default_factory=list)  # predicted B-cell epitopes
+    t_cell_epitopes: List[TCellEpitopeDict] = field(default_factory=list)  # predicted T-cell epitopes
+    b_cell_epitopes: List[BCellEpitopeDict] = field(default_factory=list)  # predicted B-cell epitopes
 
     # Override BaseEngineResult fields with defaults for convenience
     success: bool = True
@@ -2542,26 +2635,26 @@ def compute_immunogenicity(
 
         # B-cell prediction using epitope.py's predict_epitopes
         b_result = predict_epitopes(protein)
-        b_epitopes_converted: list[dict] = [
-            {
-                "start": ep.start,
-                "end": ep.end,
-                "peptide": ep.peptide,
-                "score": ep.score,
-                "method": ep.method,
-            }
+        b_epitopes_converted: list[BCellEpitopeDict] = [
+            BCellEpitopeDict(
+                start=ep.start,
+                end=ep.end,
+                peptide=ep.peptide,
+                score=ep.score,
+                method=ep.method,
+            )
             for ep in b_result.linear_epitopes
         ]
         b_cell_score = b_result.epitope_coverage
 
         # Combined score
-        overall_score = 0.6 * t_cell_score + 0.4 * b_cell_score
+        overall_score = T_CELL_WEIGHT * t_cell_score + B_CELL_WEIGHT * b_cell_score
         overall_score = max(0.0, min(1.0, overall_score))
 
         # Classification
-        if overall_score < 0.3:
+        if overall_score < IMMUNOGENICITY_LOW_THRESHOLD:
             immuno_class = "low"
-        elif overall_score < 0.6:
+        elif overall_score < IMMUNOGENICITY_HIGH_THRESHOLD:
             immuno_class = "moderate"
         else:
             immuno_class = "high"
@@ -2715,7 +2808,7 @@ def find_deimmunization_mutations(
     candidates.sort(key=lambda c: (-c.delta_score, -c.details.get("blosum62", 0)))
 
     # Limit to top candidates
-    return candidates[:200]
+    return candidates[:MAX_DEIMMUNIZATION_CANDIDATES]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2762,6 +2855,10 @@ def compute_immunogenicity_batch(
                 try:
                     result_map[idx] = future.result()
                 except Exception as exc:
+                    logger.error(
+                        "compute_immunogenicity_batch: sequence %d failed: %s",
+                        idx, exc,
+                    )
                     result_map[idx] = ImmunogenicityResult(
                         sequence=sequences[idx] if sequences[idx] else "",
                         primary_score=0.0,

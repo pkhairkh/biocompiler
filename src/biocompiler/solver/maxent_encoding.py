@@ -53,7 +53,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from itertools import product
-from typing import Optional
+from typing import Optional, TypeAlias
 
 from ..constants import AA_TO_CODONS
 from ..maxentscan import score_donor, score_acceptor
@@ -61,8 +61,50 @@ from .types import SolverConfig, SpliceConstraint, CrossCodonSpliceConstraint
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "SpliceConstraintEncoder",
+    "precompute_splice_scores",
+    "build_splice_constraint_table",
+    "quantize_maxent_scores",
+    "encode_cross_codon_splice_context",
+]
+
+# ==============================================================================
+# Named constants
+# ==============================================================================
+
+# Number of DNA bases per codon
+BASES_PER_CODON: int = 3
+
+# Donor (GT) k-mer scoring context — defines the 9-mer window around a GT site
+DONOR_CONTEXT_UPSTREAM: int = 3    # bases before GT position in k-mer window
+DONOR_CONTEXT_DOWNSTREAM: int = 8  # exclusive end offset after GT (window: [p-3, p+8))
+
+# Acceptor (AG) k-mer scoring context — defines the 23-mer window around an AG site
+ACCEPTOR_CONTEXT_UPSTREAM: int = 20   # bases before AG position in k-mer window
+ACCEPTOR_CONTEXT_DOWNSTREAM: int = 3  # exclusive end offset after AG (window: [p-20, p+3))
+
+# Scan range extensions beyond codon boundaries when searching for GT/AG
+# dinucleotides whose k-mer context might overlap with a codon position.
+# These are deliberately wider than strictly necessary to ensure no sites are missed.
+DONOR_SCAN_LEFT_PAD: int = 8    # bases left of codon_start to begin GT scan
+DONOR_SCAN_RIGHT_PAD: int = 2   # bases right of codon_end to end GT scan
+ACCEPTOR_SCAN_LEFT_PAD: int = 22  # bases left of codon_start to begin AG scan
+ACCEPTOR_SCAN_RIGHT_PAD: int = 20 # bases right of codon_end to end AG scan
+
+# Default quantization parameters for soft-constraint CSP encoding
+DEFAULT_QUANTIZE_BINS: int = 20
+DEFAULT_QUANTIZE_THRESHOLD: float = 3.0
+
 # Sentinel value used by MaxEntScan when the scoring context is out of bounds.
 _OUT_OF_BOUNDS_SCORE: float = -50.0
+
+# ==============================================================================
+# Type aliases for splice score data structures
+# ==============================================================================
+
+SpliceScoreEntry: TypeAlias = dict[str, list[tuple[int, float]]]
+SpliceScoreMap: TypeAlias = dict[tuple[int, str], SpliceScoreEntry]
 
 
 # ==============================================================================
@@ -104,7 +146,7 @@ def _build_sequence_with_codon(
 def precompute_splice_scores(
     protein: str,
     config: SolverConfig,
-) -> dict[tuple[int, str], dict]:
+) -> SpliceScoreMap:
     """Pre-compute MaxEntScan splice scores for every codon choice at every position.
 
     For each codon position *i* and each possible codon choice *c_i*, this
@@ -146,7 +188,7 @@ def precompute_splice_scores(
     """
     protein = protein.upper()
     n_codons = len(protein)
-    result: dict[tuple[int, str], dict] = {}
+    result: SpliceScoreMap = {}
 
     # Build a default sequence (highest-CAI codon per position) for context
     default_assignments: dict[int, str] = {}
@@ -167,32 +209,32 @@ def precompute_splice_scores(
             # Scan for donor sites (GT dinucleotides) in the affected range.
             # Donor 9-mer: bases [p-3, p+8). A GT at base p is affected by
             # codon i if codon i's bases [3i, 3i+3) overlap with [p-3, p+8).
-            codon_start = i * 3
-            codon_end = i * 3 + 3
+            codon_start = i * BASES_PER_CODON
+            codon_end = i * BASES_PER_CODON + BASES_PER_CODON
 
             donor_scores: list[tuple[int, float]] = []
-            gt_lo = max(0, codon_start - 8)
-            gt_hi = min(len(seq) - 1, codon_end + 2)
+            gt_lo = max(0, codon_start - DONOR_SCAN_LEFT_PAD)
+            gt_hi = min(len(seq) - 1, codon_end + DONOR_SCAN_RIGHT_PAD)
 
             for p in range(gt_lo, gt_hi):
                 if p + 1 < len(seq) and seq[p] == "G" and seq[p + 1] == "T":
                     s = score_donor(seq, p)
-                    mer_start = p - 3
-                    mer_end = p + 8
+                    mer_start = p - DONOR_CONTEXT_UPSTREAM
+                    mer_end = p + DONOR_CONTEXT_DOWNSTREAM
                     if mer_start < codon_end and mer_end > codon_start:
                         donor_scores.append((p, s))
 
             # Scan for acceptor sites (AG dinucleotides) in the affected range.
             # Acceptor 23-mer: bases [p-20, p+3), AG at base p.
             acceptor_scores: list[tuple[int, float]] = []
-            ag_lo = max(0, codon_start - 22)
-            ag_hi = min(len(seq) - 1, codon_end + 20)
+            ag_lo = max(0, codon_start - ACCEPTOR_SCAN_LEFT_PAD)
+            ag_hi = min(len(seq) - 1, codon_end + ACCEPTOR_SCAN_RIGHT_PAD)
 
             for p in range(ag_lo, ag_hi):
                 if p + 1 < len(seq) and seq[p] == "A" and seq[p + 1] == "G":
                     s = score_acceptor(seq, p)
-                    mer_start = p - 20
-                    mer_end = p + 3
+                    mer_start = p - ACCEPTOR_CONTEXT_UPSTREAM
+                    mer_end = p + ACCEPTOR_CONTEXT_DOWNSTREAM
                     if mer_start < codon_end and mer_end > codon_start:
                         acceptor_scores.append((p, s))
 
@@ -216,7 +258,7 @@ def precompute_splice_scores(
 def build_splice_constraint_table(
     protein: str,
     config: SolverConfig,
-    score_data: dict[tuple[int, str], dict],
+    score_data: SpliceScoreMap,
 ) -> list[SpliceConstraint]:
     """Build a table of forbidden codon assignments based on splice scores.
 
@@ -301,8 +343,8 @@ def build_splice_constraint_table(
 
 def quantize_maxent_scores(
     scores: list[float],
-    n_bins: int = 20,
-    threshold: float = 3.0,
+    n_bins: int = DEFAULT_QUANTIZE_BINS,
+    threshold: float = DEFAULT_QUANTIZE_THRESHOLD,
 ) -> list[int]:
     """Quantize continuous MaxEntScan scores into discrete bins for CSP encoding.
 
@@ -432,17 +474,17 @@ def encode_cross_codon_splice_context(
         codons_right = AA_TO_CODONS[aa_right]
 
         # Boundary base position: last base of codon i
-        boundary_base = i * 3 + 2
+        boundary_base = i * BASES_PER_CODON + BASES_PER_CODON - 1
 
         for cl, cr in product(codons_left, codons_right):
             # Check cross-boundary dinucleotide: last base of cl + first base of cr
-            dinuc = cl[2] + cr[0]
+            dinuc = cl[BASES_PER_CODON - 1] + cr[0]
 
             if dinuc == "GT":
                 # Build the full sequence with this pair
                 seq_list = list(default_seq)
-                seq_list[i * 3: i * 3 + 3] = list(cl)
-                seq_list[(i + 1) * 3: (i + 1) * 3 + 3] = list(cr)
+                seq_list[i * BASES_PER_CODON: i * BASES_PER_CODON + BASES_PER_CODON] = list(cl)
+                seq_list[(i + 1) * BASES_PER_CODON: (i + 1) * BASES_PER_CODON + BASES_PER_CODON] = list(cr)
                 seq = "".join(seq_list)
 
                 score = score_donor(seq, boundary_base)
@@ -450,8 +492,8 @@ def encode_cross_codon_splice_context(
 
             elif dinuc == "AG":
                 seq_list = list(default_seq)
-                seq_list[i * 3: i * 3 + 3] = list(cl)
-                seq_list[(i + 1) * 3: (i + 1) * 3 + 3] = list(cr)
+                seq_list[i * BASES_PER_CODON: i * BASES_PER_CODON + BASES_PER_CODON] = list(cl)
+                seq_list[(i + 1) * BASES_PER_CODON: (i + 1) * BASES_PER_CODON + BASES_PER_CODON] = list(cr)
                 seq = "".join(seq_list)
 
                 score = score_acceptor(seq, boundary_base)
@@ -505,7 +547,7 @@ class SpliceConstraintEncoder:
 
     protein: str
     config: SolverConfig
-    _score_cache: dict[tuple[int, str], dict] = field(default_factory=dict, repr=False)
+    _score_cache: SpliceScoreMap = field(default_factory=dict, repr=False)
     _forbidden_cache: list[SpliceConstraint] = field(default_factory=list, repr=False)
     _cross_codon_cache: list[tuple[int, str, str, bool, float]] = field(
         default_factory=list, repr=False
@@ -609,7 +651,7 @@ class SpliceConstraintEncoder:
 
     def get_scores_for_position(
         self, position: int, codon: str
-    ) -> Optional[dict]:
+    ) -> Optional[SpliceScoreEntry]:
         """Get pre-computed splice scores for a specific (position, codon) pair.
 
         Args:

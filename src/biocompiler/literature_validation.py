@@ -42,6 +42,20 @@ from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "LiteratureCase",
+    "ValidationResult",
+    "DomainReport",
+    "SCID_CASES",
+    "THALASSEMIA_CASES",
+    "AGGREGATION_CASES",
+    "IMMUNOGENICITY_CASES",
+    "ALL_LITERATURE_CASES",
+    "evaluate_case",
+    "run_literature_validation",
+    "format_literature_report",
+]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Data structures

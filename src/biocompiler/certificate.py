@@ -15,16 +15,22 @@ PstI site is still useful — the biologist can decide whether PstI is
 acceptable for their cloning workflow.
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
+
 from .types import Verdict, TypeCheckResult, Certificate, SLOTMode
 try:
     from .type_system import registry
 except ImportError:
-    # Fallback: registry not available in type_system
     registry = None
+    logging.getLogger(__name__).warning(
+        "type_system.registry not available; certificate verification will be limited"
+    )
 from .type_system import CertLevel, PredicateResult
 from .exceptions import CertificateGenerationError
 
@@ -32,37 +38,53 @@ logger = logging.getLogger(__name__)
 
 try:
     from . import __version__ as _PKG_VERSION
-    VERSION = _PKG_VERSION
+    VERSION: str = _PKG_VERSION
 except ImportError:
     VERSION = "7.2.0"
+    logger.debug("Package version not available; using fallback VERSION=%s", VERSION)
 
 try:
     from .slot_verification import is_slot_predicate
 except ImportError:
     is_slot_predicate = lambda name: False  # type: ignore[assignment]
+    logger.debug("slot_verification.is_slot_predicate not available; using no-op fallback")
+
+__all__ = [
+    "generate_certificate",
+    "verify_certificate",
+    "compute_certificate",
+    "format_certificate",
+    "VERSION",
+]
 
 # Required keys in a certificate dict for verification
-_CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}
-_PROVENANCE_REQUIRED_KEYS = {"tool", "version", "timestamp", "input_hash"}
+_CERT_REQUIRED_KEYS: frozenset[str] = frozenset({"version", "design_id", "sequence", "types", "provenance"})
+_PROVENANCE_REQUIRED_KEYS: frozenset[str] = frozenset({"tool", "version", "timestamp", "input_hash"})
 
 # Default parameter constants (avoids magic numbers)
-_DEFAULT_ORGANISM = "Homo_sapiens"
-_DEFAULT_CELL_TYPE = "HEK293T"
-_DEFAULT_GC_LO = 0.30
-_DEFAULT_GC_HI = 0.70
-_DEFAULT_CAI_THRESHOLD = 0.5
-_DEFAULT_ENZYMES = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
-_DEFAULT_CRYPTIC_SPLICE_THRESHOLD = 3.0
-_CERT_FORMAT_WIDTH = 60
+_DEFAULT_ORGANISM: str = "Homo_sapiens"
+_DEFAULT_CELL_TYPE: str = "HEK293T"
+_DEFAULT_GC_LO: float = 0.30
+_DEFAULT_GC_HI: float = 0.70
+_DEFAULT_CAI_THRESHOLD: float = 0.5
+_DEFAULT_ENZYMES: list[str] = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
+_DEFAULT_CRYPTIC_SPLICE_THRESHOLD: float = 3.0
+_CERT_FORMAT_WIDTH: int = 60
+
+# Hashing constants
+_HASH_ALGORITHM: str = "sha256"
+_HASH_TRUNCATION_LENGTH: int = 16
 
 
 def generate_certificate(
     sequence: str,
     type_results: list[TypeCheckResult],
-    input_params: dict,
+    input_params: dict[str, Any],
     require_all_pass: bool = False,
-    mutagenesis_substitutions: list[dict] | None = None,
+    mutagenesis_substitutions: list[dict[str, Any]] | None = None,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
+    solver_backend: str | None = None,
+    solver_config: dict[str, Any] | None = None,
 ) -> Certificate:
     """
     Generate a machine-checkable guarantee certificate.
@@ -85,6 +107,12 @@ def generate_certificate(
         mutagenesis_substitutions: if provided, documents AA substitutions applied
             to make the design feasible. Each dict has keys: position, from, to,
             blosum62, reason, predicate.
+        slot_mode: SLOT verification mode (CONSERVATIVE, VERIFIED, or PERMISSIVE).
+        solver_backend: name of the solver backend used (e.g. "ortools", "z3",
+            "greedy"). Recorded in provenance for reproducibility; defaults to
+            "greedy" if not specified.
+        solver_config: solver configuration dict (e.g. GC bounds, time limits).
+            Recorded in provenance for reproducibility; defaults to empty dict.
 
     Returns:
         Certificate object with all predicate results documented
@@ -103,7 +131,7 @@ def generate_certificate(
         raise CertificateGenerationError(failures)
 
     # Compute hash once
-    seq_hash = hashlib.sha256(sequence.encode()).hexdigest()
+    seq_hash = hashlib.new(_HASH_ALGORITHM, sequence.encode()).hexdigest()
 
     # Compute overall status
     n_pass = sum(1 for r in type_results if r.verdict == Verdict.PASS)
@@ -122,7 +150,7 @@ def generate_certificate(
     complete_params.setdefault("exon_boundaries", [(0, len(sequence))])
 
     # Build provenance dict
-    provenance = {
+    provenance: dict[str, Any] = {
         "tool": "BioCompiler",
         "version": VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -135,6 +163,8 @@ def generate_certificate(
             "verified": "SLOT predicates PASS when verification conditions met",
             "permissive": "SLOT predicates PASS with weaker evidence thresholds",
         }.get(slot_mode.value, "Unknown SLOT mode"),
+        "solver_backend": solver_backend or "greedy",
+        "solver_config": solver_config or {},
     }
 
     # Include mutagenesis metadata if substitutions were applied
@@ -168,11 +198,14 @@ def generate_certificate(
         provenance=provenance,
     )
     status_msg = overall_status if failures else "FULL_PASS"
-    logger.info("Certificate generated: design_id=%s... status=%s", cert.design_id[:16], status_msg)
+    logger.info(
+        "Certificate generated: design_id=%s... status=%s solver=%s",
+        cert.design_id[:_HASH_TRUNCATION_LENGTH], status_msg, provenance["solver_backend"],
+    )
     return cert
 
 
-def _validate_cert_structure(cert_dict: dict) -> list[str]:
+def _validate_cert_structure(cert_dict: dict[str, Any]) -> list[str]:
     """Validate that a certificate dict has all required fields. Returns list of issues."""
     issues: list[str] = []
     missing_keys = _CERT_REQUIRED_KEYS - set(cert_dict.keys())
@@ -193,7 +226,7 @@ def _validate_cert_structure(cert_dict: dict) -> list[str]:
 
 
 # Mapping from predicate name pattern to registry name and required kwargs
-_PREDICATE_KWARGS_MAP: dict[str, Callable[[dict], dict]] = {
+_PREDICATE_KWARGS_MAP: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "NoCrypticSplice": lambda params: {
         "known_exon_boundaries": params.get("exon_boundaries", []),
     },
@@ -220,13 +253,16 @@ _PREDICATE_KWARGS_MAP: dict[str, Callable[[dict], dict]] = {
 }
 
 
-def _resolve_predicate_name(cert_predicate_name: str) -> str | None:
+def _resolve_predicate_name(cert_predicate_name: str) -> str | None:  # noqa: PYI042 – registry may be None at runtime
     """
     Resolve a possibly parameterized predicate name from a certificate
     (e.g., 'GCInRange(0.30, 0.70)') to its registry base name (e.g., 'GCInRange').
 
     Returns None if no matching registry predicate is found.
     """
+    if registry is None:
+        logger.warning("Cannot resolve predicate name: registry is not available")
+        return None
     if cert_predicate_name in registry:
         return cert_predicate_name
     for base_name in registry.names():
@@ -235,7 +271,7 @@ def _resolve_predicate_name(cert_predicate_name: str) -> str | None:
     return None
 
 
-def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
+def verify_certificate(cert_dict: dict[str, Any], **kwargs: Any) -> tuple[str, list[str]]:
     """
     INDEPENDENTLY verify a guarantee certificate.
 
@@ -270,12 +306,12 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
     for key, val in kwargs.items():
         effective_params[key] = val
 
-    # Check 1: design_id matches SHA-256 of sequence
-    computed_hash = hashlib.sha256(seq.encode()).hexdigest()
+    # Check 1: design_id matches hash of sequence
+    computed_hash = hashlib.new(_HASH_ALGORITHM, seq.encode()).hexdigest()
     if computed_hash != cert_dict["design_id"]:
         failures.append(
-            f"design_id mismatch: computed {computed_hash[:16]}... != "
-            f"stored {cert_dict['design_id'][:16]}..."
+            f"design_id mismatch: computed {computed_hash[:_HASH_TRUNCATION_LENGTH]}... != "
+            f"stored {cert_dict['design_id'][:_HASH_TRUNCATION_LENGTH]}..."
         )
 
     # Check 2: Re-evaluate each predicate using the registry
@@ -301,6 +337,10 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
                     f"re-evaluation gives {result.verdict.value}"
                 )
         except Exception as e:
+            logger.warning(
+                "Predicate %s re-evaluation error during verification: %s",
+                predicate_name, e, exc_info=True,
+            )
             failures.append(f"Predicate {predicate_name}: re-evaluation error: {e}")
 
     # Check 3: Provenance completeness
@@ -315,8 +355,9 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
     # Determine verification status based on certificate's own overall_status
     overall = prov.get("overall_status", "FULL_PASS")
     logger.info(
-        "Certificate VERIFIED: design_id=%s... overall_status=%s",
-        cert_dict["design_id"][:16], overall
+        "Certificate VERIFIED: design_id=%s... overall_status=%s solver=%s",
+        cert_dict["design_id"][:_HASH_TRUNCATION_LENGTH], overall,
+        prov.get("solver_backend", "unknown"),
     )
     return "VERIFIED", []
 
@@ -326,7 +367,9 @@ def verify_certificate(cert_dict: dict, **kwargs) -> tuple[str, list[str]]:
 # ────────────────────────────────────────────────────────────
 # Originally in certificates.py — consolidated here.
 
-def compute_certificate(results: list[PredicateResult], slot_mode: SLOTMode = SLOTMode.CONSERVATIVE) -> CertLevel:
+def compute_certificate(
+    results: list[PredicateResult], slot_mode: SLOTMode = SLOTMode.CONSERVATIVE
+) -> CertLevel:
     """Compute certificate level from predicate results.
 
     GOLD:   All predicates satisfied by optimization alone
@@ -360,7 +403,10 @@ def compute_certificate(results: list[PredicateResult], slot_mode: SLOTMode = SL
         return CertLevel.GOLD
 
 
-def format_certificate(results: list[PredicateResult], seq: str, species: str, slot_mode: SLOTMode = SLOTMode.CONSERVATIVE) -> str:
+def format_certificate(
+    results: list[PredicateResult], seq: str, species: str,
+    slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
+) -> str:
     """Format a human-readable certificate report."""
     cert = compute_certificate(results, slot_mode)
     lines = [

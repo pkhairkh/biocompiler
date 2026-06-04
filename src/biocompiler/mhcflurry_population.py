@@ -48,6 +48,23 @@ logger = logging.getLogger(__name__)
 # Scale factor for converting phenotype frequency (%) to a fraction.
 _FREQUENCY_PERCENT_SCALE: float = 100.0
 
+# Default number of alleles selected by find_coverage_optimizing_alleles().
+_DEFAULT_OPTIMIZING_N_ALLELES: int = 6
+
+# Population key used to request a weighted global average.
+_GLOBAL_POPULATION_KEY: str = "global"
+
+# Coverage fraction bounds (returned values are clamped to this range).
+_MIN_COVERAGE_FRACTION: float = 0.0
+_MAX_COVERAGE_FRACTION: float = 1.0
+
+# Canonical non-human (mouse) MHC-I and MHC-II allele names used as a
+# safety net in _build_allele_classification().
+_MOUSE_MHC_I_ALLELES: tuple[str, ...] = (
+    "H-2-Db", "H-2-Kb", "H-2-Ld", "H-2-Dd", "H-2-Kd", "H-2-Kk",
+)
+_MOUSE_MHC_II_ALLELES: tuple[str, ...] = ("H-2-IAb", "H-2-IAd")
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Population groups
 # ═══════════════════════════════════════════════════════════════════════════
@@ -308,11 +325,11 @@ EXPANDED_POPULATION_COVERAGE: dict[str, dict[str, float]] = {
 # Format: "<class>:<source>"
 
 # PSSM alleles from immunogenicity.py
-_PSSM_MHC_I_ALLELES = [
+_PSSM_MHC_I_ALLELES: list[str] = [
     "HLA-A*02:01", "HLA-A*01:01", "HLA-A*03:01",
     "HLA-A*24:02", "HLA-B*07:02", "HLA-B*08:01",
 ]
-_PSSM_MHC_II_ALLELES = [
+_PSSM_MHC_II_ALLELES: list[str] = [
     "HLA-DRB1*01:01", "HLA-DRB1*04:01", "HLA-DRB1*07:01",
 ]
 
@@ -466,9 +483,9 @@ def _build_allele_classification() -> dict[str, str]:
 
     # Safety net: ensure non-human alleles are classified even if the
     # MHCflurry allele lists above are modified in the future.
-    for allele in ("H-2-Db", "H-2-Kb", "H-2-Ld", "H-2-Dd", "H-2-Kd", "H-2-Kk"):
+    for allele in _MOUSE_MHC_I_ALLELES:
         classification.setdefault(allele, "I:mhcflurry")
-    for allele in ("H-2-IAb", "H-2-IAd"):
+    for allele in _MOUSE_MHC_II_ALLELES:
         classification.setdefault(allele, "II:mhcflurry")
 
     return classification
@@ -501,19 +518,24 @@ def get_allele_frequency(allele: str, population: str) -> float:
     """
     pop_data = EXPANDED_POPULATION_COVERAGE.get(allele)
     if pop_data is None:
-        logger.debug("Allele %r not found in coverage data", allele)
+        logger.warning("Allele %r not found in coverage data; returning 0.0", allele)
         return 0.0
     freq = pop_data.get(population, 0.0)
-    if freq == 0.0:
+    if freq == 0.0 and population not in pop_data:
+        logger.warning(
+            "Population %r not found for allele %r; returning 0.0",
+            population, allele,
+        )
+    elif freq == 0.0:
         logger.debug(
-            "Population %r not found for allele %r", population, allele
+            "Allele %r has frequency 0.0 in population %r", allele, population
         )
     return freq
 
 
 def compute_population_coverage(
     alleles: list[str],
-    population: str = "global",
+    population: str = _GLOBAL_POPULATION_KEY,
 ) -> float:
     """Compute the fraction of a population covered by a set of alleles.
 
@@ -545,9 +567,10 @@ def compute_population_coverage(
         Estimated population coverage as a fraction in [0.0, 1.0].
     """
     if not alleles:
+        logger.debug("Empty allele list provided; returning 0.0 coverage")
         return 0.0
 
-    if population == "global":
+    if population == _GLOBAL_POPULATION_KEY:
         return _compute_global_coverage(alleles)
 
     # Single-population coverage
@@ -556,13 +579,17 @@ def compute_population_coverage(
         freq_pct = get_allele_frequency(allele, population)
         prob_not_covered *= 1.0 - freq_pct / _FREQUENCY_PERCENT_SCALE
 
-    return max(0.0, min(1.0, 1.0 - prob_not_covered))
+    return max(_MIN_COVERAGE_FRACTION, min(_MAX_COVERAGE_FRACTION, 1.0 - prob_not_covered))
 
 
 def _compute_global_coverage(alleles: list[str]) -> float:
     """Compute weighted-average global population coverage."""
     total_weight = sum(POPULATION_WEIGHTS.values())
     if total_weight <= 0:
+        logger.warning(
+            "Population weights sum to %.1f (≤ 0); returning 0.0 coverage",
+            total_weight,
+        )
         return 0.0
 
     weighted_coverage = 0.0
@@ -571,12 +598,12 @@ def _compute_global_coverage(alleles: list[str]) -> float:
         weight = POPULATION_WEIGHTS.get(pop, 0.0)
         weighted_coverage += pop_coverage * weight
 
-    return max(0.0, min(1.0, weighted_coverage / total_weight))
+    return max(_MIN_COVERAGE_FRACTION, min(_MAX_COVERAGE_FRACTION, weighted_coverage / total_weight))
 
 
 def find_coverage_optimizing_alleles(
-    n_alleles: int = 6,
-    population: str = "global",
+    n_alleles: int = _DEFAULT_OPTIMIZING_N_ALLELES,
+    population: str = _GLOBAL_POPULATION_KEY,
 ) -> list[str]:
     """Greedy selection of alleles that maximize population coverage.
 
@@ -598,6 +625,9 @@ def find_coverage_optimizing_alleles(
         coverage contribution.
     """
     if n_alleles <= 0:
+        logger.warning(
+            "n_alleles=%d is non-positive; returning empty list", n_alleles
+        )
         return []
 
     # Rank candidate alleles by frequency in the target population
@@ -605,7 +635,7 @@ def find_coverage_optimizing_alleles(
 
     # Sort by frequency (descending) in the target population
     def _freq_key(allele: str) -> float:
-        if population == "global":
+        if population == _GLOBAL_POPULATION_KEY:
             return _global_average_frequency(allele)
         return get_allele_frequency(allele, population)
 
@@ -648,6 +678,10 @@ def _global_average_frequency(allele: str) -> float:
     """Compute weighted-average frequency across all populations."""
     total_weight = sum(POPULATION_WEIGHTS.values())
     if total_weight <= 0:
+        logger.warning(
+            "Population weights sum to %.1f (≤ 0); returning 0.0 frequency",
+            total_weight,
+        )
         return 0.0
 
     weighted_freq = 0.0

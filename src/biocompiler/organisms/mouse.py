@@ -6,7 +6,7 @@ Source: Kazusa Codon Usage Database
 Coding GC: 52.25%
 """
 
-from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
 
 __all__ = [
     "MOUSE_CODON_USAGE",
@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
-MOUSE_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
+MOUSE_CODON_USAGE: CodonUsageTable = {
     "TTT": ("F", 0.46, 17.5, 420837),
     "TTC": ("F", 0.54, 20.6, 494997),
     "TTA": ("L", 0.07, 7.6, 183106),

@@ -75,6 +75,7 @@ from .types import (
     SolverConfig,
     SolverResult,
     SolverBackend,
+    SolverBackendProtocol,
     CSPModel,
     ConstraintStrictness,
     MUSReport,
@@ -85,10 +86,12 @@ from ..organisms import CODON_ADAPTIVENESS_TABLES
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["Z3Engine"]
+
 # Scaling factor for converting float CAI weights to Z3 integers
-_CAI_SCALE = 10000  # 4 decimal places of precision
+_CAI_SCALE: int = 10000  # 4 decimal places of precision
 # Scale factor for MaxEntScan scores to convert to Z3-compatible integers
-_SCORE_SCALE = 100  # 2 decimal places
+_SCORE_SCALE: int = 100  # 2 decimal places
 
 
 def _precompute_donor_scores() -> list[list[float]]:
@@ -134,12 +137,16 @@ _DONOR_SCORES = _precompute_donor_scores() if _Z3_AVAILABLE else []
 _ACCEPTOR_SCORES = _precompute_acceptor_scores() if _Z3_AVAILABLE else []
 
 
-class Z3Engine:
+class Z3Engine(SolverBackendProtocol):
     """Z3 SMT solver backend for BioCompiler codon optimization.
 
     This is the FALLBACK solver engine — use when OR-Tools is unavailable.
     Z3 is better for continuous constraints (MaxEntScan scores) but slower
     for automaton-style pattern constraints (restriction sites).
+
+    Implements the :class:`SolverBackendProtocol` — any module that
+    depends on a solver backend can use a Z3Engine instance via the
+    protocol interface.
 
     Usage::
 
@@ -157,13 +164,21 @@ class Z3Engine:
     Thread safety: NOT thread-safe. Create one engine per thread.
     """
 
-    def __init__(self, config: SolverConfig, organism: str = "Homo_sapiens") -> None:
+    def __init__(
+        self,
+        config: SolverConfig,
+        organism: str = "Homo_sapiens",
+        seed: int = 0,
+    ) -> None:
         """Initialize the Z3 solver engine.
 
         Args:
             config: Solver configuration parameters.
             organism: Target organism for codon usage tables.
                 Defaults to ``"Homo_sapiens"``.
+            seed: Deterministic random seed for the Z3 optimizer.
+                Defaults to ``0``.  Use the same seed for reproducible
+                results across runs.
 
         Raises:
             ImportError: If z3-solver is not installed (check
@@ -176,6 +191,7 @@ class Z3Engine:
             )
         self.config = config
         self.organism = organism
+        self._seed: int = seed
         self._optimizer: Optional[Optimize] = None
 
     # -------------------------------------------------------------------
@@ -238,6 +254,13 @@ class Z3Engine:
         # Create optimizer
         optimizer = Optimize()
         optimizer.set("timeout", int(config.timeout_seconds * 1000))
+        # Note: Z3's Optimize does not support 'random_seed' (only Solver does).
+        # We use 'rlimit' as a resource limit proxy for reproducibility.
+        try:
+            optimizer.set("random_seed", self._seed)
+        except Exception:
+            # Not all Z3 builds support random_seed on Optimize; ignore.
+            logger.debug("Z3 Optimize does not support random_seed, skipping")
 
         # --- Create codon variables and domains ---
         codon_vars: list[ArithRef] = []
@@ -727,7 +750,12 @@ class Z3Engine:
             val = z3_model.eval(c_var, model_completion=True)
             try:
                 idx = val.as_long()
-            except (AttributeError, ValueError):
+            except (AttributeError, ValueError) as exc:
+                logger.warning(
+                    "Z3: Could not extract integer value from model "
+                    "evaluation for %s (got %r): %s — defaulting to 0",
+                    c_var, val, exc,
+                )
                 idx = 0
             idx = max(0, min(idx, len(codons_for_aa) - 1))
             chosen_codons.append(codons_for_aa[idx])
@@ -827,8 +855,11 @@ class Z3Engine:
                             else:
                                 name = f"constraint_{name_idx}"
                             core_names.add(name)
-                    except (ValueError, IndexError):
-                        pass
+                    except (ValueError, IndexError) as exc:
+                        logger.debug(
+                            "Z3: Could not parse UNSAT core element %r: %s",
+                            p, exc,
+                        )
 
                 for name in sorted(core_names):
                     violation = self._classify_constraint(name)

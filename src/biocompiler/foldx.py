@@ -1,5 +1,5 @@
 """
-BioCompiler FoldX Stability Analysis Module v9.0.0
+BioCompiler FoldX Stability Analysis Module v9.2.0
 ====================================================
 Provides both online (FoldX CLI wrapper) and offline (empirical scoring)
 modes for protein stability analysis, mutation scanning, and stabilization.
@@ -143,6 +143,8 @@ __all__ = [
     "FOLDX_EMPIRICAL_LARGE_MAE",
     "FOLDX_EMPIRICAL_PEARSON_R",
     "FOLDX_EMPIRICAL_BIAS",
+    "POSITIVE_AAS",
+    "NEGATIVE_AAS",
 ]
 
 # ────────────────────────────────────────────────────────────
@@ -191,14 +193,62 @@ AA_VOLUME: dict[str, float] = {
 }
 
 # ΔΔG category thresholds (kcal/mol) for statistical estimation
-_STABILIZING_THRESHOLD = -0.5
-_DESTABILIZING_THRESHOLD = 0.5
+_STABILIZING_THRESHOLD: float = -0.5
+_DESTABILIZING_THRESHOLD: float = 0.5
 
 # Volume normalization factor: raw volumes are in Å³ (60–228), producing
 # |Δvolume| up to ~168.  Dividing by 100 keeps the volume term in the
 # same order of magnitude as the BLOSUM and hydropathy terms, yielding
 # physically reasonable ΔΔG estimates (roughly -1 to +6 kcal/mol).
-_VOLUME_SCALE = 100.0
+_VOLUME_SCALE: float = 100.0
+
+# Protein size thresholds (amino acids) for confidence classification
+_SMALL_PROTEIN_AA: int = 100
+_MEDIUM_PROTEIN_AA: int = 300
+
+# Stability classification thresholds (kcal/mol)
+_VERY_STABLE_THRESHOLD: float = -10.0
+_STABLE_THRESHOLD: float = -5.0
+
+# Empirical stability heuristic parameters
+_BASE_STABILITY_KCAL: float = -5.0        # base stability for a folded globular protein
+_HYDRO_OPTIMAL_LO: float = 0.35           # optimal hydrophobic fraction lower bound
+_HYDRO_OPTIMAL_HI: float = 0.45           # optimal hydrophobic fraction upper bound
+_HYDRO_PENALTY_SCALE: float = 20.0         # kcal/mol per unit deviation from optimal
+_CHARGE_PENALTY_SCALE: float = 3.0         # max kcal/mol penalty for charge imbalance
+_PROLINE_MODERATE_FRAC: float = 0.05       # below this, proline slightly stabilizing
+_PROLINE_NEUTRAL_FRAC: float = 0.08        # above this, proline increasingly destabilizing
+_PROLINE_DESTAB_SCALE: float = 15.0        # kcal/mol per fraction above neutral
+_GLYCINE_THRESHOLD_FRAC: float = 0.07      # above this, glycine is destabilizing
+_GLYCINE_DESTAB_SCALE: float = 10.0        # kcal/mol per fraction above threshold
+_DISULFIDE_STABILITY_KCAL: float = -2.0    # stabilization per disulfide bond
+_DISULFIDE_UNPAIRED_PENALTY: float = 0.5   # penalty for one unpaired cysteine
+_ALT_PATTERN_OPTIMAL_LO: float = 0.2       # alternation fraction lower bound (good helix)
+_ALT_PATTERN_OPTIMAL_HI: float = 0.35      # alternation fraction upper bound (good helix)
+_ALT_PATTERN_BONUS: float = -0.5           # stabilization for good helical pattern
+_ALT_PATTERN_EXCESS_SCALE: float = 3.0     # penalty per unit above optimal
+_LENGTH_SCALE_FACTOR: float = 100.0        # divisor in length bonus formula
+_LENGTH_BONUS_SCALE: float = 2.0           # maximum length bonus magnitude
+
+# Conservation analysis thresholds
+_TOLERATED_DDG_THRESHOLD: float = 1.0      # ΔΔG below which substitution is tolerated
+_NUM_SUBSTITUTIONS: int = 19               # number of possible AA substitutions per position
+_CRITICAL_CONSERVATION: float = 0.8         # conservation above this → critical position
+_CRITICAL_AVG_DDG: float = 3.0              # avg ΔΔG above this → critical position
+
+# Compensatory mutation search window (residues)
+_COMPENSATORY_SEARCH_WINDOW: int = 5
+
+# Empirical ΔΔG estimation coefficients (statistical formula)
+_DDG_BLOSUM_COEFF: float = -0.1            # BLOSUM62 contribution coefficient
+_DDG_HYDRO_COEFF: float = 0.5              # hydropathy change coefficient
+_DDG_VOLUME_COEFF: float = 0.3             # volume change coefficient
+
+# FoldX CLI availability check timeout (seconds)
+_FOLDX_VERSION_TIMEOUT: int = 10
+
+# PDB line minimum length for atom record parsing
+_PDB_ATOM_LINE_MIN_LEN: int = 54
 
 
 # ────────────────────────────────────────────────────────────
@@ -355,9 +405,9 @@ class FoldXResult(BaseEngineResult):
             return "high"
         # Empirical mode — confidence depends on protein size
         n = len(self.protein)
-        if n < 100:
+        if n < _SMALL_PROTEIN_AA:
             return "high"
-        elif n <= 300:
+        elif n <= _MEDIUM_PROTEIN_AA:
             return "medium"
         else:
             return "low"
@@ -388,9 +438,9 @@ def _classify_stability(stability_kcal: float, success: bool = True) -> str:
     """
     if not success:
         return "failed"
-    if stability_kcal < -10.0:
+    if stability_kcal < _VERY_STABLE_THRESHOLD:
         return "very_stable"
-    elif stability_kcal < -5.0:
+    elif stability_kcal < _STABLE_THRESHOLD:
         return "stable"
     elif stability_kcal < 0.0:
         return "marginally_stable"
@@ -455,7 +505,7 @@ class FoldXCache:
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
         return (content_hash, method)
 
-    def get(self, content: str, method: str):
+    def get(self, content: str, method: str) -> object | None:
         key = self._make_key(content, method)
         return self._store.get(key)
 
@@ -546,7 +596,7 @@ def is_foldx_available() -> bool:
             ["foldx", "--version"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_FOLDX_VERSION_TIMEOUT,
         )
         # FoldX may return non-zero for --version but still be available;
         # as long as it runs, we consider it available
@@ -1057,16 +1107,16 @@ def empirical_stability(
         # ── Heuristic a: Hydrophobic core quality ──
         hydrophobic_count = sum(1 for aa in seq if aa in HYDROPHOBIC_AAS)
         hydrophobic_frac = hydrophobic_count / n if n > 0 else 0.0
-        # Optimal range: 0.35–0.45; deviations penalized
-        if 0.35 <= hydrophobic_frac <= 0.45:
+        # Optimal range; deviations penalized
+        if _HYDRO_OPTIMAL_LO <= hydrophobic_frac <= _HYDRO_OPTIMAL_HI:
             hydro_score = 0.0
         else:
             # Quadratic penalty for deviation from optimal range
-            if hydrophobic_frac < 0.35:
-                deviation = 0.35 - hydrophobic_frac
+            if hydrophobic_frac < _HYDRO_OPTIMAL_LO:
+                deviation = _HYDRO_OPTIMAL_LO - hydrophobic_frac
             else:
-                deviation = hydrophobic_frac - 0.45
-            hydro_score = deviation * 20.0  # kcal/mol penalty
+                deviation = hydrophobic_frac - _HYDRO_OPTIMAL_HI
+            hydro_score = deviation * _HYDRO_PENALTY_SCALE
 
         # ── Heuristic b: Charge balance ──
         pos_count = sum(1 for aa in seq if aa in POSITIVE_AAS)
@@ -1077,34 +1127,34 @@ def empirical_stability(
         else:
             charge_ratio = 0.0
         # Ideal ratio is 1.0; deviation is destabilizing
-        charge_score = (1.0 - charge_ratio) * 3.0  # up to 3 kcal/mol penalty
+        charge_score = (1.0 - charge_ratio) * _CHARGE_PENALTY_SCALE
 
         # ── Heuristic c: Proline content ──
         proline_count = sum(1 for aa in seq if aa == "P")
         proline_frac = proline_count / n if n > 0 else 0.0
-        if proline_frac <= 0.05:
+        if proline_frac <= _PROLINE_MODERATE_FRAC:
             pro_score = -0.2  # slight stabilizing effect of moderate proline
-        elif proline_frac <= 0.08:
+        elif proline_frac <= _PROLINE_NEUTRAL_FRAC:
             pro_score = 0.0   # neutral
         else:
-            pro_score = (proline_frac - 0.08) * 15.0  # destabilizing above 8%
+            pro_score = (proline_frac - _PROLINE_NEUTRAL_FRAC) * _PROLINE_DESTAB_SCALE
 
         # ── Heuristic d: Glycine content ──
         glycine_count = sum(1 for aa in seq if aa == "G")
         glycine_frac = glycine_count / n if n > 0 else 0.0
-        if glycine_frac <= 0.07:
+        if glycine_frac <= _GLYCINE_THRESHOLD_FRAC:
             gly_score = 0.0
         else:
-            gly_score = (glycine_frac - 0.07) * 10.0  # destabilizing above 7%
+            gly_score = (glycine_frac - _GLYCINE_THRESHOLD_FRAC) * _GLYCINE_DESTAB_SCALE
 
         # ── Heuristic e: Cysteine pairs (disulfide bonds) ──
         cys_count = sum(1 for aa in seq if aa == "C")
         if cys_count >= 2 and cys_count % 2 == 0:
             disulfide_count = cys_count // 2
-            disulfide_score = -disulfide_count * 2.0  # each disulfide ~ -2 kcal/mol
+            disulfide_score = disulfide_count * _DISULFIDE_STABILITY_KCAL
         elif cys_count >= 2:
             # Odd number of cysteines — one unpaired, partial stabilization
-            disulfide_score = -((cys_count - 1) // 2) * 2.0 + 0.5
+            disulfide_score = -((cys_count - 1) // 2) * abs(_DISULFIDE_STABILITY_KCAL) + _DISULFIDE_UNPAIRED_PENALTY
         else:
             disulfide_score = 0.0
 
@@ -1121,21 +1171,20 @@ def empirical_stability(
                 if (is_charged_i and is_hydro_j) or (is_hydro_i and is_charged_j):
                     alternations += 1
             alt_frac = alternations / (n - 1) if n > 1 else 0.0
-            # Moderate alternation (0.2–0.35) suggests good helix content
-            if 0.2 <= alt_frac <= 0.35:
-                pattern_score = -0.5
-            elif alt_frac > 0.35:
-                pattern_score = (alt_frac - 0.35) * 3.0  # too much is bad
+            if _ALT_PATTERN_OPTIMAL_LO <= alt_frac <= _ALT_PATTERN_OPTIMAL_HI:
+                pattern_score = _ALT_PATTERN_BONUS
+            elif alt_frac > _ALT_PATTERN_OPTIMAL_HI:
+                pattern_score = (alt_frac - _ALT_PATTERN_OPTIMAL_HI) * _ALT_PATTERN_EXCESS_SCALE
 
         # ── Heuristic g: Sequence length ──
         # Longer proteins have more intramolecular contacts → more stable
         # Base stability increases logarithmically with length
-        length_bonus = -2.0 * (1.0 - 1.0 / (1.0 + n / 100.0))
+        length_bonus = -_LENGTH_BONUS_SCALE * (1.0 - 1.0 / (1.0 + n / _LENGTH_SCALE_FACTOR))
 
         # ── Combine into estimated ΔG ──
         # Typical globular protein: -5 to -15 kcal/mol
         stability_kcal = (
-            -5.0            # base stability for a folded protein
+            _BASE_STABILITY_KCAL
             + hydro_score   # positive = destabilizing
             + charge_score  # positive = destabilizing
             + pro_score     # can be stabilizing or destabilizing
@@ -1540,12 +1589,12 @@ def compute_conservation(
                 continue
             ddg = _estimate_ddg_statistical(wt, mut)
             ddgs.append(ddg)
-            if ddg < 1.0:
+            if ddg < _TOLERATED_DDG_THRESHOLD:
                 tolerated += 1
 
-        conservation = 1.0 - (tolerated / 19.0)
+        conservation = 1.0 - (tolerated / _NUM_SUBSTITUTIONS)
         avg_ddg = sum(ddgs) / len(ddgs) if ddgs else 0.0
-        critical = conservation > 0.8 or avg_ddg > 3.0
+        critical = conservation > _CRITICAL_CONSERVATION or avg_ddg > _CRITICAL_AVG_DDG
 
         scores.append(ConservationScore(
             position=pos,
@@ -1612,11 +1661,11 @@ def find_compensatory_mutations(
         if dm_pos < 0 or dm_pos >= len(protein):
             continue
 
-        # Search nearby positions (within 5 residues)
+        # Search nearby positions (within _COMPENSATORY_SEARCH_WINDOW residues)
         best_comp: dict | None = None
         best_combined = dm_ddg  # start with no compensation
 
-        for offset in range(-5, 6):
+        for offset in range(-_COMPENSATORY_SEARCH_WINDOW, _COMPENSATORY_SEARCH_WINDOW + 1):
             if offset == 0:
                 continue
             nearby = dm_pos + offset
@@ -1758,7 +1807,7 @@ def identify_hotspot_regions(
 # Internal Helpers
 # ────────────────────────────────────────────────────────────
 
-def _parse_stability_fxout(filepath: str) -> dict:
+def _parse_stability_fxout(filepath: str) -> dict[str, float]:
     """Parse a FoldX Stability .fxout file.
 
     The .fxout file has a header line with column labels followed by
@@ -1768,12 +1817,13 @@ def _parse_stability_fxout(filepath: str) -> dict:
     Returns:
         Dict with energy component keys and float values.
     """
-    result: dict = {}
+    result: dict[str, float] = {}
 
     try:
         with open(filepath) as f:
             lines = f.readlines()
-    except OSError:
+    except OSError as exc:
+        logger.warning("Could not read FoldX output file %s: %s", filepath, exc)
         return result
 
     # FoldX .fxout format: header lines start with #, data follows
@@ -1876,7 +1926,8 @@ def _parse_buildmodel_output(tmpdir: str) -> dict[str, float]:
                                         except ValueError:
                                             continue
                                     break
-            except OSError:
+            except OSError as exc:
+                logger.debug("Could not read BuildModel output file %s: %s", filepath, exc)
                 continue
 
     return ddg_values
@@ -1905,7 +1956,7 @@ def _extract_protein_from_pdb(pdb_string: str) -> str:
     for line in pdb_string.splitlines():
         if not line.startswith("ATOM"):
             continue
-        if len(line) < 54:
+        if len(line) < _PDB_ATOM_LINE_MIN_LEN:
             continue
         atom_name = line[12:16].strip()
         if atom_name != "CA":
@@ -1952,6 +2003,8 @@ def _parse_mutation_string(mut_str: str) -> tuple[str, int, str] | None:
 def _empirical_mutation_scan(
     protein: str,
     positions: list[int],
+    *,
+    window: int = 5,
 ) -> list[MutationResult]:
     """Scan mutations using empirical BLOSUM62 + hydropathy scoring.
 
@@ -1978,7 +2031,6 @@ def _empirical_mutation_scan(
 
     # Estimate which positions are "core" vs "surface" based on
     # local hydrophobicity
-    window = 5
     for pos in positions:
         wt = protein[pos]
         if wt not in BLOSUM62:
@@ -2136,7 +2188,7 @@ def _estimate_ddg_statistical(wt: str, mut: str) -> float:
     blosum = BLOSUM62.get(wt, {}).get(mut, -4)
     delta_hydro = abs(HYDROPATHY.get(wt, 0.0) - HYDROPATHY.get(mut, 0.0))
     delta_volume = abs(AA_VOLUME.get(wt, 0.0) - AA_VOLUME.get(mut, 0.0)) / _VOLUME_SCALE
-    return -0.1 * blosum + 0.5 * delta_hydro + 0.3 * delta_volume
+    return _DDG_BLOSUM_COEFF * blosum + _DDG_HYDRO_COEFF * delta_hydro + _DDG_VOLUME_COEFF * delta_volume
 
 
 def _cleanup_tempdir(tmpdir: str) -> None:
@@ -2150,8 +2202,8 @@ def _cleanup_tempdir(tmpdir: str) -> None:
             fpath = os.path.join(tmpdir, fname)
             try:
                 os.remove(fpath)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("Could not remove temp file %s: %s", fpath, exc)
         os.rmdir(tmpdir)
     except OSError:
         logger.warning("Could not clean up temp directory: %s", tmpdir)

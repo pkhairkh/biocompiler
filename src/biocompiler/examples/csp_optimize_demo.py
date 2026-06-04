@@ -149,6 +149,7 @@ def _try_solver_dispatch(protein: str) -> Optional[str]:
     try:
         from biocompiler.solver.dispatch import csp_optimize, is_csp_available
     except (ImportError, Exception):
+        logger.warning("CSP solver dispatch import failed, skipping", exc_info=True)
         return None
 
     avail = is_csp_available()
@@ -219,6 +220,7 @@ def run_csp(protein: str, protein_name: str) -> OptimizationRun:
     try:
         cai_val = compute_cai(sequence, "Homo_sapiens")
     except Exception:
+        logger.warning("CAI computation failed, defaulting to 0.0", exc_info=True)
         cai_val = 0.0
 
     # Evaluate predicates
@@ -397,6 +399,7 @@ def main() -> None:
             greedy_run = run_greedy(protein, protein_name)
             print(f"  Greedy done in {greedy_run.elapsed_s:.3f} s")
         except Exception as exc:
+            logger.error("Greedy optimizer failed for %s", protein_name, exc_info=True)
             print(f"  Greedy optimizer FAILED: {exc}")
             continue
 
@@ -406,6 +409,7 @@ def main() -> None:
             csp_run = run_csp(protein, protein_name)
             print(f"  CSP done in {csp_run.elapsed_s:.3f} s")
         except Exception as exc:
+            logger.error("CSP optimizer failed for %s", protein_name, exc_info=True)
             print(f"  CSP optimizer FAILED: {exc}")
             print(f"  Showing greedy results only.")
             print()

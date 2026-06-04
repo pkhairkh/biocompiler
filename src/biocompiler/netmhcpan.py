@@ -40,8 +40,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Dict
-
 from .constants import DEFAULT_ENGINE_TIMEOUT
 from .engine_base import validate_protein_sequence
 from .exceptions import ImmunogenicityError
@@ -60,6 +58,8 @@ __all__ = [
     "MAX_POLL_ATTEMPTS",
     "STRONG_BINDER_RANK_THRESHOLD",
     "WEAK_BINDER_RANK_THRESHOLD",
+    "MHC_II_EPITOPE_LENGTH",
+    "DEFAULT_MHC_I_EPITOPE_LENGTHS",
     "clear_cache",
     "is_netmhcpan_available",
     "predict_mhc_i_binding",
@@ -78,21 +78,40 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_URL = "https://services.healthtech.dtu.dk/cgi-bin/webface2.cgi"
 DEFAULT_MHCII_API_URL = "https://services.healthtech.dtu.dk/cgi-bin/webface2.cgi"
 DEFAULT_TIMEOUT: float = DEFAULT_ENGINE_TIMEOUT
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2.0  # seconds, doubled each attempt
-POLL_INTERVAL = 5.0  # seconds between polling for job completion
-MAX_POLL_ATTEMPTS = 120  # 120 * 5s = 10 minutes max wait
+MAX_RETRIES: int = 3
+RETRY_BASE_DELAY: float = 2.0  # seconds, doubled each attempt
+POLL_INTERVAL: float = 5.0  # seconds between polling for job completion
+MAX_POLL_ATTEMPTS: int = 120  # 120 * 5s = 10 minutes max wait
 
 # Binding classification thresholds (rank %)
-STRONG_BINDER_RANK_THRESHOLD = 0.5  # rank < 0.5% → strong binder
-WEAK_BINDER_RANK_THRESHOLD = 2.0  # rank < 2% → weak binder
+STRONG_BINDER_RANK_THRESHOLD: float = 0.5  # rank < 0.5% → strong binder
+WEAK_BINDER_RANK_THRESHOLD: float = 2.0  # rank < 2% → weak binder
+
+# Epitope length defaults
+MHC_II_EPITOPE_LENGTH: int = 15  # 15-mer peptides for MHC-II prediction
+DEFAULT_MHC_I_EPITOPE_LENGTHS: list[int] = [8, 9, 10, 11]  # Standard MHC-I peptide lengths
+
+# NetMHCpan IC50 conversion constant (50000 nM = 50 µM, the log50k reference)
+_NETMHCPAN_LOG50K_CONSTANT: float = 50000.0
+
+# Rank-to-score mapping divisor (log10 scale: rank 0.01→1.0, rank 100→0.0)
+_RANK_SCORE_LOG10_DIVISOR: float = 4.0
+
+# Fallback rank used when parsing yields no rank value
+_FALLBACK_RANK: float = 100.0
+
+# Minimum number of whitespace-separated tokens required to attempt parsing
+_MIN_DATA_LINE_TOKENS: int = 6
+
+# Maximum characters to read from an HTTP error response body
+_ERROR_BODY_MAX_CHARS: int = 500
 
 # NetMHCpan config file identifiers for the webface2 CGI
 # NOTE: These look like local filesystem paths but are actually external service
 # identifiers required by the DTU NetMHCpan webface2 CGI API. They reference
 # config paths on the remote DTU server, NOT local files.
-_NETMHCPAN_CONFIG = "/usr/opt/www/pub/CBS/services/NetMHCpan-4.1/webface.NetMHCpan-4.1.cfg"
-_NETMHCIIPAN_CONFIG = "/usr/opt/www/pub/CBS/services/NetMHCIIpan-4.0/webface.NetMHCIIpan-4.0.cfg"
+_NETMHCPAN_CONFIG: str = "/usr/opt/www/pub/CBS/services/NetMHCpan-4.1/webface.NetMHCpan-4.1.cfg"
+_NETMHCIIPAN_CONFIG: str = "/usr/opt/www/pub/CBS/services/NetMHCIIpan-4.0/webface.NetMHCIIpan-4.0.cfg"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -179,7 +198,7 @@ class NetMHCpanCache:
     """
 
     def __init__(self, max_size: int = 5000):
-        self._cache: Dict[str, MHCBindingResult] = {}
+        self._cache: dict[str, MHCBindingResult] = {}
         self._max_size = max_size
         self._hits = 0
         self._misses = 0
@@ -303,7 +322,7 @@ def _rank_to_binding_score(rank: float) -> float:
         return 1.0
     import math
     # log10 mapping: rank 0.01 → 1.0, rank 100 → 0.0
-    score = max(0.0, min(1.0, 1.0 - math.log10(rank) / 4.0))
+    score = max(0.0, min(1.0, 1.0 - math.log10(rank) / _RANK_SCORE_LOG10_DIVISOR))
     return round(score, 6)
 
 
@@ -393,7 +412,7 @@ def _parse_data_line(line: str) -> dict | None:
     """
     # Split on whitespace and filter empty tokens
     tokens = line.split()
-    if len(tokens) < 6:
+    if len(tokens) < _MIN_DATA_LINE_TOKENS:
         return None
 
     try:
@@ -443,12 +462,12 @@ def _parse_data_line(line: str) -> dict | None:
 
         # Convert NetMHCpan score (1-log50k IC50) to IC50 in nM
         # 1-log50k(IC50) where IC50 is in nM
-        # So IC50 = 50000^(1-score)
+        # So IC50 = _NETMHCPAN_LOG50K_CONSTANT^(1-score)
         import math
         if score > 0:
-            ic50 = 50000.0 ** (1.0 - score)
+            ic50 = _NETMHCPAN_LOG50K_CONSTANT ** (1.0 - score)
         else:
-            ic50 = 50000.0  # maximum
+            ic50 = _NETMHCPAN_LOG50K_CONSTANT  # maximum
 
         # Determine binding class from rank (preferred) or bind_level
         if bind_level in ("SB", "<0.5%", "<0.5", "<=0.5%"):
@@ -469,6 +488,7 @@ def _parse_data_line(line: str) -> dict | None:
         }
 
     except (ValueError, IndexError):
+        logger.debug("Failed to parse NetMHCpan data line", exc_info=True)
         return None
 
 
@@ -604,7 +624,7 @@ class NetMHCpanClient:
                 start_position=0,
                 end_position=len(peptide_sequence) - 1,
                 binding_score=0.0,
-                ic50_nm=50000.0,
+                ic50_nm=_NETMHCPAN_LOG50K_CONSTANT,
                 binding_class="non_binder",
                 rank=None,
                 method="netmhcpan",
@@ -612,8 +632,8 @@ class NetMHCpanClient:
         else:
             # Take the first (and usually only) result
             p = parsed[0]
-            rank = p.get("rank", 100.0)
-            binding_class = p.get("binding_class", classify_binding_rank(rank if rank is not None else 100.0))
+            rank = p.get("rank", _FALLBACK_RANK)
+            binding_class = p.get("binding_class", classify_binding_rank(rank if rank is not None else _FALLBACK_RANK))
             binding_score = _rank_to_binding_score(rank) if rank is not None else 0.0
 
             result = MHCBindingResult(
@@ -664,7 +684,7 @@ class NetMHCpanClient:
 
         # Check cache
         if self.use_cache:
-            cached = self._cache.get(allele, peptide_sequence, 15)
+            cached = self._cache.get(allele, peptide_sequence, MHC_II_EPITOPE_LENGTH)
             if cached is not None:
                 logger.debug("Cache hit for %s/%s (MHC-II)", allele, peptide_sequence)
                 return cached
@@ -685,15 +705,15 @@ class NetMHCpanClient:
                 start_position=0,
                 end_position=len(peptide_sequence) - 1,
                 binding_score=0.0,
-                ic50_nm=50000.0,
+                ic50_nm=_NETMHCPAN_LOG50K_CONSTANT,
                 binding_class="non_binder",
                 rank=None,
                 method="netmhcpan",
             )
         else:
             # For MHC-II, take the best-scoring core
-            best = min(parsed, key=lambda p: p.get("rank", 100.0))
-            rank = best.get("rank", 100.0)
+            best = min(parsed, key=lambda p: p.get("rank", _FALLBACK_RANK))
+            rank = best.get("rank", _FALLBACK_RANK)
             binding_class = best.get("binding_class", classify_binding_rank(rank))
             binding_score = _rank_to_binding_score(rank)
 
@@ -711,7 +731,7 @@ class NetMHCpanClient:
 
         # Cache result
         if self.use_cache:
-            self._cache.put(allele, peptide_sequence, result, 15)
+            self._cache.put(allele, peptide_sequence, result, MHC_II_EPITOPE_LENGTH)
 
         return result
 
@@ -742,7 +762,7 @@ class NetMHCpanClient:
             Binding predictions for every peptide x allele combination.
         """
         if epitope_lengths is None:
-            epitope_lengths = [8, 9, 10, 11]
+            epitope_lengths = list(DEFAULT_MHC_I_EPITOPE_LENGTHS)
 
         protein_sequence = protein_sequence.upper().strip()
 
@@ -760,7 +780,7 @@ class NetMHCpanClient:
 
             if is_mhc_ii:
                 # MHC-II: use 15-mer peptides
-                peptide_length = 15
+                peptide_length = MHC_II_EPITOPE_LENGTH
                 for start in range(len(protein_sequence) - peptide_length + 1):
                     peptide = protein_sequence[start : start + peptide_length]
                     try:
@@ -781,7 +801,7 @@ class NetMHCpanClient:
                             start_position=start,
                             end_position=start + peptide_length - 1,
                             binding_score=0.0,
-                            ic50_nm=50000.0,
+                            ic50_nm=_NETMHCPAN_LOG50K_CONSTANT,
                             binding_class="non_binder",
                             method="netmhcpan_failed",
                         ))
@@ -807,7 +827,7 @@ class NetMHCpanClient:
                                 start_position=start,
                                 end_position=start + epi_len - 1,
                                 binding_score=0.0,
-                                ic50_nm=50000.0,
+                                ic50_nm=_NETMHCPAN_LOG50K_CONSTANT,
                                 binding_class="non_binder",
                                 method="netmhcpan_failed",
                             ))
@@ -931,7 +951,7 @@ class NetMHCpanClient:
                     continue
                 elif exc.code >= 400:
                     # Client error — do not retry
-                    error_body = exc.read().decode("utf-8", errors="replace")[:500]
+                    error_body = exc.read().decode("utf-8", errors="replace")[:_ERROR_BODY_MAX_CHARS]
                     last_error = f"API client error ({exc.code}): {error_body}"
                     logger.error("API client error, not retrying: %s", last_error)
                     break

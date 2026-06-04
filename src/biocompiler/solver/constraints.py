@@ -38,9 +38,9 @@ import math
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
-from .types import CodonVariable, SolverConfig, ConstraintStrictness, ConstraintType
+from .types import CodonVariable, ConstraintPriority, ConstraintSpec, SolverConfig, ConstraintStrictness, ConstraintType
 from ..constants import AA_TO_CODONS, CODON_TABLE, RESTRICTION_ENZYMES, INSTABILITY_MOTIF
 from ..organisms import (
     CODON_ADAPTIVENESS_TABLES,
@@ -50,6 +50,45 @@ from ..organisms import (
 from ..maxentscan import score_donor, score_acceptor
 
 logger = logging.getLogger(__name__)
+
+
+__all__ = [
+    # Constants
+    "DEFAULT_GC_LO",
+    "DEFAULT_GC_HI",
+    "DEFAULT_CPG_WINDOW",
+    "DEFAULT_CPG_THRESHOLD",
+    "DEFAULT_MAX_T_RUN",
+    "CAI_LOG_EPSILON",
+    "NEAREST_NEIGHBOR_GC",
+    "NEAREST_NEIGHBOR_AU",
+    "NEAREST_NEIGHBOR_GU",
+    # Helper functions
+    "codon_gc_count",
+    "codon_contains_gt",
+    "codon_contains_ag",
+    "codon_contains_cpg",
+    "compute_gc_from_codons",
+    # Abstract base classes
+    "HardConstraint",
+    "SoftConstraint",
+    # Hard constraints
+    "TranslationConstraint",
+    "NoRestrictionSiteConstraint",
+    "GCRangeConstraint",
+    "NoCrypticSpliceConstraint",
+    "NoCpGIslandConstraint",
+    "NoATTTAMotifConstraint",
+    "NoTRunConstraint",
+    # Soft constraints
+    "MaximizeCAI",
+    "MinimizeCpG",
+    "MinimizeMRNADG",
+    # Model
+    "CSPModel",
+    # Builder
+    "build_csp_model",
+]
 
 
 # ==============================================================================
@@ -470,12 +509,21 @@ class GCRangeConstraint(HardConstraint):
         """Count G/C bases in a sequence."""
         return sum(1 for b in sequence if b in "GC")
 
+    def _gc_fraction(self, sequence: str) -> tuple[int, float]:
+        """Return (gc_count, gc_fraction) for the sequence.
+
+        Computes the GC count and fraction once so that both ``check()``
+        and ``violated_positions()`` can reuse the result without
+        calling ``_gc_count`` twice.
+        """
+        gc = self._gc_count(sequence)
+        return gc, gc / len(sequence)
+
     def check(self, sequence: str) -> bool:
         """Return True if GC content is within the allowed range."""
         if not sequence:
             return True
-        gc = self._gc_count(sequence)
-        frac = gc / len(sequence)
+        _, frac = self._gc_fraction(sequence)
         return self._gc_lo <= frac <= self._gc_hi
 
     def violated_positions(self, sequence: str) -> list[int]:
@@ -486,11 +534,11 @@ class GCRangeConstraint(HardConstraint):
         that *should* be G/C).
         If GC is in range, returns empty list.
         """
-        if not sequence or self.check(sequence):
+        if not sequence:
             return []
-
-        gc = self._gc_count(sequence)
-        frac = gc / len(sequence)
+        gc, frac = self._gc_fraction(sequence)
+        if self._gc_lo <= frac <= self._gc_hi:
+            return []
 
         if frac > self._gc_hi:
             # Too much GC — report GC positions
@@ -536,6 +584,11 @@ class NoCrypticSpliceConstraint(HardConstraint):
 
         Returns a list of positions (0-based) where GT donor or AG acceptor
         dinucleotides have MaxEntScan scores >= threshold.
+
+        Note: The canonical sliding-window GT/AG scanning implementation lives
+        in :func:`biocompiler.maxentscan.scan_splice_sites`, which returns
+        richer ``(position, site_type, score)`` tuples.  This method is a
+        lightweight wrapper used by the constraint model.
         """
         sequence = sequence.upper()
         positions: list[int] = []
@@ -604,6 +657,11 @@ class NoCpGIslandConstraint(HardConstraint):
 
         Returns start positions of windows where the Obs/Exp CG ratio
         exceeds *threshold*.
+
+        Note: The canonical CpG island sliding-window implementation lives
+        in :func:`biocompiler.type_system.check_no_cpg_island` and
+        :func:`biocompiler.type_system.evaluate_no_cpg_island`.  This method
+        is a lightweight variant used by the constraint model.
         """
         sequence = sequence.upper()
         violating_starts: list[int] = []
@@ -953,9 +1011,9 @@ class MinimizeMRNADG(SoftConstraint):
                 window_seq = sequence[self._window_start : self._window_end]
                 return compute_5prime_dg(window_seq, window=window_len)
         except ImportError:
-            logger.warning("ViennaRNA unavailable, using fallback dG approximation", exc_info=True)
+            logger.warning("ViennaRNA not installed, using fallback dG approximation", exc_info=True)
         except Exception:
-            logger.warning("ViennaRNA unavailable, using fallback dG approximation", exc_info=True)
+            logger.warning("ViennaRNA computation failed, using fallback dG approximation", exc_info=True)
 
         # --- Fallback: simplified nearest-neighbor approximation ---
         sequence = sequence.upper()
@@ -988,6 +1046,119 @@ class MinimizeMRNADG(SoftConstraint):
                 gu_pairs += 1
 
         return NEAREST_NEIGHBOR_GC * gc_pairs + NEAREST_NEIGHBOR_AU * au_pairs + NEAREST_NEIGHBOR_GU * gu_pairs
+
+
+# ==============================================================================
+# Helper: extract params from HardConstraint / SoftConstraint instances
+# ==============================================================================
+
+def _extract_constraint_params(constraint: HardConstraint | SoftConstraint) -> dict[str, Any]:
+    """Extract check-relevant parameters from a constraint object.
+
+    Returns a dict of parameters that :meth:`ConstraintSpec.check` can use
+    to verify the constraint against a sequence without needing the original
+    ``HardConstraint`` / ``SoftConstraint`` instance.
+    """
+    from .types import ConstraintType as CT
+
+    ctype = constraint.constraint_type
+
+    if ctype == CT.GC_CONTENT:
+        # GCRangeConstraint has gc_lo / gc_hi properties
+        return {
+            "gc_lo": getattr(constraint, "gc_lo", 0.30),
+            "gc_hi": getattr(constraint, "gc_hi", 0.70),
+        }
+
+    if ctype == CT.NO_CPG:
+        # NoCpGIslandConstraint has window / threshold
+        return {
+            "window": getattr(constraint, "window", 200),
+            "threshold": getattr(constraint, "threshold", 0.6),
+        }
+
+    if ctype in (CT.NO_CRYPTIC_SPLICE, CT.SPLICE_DONOR_AVOIDANCE):
+        # NoCrypticSpliceConstraint has threshold
+        return {
+            "threshold": getattr(constraint, "threshold", 3.0),
+        }
+
+    if ctype == CT.RESTRICTION_SITE:
+        # NoRestrictionSiteConstraint has sites
+        return {
+            "sites": getattr(constraint, "sites", []),
+        }
+
+    if ctype == CT.NO_INSTABILITY_MOTIF:
+        # NoATTTAMotifConstraint uses constant INSTABILITY_MOTIF
+        return {
+            "motif": INSTABILITY_MOTIF,
+        }
+
+    if ctype == CT.MRNA_STABILITY:
+        # NoTRunConstraint has max_run
+        return {
+            "max_run": getattr(constraint, "max_run", 5),
+        }
+
+    if ctype == CT.AMINO_ACID_IDENTITY:
+        # TranslationConstraint has protein
+        return {
+            "protein": getattr(constraint, "protein", ""),
+        }
+
+    # For soft constraints (CODON_USAGE, etc.) and unknown types,
+    # no params needed — ConstraintSpec.check() defaults to True.
+    return {}
+
+
+# Default enforcement priority for each well-known constraint type.
+_CONSTRAINT_PRIORITY_MAP: dict[str, ConstraintPriority] = {
+    "TranslationConstraint": ConstraintPriority.CRITICAL,
+    "NoRestrictionSiteConstraint": ConstraintPriority.HIGH,
+    "GCRangeConstraint": ConstraintPriority.MEDIUM,
+    "NoCrypticSpliceConstraint": ConstraintPriority.MEDIUM,
+    "NoCpGIslandConstraint": ConstraintPriority.MEDIUM,
+    "NoATTTAMotifConstraint": ConstraintPriority.MEDIUM,
+    "NoTRunConstraint": ConstraintPriority.LOW,
+    "MaximizeCAI": ConstraintPriority.LOW,
+    "MinimizeCpG": ConstraintPriority.LOW,
+    "MinimizeMRNADG": ConstraintPriority.LOW,
+}
+
+
+def _default_priority_for(name: str) -> ConstraintPriority:
+    """Return the default enforcement priority for a constraint by name.
+
+    Args:
+        name: The constraint's ``name`` property (e.g. ``"GCRangeConstraint"``).
+
+    Returns:
+        The corresponding :class:`ConstraintPriority`, or MEDIUM if unknown.
+    """
+    return _CONSTRAINT_PRIORITY_MAP.get(name, ConstraintPriority.MEDIUM)
+
+
+def _default_weight_for(name: str, config: SolverConfig) -> float:
+    """Return the default scoring weight for a soft constraint by name.
+
+    Uses the solver configuration's objective weights for the standard
+    soft constraints (CAI, CpG, mRNA dG).  Returns 1.0 for unknown
+    constraints.
+
+    Args:
+        name: The constraint's ``name`` property.
+        config: Solver configuration providing objective weights.
+
+    Returns:
+        Weight multiplier for soft constraint scoring.
+    """
+    weight_map: dict[str, float] = {
+        "MaximizeCAI": config.cai_weight,
+        "MinimizeCpG": config.cpg_weight,
+        "MinimizeMRNADG": config.mrna_dg_weight,
+    }
+    return weight_map.get(name, 1.0)
 
 
 # ==============================================================================
@@ -1035,6 +1206,54 @@ class CSPModel:
     def num_soft_constraints(self) -> int:
         """Number of soft constraints / objectives."""
         return len(self.soft_constraints)
+
+    @property
+    def protein_sequence(self) -> str:
+        """Alias for :attr:`protein` — compatibility with ``types.CSPModel``."""
+        return self.protein
+
+    @property
+    def codon_domains(self) -> dict[int, list[str]]:
+        """Mapping from codon position to allowed codon domain.
+
+        Derived from :attr:`variables`.  Provides compatibility with
+        ``types.CSPModel`` which stores domains in this dict format.
+        """
+        return {var.position: list(var.domain) for var in self.variables}
+
+    @property
+    def constraints(self) -> list[ConstraintSpec]:
+        """Constraint specs derived from hard and soft constraints.
+
+        Converts the typed constraint objects (:class:`HardConstraint` /
+        :class:`SoftConstraint`) into :class:`ConstraintSpec` instances so
+        that code expecting ``types.CSPModel.constraints`` (a list of
+        ``ConstraintSpec``) works transparently.
+
+        Each spec carries an enforcement ``priority`` (CRITICAL for
+        translation, HIGH for restriction sites, MEDIUM for most biological
+        constraints, LOW for advisory/soft constraints) and a ``weight``
+        derived from the solver configuration's objective weights.
+        """
+        specs: list[ConstraintSpec] = []
+        for hc in self.hard_constraints:
+            specs.append(ConstraintSpec(
+                ctype=hc.constraint_type,
+                name=hc.name,
+                strictness=ConstraintStrictness.HARD,
+                params=_extract_constraint_params(hc),
+                priority=_default_priority_for(hc.name),
+            ))
+        for sc in self.soft_constraints:
+            specs.append(ConstraintSpec(
+                ctype=sc.constraint_type,
+                name=sc.name,
+                strictness=ConstraintStrictness.SOFT,
+                params=_extract_constraint_params(sc),
+                priority=_default_priority_for(sc.name),
+                weight=_default_weight_for(sc.name, self.config),
+            ))
+        return specs
 
     def sequence_from_assignment(self, assignment: dict[int, str] | None = None) -> str:
         """Build a DNA sequence from variable assignments.

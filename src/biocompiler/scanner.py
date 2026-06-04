@@ -9,18 +9,43 @@ Production-grade scanner with:
 - Logging instead of print
 """
 
+from __future__ import annotations
+
 import logging
 from .constants import (
     DONOR_CONSENSUS, ACCEPTOR_CONSENSUS, INSTABILITY_MOTIF,
     RESTRICTION_ENZYMES, POLYPYRIMIDINE_WINDOW,
     IUPAC_EXPAND,
     reverse_complement,
+    START_CODON,
+    STOP_CODONS,
 )
 from .types import Token
 from .exceptions import InvalidSequenceError
 from .maxentscan import score_donor, score_acceptor
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    # Public functions
+    "validate_dna_sequence",
+    "gc_content",
+    "scan_sequence",
+    # Module constants
+    "KOZAK_POSITION_WEIGHTS",
+    "SPLICE_DONOR_MIN_SCORE",
+    "SPLICE_ACCEPTOR_MIN_SCORE",
+    "DONOR_FALLBACK_SCORE",
+    "POLYPYRIMIDINE_MIN_FRACTION",
+    "ACCEPTOR_SCORE_MULTIPLIER",
+    "KOZAK_REPORT_THRESHOLD",
+    "NUM_READING_FRAMES",
+    "CODON_LENGTH",
+    "DEFAULT_MOTIF_SCORE",
+    "SCORE_ROUND_DIGITS",
+    "KOZAK_UPSTREAM_CONTEXT",
+    "KOZAK_DOWNSTREAM_CONTEXT",
+]
 
 # Kozak consensus position weights for scoring
 # Reference: Kozak M. (1987) "An analysis of 5'-noncoding sequences from 699 vertebrate mRNAs"
@@ -39,8 +64,8 @@ KOZAK_POSITION_WEIGHTS: dict[int, dict[str, float]] = {
 
 # Minimum MaxEntScan score for a splice site to be considered functional
 # Based on Yeo & Burge (2004): scores >3.0 are likely functional splice sites
-SPLICE_DONOR_MIN_SCORE = 3.0
-SPLICE_ACCEPTOR_MIN_SCORE = 3.0
+SPLICE_DONOR_MIN_SCORE: float = 3.0
+SPLICE_ACCEPTOR_MIN_SCORE: float = 3.0
 
 # Fallback score assigned to splice donors when MaxEntScan is disabled
 DONOR_FALLBACK_SCORE: float = 5.0
@@ -53,6 +78,25 @@ ACCEPTOR_SCORE_MULTIPLIER: float = 10.0
 
 # Minimum Kozak consensus score for a site to be reported as a kozak token
 KOZAK_REPORT_THRESHOLD: float = 0.7
+
+# Number of reading frames in a nucleotide sequence
+NUM_READING_FRAMES: int = 3
+
+# Length of a codon in nucleotides
+CODON_LENGTH: int = 3
+
+# Default score assigned to motifs that are detected by exact match (no scoring model)
+DEFAULT_MOTIF_SCORE: float = 1.0
+
+# Decimal places used when rounding fractional scores
+SCORE_ROUND_DIGITS: int = 4
+
+# Number of bases upstream of ATG included in the Kozak context window
+KOZAK_UPSTREAM_CONTEXT: int = 3
+
+# Number of bases downstream of ATG included in the Kozak context window
+# (includes the ATG itself: positions -3..+4 relative to the A of ATG)
+KOZAK_DOWNSTREAM_CONTEXT: int = 5
 
 
 def _iupac_match(seq: str, pattern: str) -> bool:
@@ -72,7 +116,7 @@ def _iupac_match(seq: str, pattern: str) -> bool:
     if len(seq) != len(pattern):
         return False
     for s_base, p_base in zip(seq, pattern):
-        allowed = IUPAC_EXPAND.get(p_base.upper(), p_base.upper())
+        allowed: str = IUPAC_EXPAND.get(p_base.upper(), p_base.upper())
         if s_base not in allowed:
             return False
     return True
@@ -94,8 +138,8 @@ def validate_dna_sequence(seq: str) -> str:
         InvalidSequenceError: if any character is not A/C/G/T/N.
     """
     seq = seq.upper()
-    valid = set("ACGTN")
-    invalid = set(seq) - valid
+    valid: set[str] = set("ACGTN")
+    invalid: set[str] = set(seq) - valid
     if invalid:
         raise InvalidSequenceError(seq, invalid)
     return seq
@@ -111,13 +155,14 @@ def gc_content(seq: str) -> float:
         seq: DNA sequence (case-insensitive)
 
     Returns:
-        GC fraction rounded to 4 decimal places.  Returns 0.0 for empty input.
+        GC fraction rounded to SCORE_ROUND_DIGITS decimal places.
+        Returns 0.0 for empty input.
     """
     if not seq:
         return 0.0
     seq = seq.upper()
-    gc = seq.count('G') + seq.count('C')
-    return round(gc / len(seq), 4)
+    gc: int = seq.count('G') + seq.count('C')
+    return round(gc / len(seq), SCORE_ROUND_DIGITS)
 
 
 def _score_kozak(seq: str, atg_pos: int) -> float:
@@ -134,16 +179,16 @@ def _score_kozak(seq: str, atg_pos: int) -> float:
     Returns:
         Kozak score in [0.0, 1.0]
     """
-    score = 0.0
-    total_weight = 0.0
+    score: float = 0.0
+    total_weight: float = 0.0
     for offset, weights in KOZAK_POSITION_WEIGHTS.items():
-        pos = atg_pos + offset
+        pos: int = atg_pos + offset
         if 0 <= pos < len(seq):
-            base = seq[pos]
-            weight = sum(weights.values())  # max possible for this position
+            base: str = seq[pos]
+            weight: float = sum(weights.values())  # max possible for this position
             total_weight += weight
             score += weights.get(base, 0.0) * weight
-    return round(score / total_weight, 4) if total_weight > 0 else 0.0
+    return round(score / total_weight, SCORE_ROUND_DIGITS) if total_weight > 0 else 0.0
 
 
 def scan_sequence(
@@ -178,90 +223,106 @@ def scan_sequence(
     tokens: list[Token] = []
 
     # --- Splice donor sites (GT) with MaxEntScan scoring ---
-    for i in range(len(seq) - 1):
-        if seq[i:i+2] == DONOR_CONSENSUS:
+    for i in range(len(seq) - len(DONOR_CONSENSUS) + 1):
+        if seq[i:i + len(DONOR_CONSENSUS)] == DONOR_CONSENSUS:
             if use_maxentscan:
-                mes_score = score_donor(seq, i)
+                try:
+                    mes_score: float = score_donor(seq, i)
+                except Exception:
+                    logger.warning(
+                        "MaxEntScan donor scoring failed at position %d; skipping site",
+                        i,
+                        exc_info=True,
+                    )
+                    continue
                 if mes_score >= donor_threshold:
-                    tokens.append(Token(i, "splice_donor", seq[i:i+2], mes_score))
+                    tokens.append(Token(i, "splice_donor", seq[i:i + len(DONOR_CONSENSUS)], mes_score))
             else:
-                tokens.append(Token(i, "splice_donor", seq[i:i+2], DONOR_FALLBACK_SCORE))
+                tokens.append(Token(i, "splice_donor", seq[i:i + len(DONOR_CONSENSUS)], DONOR_FALLBACK_SCORE))
 
     # --- Splice acceptor sites (AG) with MaxEntScan scoring ---
-    for i in range(len(seq) - 1):
-        if seq[i:i+2] == ACCEPTOR_CONSENSUS:
+    for i in range(len(seq) - len(ACCEPTOR_CONSENSUS) + 1):
+        if seq[i:i + len(ACCEPTOR_CONSENSUS)] == ACCEPTOR_CONSENSUS:
             if use_maxentscan:
-                mes_score = score_acceptor(seq, i)
+                try:
+                    mes_score: float = score_acceptor(seq, i)
+                except Exception:
+                    logger.warning(
+                        "MaxEntScan acceptor scoring failed at position %d; skipping site",
+                        i,
+                        exc_info=True,
+                    )
+                    continue
                 if mes_score >= acceptor_threshold:
-                    tokens.append(Token(i, "splice_acceptor", seq[i:i+2], mes_score))
+                    tokens.append(Token(i, "splice_acceptor", seq[i:i + len(ACCEPTOR_CONSENSUS)], mes_score))
             else:
                 # Fallback: polypyrimidine tract scoring
-                upstream = seq[max(0, i - POLYPYRIMIDINE_WINDOW):i]
-                ct_count = upstream.count('C') + upstream.count('T')
-                score = ct_count / max(len(upstream), 1)
+                upstream: str = seq[max(0, i - POLYPYRIMIDINE_WINDOW):i]
+                ct_count: int = upstream.count('C') + upstream.count('T')
+                score: float = ct_count / max(len(upstream), 1)
                 if score > POLYPYRIMIDINE_MIN_FRACTION:
-                    tokens.append(Token(i, "splice_acceptor", seq[i:i+2], score * ACCEPTOR_SCORE_MULTIPLIER))
+                    tokens.append(Token(i, "splice_acceptor", seq[i:i + len(ACCEPTOR_CONSENSUS)], score * ACCEPTOR_SCORE_MULTIPLIER))
 
     # --- Start codons in ALL reading frames ---
     if scan_all_frames:
-        for frame in range(3):
-            for i in range(frame, len(seq) - 2, 3):
-                if seq[i:i+3] == "ATG":
-                    kozak_score = _score_kozak(seq, i)
-                    tokens.append(Token(i, "start_codon", "ATG", kozak_score, frame=frame))
+        for frame in range(NUM_READING_FRAMES):
+            for i in range(frame, len(seq) - CODON_LENGTH + 1, NUM_READING_FRAMES):
+                if seq[i:i + CODON_LENGTH] == START_CODON:
+                    kozak_score: float = _score_kozak(seq, i)
+                    tokens.append(Token(i, "start_codon", START_CODON, kozak_score, frame=frame))
     else:
-        for i in range(0, len(seq) - 2, 3):
-            if seq[i:i+3] == "ATG":
+        for i in range(0, len(seq) - CODON_LENGTH + 1, NUM_READING_FRAMES):
+            if seq[i:i + CODON_LENGTH] == START_CODON:
                 kozak_score = _score_kozak(seq, i)
-                tokens.append(Token(i, "start_codon", "ATG", kozak_score, frame=0))
+                tokens.append(Token(i, "start_codon", START_CODON, kozak_score, frame=0))
 
     # --- Stop codons in ALL reading frames ---
     if scan_all_frames:
-        for frame in range(3):
-            for i in range(frame, len(seq) - 2, 3):
-                codon = seq[i:i+3]
-                if codon in ("TAA", "TAG", "TGA"):
-                    tokens.append(Token(i, "stop_codon", codon, 1.0, frame=frame))
+        for frame in range(NUM_READING_FRAMES):
+            for i in range(frame, len(seq) - CODON_LENGTH + 1, NUM_READING_FRAMES):
+                codon: str = seq[i:i + CODON_LENGTH]
+                if codon in STOP_CODONS:
+                    tokens.append(Token(i, "stop_codon", codon, DEFAULT_MOTIF_SCORE, frame=frame))
     else:
-        for i in range(0, len(seq) - 2, 3):
-            codon = seq[i:i+3]
-            if codon in ("TAA", "TAG", "TGA"):
-                tokens.append(Token(i, "stop_codon", codon, 1.0, frame=0))
+        for i in range(0, len(seq) - CODON_LENGTH + 1, NUM_READING_FRAMES):
+            codon = seq[i:i + CODON_LENGTH]
+            if codon in STOP_CODONS:
+                tokens.append(Token(i, "stop_codon", codon, DEFAULT_MOTIF_SCORE, frame=0))
 
     # --- Kozak consensus (weighted scoring, not exact match) ---
-    for i in range(len(seq) - 2):
-        if seq[i:i+3] == "ATG":
+    for i in range(len(seq) - CODON_LENGTH + 1):
+        if seq[i:i + CODON_LENGTH] == START_CODON:
             kozak_score = _score_kozak(seq, i)
             if kozak_score >= KOZAK_REPORT_THRESHOLD:  # Only report strong Kozak contexts
-                tokens.append(Token(i, "kozak", seq[max(0,i-3):i+5], kozak_score))
+                tokens.append(Token(i, "kozak", seq[max(0, i - KOZAK_UPSTREAM_CONTEXT):i + KOZAK_DOWNSTREAM_CONTEXT], kozak_score))
 
     # --- Instability motifs (ATTTA) ---
-    for i in range(len(seq) - 4):
-        if seq[i:i+5] == INSTABILITY_MOTIF:
-            tokens.append(Token(i, "instability_motif", seq[i:i+5], 1.0))
+    for i in range(len(seq) - len(INSTABILITY_MOTIF) + 1):
+        if seq[i:i + len(INSTABILITY_MOTIF)] == INSTABILITY_MOTIF:
+            tokens.append(Token(i, "instability_motif", seq[i:i + len(INSTABILITY_MOTIF)], DEFAULT_MOTIF_SCORE))
 
     # --- Restriction enzyme sites (BOTH strands, IUPAC-aware) ---
     if restriction_enzymes:
         for enz_name in restriction_enzymes:
             if enz_name in RESTRICTION_ENZYMES:
-                site = RESTRICTION_ENZYMES[enz_name]
-                has_iupac = any(b not in "ACGT" for b in site.upper())
+                site: str = RESTRICTION_ENZYMES[enz_name]
+                has_iupac: bool = any(b not in "ACGT" for b in site.upper())
                 # Forward strand
                 for i in range(len(seq) - len(site) + 1):
-                    window = seq[i:i+len(site)]
+                    window: str = seq[i:i + len(site)]
                     if has_iupac:
                         if _iupac_match(window, site):
-                            tokens.append(Token(i, "restriction_site", window, 1.0, strand="+"))
+                            tokens.append(Token(i, "restriction_site", window, DEFAULT_MOTIF_SCORE, strand="+"))
                     else:
                         if window == site:
-                            tokens.append(Token(i, "restriction_site", site, 1.0, strand="+"))
+                            tokens.append(Token(i, "restriction_site", site, DEFAULT_MOTIF_SCORE, strand="+"))
                 # Reverse complement strand (only for non-IUPAC sites; IUPAC RC is complex)
                 if not has_iupac:
-                    site_rc = reverse_complement(site)
+                    site_rc: str = reverse_complement(site)
                     if site_rc != site:  # Avoid double-counting palindromes
                         for i in range(len(seq) - len(site_rc) + 1):
-                            if seq[i:i+len(site_rc)] == site_rc:
-                                tokens.append(Token(i, "restriction_site", site_rc, 1.0, strand="-"))
+                            if seq[i:i + len(site_rc)] == site_rc:
+                                tokens.append(Token(i, "restriction_site", site_rc, DEFAULT_MOTIF_SCORE, strand="-"))
 
     tokens.sort(key=lambda t: (t.position, t.element_type))
     logger.debug("Scanned %d nt sequence, found %d tokens", len(seq), len(tokens))

@@ -656,7 +656,8 @@ class MHCflurryClient:
         Raises
         ------
         RuntimeError
-            If MHCflurry models cannot be loaded.
+            If MHCflurry models cannot be loaded, or if the prediction
+            fails (e.g. unsupported allele, internal MHCflurry error).
         ValueError
             If the peptide contains non-standard amino acids.
         """
@@ -677,39 +678,27 @@ class MHCflurryClient:
                 alleles=[allele],
             )
             if df.empty:
-                logger.warning(
-                    "MHCflurry returned empty result for %s / %s",
-                    allele, peptide,
+                raise RuntimeError(
+                    f"MHCflurry returned no prediction for allele "
+                    f"{allele!r} / peptide {peptide!r}. The allele may "
+                    f"not be supported by the installed models."
                 )
-                result = _mhcflurry_result_to_binding_result(
-                    peptide=peptide,
-                    allele=allele,
-                    start_position=0,
-                    end_position=len(peptide) - 1,
-                    ic50_nm=_MAX_IC50_NM,
-                )
-            else:
-                # The DataFrame has columns: peptide, allele, prediction
-                ic50_nm = float(df.iloc[0]["prediction"])
-                result = _mhcflurry_result_to_binding_result(
-                    peptide=peptide,
-                    allele=allele,
-                    start_position=0,
-                    end_position=len(peptide) - 1,
-                    ic50_nm=ic50_nm,
-                )
-        except Exception as exc:
-            logger.warning(
-                "MHCflurry prediction failed for %s / %s: %s",
-                allele, peptide, exc,
-            )
+            # The DataFrame has columns: peptide, allele, prediction
+            ic50_nm = float(df.iloc[0]["prediction"])
             result = _mhcflurry_result_to_binding_result(
                 peptide=peptide,
                 allele=allele,
                 start_position=0,
                 end_position=len(peptide) - 1,
-                ic50_nm=_MAX_IC50_NM,
+                ic50_nm=ic50_nm,
             )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"MHCflurry prediction failed for allele "
+                f"{allele!r} / peptide {peptide!r}: {exc}"
+            ) from exc
 
         self._cache.put(peptide, allele, result)
         return result

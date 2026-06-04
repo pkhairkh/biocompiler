@@ -31,6 +31,17 @@ from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ProteinEntry",
+    "BenchmarkComparison",
+    "BenchmarkStatistics",
+    "BenchmarkReport",
+    "BENCHMARK_DATASET",
+    "run_foldx_benchmark",
+    "generate_benchmark_report",
+    "generate_benchmark_json",
+]
+
 
 # ────────────────────────────────────────────────────────────
 # Data Structures
@@ -420,6 +431,13 @@ BENCHMARK_DATASET: list[ProteinEntry] = [
 # Benchmark Engine
 # ────────────────────────────────────────────────────────────
 
+# Numerical constants for Pearson correlation computation
+_CORRELATION_MIN: float = -1.0
+_CORRELATION_MAX: float = 1.0
+_VARIANCE_EPSILON: float = 1e-15    # guard against zero-variance division
+_T_STAT_FLOOR: float = 0.001        # minimum |t| for p-value approximation
+
+
 def _pearson_correlation(x: list[float], y: list[float]) -> tuple[float, float]:
     """Compute Pearson correlation coefficient and p-value.
 
@@ -444,17 +462,17 @@ def _pearson_correlation(x: list[float], y: list[float]) -> tuple[float, float]:
     r = cov_xy / math.sqrt(var_x * var_y)
 
     # Clamp to [-1, 1] due to floating point
-    r = max(-1.0, min(1.0, r))
+    r = max(_CORRELATION_MIN, min(_CORRELATION_MAX, r))
 
     # Approximate p-value using t-distribution
     if n < 4:
         return r, 1.0
 
-    t_stat = r * math.sqrt((n - 2) / (1 - r ** 2 + 1e-15))
+    t_stat = r * math.sqrt((n - 2) / (1 - r ** 2 + _VARIANCE_EPSILON))
 
     # Approximate p-value from normal distribution for large n,
     # or simple bound for small n
-    p = 2.0 * math.exp(-0.5 * t_stat ** 2) / (math.sqrt(2 * math.pi) * max(abs(t_stat), 0.001))
+    p = 2.0 * math.exp(-0.5 * t_stat ** 2) / (math.sqrt(2 * math.pi) * max(abs(t_stat), _T_STAT_FLOOR))
     p = min(1.0, p)
 
     return r, p
@@ -574,7 +592,10 @@ def run_foldx_benchmark(
             ))
 
         except Exception as exc:
-            logger.error("Benchmark failed for %s: %s", entry.name, exc)
+            logger.error(
+                "FoldX benchmark failed for %s (%s): %s",
+                entry.name, entry.pdb_id, exc, exc_info=True,
+            )
 
     stats = _compute_statistics(comparisons)
 
@@ -641,7 +662,7 @@ def generate_benchmark_report(report: BenchmarkReport) -> str:
     return "\n".join(lines)
 
 
-def generate_benchmark_json(report: BenchmarkReport) -> dict:
+def generate_benchmark_json(report: BenchmarkReport) -> dict[str, object]:
     """Generate a machine-readable JSON-compatible dict from benchmark results.
 
     Args:

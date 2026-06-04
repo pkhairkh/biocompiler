@@ -24,8 +24,10 @@ import pytest
 z3 = pytest.importorskip("z3", reason="z3-solver not installed")
 
 # The solver module is created by sub-agents A1–A16; import after z3 check.
-from biocompiler.solver.engine_z3 import Z3Engine, Z3SolveResult  # type: ignore[import-untyped]
-from biocompiler.solver.engine_ortools import ORToolsEngine, ORToolsSolveResult  # type: ignore[import-untyped]
+from biocompiler.solver.engine_z3 import Z3Engine
+from biocompiler.solver.types import SolverResult as Z3SolveResult
+from biocompiler.solver.engine_ortools import ORTOOLSEngine
+from biocompiler.solver.types import SolverResult as ORToolsSolveResult
 
 # BioCompiler internals used for verification
 from biocompiler.translation import translate, compute_cai
@@ -48,9 +50,9 @@ def z3_engine() -> Z3Engine:
 
 
 @pytest.fixture
-def ortools_engine() -> ORToolsEngine:
+def ortools_engine() -> ORTOOLSEngine:
     """Default OR-Tools engine for comparison tests."""
-    return ORToolsEngine(organism="Homo_sapiens")
+    return ORTOOLSEngine(organism="Homo_sapiens")
 
 
 def _gc_content(seq: str) -> float:
@@ -252,7 +254,7 @@ class TestZ3VsORTools:
     """Cross-backend validation: both Z3 and OR-Tools should produce valid sequences."""
 
     def test_both_solve_same_protein(
-        self, z3_engine: Z3Engine, ortools_engine: ORToolsEngine,
+        self, z3_engine: Z3Engine, ortools_engine: ORTOOLSEngine,
     ):
         """Both engines should successfully solve the same protein."""
         z3_result = z3_engine.solve(HBB_PROTEIN_SHORT)
@@ -261,7 +263,7 @@ class TestZ3VsORTools:
         assert ort_result.solved, f"OR-Tools failed: {ort_result.error}"
 
     def test_both_produce_valid_sequences(
-        self, z3_engine: Z3Engine, ortools_engine: ORToolsEngine,
+        self, z3_engine: Z3Engine, ortools_engine: ORTOOLSEngine,
     ):
         """Both solutions should translate correctly and have valid length."""
         for label, eng in [("Z3", z3_engine), ("OR-Tools", ortools_engine)]:
@@ -273,7 +275,7 @@ class TestZ3VsORTools:
             )
 
     def test_both_respect_gc_bounds(
-        self, z3_engine: Z3Engine, ortools_engine: ORToolsEngine,
+        self, z3_engine: Z3Engine, ortools_engine: ORTOOLSEngine,
     ):
         """Both solutions should have GC within the default [0.30, 0.70] range."""
         for label, eng in [("Z3", z3_engine), ("OR-Tools", ortools_engine)]:
@@ -284,7 +286,7 @@ class TestZ3VsORTools:
             assert 0.30 <= gc <= 0.70, f"{label}: GC {gc:.4f} outside [0.30, 0.70]"
 
     def test_cai_values_reasonable(
-        self, z3_engine: Z3Engine, ortools_engine: ORToolsEngine,
+        self, z3_engine: Z3Engine, ortools_engine: ORTOOLSEngine,
     ):
         """Both engines should produce sequences with reasonable CAI."""
         for label, eng in [("Z3", z3_engine), ("OR-Tools", ortools_engine)]:
@@ -296,7 +298,7 @@ class TestZ3VsORTools:
             assert cai >= 0.3, f"{label}: CAI {cai:.4f} is unreasonably low"
 
     def test_cai_may_differ_but_both_valid(
-        self, z3_engine: Z3Engine, ortools_engine: ORToolsEngine,
+        self, z3_engine: Z3Engine, ortools_engine: ORTOOLSEngine,
     ):
         """CAI values may differ between backends but both should be valid."""
         z3_r = z3_engine.solve(HBB_PROTEIN_SHORT)

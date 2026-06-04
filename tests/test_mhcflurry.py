@@ -29,13 +29,12 @@ is_mhcflurry_available = _mhcflurry_adapter.is_mhcflurry_available
 MHCflurryClient = _mhcflurry_adapter.MHCflurryClient
 MHCBindingResult = _mhcflurry_adapter.MHCBindingResult
 ic50_to_binding_score = _mhcflurry_adapter.ic50_to_binding_score
-binding_score_to_ic50 = _mhcflurry_adapter.binding_score_to_ic50
 classify_binding = _mhcflurry_adapter.classify_binding
-predict_binding = _mhcflurry_adapter.predict_binding
-batch_predict = _mhcflurry_adapter.batch_predict
-predict_presentation = _mhcflurry_adapter.predict_presentation
 download_models = _mhcflurry_adapter.download_models
 clear_cache = _mhcflurry_adapter.clear_cache
+
+# binding_score_to_ic50 lives in immunogenicity, not the adapter
+from biocompiler.immunogenicity import binding_score_to_ic50
 
 # ---------------------------------------------------------------------------
 # Constants used across tests
@@ -229,7 +228,7 @@ class TestResultFormatConversion:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestPredictBinding:
-    """Tests for ``predict_binding`` — conditional on MHCflurry installation."""
+    """Tests for ``MHCflurryClient.predict_binding`` — conditional on MHCflurry installation."""
 
     @pytest.fixture(autouse=True)
     def _skip_if_no_mhcflurry(self) -> None:
@@ -238,14 +237,19 @@ class TestPredictBinding:
         if not is_mhcflurry_available():
             pytest.skip("MHCflurry not available")
 
-    def test_returns_mhc_binding_result(self) -> None:
+    @pytest.fixture()
+    def client(self) -> MHCflurryClient:
+        """Provide a fresh MHCflurryClient for each test."""
+        return MHCflurryClient()
+
+    def test_returns_mhc_binding_result(self, client: MHCflurryClient) -> None:
         """predict_binding returns an MHCBindingResult instance."""
-        result = predict_binding(KNOWN_PEPTIDE, KNOWN_ALLELE)
+        result = client.predict_binding(KNOWN_PEPTIDE, KNOWN_ALLELE)
         assert isinstance(result, MHCBindingResult)
 
-    def test_result_fields_populated(self) -> None:
+    def test_result_fields_populated(self, client: MHCflurryClient) -> None:
         """All fields of MHCBindingResult are populated correctly."""
-        result = predict_binding(KNOWN_PEPTIDE, KNOWN_ALLELE)
+        result = client.predict_binding(KNOWN_PEPTIDE, KNOWN_ALLELE)
         assert result.allele == KNOWN_ALLELE
         assert result.peptide == KNOWN_PEPTIDE
         assert isinstance(result.binding_score, float)
@@ -255,7 +259,7 @@ class TestPredictBinding:
         assert isinstance(result.binding_class, str)
         assert result.binding_class in VALID_BINDING_CLASSES
 
-    def test_binding_class_is_valid(self) -> None:
+    def test_binding_class_is_valid(self, client: MHCflurryClient) -> None:
         """binding_class is one of the 4 valid values."""
         # Test several peptide/allele combinations
         pairs = [
@@ -264,15 +268,15 @@ class TestPredictBinding:
             ("GILGFVFTL", "HLA-A*02:01"),
         ]
         for peptide, allele in pairs:
-            result = predict_binding(peptide, allele)
+            result = client.predict_binding(peptide, allele)
             assert result.binding_class in VALID_BINDING_CLASSES, (
                 f"Invalid binding_class '{result.binding_class}' for "
                 f"{peptide}/{allele}"
             )
 
-    def test_positions_are_consistent(self) -> None:
+    def test_positions_are_consistent(self, client: MHCflurryClient) -> None:
         """start_position and end_position are consistent with peptide length."""
-        result = predict_binding(KNOWN_PEPTIDE, KNOWN_ALLELE)
+        result = client.predict_binding(KNOWN_PEPTIDE, KNOWN_ALLELE)
         assert result.end_position - result.start_position + 1 == len(KNOWN_PEPTIDE)
 
 
@@ -281,7 +285,7 @@ class TestPredictBinding:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestBatchPredict:
-    """Tests for ``batch_predict`` — conditional on MHCflurry installation."""
+    """Tests for ``MHCflurryClient.batch_predict`` — conditional on MHCflurry installation."""
 
     @pytest.fixture(autouse=True)
     def _skip_if_no_mhcflurry(self) -> None:
@@ -290,9 +294,14 @@ class TestBatchPredict:
         if not is_mhcflurry_available():
             pytest.skip("MHCflurry not available")
 
-    def test_batch_predict_returns_results(self) -> None:
+    @pytest.fixture()
+    def client(self) -> MHCflurryClient:
+        """Provide a fresh MHCflurryClient for each test."""
+        return MHCflurryClient()
+
+    def test_batch_predict_returns_results(self, client: MHCflurryClient) -> None:
         """batch_predict returns a list of MHCBindingResult."""
-        results = batch_predict(
+        results = client.batch_predict(
             TEST_PROTEIN,
             alleles=["HLA-A*02:01"],
             epitope_lengths=[9],
@@ -302,10 +311,10 @@ class TestBatchPredict:
         for r in results:
             assert isinstance(r, MHCBindingResult)
 
-    def test_multiple_alleles_covered(self) -> None:
+    def test_multiple_alleles_covered(self, client: MHCflurryClient) -> None:
         """batch_predict covers all requested alleles."""
         alleles = ["HLA-A*02:01", "HLA-A*01:01"]
-        results = batch_predict(
+        results = client.batch_predict(
             TEST_PROTEIN,
             alleles=alleles,
             epitope_lengths=[9],
@@ -314,10 +323,10 @@ class TestBatchPredict:
         for allele in alleles:
             assert allele in found_alleles, f"Allele {allele} not in results"
 
-    def test_multiple_epitope_lengths_scanned(self) -> None:
+    def test_multiple_epitope_lengths_scanned(self, client: MHCflurryClient) -> None:
         """batch_predict scans multiple epitope lengths."""
         epi_lengths = [8, 9, 10]
-        results = batch_predict(
+        results = client.batch_predict(
             TEST_PROTEIN,
             alleles=["HLA-A*02:01"],
             epitope_lengths=epi_lengths,
@@ -329,7 +338,7 @@ class TestBatchPredict:
             f"got lengths {found_lengths}"
         )
 
-    def test_results_count_reasonable(self) -> None:
+    def test_results_count_reasonable(self, client: MHCflurryClient) -> None:
         """Number of results is reasonable given protein length and parameters.
 
         For a protein of length L and peptide length p, we expect
@@ -338,7 +347,7 @@ class TestBatchPredict:
         protein = TEST_PROTEIN
         allele_count = 2
         epi_lengths = [9]
-        results = batch_predict(
+        results = client.batch_predict(
             protein,
             alleles=["HLA-A*02:01", "HLA-A*01:01"],
             epitope_lengths=epi_lengths,
@@ -360,7 +369,7 @@ class TestBatchPredict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestPredictPresentation:
-    """Tests for ``predict_presentation`` — conditional on MHCflurry."""
+    """Tests for ``MHCflurryClient.predict_presentation`` — conditional on MHCflurry."""
 
     @pytest.fixture(autouse=True)
     def _skip_if_no_mhcflurry(self) -> None:
@@ -369,26 +378,31 @@ class TestPredictPresentation:
         if not is_mhcflurry_available():
             pytest.skip("MHCflurry not available")
 
-    def test_predict_presentation_returns_results(self) -> None:
+    @pytest.fixture()
+    def client(self) -> MHCflurryClient:
+        """Provide a fresh MHCflurryClient for each test."""
+        return MHCflurryClient()
+
+    def test_predict_presentation_returns_results(self, client: MHCflurryClient) -> None:
         """predict_presentation returns a list of results."""
-        results = predict_presentation(
+        results = client.predict_presentation(
             TEST_PROTEIN,
             alleles=["HLA-A*02:01"],
         )
         assert isinstance(results, list)
 
-    def test_predict_presentation_may_differ_from_binding(self) -> None:
+    def test_predict_presentation_may_differ_from_binding(self, client: MHCflurryClient) -> None:
         """Presentation prediction may differ from binding-only prediction.
 
         MHCflurry's presentation model incorporates antigen processing,
         so results may differ from the binding-only model.
         """
-        binding_results = batch_predict(
+        binding_results = client.batch_predict(
             TEST_PROTEIN,
             alleles=["HLA-A*02:01"],
             epitope_lengths=[9],
         )
-        presentation_results = predict_presentation(
+        presentation_results = client.predict_presentation(
             TEST_PROTEIN,
             alleles=["HLA-A*02:01"],
         )
@@ -396,9 +410,9 @@ class TestPredictPresentation:
         assert len(binding_results) > 0
         assert len(presentation_results) > 0
 
-    def test_predict_presentation_binding_class_valid(self) -> None:
+    def test_predict_presentation_binding_class_valid(self, client: MHCflurryClient) -> None:
         """All presentation results have valid binding_class values."""
-        results = predict_presentation(
+        results = client.predict_presentation(
             TEST_PROTEIN,
             alleles=["HLA-A*02:01"],
         )
@@ -425,7 +439,7 @@ class TestErrorHandling:
         # If MHCflurry is not available, predict_binding should handle
         # it gracefully (return empty result or raise a specific error)
         try:
-            result = predict_binding("SIINFEKL", "INVALID_ALLELE_999")
+            result = client.predict_binding("SIINFEKL", "INVALID_ALLELE_999")
             # If it returns a result, it should be a non-binder
             if result is not None:
                 assert isinstance(result, MHCBindingResult)
@@ -435,9 +449,10 @@ class TestErrorHandling:
 
     def test_invalid_peptide_handled(self) -> None:
         """An invalid peptide should be handled gracefully."""
+        client = MHCflurryClient()
         # Empty peptide
         try:
-            result = predict_binding("", KNOWN_ALLELE)
+            result = client.predict_binding("", KNOWN_ALLELE)
             if result is not None:
                 assert isinstance(result, MHCBindingResult)
         except (ValueError, TypeError):
@@ -447,8 +462,9 @@ class TestErrorHandling:
 
     def test_very_short_protein(self) -> None:
         """A protein shorter than the minimum epitope length returns empty results."""
+        client = MHCflurryClient()
         # 1-AA protein — cannot produce any 8-11 mer peptides
-        results = batch_predict(
+        results = client.batch_predict(
             SHORT_PROTEIN,
             alleles=["HLA-A*02:01"],
             epitope_lengths=[8, 9, 10, 11],
@@ -458,10 +474,11 @@ class TestErrorHandling:
 
     def test_non_standard_amino_acids(self) -> None:
         """Peptides with non-standard amino acids are handled gracefully."""
+        client = MHCflurryClient()
         # Protein with X (non-standard)
         protein_with_x = "MAGXKWVTFISLLFLFSSAYS"
         try:
-            results = batch_predict(
+            results = client.batch_predict(
                 protein_with_x,
                 alleles=["HLA-A*02:01"],
                 epitope_lengths=[9],

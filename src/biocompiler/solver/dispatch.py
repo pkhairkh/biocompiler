@@ -31,12 +31,15 @@ from __future__ import annotations
 import importlib.util
 import logging
 import time
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from ..constants import AA_TO_CODONS
 from ..organisms import SPECIES
 
 from .types import (
+    ConstraintPriority,
+    ConstraintSpec,
     ConstraintStrictness,
     ConstraintViolation,
     CSPModel,
@@ -45,31 +48,36 @@ from .types import (
     SolverResult,
 )
 from .constraints import build_csp_model, HardConstraint, SoftConstraint
-from .mus import compute_mus, quick_feasibility_check
+from .mus import compute_mus, quick_feasibility_check, FeasibilityReport
+from .scoring import ConstraintScorer
 
 if TYPE_CHECKING:
+    # These imports exist ONLY for TYPE_CHECKING — they provide type
+    # annotations (e.g. type[ORTOOLSEngine] below) without importing
+    # the heavy backend modules at runtime.  The actual runtime
+    # imports happen in the try-except blocks below.
     from .engine_ortools import ORTOOLSEngine
     from .engine_z3 import Z3Engine
 
 # Backend engines (optional — may not be installed)
 _ORTOOLS_AVAILABLE: bool = False
 _Z3_AVAILABLE: bool = False
-_ortools_engine: type[ORTOOLSEngine] | None = None
-_z3_engine: type[Z3Engine] | None = None
+_ortools_engine: type[ORTOOLSEngine] | None = None  # type: ignore[valid-type]
+_z3_engine: type[Z3Engine] | None = None  # type: ignore[valid-type]
+
+logger = logging.getLogger(__name__)
 
 try:
     from .engine_ortools import ORTOOLSEngine as _ortools_engine  # noqa: F811
     _ORTOOLS_AVAILABLE = True
 except ImportError:
-    pass
+    logger.debug("OR-Tools engine not available")
 
 try:
     from .engine_z3 import Z3Engine as _z3_engine  # noqa: F811
     _Z3_AVAILABLE = True
 except ImportError:
-    pass
-
-logger = logging.getLogger(__name__)
+    logger.debug("Z3 engine not available")
 
 
 def get_csp_availability() -> dict[str, bool]:
@@ -88,8 +96,15 @@ def get_csp_availability() -> dict[str, bool]:
     return {"ortools": ortools_ok, "z3": z3_ok, "any": ortools_ok or z3_ok}
 
 
-# Backward-compatible alias (name previously implied a bool return)
-is_csp_available = get_csp_availability
+def is_csp_available() -> dict[str, bool]:
+    """Deprecated: use :func:`get_csp_availability` or :func:`is_solver_available` instead."""
+    warnings.warn(
+        "is_csp_available() is deprecated — use get_csp_availability() "
+        "or is_solver_available() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return get_csp_availability()
 
 
 def is_solver_available() -> bool:
@@ -221,8 +236,9 @@ def solve_with_csp(
     model = build_csp_model(protein, organism, config)
 
     # Quick feasibility check
-    feasible, reason = quick_feasibility_check(model)
-    if not feasible:
+    report = quick_feasibility_check(model)
+    if not report.feasible:
+        reason = "; ".join(report.impossible_constraints) if report.impossible_constraints else "Model infeasible"
         logger.warning("CSP model infeasible: %s", reason)
         return _make_fallback_result(protein, organism, time.monotonic() - start, reason)
 
@@ -243,14 +259,16 @@ def solve_with_csp(
             "All CSP backends unavailable or infeasible",
         )
 
-    # Post-solve validation
+    # Post-solve validation (returns violations + composite enforcement score)
     if result.sequence:
-        violations = validate_csp_solution(result.sequence, protein, config, organism)
+        violations, composite_score = validate_csp_solution(result.sequence, protein, config, organism)
         result.violations = violations
+        result.metadata["composite_score"] = composite_score
         if violations:
             logger.warning(
-                "CSP solution has %d constraint violation(s) — solver may be incorrect.",
-                len(violations),
+                "CSP solution has %d constraint violation(s) — "
+                "composite_score=%.4f — solver may be incorrect.",
+                len(violations), composite_score,
             )
 
     result.fallback_used = False
@@ -327,21 +345,118 @@ def csp_optimize(
         return _make_fallback_result(protein, organism, 0.0, "solve_with_csp raised an exception")
 
 
+# Default priority mapping for well-known constraint types, used when
+# the constraint object doesn't carry an explicit ConstraintPriority.
+_DEFAULT_PRIORITY_MAP: dict[str, ConstraintPriority] = {
+    "TranslationConstraint": ConstraintPriority.CRITICAL,
+    "NoRestrictionSiteConstraint": ConstraintPriority.HIGH,
+    "GCRangeConstraint": ConstraintPriority.MEDIUM,
+    "NoCrypticSpliceConstraint": ConstraintPriority.MEDIUM,
+    "NoCpGIslandConstraint": ConstraintPriority.MEDIUM,
+    "NoATTTAMotifConstraint": ConstraintPriority.MEDIUM,
+    "NoTRunConstraint": ConstraintPriority.LOW,
+    "MaximizeCAI": ConstraintPriority.LOW,
+    "MinimizeCpG": ConstraintPriority.LOW,
+    "MinimizeMRNADG": ConstraintPriority.LOW,
+}
+
+
+def _check_constraint(
+    constraint: HardConstraint | SoftConstraint | ConstraintSpec,
+    sequence: str,
+    strictness: ConstraintStrictness,
+) -> ConstraintViolation | None:
+    """Check a single constraint against a candidate sequence.
+
+    Handles both :class:`HardConstraint` / :class:`SoftConstraint` instances
+    and :class:`ConstraintSpec` objects.  All three types now support a
+    ``.check()`` method — ``ConstraintSpec.check()`` dispatches to the
+    appropriate verification logic based on ``constraint.ctype`` and
+    ``constraint.params``.
+
+    The returned :class:`ConstraintViolation` (if any) includes the
+    constraint's enforcement priority and weight.
+
+    Parameters
+    ----------
+    constraint : HardConstraint | SoftConstraint | ConstraintSpec
+        The constraint to check.
+    sequence : str
+        Candidate DNA sequence.
+    strictness : ConstraintStrictness
+        Whether this is a HARD or SOFT constraint.
+
+    Returns
+    -------
+    ConstraintViolation | None
+        A violation if the constraint is not satisfied or raises an error;
+        ``None`` if the constraint passes.
+    """
+    # Determine priority and weight for the violation
+    if isinstance(constraint, ConstraintSpec):
+        priority = constraint.priority
+        weight = constraint.weight
+    else:
+        priority = _DEFAULT_PRIORITY_MAP.get(
+            constraint.name, ConstraintPriority.MEDIUM
+        )
+        weight = 1.0
+
+    try:
+        satisfied = constraint.check(sequence)
+    except Exception as exc:
+        return ConstraintViolation(
+            constraint_name=constraint.name,
+            constraint_type=strictness,
+            description=f"Constraint check raised {type(exc).__name__}: {exc}",
+            severity=0.5 if strictness == ConstraintStrictness.HARD else 0.3,
+            priority=priority,
+            weight=weight,
+        )
+
+    if not satisfied:
+        severity = 0.8 if strictness == ConstraintStrictness.HARD else 0.5
+        label = "Constraint" if strictness == ConstraintStrictness.HARD else "Soft constraint"
+        return ConstraintViolation(
+            constraint_name=constraint.name,
+            constraint_type=strictness,
+            description=f"{label} '{constraint.name}' is not satisfied by the solution.",
+            severity=severity,
+            priority=priority,
+            weight=weight,
+        )
+
+    return None
+
+
 def validate_csp_solution(
     sequence: str,
     protein: str,
     config: SolverConfig,
     organism: str = "Homo_sapiens",
-) -> list[ConstraintViolation]:
+) -> tuple[list[ConstraintViolation], float]:
     """Verify that a candidate sequence satisfies *all* constraints.
 
-    This is a sanity check — if the solver is correct the returned list
-    will be empty.  When violations are found they are reported so that
-    the caller can decide whether to accept the solution, re-solve, or
-    fall back.
+    This is a sanity check — if the solver is correct the returned
+    violation list will be empty.  When violations are found they are
+    reported so that the caller can decide whether to accept the
+    solution, re-solve, or fall back.
+
+    In addition to the violation list, a **composite enforcement score**
+    in [0.0, 1.0] is returned.  This score is computed by
+    :class:`ConstraintScorer` and reflects how well the solution
+    satisfies all constraints, weighted by each constraint's priority
+    and weight:
+
+    - 1.0 = all constraints satisfied
+    - 0.0 = at least one CRITICAL constraint violated
+    - Between = partial satisfaction with priority-weighted penalties
 
     Iterates over every constraint in the CSP model and calls its
-    ``check()`` method, then performs a translation-fidelity sanity check.
+    ``check()`` method, then performs a translation-fidelity sanity
+    check.  Uses the :func:`_check_constraint` helper so that both
+    ``HardConstraint``/``SoftConstraint`` instances (with ``.check()``)
+    and ``ConstraintSpec`` objects are handled gracefully.
 
     Parameters
     ----------
@@ -351,11 +466,16 @@ def validate_csp_solution(
         The original amino-acid sequence.
     config : SolverConfig
         Solver configuration (defines the active constraint set).
+    organism : str
+        Target organism name.
 
     Returns
     -------
-    list[ConstraintViolation]
-        Empty if fully valid; otherwise one entry per violated constraint.
+    tuple[list[ConstraintViolation], float]
+        A tuple of (violations, composite_score).
+        - violations: Empty if fully valid; otherwise one entry per
+          violated constraint.
+        - composite_score: Enforcement score in [0.0, 1.0].
     """
     violations: list[ConstraintViolation] = []
 
@@ -365,8 +485,9 @@ def validate_csp_solution(
             constraint_type=ConstraintStrictness.HARD,
             description="Sequence is empty — nothing to validate.",
             severity=1.0,
+            priority=ConstraintPriority.CRITICAL,
         ))
-        return violations
+        return violations, 0.0
 
     # Rebuild the model to iterate constraints.  build_csp_model() returns
     # a constraints.CSPModel whose hard_constraints / soft_constraints are
@@ -375,45 +496,28 @@ def validate_csp_solution(
 
     # Check hard constraints
     for constraint in constraint_model.hard_constraints:
-        try:
-            satisfied = constraint.check(sequence)
-        except Exception as exc:
-            violations.append(ConstraintViolation(
-                constraint_name=constraint.name,
-                constraint_type=ConstraintStrictness.HARD,
-                description=f"Constraint check raised {type(exc).__name__}: {exc}",
-                severity=0.5,
-            ))
-            continue
-
-        if not satisfied:
-            violations.append(ConstraintViolation(
-                constraint_name=constraint.name,
-                constraint_type=ConstraintStrictness.HARD,
-                description=f"Constraint '{constraint.name}' is not satisfied by the solution.",
-                severity=0.8,
-            ))
+        violation = _check_constraint(constraint, sequence, ConstraintStrictness.HARD)
+        if violation is not None:
+            violations.append(violation)
 
     # Check soft constraints
     for constraint in constraint_model.soft_constraints:
-        try:
-            satisfied = constraint.check(sequence)
-        except Exception as exc:
-            violations.append(ConstraintViolation(
-                constraint_name=constraint.name,
-                constraint_type=ConstraintStrictness.SOFT,
-                description=f"Soft constraint check raised {type(exc).__name__}: {exc}",
-                severity=0.3,
-            ))
-            continue
+        violation = _check_constraint(constraint, sequence, ConstraintStrictness.SOFT)
+        if violation is not None:
+            violations.append(violation)
 
-        if not satisfied:
-            violations.append(ConstraintViolation(
-                constraint_name=constraint.name,
-                constraint_type=ConstraintStrictness.SOFT,
-                description=f"Soft constraint '{constraint.name}' is not satisfied by the solution.",
-                severity=0.5,
-            ))
+    # Also iterate constraint_model.constraints if present (e.g. types.CSPModel
+    # has a list[ConstraintSpec] attribute).  ConstraintSpec objects now have
+    # a .check() method that dispatches based on ctype and params.
+    for constraint in getattr(constraint_model, "constraints", []):
+        strictness = (
+            constraint.strictness
+            if isinstance(constraint, ConstraintSpec)
+            else ConstraintStrictness.HARD
+        )
+        violation = _check_constraint(constraint, sequence, strictness)
+        if violation is not None:
+            violations.append(violation)
 
     # Extra sanity: translation fidelity
     from ..constants import CODON_TABLE
@@ -427,6 +531,7 @@ def validate_csp_solution(
                 f"protein length × 3 ({len(protein) * 3})."
             ),
             severity=1.0,
+            priority=ConstraintPriority.CRITICAL,
         ))
     else:
         codons = [sequence[i:i + 3] for i in range(0, len(sequence), 3)]
@@ -438,6 +543,31 @@ def validate_csp_solution(
                     constraint_type=ConstraintStrictness.HARD,
                     description=f"Codon {idx} ({codon}) translates to '{actual_aa}', expected '{expected_aa}'.",
                     severity=1.0,
+                    priority=ConstraintPriority.CRITICAL,
                 ))
 
-    return violations
+    # ── Compute composite enforcement score via ConstraintScorer ─────
+    # Use the constraint specs from the model (which carry priority & weight)
+    constraint_specs: list[ConstraintSpec] = list(
+        getattr(constraint_model, "constraints", [])
+    )
+    scorer = ConstraintScorer()
+    composite_score = scorer.score_solution(sequence, constraint_specs)
+
+    # If we found violations not in the specs (e.g. translation fidelity),
+    # factor them into the composite score
+    has_critical_violation = any(
+        v.priority == ConstraintPriority.CRITICAL for v in violations
+    )
+    if has_critical_violation:
+        composite_score = 0.0
+
+    # Sort violations by priority (CRITICAL first) then severity
+    violations.sort(key=lambda v: (v.priority.rank, -v.severity))
+
+    logger.info(
+        "validate_csp_solution: %d violation(s), composite_score=%.4f",
+        len(violations), composite_score,
+    )
+
+    return violations, composite_score

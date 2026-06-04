@@ -56,7 +56,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +68,10 @@ __all__ = [
     "MFEResult",
     "AccessibilityResult",
     "StableStructure",
+    "MIN_LOOP_LENGTH",
+    "PAIR_ENERGIES",
+    "DEFAULT_WINDOW_SIZE",
+    "DEFAULT_STABLE_DG_THRESHOLD",
 ]
 
 
@@ -96,6 +99,18 @@ DEFAULT_WINDOW_SIZE: int = 120
 
 #: Default ΔG threshold for "stable" structures (kcal/mol).
 DEFAULT_STABLE_DG_THRESHOLD: float = -4.0
+
+#: Default sliding window size for stable structure detection (nt).
+DEFAULT_STABLE_WINDOW_SIZE: int = 60
+
+#: Default minimum stem length (base pairs) for reporting stable structures.
+DEFAULT_MIN_STEM: int = 3
+
+#: Sliding window step divisor for accessibility computation.
+_ACCESSIBILITY_STEP_DIVISOR: int = 4
+
+#: Sliding window overlap divisor for stable structure detection.
+_STABLE_WINDOW_OVERLAP_DIVISOR: int = 2
 
 
 # ==============================================================================
@@ -139,7 +154,7 @@ class AccessibilityResult:
         warning:        User-facing warning about approximate results.
     """
     sequence: str
-    accessibility: List[float]
+    accessibility: list[float]
     window_size: int
     method: str = "nussinov_fallback"
     warning: str = "Approximate accessibility from Nussinov fallback; install ViennaRNA for accurate prediction"
@@ -181,7 +196,7 @@ def _can_pair(a: str, b: str) -> bool:
 # Nussinov–Jacobson DP
 # ==============================================================================
 
-def nussinov_fold(seq: str, min_loop: int = MIN_LOOP_LENGTH) -> Tuple[str, float]:
+def nussinov_fold(seq: str, min_loop: int = MIN_LOOP_LENGTH) -> tuple[str, float]:
     """Predict RNA secondary structure using the Nussinov–Jacobson algorithm.
 
     The Nussinov algorithm fills an n×n DP table where ``dp[i][j]`` is the
@@ -238,11 +253,11 @@ def nussinov_fold(seq: str, min_loop: int = MIN_LOOP_LENGTH) -> Tuple[str, float
 
 
 def _traceback(
-    dp: List[List[int]],
+    dp: list[list[int]],
     rna: str,
     i: int,
     j: int,
-    structure: List[str],
+    structure: list[str],
     min_loop: int,
 ) -> None:
     """Recursive traceback for Nussinov DP table."""
@@ -292,15 +307,26 @@ def compute_approx_dg(seq: str, structure: str) -> float:
         )
 
     # Identify base pairs from dot-bracket using a stack
-    stack: List[int] = []
-    pairs: List[Tuple[int, int]] = []
+    stack: list[int] = []
+    pairs: list[tuple[int, int]] = []
     for idx, char in enumerate(structure):
         if char == "(":
             stack.append(idx)
         elif char == ")":
-            if stack:
-                open_idx = stack.pop()
-                pairs.append((open_idx, idx))
+            if not stack:
+                logger.warning(
+                    "Unmatched closing bracket at position %d in structure; skipping",
+                    idx,
+                )
+                continue
+            open_idx = stack.pop()
+            pairs.append((open_idx, idx))
+
+    if stack:
+        logger.warning(
+            "%d unmatched opening bracket(s) remaining in structure after parsing",
+            len(stack),
+        )
 
     # Sum per-pair energies
     dg = 0.0
@@ -395,7 +421,7 @@ def predict_accessibility_fallback(
     paired_count = [0] * n
     window_count = [0] * n
 
-    for start in range(0, n - window_size + 1, max(1, window_size // 4)):
+    for start in range(0, n - window_size + 1, max(1, window_size // _ACCESSIBILITY_STEP_DIVISOR)):
         end = start + window_size
         window_seq = seq_upper[start:end]
         structure, _ = nussinov_fold(window_seq)
@@ -442,9 +468,9 @@ def predict_accessibility_fallback(
 def find_stable_structures_fallback(
     seq: str,
     dg_threshold: float = DEFAULT_STABLE_DG_THRESHOLD,
-    window_size: int = 60,
-    min_stem: int = 3,
-) -> List[StableStructure]:
+    window_size: int = DEFAULT_STABLE_WINDOW_SIZE,
+    min_stem: int = DEFAULT_MIN_STEM,
+) -> list[StableStructure]:
     """Find stable stem-loop structures in an RNA sequence.
 
     Slides a window across the sequence, folds each window with the
@@ -468,7 +494,7 @@ def find_stable_structures_fallback(
     if n == 0:
         return []
 
-    results: List[StableStructure] = []
+    results: list[StableStructure] = []
 
     # If sequence is shorter than window_size, fold the whole thing
     if n <= window_size:
@@ -485,7 +511,7 @@ def find_stable_structures_fallback(
         return results
 
     # Slide window with 50% overlap
-    step = max(1, window_size // 2)
+    step = max(1, window_size // _STABLE_WINDOW_OVERLAP_DIVISOR)
     seen_ranges: set[tuple[int, int]] = set()
 
     for start in range(0, n - window_size + 1, step):

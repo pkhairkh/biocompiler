@@ -171,6 +171,11 @@ _AVAILABILITY_TIMEOUT: float = 10.0       # seconds — HEAD request timeout for
 _MIN_PDB_LENGTH: int = 50                  # minimum bytes for a valid PDB response
 _ERROR_TRUNCATE: int = 200                 # max chars for truncated API error messages
 _CACHE_KEY_LENGTH: int = 16                # hex chars kept from SHA-256 digest for cache keys
+_DEGENERATE_BOND_THRESHOLD: float = 1e-8   # below this, bonds are considered coincident in dihedral calc
+_DEFAULT_BATCH_TIMEOUT: float = 120.0      # seconds — default per-protein timeout for batch requests
+_API_TIME_PER_RESIDUE: float = 1.0         # seconds — estimated API time per residue for batch estimates
+_CACHE_TIME_PER_RESIDUE: float = 0.5       # seconds — estimated cached-result time per residue
+_REPORT_LINE_WIDTH: int = 82               # characters — width of formatted batch report lines
 
 # NOTE: PDB ATOM record parsing uses fixed-width column slicing
 # (see parse_pdb).  A regex-based parser was previously defined here
@@ -418,8 +423,10 @@ class ESMFoldCache:
                     self._cache[key] = result
                     self._hits += 1
                     return result
-                except (json.JSONDecodeError, KeyError):
-                    pass
+                except (json.JSONDecodeError, KeyError) as exc:
+                    logger.warning(
+                        "Corrupt cache file %s, skipping: %s", filepath, exc
+                    )
 
         self._misses += 1
         return None
@@ -459,8 +466,10 @@ class ESMFoldCache:
                 }
                 with open(filepath, "w") as f:
                     json.dump(data, f)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning(
+                    "Failed to write cache file %s: %s", filepath, exc
+                )
 
     @property
     def hits(self) -> int:
@@ -558,7 +567,7 @@ def is_esmfold_available() -> bool:
         logger.debug("Local esm package is importable")
         return True
     except ImportError:
-        pass
+        logger.debug("Local esm package not importable")
 
     return False
 
@@ -731,7 +740,7 @@ def _dihedral_angle(
 
     # Normalise b1 so that it does not influence magnitude of vector
     b1_norm = np.linalg.norm(b1)
-    if b1_norm < 1e-8:
+    if b1_norm < _DEGENERATE_BOND_THRESHOLD:
         return None
     b1_unit = b1 / b1_norm
 
@@ -1259,7 +1268,7 @@ class BatchStructureRequest:
     names: list[str] | None = None
     use_cache: bool = True
     max_concurrent: int = 3
-    timeout_per_protein: float = 120.0
+    timeout_per_protein: float = _DEFAULT_BATCH_TIMEOUT
     stop_on_failure: bool = False
 
 
@@ -1281,14 +1290,14 @@ class BatchStructureResult:
         summary: Aggregate statistics dict.
     """
 
-    results: list[dict]
+    results: list[dict[str, Any]]
     names: list[str]
     total: int
     successful: int
     failed: int
     from_cache: int
     total_time_s: float
-    summary: dict
+    summary: dict[str, Any]
 
 
 def validate_batch_input(proteins: list[str]) -> list[str]:
@@ -1354,8 +1363,8 @@ def estimate_batch_time(
         return 0.0
 
     # Rough per-residue timing.
-    api_time_per_protein = avg_length * 1.0   # ~1 s/residue
-    cache_time_per_protein = avg_length * 0.5  # ~0.5 s/residue for cached
+    api_time_per_protein = avg_length * _API_TIME_PER_RESIDUE
+    cache_time_per_protein = avg_length * _CACHE_TIME_PER_RESIDUE
 
     # Assume ~50 % cache-hit rate for estimation.
     api_count = num_proteins // 2 + num_proteins % 2
@@ -1377,12 +1386,12 @@ def _predict_single(
     name: str,
     use_cache: bool,
     semaphore: Semaphore,
-) -> dict:
+) -> dict[str, Any]:
     """Predict structure for a single protein with rate-limiting.
 
     Returns a result dict with at least ``name`` and ``status`` keys.
     """
-    result: dict = {"name": name, "status": "error"}
+    result: dict[str, Any] = {"name": name, "status": "error"}
 
     with EngineTimer() as timer:
         try:
@@ -1484,11 +1493,11 @@ def predict_batch(
             max_concurrent=request.max_concurrent,
         )
 
-        # Convert BatchResult[ESMFoldResult] → list[dict] for BatchStructureResult.
-        results: list[dict] = []
+        # Convert BatchResult[ESMFoldResult] → list[dict[str, Any]] for BatchStructureResult.
+        results: list[dict[str, Any]] = []
         cancel = False
         for idx, (name, ef_result) in enumerate(zip(names, batch_result.results)):
-            result_dict: dict = {
+            result_dict: dict[str, Any] = {
                 "name": name,
                 "status": "success" if ef_result.success else "error",
                 "from_cache": False,
@@ -1522,7 +1531,7 @@ def predict_batch(
         if r["status"] == "success" and r.get("mean_plddt") is not None
     ]
 
-    summary: dict = {
+    summary: dict[str, Any] = {
         "total": total,
         "successful": successful,
         "failed": failed,
@@ -1617,9 +1626,9 @@ def format_batch_report(
     # --- text format ---
     # Header
     lines: list[str] = []
-    lines.append("=" * 82)
+    lines.append("=" * _REPORT_LINE_WIDTH)
     lines.append("ESMFold Batch Structure Prediction Report")
-    lines.append("=" * 82)
+    lines.append("=" * _REPORT_LINE_WIDTH)
     lines.append("")
 
     # Table header
@@ -1628,7 +1637,7 @@ def format_batch_report(
         f"{'Quality':>10s} {'Time (s)':>9s} {'Status':>8s} {'Cache':>5s}"
     )
     lines.append(header)
-    lines.append("-" * 82)
+    lines.append("-" * _REPORT_LINE_WIDTH)
 
     # Table rows
     for r in result.results:
@@ -1651,7 +1660,7 @@ def format_batch_report(
             f"{quality:>10s} {time_s:>9s} {status:>8s} {cache:>5s}"
         )
 
-    lines.append("-" * 82)
+    lines.append("-" * _REPORT_LINE_WIDTH)
 
     # Summary
     s = result.summary
@@ -1685,6 +1694,6 @@ def format_batch_report(
     if s.get("cancelled"):
         lines.append("  ** Batch was cancelled (stop_on_failure) **")
 
-    lines.append("=" * 82)
+    lines.append("=" * _REPORT_LINE_WIDTH)
 
     return "\n".join(lines)

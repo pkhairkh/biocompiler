@@ -19,10 +19,30 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
+import random
 import sys
 import time
 from typing import List, Optional
+
+__all__ = [
+    "main",
+    "verify",
+    "build_parser",
+    "colorize",
+    "cmd_optimize",
+    "cmd_check",
+    "cmd_benchmark",
+    "cmd_scan",
+    "cmd_structure",
+    "cmd_stability",
+    "cmd_solubility",
+    "cmd_immunogenicity",
+    "cmd_assess",
+]
+
+logger = logging.getLogger(__name__)
 
 from . import __version__
 from .optimization import BioOptimizer
@@ -216,22 +236,28 @@ def _get_organism(args: argparse.Namespace) -> str:
 
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Handle the 'optimize' command."""
+    # Set deterministic seed if provided
+    seed: Optional[int] = getattr(args, "seed", None)
+    if seed is not None:
+        random.seed(seed)
+        logger.info("Random seed set to %d for reproducible optimization", seed)
+
     # Clear engine caches for a fresh optimization run
     try:
         from .foldx import clear_cache as foldx_clear_cache
         foldx_clear_cache()
     except ImportError:
-        pass
+        logger.debug("foldx module not available; skipping cache clear")
     try:
         from .camsol import clear_cache as camsol_clear_cache
         camsol_clear_cache()
     except ImportError:
-        pass
+        logger.debug("camsol module not available; skipping cache clear")
     try:
         from .immunogenicity import clear_cache as immunogenicity_clear_cache
         immunogenicity_clear_cache()
     except ImportError:
-        pass
+        logger.debug("immunogenicity module not available; skipping cache clear")
 
     seq = _read_fasta(args.input)
 
@@ -285,7 +311,8 @@ def cmd_check(args: argparse.Namespace) -> None:
         enzymes = [e.strip() for e in args.enzymes.split(",") if e.strip()]
 
     # Evaluate all 8 predicates
-    results = []
+    from .type_system import PredicateResult
+    results: List[PredicateResult] = []
     results.append(check_no_stop_codons(seq))
     results.append(check_no_cryptic_splice(seq, args.splice_low, args.splice_high))
     results.append(check_no_cpg_island(seq))
@@ -294,7 +321,6 @@ def cmd_check(args: argparse.Namespace) -> None:
     results.append(check_valid_coding_seq(seq))
 
     # ConservationScore — no optimization was performed, so all AA are self-conserved
-    from .type_system import PredicateResult
     results.append(PredicateResult(
         "ConservationScore", True,
         details="No substitutions (check-only mode); identity conservation by default"
@@ -331,6 +357,12 @@ def cmd_check(args: argparse.Namespace) -> None:
 
 def cmd_benchmark(args: argparse.Namespace) -> None:
     """Handle the 'benchmark' command."""
+    # Set deterministic seed if provided
+    seed: Optional[int] = getattr(args, "seed", None)
+    if seed is not None:
+        random.seed(seed)
+        logger.info("Random seed set to %d for reproducible benchmark", seed)
+
     from .benchmark import run_benchmark, compare_tools
 
     enzymes: List[str] = []
@@ -503,7 +535,7 @@ def cmd_stability(args: argparse.Namespace) -> None:
         _print_mutation_table(mut_results)
 
 
-def _print_mutation_table(mut_results: list) -> None:
+def _print_mutation_table(mut_results: List[object]) -> None:
     """Print a table of mutation scan results."""
     print()
     print(_section_header("  Mutation Scan Results"))
@@ -865,6 +897,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--certificate", "-c", default=None,
         help="Certificate output file path (default: <input>_certificate.txt)",
     )
+    opt_parser.add_argument(
+        "--seed", type=int, default=None, metavar="INT",
+        help="Deterministic seed for reproducible optimization (default: None)",
+    )
 
     # ── check ──
     check_parser = subparsers.add_parser(
@@ -909,6 +945,10 @@ def build_parser() -> argparse.ArgumentParser:
     bench_parser.add_argument(
         "--splice-high", type=float, default=6.0,
         help="High splice score threshold (default: 6.0)",
+    )
+    bench_parser.add_argument(
+        "--seed", type=int, default=None, metavar="INT",
+        help="Deterministic seed for reproducible benchmarks (default: None)",
     )
 
     # ── scan ──
@@ -1117,6 +1157,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def verify() -> None:
+    """Entry point for ``biocompiler-verify`` — runs the check command."""
+    main(["check"] + sys.argv[1:])
 
 
 if __name__ == "__main__":

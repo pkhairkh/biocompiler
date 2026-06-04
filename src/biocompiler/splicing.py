@@ -11,8 +11,20 @@ Production-grade splicing engine with:
 - Configurable parameters (not hardcoded magic numbers)
 """
 
+from __future__ import annotations
+
 import logging
 from itertools import combinations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .type_system import SpliceVerdict
+
+__all__ = [
+    "maxent_score",
+    "score_splice_sites",
+    "compute_splice_isoforms",
+]
 
 # ==============================================================================
 # Cryptic Splice Site Scoring (merged from splice.py)
@@ -31,7 +43,7 @@ from itertools import combinations
 # ==============================================================================
 
 # Position weight matrix for 5' splice site (positions -3 to +6 relative to GT)
-_MAXENT_PWM = [
+_MAXENT_PWM: list[list[float]] = [
     # pos -3   -2   -1    G    T   +1   +2   +3   +4
     [0.10, 0.07, 0.12, 3.50, 3.50, 0.16, 0.20, 0.12, 0.08],  # A
     [0.06, 0.04, 0.06, 0.01, 0.01, 0.06, 0.04, 0.06, 0.05],  # C
@@ -39,7 +51,7 @@ _MAXENT_PWM = [
     [0.08, 0.15, 0.10, 0.01, 0.01, 0.14, 0.10, 0.12, 0.08],  # T
 ]
 
-_BASE_INDEX = {"A": 0, "C": 1, "G": 2, "T": 3}
+_BASE_INDEX: dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
 
 # Named constants replacing magic numbers
 _PWM_CONTEXT_LEN = 9          # Position weight matrix context length (positions -3 to +6)
@@ -48,6 +60,18 @@ _DINUC_LEN = 2               # Splice dinucleotide length (GT / AG)
 _EXON_SKIP_DECAY = 0.5       # Score decay factor per additional skipped exon
 _PWM_UPSTREAM = 3            # Bases upstream of GT for PWM context
 _PWM_DOWNSTREAM = 6          # Bases downstream of GT for PWM context
+
+# Default thresholds for splice site scoring (used by score_splice_sites)
+_DEFAULT_LOW_THRESH: float = 3.0     # Below this score → PASS
+_DEFAULT_HIGH_THRESH: float = 6.0    # At or above this score → FAIL
+
+# Default parameters for compute_splice_isoforms
+_DEFAULT_MAX_ISOFORMS: int = 100             # Safety limit to prevent combinatorial explosion
+_DEFAULT_MAX_EXON_SKIP_COMBOS: int = 10      # Maximum exon-skipping combinations
+_DEFAULT_TOLERANCE: int = 5                  # Position tolerance for matching known splice sites
+_DEFAULT_ALT_SITE_WINDOW: int = 50          # Window for alternative splice site detection
+_DEFAULT_MAX_ALT_SITES: int = 3              # Maximum alternative sites per intron
+_DEFAULT_CRYPTIC_SCORE_THRESHOLD: float = 8.0  # Minimum score for cryptic sites to be included
 
 
 def maxent_score(context: str) -> float:
@@ -80,7 +104,7 @@ def maxent_score(context: str) -> float:
     return score
 
 
-def score_splice_sites(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> list[tuple[int, float, "SpliceVerdict"]]:
+def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_thresh: float = _DEFAULT_HIGH_THRESH) -> list[tuple[int, float, SpliceVerdict]]:
     """Score all potential splice sites in a sequence using simplified PWM.
 
     Scans for GT dinucleotides and classifies each site as
@@ -94,7 +118,7 @@ def score_splice_sites(seq: str, low_thresh: float = 3.0, high_thresh: float = 6
     Returns:
         List of (position, score, SpliceVerdict) tuples for each GT site found.
     """
-    from .type_system import SpliceVerdict
+    from .type_system import SpliceVerdict  # noqa: F811 — runtime import for enum values
     results: list[tuple[int, float, SpliceVerdict]] = []
     for i in range(len(seq) - 1):
         if seq[i:i + _DINUC_LEN] == "GT":
@@ -135,7 +159,11 @@ def _get_tissue_weights(cellular_context: str) -> dict[str, float]:
         return _get_gtex_weights(cellular_context)
     except Exception:
         # Fallback to default weights from tissue_data module
-        logger.debug("Falling back to default tissue weights for %r", cellular_context, exc_info=True)
+        logger.warning(
+            "Failed to retrieve GTEx tissue weights for %r; falling back to defaults",
+            cellular_context,
+            exc_info=True,
+        )
         from .tissue_data import GTEX_TISSUE_WEIGHTS
         return GTEX_TISSUE_WEIGHTS.get(cellular_context, GTEX_TISSUE_WEIGHTS["default"])
 
@@ -144,12 +172,12 @@ def compute_splice_isoforms(
     pre_mrna: str,
     known_exon_boundaries: list[tuple[int, int]],
     cellular_context: str = "HEK293T",
-    max_isoforms: int = 100,
-    max_exon_skip_combos: int = 10,
-    tolerance: int = 5,
-    alt_site_window: int = 50,
-    max_alt_sites: int = 3,
-    cryptic_score_threshold: float = 8.0,
+    max_isoforms: int = _DEFAULT_MAX_ISOFORMS,
+    max_exon_skip_combos: int = _DEFAULT_MAX_EXON_SKIP_COMBOS,
+    tolerance: int = _DEFAULT_TOLERANCE,
+    alt_site_window: int = _DEFAULT_ALT_SITE_WINDOW,
+    max_alt_sites: int = _DEFAULT_MAX_ALT_SITES,
+    cryptic_score_threshold: float = _DEFAULT_CRYPTIC_SCORE_THRESHOLD,
 ) -> list[SpliceIsoform]:
     """
     Compute all possible splice isoforms via enumerative NDFST.

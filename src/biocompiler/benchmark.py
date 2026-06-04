@@ -1,5 +1,5 @@
 """
-BioCompiler Benchmark Module v9.0.0
+BioCompiler Benchmark Module v9.2.0
 =====================================
 Built-in benchmark sequences, performance measurement, comprehensive
 benchmarking, ablation studies, and head-to-head tool comparisons for
@@ -34,6 +34,7 @@ import matplotlib.font_manager as fm
 try:
     fm.fontManager.addfont('/usr/share/fonts/truetype/chinese/NotoSansSC[wght].ttf')
 except Exception:
+    logger.debug("Primary font loading failed, trying fallback", exc_info=True)
     try:
         fm.fontManager.addfont('/usr/share/fonts/truetype/chinese/SarasaMonoSC-Regular.ttf')
     except Exception:
@@ -46,6 +47,7 @@ import numpy as np
 try:
     from .optimizer import BioOptimizer
 except ImportError:
+    logger.debug("Import failed: .optimizer module, falling back to .optimization")
     from .optimization import BioOptimizer
 from .optimization import optimize_sequence
 
@@ -56,6 +58,36 @@ from .scanner import gc_content
 from .constants import AA_TO_CODONS, RESTRICTION_ENZYMES, reverse_complement
 from .restriction_sites import get_recognition_site
 from .engine_base import BatchResult, EngineTimer, BaseEngineResult
+
+__all__ = [
+    # Constants / Data
+    "EGFP_DNA", "MCHERRY_DNA", "LACZ_DNA",
+    "REFERENCE_GENES", "OUTPUT_DIR", "GENE_PANEL",
+    "ORGANISM_TO_SPECIES", "ORGANISM_FOR_CAI",
+    "DEFAULT_ENZYMES", "MAX_CONSTRAINTS",
+    # Classes
+    "BenchmarkResult", "BenchmarkReport",
+    "ToolResult", "HeadToHeadReport",
+    # Functions — core benchmark
+    "run_benchmark", "run_benchmarks",
+    "compare_tools_theoretical", "compare_tools",
+    # Functions — structured benchmarks
+    "run_structured_benchmarks",
+    "format_benchmark_report_json", "format_benchmark_report_text",
+    # Functions — comprehensive benchmark suite
+    "optimize_biocompiler", "optimize_simple_cai", "optimize_random",
+    "run_multi_gene_comparison", "compute_statistics", "format_stats_table",
+    "run_ablation_study", "format_ablation_table",
+    "plot_pareto_frontier", "plot_ablation",
+    "save_json", "save_csv", "save_summary",
+    "run_comprehensive_benchmark",
+    # Functions — head-to-head comparison
+    "is_dna_chisel_available",
+    "run_head_to_head_benchmark",
+    "format_head_to_head_text", "format_head_to_head_json",
+    # Entry point
+    "main",
+]
 
 # ────────────────────────────────────────────────────────────
 # Built-in gene sequences (standard reference sequences)
@@ -767,6 +799,7 @@ def _compute_metrics(
     try:
         cai = compute_cai(sequence, cai_organism)
     except Exception:
+        logger.warning("CAI computation failed, defaulting to 0.0", exc_info=True)
         cai = 0.0
     gc = gc_content(sequence)
     rs_count = _count_restriction_sites_both_strands(sequence, enzymes)
@@ -864,6 +897,7 @@ def optimize_simple_cai(
         }
     except Exception as exc:
         elapsed = time.perf_counter() - t0
+        logger.debug("SimpleCAI optimization failed: %s", exc)
         return {
             "tool": "SimpleCAI",
             "sequence": "",
@@ -917,6 +951,7 @@ def optimize_random(
         }
     except Exception as exc:
         elapsed = time.perf_counter() - t0
+        logger.debug("Random optimization failed: %s", exc)
         return {
             "tool": "Random",
             "sequence": "",
@@ -1523,6 +1558,7 @@ try:
     )
     _DNA_CHISEL_AVAILABLE = True
 except ImportError as exc:
+    logger.debug("Import failed: dnachisel not available: %s", exc)
     _DNA_CHISEL_ERROR = str(exc)
 
 
@@ -2087,6 +2123,7 @@ def _optimize_simple_cai_h2h(
         )
     except Exception as exc:
         elapsed = time.perf_counter() - t0
+        logger.debug("SimpleCAI head-to-head optimization failed: %s", exc)
         return ToolResult(
             tool_name="SimpleCAI",
             sequence="",
@@ -2157,6 +2194,7 @@ def _optimize_random_h2h(
         )
     except Exception as exc:
         elapsed = time.perf_counter() - t0
+        logger.debug("Random head-to-head optimization failed: %s", exc)
         return ToolResult(
             tool_name="Random",
             sequence="",

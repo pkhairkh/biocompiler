@@ -5,7 +5,7 @@ Source: Kazusa Codon Usage Database
 K-12 MG1655, high-expression genes
 """
 
-from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
 
 __all__ = [
     "E_COLI_CODON_USAGE",
@@ -14,7 +14,7 @@ __all__ = [
     "ECOLI_CODON_USAGE",
 ]
 
-E_COLI_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
+E_COLI_CODON_USAGE: CodonUsageTable = {
     "TTT": ("F", 0.35, 22.0, 142302),
     "TTC": ("F", 0.65, 17.2, 111196),
     "TTA": ("L", 0.14, 13.7, 88522),

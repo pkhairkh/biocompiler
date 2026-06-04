@@ -1,5 +1,5 @@
 """
-BioCompiler Solubility Predicates v7.2.0
+BioCompiler Solubility Predicates v9.2.0
 =========================================
 Type system predicates for protein solubility assessment.
 
@@ -21,6 +21,17 @@ Helper functions:
 from __future__ import annotations
 
 from .type_system import Verdict, TypeCheckResult
+
+__all__ = [
+    "PKA_VALUES",
+    "compute_net_charge",
+    "compute_approximate_pI",
+    "find_hydrophobic_stretches",
+    "evaluate_soluble_expression",
+    "evaluate_no_aggregation_prone_region",
+    "evaluate_charge_composition",
+    "evaluate_no_long_hydrophobic_stretch",
+]
 
 # ────────────────────────────────────────────────────────────
 # pKa values for ionizable groups (charge calculation)

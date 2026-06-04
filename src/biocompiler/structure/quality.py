@@ -20,6 +20,21 @@ from ..constants import HYDROPATHY, HYDROPHOBIC_AAS
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "StructureQualityReport",
+    "assess_plddt",
+    "assess_ramachandran",
+    "compute_clash_score",
+    "compute_packing_density",
+    "compute_exposed_hydrophobic",
+    "compute_structure_quality",
+    "find_low_confidence_regions",
+    "compute_sasa_approximation",
+    "KYTE_DOOLITTLE",
+    "VDW_RADII",
+    "MAX_SASA",
+]
+
 # ────────────────────────────────────────────────────────────
 # Constants
 # ────────────────────────────────────────────────────────────
@@ -102,6 +117,35 @@ FAIL_PLDDT_THRESHOLD: float = 30.0
 # CA-dihedral scaling
 # ────────────────────────────────────────────────────────────
 CA_DIHEDRAL_SCALE: float = 1.6
+
+# ────────────────────────────────────────────────────────────
+# MolProbity score weights
+# ────────────────────────────────────────────────────────────
+MOLPROBITY_CLASH_WEIGHT: float = 0.5
+MOLPROBITY_RAMA_WEIGHT: float = 0.3
+MOLPROBITY_ROTA_WEIGHT: float = 0.2
+MOLPROBITY_SCALING_FACTOR: float = 10.0
+
+# ────────────────────────────────────────────────────────────
+# PDB parsing
+# ────────────────────────────────────────────────────────────
+PDB_ALT_LOC_KEEP: tuple[str, ...] = (" ", "A", "")
+
+# ────────────────────────────────────────────────────────────
+# Dihedral geometry
+# ────────────────────────────────────────────────────────────
+DIHEDRAL_NORM_TOLERANCE: float = 1e-10
+
+# ────────────────────────────────────────────────────────────
+# SASA probe radius
+# ────────────────────────────────────────────────────────────
+SASA_STANDARD_PROBE_RADIUS: float = 1.4
+
+# ────────────────────────────────────────────────────────────
+# Exposure computation
+# ────────────────────────────────────────────────────────────
+SASA_NEIGHBOR_CUTOFF_DEFAULT: float = 12.0
+SASA_BURIAL_NEIGHBORS_50PCT: float = 15.0
 
 
 # ────────────────────────────────────────────────────────────
@@ -442,7 +486,8 @@ def compute_exposed_hydrophobic(
     """Compute the fraction of exposed residues that are hydrophobic.
 
     Approximate solvent accessibility: a CA atom is considered
-    "exposed" if it has fewer than 15 neighbors within 12 Angstroms.
+    "exposed" if it has fewer than SASA_EXPOSURE_THRESHOLD neighbors
+    within the effective neighbor cutoff distance.
 
     Hydrophobic amino acids: defined by constants.HYDROPHOBIC_AAS.
 
@@ -463,7 +508,7 @@ def compute_exposed_hydrophobic(
         return 0.0
 
     # Effective neighbor cutoff incorporates the probe radius
-    neighbor_cutoff = SASA_NEIGHBOR_CUTOFF - 1.4 + probe_radius
+    neighbor_cutoff = SASA_NEIGHBOR_CUTOFF - SASA_STANDARD_PROBE_RADIUS + probe_radius
     exposure_threshold = SASA_EXPOSURE_THRESHOLD
 
     exposed_count = 0
@@ -667,8 +712,9 @@ def _approximate_molprobity_score(
     The MolProbity score combines clash score, Ramachandran outliers,
     and rotamer outliers into a single quality metric. Lower is better.
 
-    Approximation: 0.5 * log10(clash_score + 1) + 0.3 * (rama_outliers / 10)
-                   + 0.2 * (rota_outliers / 10)
+    Approximation: MOLPROBITY_CLASH_WEIGHT * log10(clash_score + 1)
+                   + MOLPROBITY_RAMA_WEIGHT * (rama_outliers / MOLPROBITY_SCALING_FACTOR)
+                   + MOLPROBITY_ROTA_WEIGHT * (rota_outliers / MOLPROBITY_SCALING_FACTOR)
 
     A score < 2.0 is excellent, 2.0-3.0 is good, > 3.0 is problematic.
 
@@ -681,9 +727,9 @@ def _approximate_molprobity_score(
     Returns:
         Approximate MolProbity score.
     """
-    clash_component = 0.5 * math.log10(clash_score + 1.0) if clash_score > 0 else 0.0
-    rama_component = 0.3 * (ramachandran_outliers / 10.0)
-    rota_component = 0.2 * (rota_outliers / 10.0)
+    clash_component = MOLPROBITY_CLASH_WEIGHT * math.log10(clash_score + 1.0) if clash_score > 0 else 0.0
+    rama_component = MOLPROBITY_RAMA_WEIGHT * (ramachandran_outliers / MOLPROBITY_SCALING_FACTOR)
+    rota_component = MOLPROBITY_ROTA_WEIGHT * (rota_outliers / MOLPROBITY_SCALING_FACTOR)
     return clash_component + rama_component + rota_component
 
 
@@ -756,11 +802,12 @@ def _parse_pdb_string(pdb_string: str) -> dict[str, Any]:
             y = float(line[38:46].strip())
             z = float(line[46:54].strip())
             b_factor = float(line[60:66].strip()) if len(line) > 60 else 0.0
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as exc:
+            logger.debug("Skipping malformed PDB ATOM/HETATM line: %s", exc)
             continue
 
         # Skip alternate conformations (keep only first or 'A')
-        if alt_loc not in (" ", "A", ""):
+        if alt_loc not in PDB_ALT_LOC_KEEP:
             continue
 
         # Determine element
@@ -1017,7 +1064,7 @@ def _approximate_phi_psi(
         n1_len = math.sqrt(n1[0] ** 2 + n1[1] ** 2 + n1[2] ** 2)
         n2_len = math.sqrt(n2[0] ** 2 + n2[1] ** 2 + n2[2] ** 2)
 
-        if n1_len < 1e-10 or n2_len < 1e-10:
+        if n1_len < DIHEDRAL_NORM_TOLERANCE or n2_len < DIHEDRAL_NORM_TOLERANCE:
             return 0.0
 
         n1 = (n1[0] / n1_len, n1[1] / n1_len, n1[2] / n1_len)

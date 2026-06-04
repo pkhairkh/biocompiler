@@ -80,6 +80,54 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "create_app",
+    "app",
+    "verify_api_key",
+    "validate_protein_input",
+    "validate_organism_input",
+    "API_KEY_NAME",
+    "RATE_LIMIT_RPM",
+    "BATCH_CHECK_MAX",
+    "BATCH_OPTIMIZE_MAX",
+    "BATCH_EXPORT_MAX",
+    "BATCH_ITEM_TIMEOUT_S",
+    "ESMFOLD_TIMEOUT_S",
+    # Pydantic input models
+    "SequenceInput",
+    "ProteinInput",
+    "CertificateInput",
+    "ExportFastaInput",
+    "ExportGenbankInput",
+    "ScanInput",
+    # Pydantic response models
+    "TypeCheckResponse",
+    "OptimizeResponse",
+    "VerifyResponse",
+    "ScanResponse",
+    "OrganismResponse",
+    "PredicateResponse",
+    "HealthResponse",
+    # Protein analysis input models
+    "StructurePredictInput",
+    "QualityAssessInput",
+    "StabilityInput",
+    "MutationScanInput",
+    "SolubilityInput",
+    "ImmunogenicityInput",
+    "DeimmunizeInput",
+    "FullAssessmentInput",
+    # Protein analysis response models
+    "StructurePredictResponse",
+    "QualityAssessResponse",
+    "StabilityResponse",
+    "MutationScanResponse",
+    "SolubilityResponse",
+    "ImmunogenicityResponse",
+    "DeimmunizeResponse",
+    "FullAssessmentResponse",
+]
+
 # ─── API Key Authentication ─────────────────────────────────────────
 
 API_KEY_NAME = "X-API-Key"
@@ -511,8 +559,8 @@ def _type_check_single(item: BatchCheckItem) -> dict[str, Any]:
                 },
             )
             cert_dict = cert.to_dict()
-        except CertificateGenerationError:
-            pass
+        except CertificateGenerationError as exc:
+            logger.warning("Certificate generation failed for batch item: %s", exc)
 
     return {
         "sequence_length": len(seq),
@@ -622,7 +670,7 @@ def validate_organism_input(organism: str) -> str | None:
             return f"Unsupported organism: {organism}. Supported: {_SUPPORTED}"
     except ImportError:
         # Fallback: accept any non-empty string if organisms module unavailable
-        pass
+        logger.debug("Organisms module unavailable; skipping organism validation")
     return None
 
 
@@ -1023,7 +1071,7 @@ _protein_router = APIRouter(tags=["Protein Analysis"])
     response_model=StructurePredictResponse,
     summary="Predict protein structure via ESMFold",
 )
-async def structure_predict(input_data: StructurePredictInput):
+async def structure_predict(input_data: StructurePredictInput) -> StructurePredictResponse:
     """
     Predict protein 3D structure using ESMFold.
 
@@ -1093,7 +1141,7 @@ async def structure_predict(input_data: StructurePredictInput):
     response_model=QualityAssessResponse,
     summary="Assess structure quality from PDB",
 )
-async def structure_quality(input_data: QualityAssessInput):
+async def structure_quality(input_data: QualityAssessInput) -> QualityAssessResponse:
     """
     Assess the quality of a protein structure from a PDB string.
 
@@ -1165,7 +1213,7 @@ class BatchStructureResponse(BaseModel):
     response_model=BatchStructureResponse,
     summary="Batch protein structure prediction",
 )
-async def structure_batch(input_data: BatchStructureInput):
+async def structure_batch(input_data: BatchStructureInput) -> BatchStructureResponse:
     """
     Predict protein structures for multiple proteins in one request.
 
@@ -1280,7 +1328,7 @@ def _structure_batch_single(item: StructurePredictInput) -> BatchStructureResult
     response_model=StabilityResponse,
     summary="Analyze protein stability",
 )
-async def stability_analyze(input_data: StabilityInput):
+async def stability_analyze(input_data: StabilityInput) -> StabilityResponse:
     """
     Analyze protein stability using FoldX (empirical) and/or
     statistical potentials.
@@ -1345,7 +1393,7 @@ async def stability_analyze(input_data: StabilityInput):
     response_model=MutationScanResponse,
     summary="Scan mutations for stability",
 )
-async def stability_mutations(input_data: MutationScanInput):
+async def stability_mutations(input_data: MutationScanInput) -> MutationScanResponse:
     """
     Scan single-point mutations for stability effects.
 
@@ -1422,7 +1470,7 @@ async def stability_mutations(input_data: MutationScanInput):
     response_model=SolubilityResponse,
     summary="Analyze protein solubility",
 )
-async def solubility_analyze(input_data: SolubilityInput):
+async def solubility_analyze(input_data: SolubilityInput) -> SolubilityResponse:
     """
     Analyze protein solubility using CamSol algorithm.
 
@@ -1468,7 +1516,7 @@ async def solubility_analyze(input_data: SolubilityInput):
     response_model=MutationScanResponse,
     summary="Find solubility-improving mutations",
 )
-async def solubility_mutations(input_data: SolubilityInput):
+async def solubility_mutations(input_data: SolubilityInput) -> MutationScanResponse:
     """
     Find mutations that improve protein solubility.
 
@@ -1528,7 +1576,7 @@ async def solubility_mutations(input_data: SolubilityInput):
     response_model=ImmunogenicityResponse,
     summary="Analyze protein immunogenicity",
 )
-async def immunogenicity_analyze(input_data: ImmunogenicityInput):
+async def immunogenicity_analyze(input_data: ImmunogenicityInput) -> ImmunogenicityResponse:
     """
     Analyze protein immunogenicity by predicting T-cell and B-cell epitopes.
 
@@ -1588,7 +1636,7 @@ async def immunogenicity_analyze(input_data: ImmunogenicityInput):
     response_model=DeimmunizeResponse,
     summary="Deimmunize a protein",
 )
-async def immunogenicity_deimmunize(input_data: DeimmunizeInput):
+async def immunogenicity_deimmunize(input_data: DeimmunizeInput) -> DeimmunizeResponse:
     """
     Deimmunize a protein by introducing conservative amino acid
     substitutions that reduce immunogenicity while preserving
@@ -1643,7 +1691,7 @@ async def immunogenicity_deimmunize(input_data: DeimmunizeInput):
     response_model=FullAssessmentResponse,
     summary="Full protein assessment",
 )
-async def assessment_full(input_data: FullAssessmentInput):
+async def assessment_full(input_data: FullAssessmentInput) -> FullAssessmentResponse:
     """
     Run a full protein assessment combining all analyses.
 
@@ -1880,7 +1928,8 @@ async def assessment_full(input_data: FullAssessmentInput):
                 {"predicate": p, "verdict": "FAIL"}
                 for p in opt_result.failed_predicates
             ]
-        except Exception:
+        except Exception as exc:
+            logger.warning("Predicate fallback evaluation failed: %s", exc)
             predicate_results = []
     except Exception as e:
         logger.warning("Predicate evaluation failed: %s", e)
@@ -1996,7 +2045,7 @@ class BatchImmunogenicityResponse(BaseModel):
     response_model=BatchStabilityResponse,
     summary="Batch protein stability analysis",
 )
-async def stability_batch(input_data: BatchStabilityInput):
+async def stability_batch(input_data: BatchStabilityInput) -> BatchStabilityResponse:
     """
     Analyze protein stability for multiple proteins in one request.
 
@@ -2100,7 +2149,7 @@ def _stability_batch_single(item: StabilityInput) -> dict[str, Any]:
     response_model=BatchSolubilityResponse,
     summary="Batch protein solubility analysis",
 )
-async def solubility_batch(input_data: BatchSolubilityInput):
+async def solubility_batch(input_data: BatchSolubilityInput) -> BatchSolubilityResponse:
     """
     Analyze protein solubility for multiple proteins in one request.
 
@@ -2187,7 +2236,7 @@ def _solubility_batch_single(item: SolubilityInput) -> dict[str, Any]:
     response_model=BatchImmunogenicityResponse,
     summary="Batch protein immunogenicity analysis",
 )
-async def immunogenicity_batch(input_data: BatchImmunogenicityInput):
+async def immunogenicity_batch(input_data: BatchImmunogenicityInput) -> BatchImmunogenicityResponse:
     """
     Analyze protein immunogenicity for multiple proteins in one request.
 
@@ -2330,7 +2379,7 @@ def create_app() -> FastAPI:
 
     # Rate limiting middleware
     @app.middleware("http")
-    async def rate_limit_middleware(request: Request, call_next):
+    async def rate_limit_middleware(request: Request, call_next) -> Any:
         client_id = request.client.host if request.client else "unknown"
         try:
             _check_rate_limit(client_id)
@@ -2382,7 +2431,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/check", response_model=TypeCheckResponse)
-    async def check_sequence(input_data: SequenceInput, client_id: str = Depends(verify_api_key)):
+    async def check_sequence(input_data: SequenceInput, client_id: str = Depends(verify_api_key)) -> TypeCheckResponse:
         """
         Type-check a DNA sequence against all registered predicates.
 
@@ -2444,8 +2493,8 @@ def create_app() -> FastAPI:
                         },
                     )
                     cert_dict = cert.to_dict()
-                except CertificateGenerationError:
-                    pass
+                except CertificateGenerationError as exc:
+                    logger.warning("Certificate generation failed during type-check: %s", exc)
 
             return TypeCheckResponse(
                 sequence_length=len(seq),
@@ -2459,9 +2508,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         except BioCompilerError as e:
             raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            logger.exception("Unexpected error during type-check")
+            raise HTTPException(status_code=500, detail=f"Type-check failed: {e}")
 
     @app.post("/optimize", response_model=OptimizeResponse)
-    async def optimize(input_data: ProteinInput, client_id: str = Depends(verify_api_key)):
+    async def optimize(input_data: ProteinInput, client_id: str = Depends(verify_api_key)) -> OptimizeResponse:
         """
         Optimize a DNA sequence for a target protein.
 
@@ -2492,9 +2544,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         except BioCompilerError as e:
             raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            logger.exception("Unexpected error during optimization")
+            raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")
 
     @app.post("/verify", response_model=VerifyResponse)
-    async def verify(input_data: CertificateInput, client_id: str = Depends(verify_api_key)):
+    async def verify(input_data: CertificateInput, client_id: str = Depends(verify_api_key)) -> VerifyResponse:
         """
         Independently verify a guarantee certificate.
 
@@ -2511,7 +2566,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="Internal verification error")
 
     @app.post("/scan", response_model=ScanResponse)
-    async def scan(input_data: ScanInput, client_id: str = Depends(verify_api_key)):
+    async def scan(input_data: ScanInput, client_id: str = Depends(verify_api_key)) -> ScanResponse:
         """
         Scan a DNA sequence for biological motifs.
 
@@ -2547,9 +2602,12 @@ def create_app() -> FastAPI:
             )
         except InvalidSequenceError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Unexpected error during sequence scan")
+            raise HTTPException(status_code=500, detail=f"Scan failed: {e}")
 
     @app.post("/export/fasta")
-    async def export_fasta_endpoint(input_data: ExportFastaInput, client_id: str = Depends(verify_api_key)):
+    async def export_fasta_endpoint(input_data: ExportFastaInput, client_id: str = Depends(verify_api_key)) -> dict[str, str]:
         """Export a sequence in FASTA format."""
         try:
             fasta = export_fasta(
@@ -2559,11 +2617,14 @@ def create_app() -> FastAPI:
                 organism=input_data.organism,
             )
             return {"format": "fasta", "content": fasta}
+        except (InvalidSequenceError, ValueError) as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.exception("FASTA export failed unexpectedly")
+            raise HTTPException(status_code=500, detail=f"FASTA export failed: {e}")
 
     @app.post("/export/genbank")
-    async def export_genbank_endpoint(input_data: ExportGenbankInput, client_id: str = Depends(verify_api_key)):
+    async def export_genbank_endpoint(input_data: ExportGenbankInput, client_id: str = Depends(verify_api_key)) -> dict[str, str]:
         """Export a sequence in GenBank format with optional certificate embedding."""
         try:
             cert = None
@@ -2580,8 +2641,11 @@ def create_app() -> FastAPI:
                 certificate=cert,
             )
             return {"format": "genbank", "content": genbank}
+        except (InvalidSequenceError, ValueError, KeyError) as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.exception("GenBank export failed unexpectedly")
+            raise HTTPException(status_code=500, detail=f"GenBank export failed: {e}")
 
     # ─── Batch Endpoints ─────────────────────────────────────────
 
@@ -2589,7 +2653,7 @@ def create_app() -> FastAPI:
     async def batch_check(
         input_data: BatchCheckInput,
         client_id: str = Depends(verify_api_key),
-    ):
+    ) -> BatchCheckResponse:
         """
         Type-check multiple DNA sequences in a single request.
 
@@ -2665,7 +2729,7 @@ def create_app() -> FastAPI:
     async def batch_optimize(
         input_data: BatchOptimizeInput,
         client_id: str = Depends(verify_api_key),
-    ):
+    ) -> BatchOptimizeResponse:
         """
         Optimize multiple proteins in a single request.
 
@@ -2737,7 +2801,7 @@ def create_app() -> FastAPI:
     async def batch_export(
         input_data: BatchExportInput,
         client_id: str = Depends(verify_api_key),
-    ):
+    ) -> BatchExportResponse:
         """
         Export multiple sequences in a single request.
 
@@ -2794,7 +2858,7 @@ def create_app() -> FastAPI:
         datasets: str | None = None,
         include_cross_organism: bool = True,
         include_optimization_improvement: bool = True,
-    ):
+    ) -> dict[str, Any]:
         """
         Validate the optimizer against common biological datasets.
 

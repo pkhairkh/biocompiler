@@ -1,5 +1,5 @@
 """
-BioCompiler Optimizer v7.0.0
+BioCompiler Optimizer v9.2.0
 ==============================
 Multi-step certified gene optimization pipeline with aggressive GT resolution.
 
@@ -16,9 +16,12 @@ Step: CAI Hill Climb        — CAI hill climbing (upgrade codons while maintain
 Step: Reoptimize            — Re-optimization pass (iterative until convergence)
 """
 
-from typing import List, Dict, Optional, Tuple, Set
+from typing import List, Dict, Optional, Tuple, Set, Any
 
+import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from itertools import product as itertools_product
 
 from .type_system import (
     CODON_TABLE, AA_TO_CODONS, BLOSUM62, PredicateResult,
@@ -31,6 +34,36 @@ from .organisms import SPECIES
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
 from .certificate import format_certificate
 from .exceptions import InvalidProteinError, UnsupportedOrganismError
+
+
+__all__ = [
+    "OptimizationResult",
+    "optimize_sequence",
+    "protein_to_aa_list",
+    "BioOptimizer",
+]
+
+logger = logging.getLogger(__name__)
+
+
+# ────────────────────────────────────────────────────────────
+# Named Constants
+# ────────────────────────────────────────────────────────────
+
+# Iteration limits for each optimization step
+MAX_RESTRICTION_SITE_ITERATIONS: int = 100
+MAX_IUPAC_SITE_ITERATIONS: int = 100
+MAX_ATTTA_MOTIF_ITERATIONS: int = 100
+MAX_T_RUN_ITERATIONS: int = 100
+MAX_GC_ADJUSTMENT_ITERATIONS: int = 200
+MAX_SPLICE_ELIMINATION_ITERATIONS: int = 300
+MAX_CPG_DISRUPTION_ITERATIONS: int = 200
+
+# Thresholds and sentinel values
+T_RUN_LENGTH_THRESHOLD: int = 6
+ELIMINATED_SITE_SCORE: float = -999.0
+TOP_CAI_ALTERNATIVES: int = 3
+IUPAC_EXPANSION_CAP: int = 4096
 
 
 # ────────────────────────────────────────────────────────────
@@ -56,6 +89,8 @@ class OptimizationResult:
     satisfied_predicates: list = field(default_factory=list)
     aa_substitutions: list = field(default_factory=list)
     mutagenesis_applied: bool = False
+    # Provenance: OptimizationRecord for this run (populated by optimize_sequence)
+    provenance: Any = field(default=None, repr=False)
 
     def __post_init__(self):
         """Validate OptimizationResult invariants."""
@@ -250,6 +285,7 @@ def _greedy_optimize(
     gc_hi: float = 0.70,
     restriction_sites: list[str] | None = None,
     cryptic_splice_threshold: float = 3.0,
+    seed: int | None = None,
 ) -> tuple[str, list[str]]:
     """
     Greedy multi-objective codon optimization with coordinated constraint solving.
@@ -279,7 +315,16 @@ def _greedy_optimize(
     - returned sequence translates to the input protein
     - len(returned sequence) == len(protein) * 3
     - all codons in sequence are valid for their amino acid
+
+    Note: The ``seed`` parameter is currently unused because the greedy
+    optimizer is fully deterministic. It is reserved for future
+    randomized optimization steps.
     """
+    # Set deterministic seed if provided (reserved for future randomized steps)
+    if seed is not None:
+        import random
+        random.seed(seed)
+
     # Validate pre-conditions
     assert 0.0 <= gc_lo < gc_hi <= 1.0, f"GC bounds invalid: [{gc_lo}, {gc_hi}]"
     assert cryptic_splice_threshold > 0, f"Threshold must be positive, got {cryptic_splice_threshold}"
@@ -315,7 +360,7 @@ def _greedy_optimize(
     # Remove concrete sites
     for site_upper in concrete_sites:
         site_rc = reverse_complement(site_upper)
-        for iteration in range(100):
+        for iteration in range(MAX_RESTRICTION_SITE_ITERATIONS):
             positions = _find_site_in_sequence(sequence, site_upper, site_rc)
             if not positions:
                 break
@@ -379,7 +424,7 @@ def _greedy_optimize(
             continue
         for variant in concrete_variants:
             variant_rc = reverse_complement(variant)
-            for iteration in range(100):
+            for iteration in range(MAX_IUPAC_SITE_ITERATIONS):
                 positions = _find_site_in_sequence(sequence, variant, variant_rc)
                 if not positions:
                     break
@@ -411,7 +456,7 @@ def _greedy_optimize(
                     warnings.append(f"IUPAC site {site_upper} variant {variant}: max iterations")
 
     # Step: Remove ATTTA instability motifs
-    for iteration in range(100):
+    for iteration in range(MAX_ATTTA_MOTIF_ITERATIONS):
         pos = sequence.find("ATTTA")
         if pos == -1:
             break
@@ -436,7 +481,7 @@ def _greedy_optimize(
         warnings.append("ATTTA motif: max iterations reached, may still be present")
 
     # Step: Fix 6+ consecutive T runs
-    for iteration in range(100):
+    for iteration in range(MAX_T_RUN_ITERATIONS):
         max_run, max_pos = 0, -1
         i = 0
         while i < len(sequence):
@@ -449,7 +494,7 @@ def _greedy_optimize(
                 i = j
             else:
                 i += 1
-        if max_run < 6:
+        if max_run < T_RUN_LENGTH_THRESHOLD:
             break
         codon_idx = (max_pos + max_run // 2) // 3
         if codon_idx < len(aas):
@@ -459,7 +504,7 @@ def _greedy_optimize(
             for alt in sorted_codons[aa]:
                 if alt != current:
                     test = sequence[:codon_idx * 3] + alt + sequence[codon_idx * 3 + 3:]
-                    if not any(test[i:i + 6] == "TTTTTT" for i in range(len(test) - 5)):
+                    if not any(test[i:i + T_RUN_LENGTH_THRESHOLD] == "T" * T_RUN_LENGTH_THRESHOLD for i in range(len(test) - 5)):
                         sequence = test
                         fixed = True
                         break
@@ -491,7 +536,7 @@ def _greedy_optimize(
         else:
             phase_target = gc_hi
 
-        for iteration in range(200):
+        for iteration in range(MAX_GC_ADJUSTMENT_ITERATIONS):
             if gc_lo <= gc_val <= gc_hi:
                 break
             best_alt = None
@@ -572,7 +617,7 @@ def _greedy_optimize(
     #   3. Accept that some Valine positions are unrepairable by codon swaps alone
     #      (these will be handled by mutagenesis if enabled)
     # Same strategy applied for AG acceptor sites using AG-free codons.
-    for iteration in range(300):
+    for iteration in range(MAX_SPLICE_ELIMINATION_ITERATIONS):
         max_d = max_donor_score(sequence)
         max_a = max_acceptor_score(sequence)
         if max_d < cryptic_splice_threshold and max_a < cryptic_splice_threshold:
@@ -647,7 +692,7 @@ def _greedy_optimize(
                     if gt_pos < len(test) - 1 and test[gt_pos:gt_pos+2] == "GT":
                         new_s = score_donor(test, gt_pos)
                     else:
-                        new_s = -999  # GT eliminated (cross-boundary)
+                        new_s = ELIMINATED_SITE_SCORE  # GT eliminated (cross-boundary)
                     if new_s < cryptic_splice_threshold:
                         sequence = test
                         fixed_any = True
@@ -662,7 +707,7 @@ def _greedy_optimize(
                         n_aa = aas[n_idx]
                         n_current = sequence[n_idx*3:n_idx*3+3]
                         # For the GT codon, try top 3 alternatives by CAI
-                        for v_alt in sorted_codons[aa][:3]:
+                        for v_alt in sorted_codons[aa][:TOP_CAI_ALTERNATIVES]:
                             # For the neighbor, try all alternatives
                             for n_alt in sorted_codons[n_aa]:
                                 if n_alt == n_current and v_alt == current:
@@ -674,7 +719,7 @@ def _greedy_optimize(
                                 if gt_pos < len(test_str) - 1 and test_str[gt_pos:gt_pos+2] == "GT":
                                     new_s = score_donor(test_str, gt_pos)
                                 else:
-                                    new_s = -999  # GT eliminated
+                                    new_s = ELIMINATED_SITE_SCORE  # GT eliminated
                                 if new_s < cryptic_splice_threshold:
                                     sequence = test_str
                                     fixed_any = True
@@ -746,7 +791,7 @@ def _greedy_optimize(
                     if ag_pos < len(test) - 1 and test[ag_pos:ag_pos+2] == "AG":
                         new_s = score_acceptor(test, ag_pos)
                     else:
-                        new_s = -999  # AG eliminated
+                        new_s = ELIMINATED_SITE_SCORE  # AG eliminated
                     if new_s < cryptic_splice_threshold:
                         sequence = test
                         fixed_any = True
@@ -760,7 +805,7 @@ def _greedy_optimize(
                     if 0 <= n_idx < len(aas):
                         n_aa = aas[n_idx]
                         n_current = sequence[n_idx*3:n_idx*3+3]
-                        for v_alt in sorted_codons[aa][:3]:
+                        for v_alt in sorted_codons[aa][:TOP_CAI_ALTERNATIVES]:
                             for n_alt in sorted_codons[n_aa]:
                                 if n_alt == n_current and v_alt == current:
                                     continue
@@ -771,7 +816,7 @@ def _greedy_optimize(
                                 if ag_pos < len(test_str) - 1 and test_str[ag_pos:ag_pos+2] == "AG":
                                     new_s = score_acceptor(test_str, ag_pos)
                                 else:
-                                    new_s = -999
+                                    new_s = ELIMINATED_SITE_SCORE
                                 if new_s < cryptic_splice_threshold:
                                     sequence = test_str
                                     fixed_any = True
@@ -812,7 +857,7 @@ def _greedy_optimize(
     # We will NOT worsen any cryptic splice score to remove a CG dinucleotide.
     # For cross-codon CG (C at end of one codon, G at start of next), we use
     # coordinated 2-codon swaps since single-codon swaps can't always resolve them.
-    for _cpg_iteration in range(200):
+    for _cpg_iteration in range(MAX_CPG_DISRUPTION_ITERATIONS):
         cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
         if not cpg_positions:
             break
@@ -951,7 +996,7 @@ def _greedy_optimize(
     # re-apply CpG disruption without reintroducing restriction sites or
     # worsening cryptic splice scores. Includes 2-codon coordinated swaps
     # for cross-codon CG dinucleotides.
-    for _cpg_iter in range(200):
+    for _cpg_iter in range(MAX_CPG_DISRUPTION_ITERATIONS):
         cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
         if not cpg_positions:
             break
@@ -1132,10 +1177,10 @@ def _expand_iupac_site(pattern: str) -> list[str]:
         if b not in "ACGT":
             total_combos *= len(IUPAC_EXPAND.get(b, "A"))
 
-    if total_combos > 4096:
+    if total_combos > IUPAC_EXPANSION_CAP:
         logger.warning(
-            "IUPAC site %s expands to %d variants (>4096), skipping",
-            pattern, total_combos,
+            "IUPAC site %s expands to %d variants (>%d), skipping",
+            pattern, total_combos, IUPAC_EXPANSION_CAP,
         )
         return []
 
@@ -1240,6 +1285,7 @@ def optimize_sequence(
     enzymes: list | None = None,
     strategy: str = "constraint_first",
     use_csp_solver: bool = False,
+    seed: int | None = None,
     **kwargs,
 ) -> OptimizationResult:
     """Optimize a protein sequence for expression in the target organism.
@@ -1262,6 +1308,12 @@ def optimize_sequence(
         enzymes: List of restriction enzyme names to avoid.
         strategy: Optimization strategy ('constraint_first' or 'cai_first').
         use_csp_solver: If True, try CSP/SMT solver before greedy (default False).
+        seed: Deterministic seed for reproducibility. Currently unused as the
+            greedy optimizer is fully deterministic, but reserved for future
+            randomized optimization strategies (e.g., Monte Carlo, genetic
+            algorithms). If provided, ``random.seed(seed)`` is called at the
+            start of optimization to ensure reproducible behavior when
+            randomized steps are added.
         **kwargs: Additional arguments (e.g., splice_low, splice_high).
 
     Returns:
@@ -1271,6 +1323,15 @@ def optimize_sequence(
         InvalidProteinError: if the protein contains invalid amino acid codes.
         UnsupportedOrganismError: if the organism is not supported.
     """
+    # Set deterministic seed if provided (reserved for future randomized steps)
+    if seed is not None:
+        import random
+        random.seed(seed)
+
+    # Start timing for provenance
+    import time as _time
+    _start_time = _time.monotonic()
+
     # Handle positional arg: optimize_sequence("MVHLTPEEK", organism="...")
     if target_protein is None and len(kwargs.get("_args", [])) > 0:
         target_protein = kwargs["_args"][0]
@@ -1323,7 +1384,11 @@ def optimize_sequence(
                 gc = _gc_content(seq)
                 try:
                     cai_val = _compute_cai(seq, organism)
-                except (UnsupportedOrganismError, Exception):
+                except Exception:
+                    logger.debug(
+                        "CAI computation failed for organism '%s', using solver result",
+                        organism, exc_info=True,
+                    )
                     cai_val = solver_result.cai
                 return OptimizationResult(
                     sequence=seq,
@@ -1337,8 +1402,7 @@ def optimize_sequence(
                     satisfied_predicates=["CSP_SOLVER"],
                 )
         except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "CSP solver failed, falling back to greedy optimizer",
                 exc_info=True,
             )
@@ -1371,6 +1435,10 @@ def optimize_sequence(
     try:
         cai_val = compute_cai(optimized_seq, organism)
     except UnsupportedOrganismError:
+        logger.debug(
+            "Unsupported organism '%s' for compute_cai, using species CAI table",
+            organism,
+        )
         cai_val = opt._compute_seq_cai(optimized_seq)
 
     # Collect failed and satisfied predicates
@@ -1379,6 +1447,41 @@ def optimize_sequence(
 
     # Detect if mutagenesis fallback was used (any V->I or similar)
     fallback = bool(opt._applied_mutagenesis)
+
+    # Build provenance record for reproducibility
+    from .provenance import OptimizationRecord as _OptimizationRecord
+    from .provenance import _get_biocompiler_version as _get_version
+
+    # Determine solver backend name
+    solver_backend = "greedy"
+    if use_csp_solver:
+        solver_backend = "csp"  # actual backend may vary, but CSP was requested
+
+    # Extract mutation descriptions from applied mutagenesis
+    mutations_made: list[str] = []
+    for mut in opt._applied_mutagenesis:
+        if isinstance(mut, dict):
+            mutations_made.append(mut.get("description", str(mut)))
+        else:
+            mutations_made.append(str(mut))
+
+    # Constraints applied (from satisfied + failed predicate names)
+    constraints_applied = sorted(set(
+        [r.predicate for r in pred_results]
+    ))
+
+    provenance_record = _OptimizationRecord(
+        input_sequence=target_protein,
+        output_sequence=optimized_seq,
+        organism=organism,
+        constraints_applied=constraints_applied,
+        mutations_made=mutations_made,
+        solver_backend=solver_backend,
+        solve_time=round(_time.monotonic() - _start_time, 6),
+        seed_used=seed,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        biocompiler_version=_get_version(),
+    )
 
     return OptimizationResult(
         sequence=optimized_seq,
@@ -1391,6 +1494,7 @@ def optimize_sequence(
         fallback_used=fallback,
         satisfied_predicates=satisfied,
         aa_substitutions=opt._applied_mutagenesis,
+        provenance=provenance_record,
     )
 
 
@@ -1548,7 +1652,7 @@ class BioOptimizer:
         # Track positions where GT is unavoidable (e.g., Valine codons)
         self._unavoidable_gt_positions: Set[int] = set()
         # Track mutagenesis proposals that were applied
-        self._applied_mutagenesis: List[Dict] = []
+        self._applied_mutagenesis: List[Dict[str, Any]] = []
         # Store original input protein for conservation scoring
         self._original_protein: str = ""
 
@@ -3416,7 +3520,7 @@ class BioOptimizer:
         """
         from .restriction_sites import get_recognition_site as _get_site
 
-        for iteration in range(100):
+        for iteration in range(MAX_ATTTA_MOTIF_ITERATIONS):
             pos = seq.find("ATTTA")
             if pos == -1:
                 break
@@ -3729,8 +3833,8 @@ class BioOptimizer:
                             # Try C-side change first (more likely to have alternatives)
                             c_alts.sort(key=lambda c: self.species_cai.get(c, 0.0), reverse=True)
                             g_alts.sort(key=lambda c: self.species_cai.get(c, 0.0), reverse=True)
-                            for c_alt in c_alts[:3]:
-                                for g_alt in g_alts[:3]:
+                            for c_alt in c_alts[:TOP_CAI_ALTERNATIVES]:
+                                for g_alt in g_alts[:TOP_CAI_ALTERNATIVES]:
                                     test_list = seq_list[:]
                                     for k, b in enumerate(c_alt):
                                         test_list[c_codon_start + k] = b
@@ -3879,7 +3983,7 @@ class BioOptimizer:
         n_bases = len(seq_list)
         target_gc = 0.50 if gc_val > 0.70 else 0.30
 
-        for iteration in range(200):
+        for iteration in range(MAX_GC_ADJUSTMENT_ITERATIONS):
             gc_val = gc_count / n_bases
             if 0.30 <= gc_val <= 0.70:
                 break

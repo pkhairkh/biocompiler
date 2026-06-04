@@ -15,6 +15,26 @@ from .immunogenicity import compute_immunogenicity
 from .immunogenicity import predict_all as predict_mhc_all
 from .immunogenicity import predict_epitopes
 
+__all__ = [
+    "evaluate_low_immunogenicity",
+    "evaluate_no_strong_t_cell_epitope",
+    "evaluate_no_dominant_b_cell_epitope",
+    "evaluate_population_coverage_safe",
+]
+
+# ────────────────────────────────────────────────────────────
+# Verdict threshold constants
+# ────────────────────────────────────────────────────────────
+_IMMO_PASS_THRESHOLD: float = 0.2
+_IMMO_LIKELY_PASS_THRESHOLD: float = 0.3
+_IMMO_UNCERTAIN_THRESHOLD: float = 0.5
+_IMMO_LIKELY_FAIL_THRESHOLD: float = 0.7
+_T_CELL_STRONG_SCORE: float = 0.7
+_B_CELL_DOMINANT_SCORE: float = 0.7
+_POP_COVERAGE_PASS_THRESHOLD: float = 0.2
+_POP_COVERAGE_LIKELY_PASS_THRESHOLD: float = 0.3
+_POP_COVERAGE_LIKELY_FAIL_THRESHOLD: float = 0.7
+
 
 def evaluate_low_immunogenicity(sequence: str, protein: str, organism: str, **kwargs: Any) -> TypeCheckResult:
     """Evaluate whether a protein has low overall immunogenicity.
@@ -46,21 +66,21 @@ def evaluate_low_immunogenicity(sequence: str, protein: str, organism: str, **kw
     result = compute_immunogenicity(protein)
     score = result.overall_score
 
-    if score < 0.2:
+    if score < _IMMO_PASS_THRESHOLD:
         verdict = Verdict.PASS
         violation = None
-    elif score < 0.3:
+    elif score < _IMMO_LIKELY_PASS_THRESHOLD:
         verdict = Verdict.LIKELY_PASS
         violation = None
-    elif score < 0.5:
+    elif score < _IMMO_UNCERTAIN_THRESHOLD:
         verdict = Verdict.UNCERTAIN
         violation = f"Immunogenicity score {score:.3f} is moderate"
-    elif score < 0.7:
+    elif score < _IMMO_LIKELY_FAIL_THRESHOLD:
         verdict = Verdict.LIKELY_FAIL
         violation = f"Immunogenicity score {score:.3f} is elevated"
     else:
         verdict = Verdict.FAIL
-        violation = f"Immunogenicity score {score:.3f} is high (>{0.7})"
+        violation = f"Immunogenicity score {score:.3f} is high (>{_IMMO_LIKELY_FAIL_THRESHOLD})"
 
     derivation = [
         {"step": "compute_immunogenicity", "score": score,
@@ -106,7 +126,7 @@ def evaluate_no_strong_t_cell_epitope(sequence: str, protein: str, organism: str
 
     result = predict_epitopes(protein)
     t_epitopes = result.linear_epitopes
-    strong_count = sum(1 for e in t_epitopes if e.score >= 0.7)
+    strong_count = sum(1 for e in t_epitopes if e.score >= _T_CELL_STRONG_SCORE)
 
     if strong_count <= max_strong:
         verdict = Verdict.PASS
@@ -155,7 +175,7 @@ def evaluate_no_dominant_b_cell_epitope(sequence: str, protein: str, organism: s
     Returns:
         TypeCheckResult with B-cell epitope verdict.
     """
-    score_threshold = kwargs.get('score_threshold', 0.7)
+    score_threshold = kwargs.get('score_threshold', _B_CELL_DOMINANT_SCORE)
     if not protein:
         return TypeCheckResult(
             predicate="NoDominantBCellEpitope",
@@ -231,16 +251,16 @@ def evaluate_population_coverage_safe(
     num_binders = len(result.binders)
     num_strong = result.strong_binders
 
-    if binding_rate < 0.2:
+    if binding_rate < _POP_COVERAGE_PASS_THRESHOLD:
         verdict = Verdict.PASS
         violation = None
-    elif binding_rate < 0.3:
+    elif binding_rate < _POP_COVERAGE_LIKELY_PASS_THRESHOLD:
         verdict = Verdict.LIKELY_PASS
         violation = None
     elif binding_rate < coverage_threshold:
         verdict = Verdict.UNCERTAIN
         violation = f"MHC binding rate {binding_rate:.3f} is moderate"
-    elif binding_rate < 0.7:
+    elif binding_rate < _POP_COVERAGE_LIKELY_FAIL_THRESHOLD:
         verdict = Verdict.LIKELY_FAIL
         violation = f"MHC binding rate {binding_rate:.3f} is elevated"
     else:

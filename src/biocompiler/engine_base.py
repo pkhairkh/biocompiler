@@ -1,6 +1,6 @@
 """BioCompiler Engine Base — Unified base types for all analysis engines.
 
-v9.0.0 — Complete API unification foundation
+v9.2.0 — Complete API unification foundation
 
 All analysis engines (ESMFold, FoldX, CamSol, Immunogenicity) share:
   - BaseEngineResult: concrete base class with unified field names
@@ -21,6 +21,7 @@ Design principles:
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import (
@@ -31,11 +32,41 @@ from typing import (
     runtime_checkable,
 )
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Protein input validation
 # ---------------------------------------------------------------------------
 
+__all__ = [
+    "STANDARD_AMINO_ACIDS",
+    "DEFAULT_TIMEOUT_S",
+    "DEFAULT_MAX_WORKERS",
+    "DEFAULT_CONFIDENCE",
+    "validate_protein_sequence",
+    "EngineResult",
+    "BaseEngineResult",
+    "MutationResult",
+    "BatchResult",
+    "EngineTimer",
+    "EngineConfig",
+    "classify_score",
+]
+
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
 STANDARD_AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
+
+#: Default wall-clock timeout for engine operations (seconds).
+DEFAULT_TIMEOUT_S: float = 300.0
+
+#: Default parallelism for batch engine operations.
+DEFAULT_MAX_WORKERS: int = 4
+
+#: Default confidence score for mutation suggestions.
+DEFAULT_CONFIDENCE: float = 1.0
 
 
 def validate_protein_sequence(protein: str, engine_name: str = "engine") -> str:
@@ -149,7 +180,7 @@ class MutationResult:
     engine: str = ""  # 'foldx', 'camsol', 'immunogenicity', 'deimmunization'
     recommendation: str = ""  # 'stabilizing', 'solubility_improving', 'deimmunizing'
     description: str = ""
-    confidence: float = 1.0
+    confidence: float = DEFAULT_CONFIDENCE
     details: dict[str, Any] = field(default_factory=dict)
 
     def __init__(
@@ -164,7 +195,7 @@ class MutationResult:
         engine: str = "",
         recommendation: str = "",
         description: str = "",
-        confidence: float = 1.0,
+        confidence: float = DEFAULT_CONFIDENCE,
         details: dict[str, Any] | None = None,
         # Old field name aliases for backward compat
         original_aa: str | None = None,
@@ -192,6 +223,12 @@ class MutationResult:
         self.description = description
         self.confidence = confidence
         self.details = details if details is not None else {}
+
+        if kwargs:
+            logger.warning(
+                "MutationResult received unexpected keyword arguments: %s",
+                ", ".join(sorted(kwargs.keys())),
+            )
 
     # Backward compatibility: 'score' property alias for delta_score
     @property
@@ -246,6 +283,13 @@ class BatchResult(Generic[T]):
     def __post_init__(self) -> None:
         """Auto-compute successful/failed counts when not explicitly provided."""
         if self.successful == 0 and self.failed == 0 and self.results:
+            for r in self.results:
+                if not hasattr(r, "success"):
+                    logger.debug(
+                        "BatchResult item %s lacks 'success' attribute; "
+                        "assuming successful",
+                        type(r).__name__,
+                    )
             self.successful = sum(
                 1 for r in self.results if getattr(r, "success", True)
             )
@@ -315,9 +359,9 @@ class EngineConfig:
         max_workers: parallelism for batch operations
     """
     use_cache: bool = True
-    timeout_s: float = 300.0
+    timeout_s: float = DEFAULT_TIMEOUT_S
     verbose: bool = False
-    max_workers: int = 4
+    max_workers: int = DEFAULT_MAX_WORKERS
 
 
 # ---------------------------------------------------------------------------

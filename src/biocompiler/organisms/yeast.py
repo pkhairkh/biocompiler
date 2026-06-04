@@ -6,7 +6,7 @@ Yeast is a common expression host for recombinant protein production.
 High-expression genes used for CAI computation.
 """
 
-from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
 
 __all__ = [
     "YEAST_CODON_USAGE",
@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
-YEAST_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
+YEAST_CODON_USAGE: CodonUsageTable = {
     "TTT": ("F", 0.59, 18.3, 90456),
     "TTC": ("F", 0.41, 12.7, 62789),
     "TTA": ("L", 0.28, 13.2, 65234),

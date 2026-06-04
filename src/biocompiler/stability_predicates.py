@@ -26,6 +26,15 @@ from .constants import HYDROPHOBIC_AAS
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "compute_hydrophobic_fraction",
+    "estimate_stability_empirical",
+    "evaluate_stable_folding",
+    "evaluate_no_destabilizing_mutation",
+    "evaluate_disulfide_bond_integrity",
+    "evaluate_hydrophobic_core_quality",
+]
+
 # ────────────────────────────────────────────────────────────
 # Constants
 # ────────────────────────────────────────────────────────────
@@ -78,7 +87,8 @@ def _parse_pdb_coords(pdb_string: str) -> dict[int, dict[str, list[float]]]:
             x = float(line[30:38].strip())
             y = float(line[38:46].strip())
             z = float(line[46:54].strip())
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as exc:
+            logger.debug("Skipping malformed PDB ATOM line: %s", exc)
             continue
         # Keep only CB and CA (CA used as fallback for glycine)
         if atom_name in ("CB", "CA"):
@@ -660,11 +670,14 @@ def evaluate_hydrophobic_core_quality(
     ]
 
     # --- Sequence-based assessment ---
+    _HYDRO_DEFICIT_FAIL: float = 0.10    # Deficit > this → FAIL
+    _HYDRO_DEFICIT_LIKELY_FAIL: float = 0.05  # Deficit > this → LIKELY_FAIL
+
     if hydro_frac < _HYDRO_FRAC_LO:
         deficit = _HYDRO_FRAC_LO - hydro_frac
-        if deficit > 0.10:
+        if deficit > _HYDRO_DEFICIT_FAIL:
             verdict = Verdict.FAIL
-        elif deficit > 0.05:
+        elif deficit > _HYDRO_DEFICIT_LIKELY_FAIL:
             verdict = Verdict.LIKELY_FAIL
         else:
             verdict = Verdict.UNCERTAIN
@@ -675,9 +688,9 @@ def evaluate_hydrophobic_core_quality(
         )
     elif hydro_frac > _HYDRO_FRAC_HI:
         excess = hydro_frac - _HYDRO_FRAC_HI
-        if excess > 0.10:
+        if excess > _HYDRO_DEFICIT_FAIL:
             verdict = Verdict.FAIL
-        elif excess > 0.05:
+        elif excess > _HYDRO_DEFICIT_LIKELY_FAIL:
             verdict = Verdict.LIKELY_FAIL
         else:
             verdict = Verdict.UNCERTAIN

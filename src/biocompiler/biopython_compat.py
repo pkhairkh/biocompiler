@@ -14,6 +14,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "to_seqrecord",
+    "from_seqrecord",
+    "optimize_to_seqrecord",
+]
+
 
 def _check_biopython() -> None:
     """Check that BioPython is installed, raise ImportError with helpful message if not."""

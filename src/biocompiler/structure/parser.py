@@ -19,12 +19,46 @@ from typing import Any, TypedDict
 logger = logging.getLogger(__name__)
 
 
+__all__ = [
+    # Data classes
+    "Atom",
+    "Residue",
+    "Chain",
+    "ProteinStructure",
+    # Amino acid mappings
+    "THREE_TO_ONE",
+    "ONE_TO_THREE",
+    # PDB I/O
+    "parse_pdb",
+    "parse_pdb_file",
+    # Structural analysis constants
+    "DEGENERATE_DIHEDRAL_THRESHOLD",
+    "MISSING_B_FACTOR",
+    "RAMACHANDRAN_HELIX_PHI",
+    "RAMACHANDRAN_HELIX_PSI",
+    "RAMACHANDRAN_SHEET_PHI",
+    "RAMACHANDRAN_SHEET_PSI",
+    "RAMACHANDRAN_ANGLE_TOLERANCE",
+    # Structural analysis functions
+    "compute_dihedral",
+    "compute_ramachandran",
+    "secondary_structure_estimate",
+    # Typed dicts
+    "RamachandranResult",
+]
+
+
 # ────────────────────────────────────────────────────────────
 # Amino acid code mappings
 # ────────────────────────────────────────────────────────────
-# NOTE: These are defined locally because constants.py does not yet export
-# THREE_TO_ONE / ONE_TO_THREE. If they are added to constants.py in the
-# future, import them from there instead of redefining here.
+# Defined locally because constants.py only provides STANDARD_AAS (the 20
+# canonical one-letter codes) and amino-acid-level data (BLOSUM62, HYDROPATHY)
+# but not the 3-letter ↔ 1-letter code maps.  These local mappings extend
+# beyond the standard 20 residues to include common non-standard entries
+# (ASX, GLX, SEC, PYL, MSE) and PDB-specific protonation states (HSD, HSE,
+# HSP, CYX, HIP, HIE, HID, LYP, CYM, MLY, ACE, NME) that are needed for
+# robust PDB parsing.  If equivalent maps are added to constants.py in the
+# future, import from there and extend locally only for the extras.
 
 THREE_TO_ONE: dict[str, str] = {
     "ALA": "A",
@@ -334,31 +368,35 @@ class ProteinStructure:
                 return c
         return None
 
-    def ca_distance_matrix(self) -> list[list[float]]:
+    def ca_distance_matrix(self) -> list[list[float | None]]:
         """Compute pairwise CA distance matrix across all residues.
 
         Returns:
-            Square matrix of distances. Missing CA atoms use
-            float('inf') as a placeholder.
+            Square matrix of distances.  Missing CA atoms produce
+            ``None`` entries so that any distance involving a missing
+            CA is also ``None`` (never mistaken for a real contact).
         """
-        ca_list: list[tuple[float, float, float]] = []
+        ca_list: list[tuple[float, float, float] | None] = []
         for chain in self.chains:
             for res in chain.residues:
                 ca_atom = res.ca()
                 if ca_atom is not None:
                     ca_list.append((ca_atom.x, ca_atom.y, ca_atom.z))
                 else:
-                    ca_list.append((float("inf"), float("inf"), float("inf")))
+                    ca_list.append(None)
 
         n = len(ca_list)
-        matrix: list[list[float]] = [[0.0] * n for _ in range(n)]
+        matrix: list[list[float | None]] = [[0.0] * n for _ in range(n)]
         for i in range(n):
-            xi, yi, zi = ca_list[i]
             for j in range(i + 1, n):
-                xj, yj, zj = ca_list[j]
-                d = math.sqrt(
-                    (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
-                )
+                ci = ca_list[i]
+                cj = ca_list[j]
+                if ci is None or cj is None:
+                    d: float | None = None
+                else:
+                    d = math.sqrt(
+                        (ci[0] - cj[0]) ** 2 + (ci[1] - cj[1]) ** 2 + (ci[2] - cj[2]) ** 2
+                    )
                 matrix[i][j] = d
                 matrix[j][i] = d
         return matrix
@@ -405,7 +443,8 @@ class ProteinStructure:
         """Compute a binary contact map from CA distances.
 
         Two residues are in contact if their CA atoms are within
-        the threshold distance.
+        the threshold distance.  Pairs where one or both CA atoms
+        are missing (distance is ``None``) are never contacts.
 
         Args:
             threshold: Distance cutoff in Angstroms (default 8.0).
@@ -418,7 +457,8 @@ class ProteinStructure:
         cmap: list[list[bool]] = [[False] * n for _ in range(n)]
         for i in range(n):
             for j in range(i + 1, n):
-                if dist[i][j] <= threshold:
+                d = dist[i][j]
+                if d is not None and d <= threshold:
                     cmap[i][j] = True
                     cmap[j][i] = True
         return cmap
@@ -701,13 +741,19 @@ def parse_pdb_file(filepath: str, include_het: bool = False) -> ProteinStructure
 # (atoms are collinear), making the dihedral angle undefined.
 DEGENERATE_DIHEDRAL_THRESHOLD: float = 1e-10
 
+# Placeholder value for residues that lack a CA atom in the distance matrix.
+# Using ``None`` (rather than ``float('inf')``) makes the sentinel explicit
+# and forces downstream code to handle missing data via ``is None`` checks
+# instead of relying on arithmetic with infinity.
+MISSING_B_FACTOR: float | None = None
+
 # Ramachandran angle targets for secondary structure estimation
 # Source: Morris et al. (1992), simplified DSSP-like classification
-RAMA_ALPHA_HELIX_PHI: float = -57.0
-RAMA_ALPHA_HELIX_PSI: float = -47.0
-RAMA_BETA_SHEET_PHI: float = -120.0
-RAMA_BETA_SHEET_PSI: float = 120.0
-RAMA_ANGLE_TOLERANCE: float = 30.0
+RAMACHANDRAN_HELIX_PHI: float = -57.0
+RAMACHANDRAN_HELIX_PSI: float = -47.0
+RAMACHANDRAN_SHEET_PHI: float = -120.0
+RAMACHANDRAN_SHEET_PSI: float = 120.0
+RAMACHANDRAN_ANGLE_TOLERANCE: float = 30.0
 
 
 class RamachandranResult(TypedDict):
@@ -905,11 +951,11 @@ def secondary_structure_estimate(structure: ProteinStructure) -> list[str]:
             ss.append("C")
             continue
 
-        # Alpha-helix: phi ≈ RAMA_ALPHA_HELIX_PHI, psi ≈ RAMA_ALPHA_HELIX_PSI
-        if abs(p - RAMA_ALPHA_HELIX_PHI) <= RAMA_ANGLE_TOLERANCE and abs(s - RAMA_ALPHA_HELIX_PSI) <= RAMA_ANGLE_TOLERANCE:
+        # Alpha-helix: phi ≈ RAMACHANDRAN_HELIX_PHI, psi ≈ RAMACHANDRAN_HELIX_PSI
+        if abs(p - RAMACHANDRAN_HELIX_PHI) <= RAMACHANDRAN_ANGLE_TOLERANCE and abs(s - RAMACHANDRAN_HELIX_PSI) <= RAMACHANDRAN_ANGLE_TOLERANCE:
             ss.append("H")
-        # Beta-sheet: phi ≈ RAMA_BETA_SHEET_PHI, psi ≈ RAMA_BETA_SHEET_PSI
-        elif abs(p - RAMA_BETA_SHEET_PHI) <= RAMA_ANGLE_TOLERANCE and abs(s - RAMA_BETA_SHEET_PSI) <= RAMA_ANGLE_TOLERANCE:
+        # Beta-sheet: phi ≈ RAMACHANDRAN_SHEET_PHI, psi ≈ RAMACHANDRAN_SHEET_PSI
+        elif abs(p - RAMACHANDRAN_SHEET_PHI) <= RAMACHANDRAN_ANGLE_TOLERANCE and abs(s - RAMACHANDRAN_SHEET_PSI) <= RAMACHANDRAN_ANGLE_TOLERANCE:
             ss.append("E")
         else:
             ss.append("C")

@@ -98,7 +98,28 @@ for full transparency.
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
+import logging
+
 from .types import Verdict, SLOTMode
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "SLOT_PREDICATES",
+    "is_slot_predicate",
+    "VerificationEvidence",
+    "verify_no_cryptic_splice",
+    "verify_no_cryptic_promoter",
+    "verify_no_unexpected_tm_domain",
+    "verify_mrna_secondary_structure",
+    "verify_co_translational_folding",
+    "verify_conservation_score",
+    "verify_codon_optimality",
+    "verify_structure_predicate",
+    "verify_stability_predicate",
+    "verify_solubility_predicate",
+    "verify_immunogenicity_predicate",
+]
 
 
 # ────────────────────────────────────────────────────────────
@@ -222,7 +243,8 @@ def _check_esmfold_available() -> bool:
     try:
         from .esmfold import is_esmfold_available
         return is_esmfold_available()
-    except Exception:
+    except Exception as exc:
+        logger.debug("ESMFold availability check failed: %s", exc)
         return False
 
 
@@ -231,7 +253,8 @@ def _check_foldx_available() -> bool:
     try:
         from .foldx import is_foldx_available
         return is_foldx_available()
-    except Exception:
+    except Exception as exc:
+        logger.debug("FoldX availability check failed: %s", exc)
         return False
 
 
@@ -240,7 +263,8 @@ def _check_camsol_available() -> bool:
     try:
         from .camsol import compute_solubility
         return callable(compute_solubility)
-    except Exception:
+    except Exception as exc:
+        logger.debug("CamSol availability check failed: %s", exc)
         return False
 
 
@@ -249,7 +273,8 @@ def _check_mhc_available() -> bool:
     try:
         from .immunogenicity import predict_mhc_i_binding
         return callable(predict_mhc_i_binding)
-    except Exception:
+    except Exception as exc:
+        logger.debug("MHC availability check failed: %s", exc)
         return False
 
 
@@ -258,7 +283,8 @@ def _check_maxent_available() -> bool:
     try:
         from .splicing import maxent_score
         return callable(maxent_score)
-    except Exception:
+    except Exception as exc:
+        logger.debug("MaxEntScan availability check failed: %s", exc)
         return False
 
 

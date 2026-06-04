@@ -12,20 +12,35 @@ are handled natively via automaton/table constraints.
 
 Module structure:
     solver/
-        __init__.py        — Public API (this file)
-        types.py           — Shared data structures (SolverConfig, SolverResult, etc.)
-        constraints.py     — Constraint builders (restriction sites, GC, etc.)
-        automaton.py       — Automaton-based encoding for forbidden substrings
-        dispatch.py        — Solver dispatch / fallback logic
-        engine_ortools.py  — OR-Tools CP-SAT engine
-        engine_z3.py       — Z3 SMT engine
-        mus.py             — Minimal Unsatisfiable Subset extraction
-        maxent_encoding.py — MaxEntScan splice scoring as CSP constraints
+        __init__.py            — Public API (this file)
+        types.py               — Shared data structures (SolverConfig, SolverResult, etc.)
+        constraints.py         — Constraint builders (restriction sites, GC, etc.)
+        automaton.py           — Automaton-based encoding for forbidden substrings
+        dispatch.py            — Solver dispatch / fallback logic
+        engine_ortools.py      — OR-Tools CP-SAT engine
+        engine_z3.py           — Z3 SMT engine
+        engine_greedy.py       — Greedy fallback engine
+        mus.py                 — Minimal Unsatisfiable Subset extraction
+        maxent_encoding.py     — MaxEntScan splice scoring as CSP constraints
+        enforcement.py         — Constraint enforcement mechanics
+        scoring.py             — Constraint enforcement scoring & soft constraint scoring & Pareto analysis
+        conflict_resolution.py — Hard constraint conflict detection & resolution
+
+All public symbols from sub-modules are re-exported here so that downstream
+code can import from ``biocompiler.solver`` directly::
+
+    from biocompiler.solver import CSPSolver, SolverConfig, solve_with_csp
+    from biocompiler.solver import ConstraintEnforcer, SoftConstraintScorer
+
+Direct imports from sub-modules (e.g. ``from biocompiler.solver.dispatch import
+solve_with_csp``) still work but are discouraged — they may trigger
+deprecation warnings in a future release.
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 if TYPE_CHECKING:
@@ -35,22 +50,62 @@ if TYPE_CHECKING:
 
     EngineType = Union[ORTOOLSEngine, Z3Engine, GreedyEngine]
 
-# ── Core types (always available, no heavy deps) ────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# Core types (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
 from .types import (
     CodonVariable,
+    ConstraintPriority,
+    ConstraintSpec,
+    ConstraintStrictness,
     ConstraintType,
     ConstraintViolation,
     CrossCodonSpliceConstraint,
     CSPModel,
     MUSReport,
     SolverBackend,
+    SolverBackendProtocol,
     SolverConfig,
     SolverResult,
     SolverStatus,
     SpliceConstraint,
 )
 
-# ── MaxEntScan encoding (always available, no heavy deps) ───────────────
+# ═══════════════════════════════════════════════════════════════════════
+# Constraint model (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
+from .constraints import (
+    # Abstract base classes
+    HardConstraint,
+    SoftConstraint,
+    # Hard constraints
+    TranslationConstraint,
+    NoRestrictionSiteConstraint,
+    GCRangeConstraint,
+    NoCrypticSpliceConstraint,
+    NoCpGIslandConstraint,
+    NoATTTAMotifConstraint,
+    NoTRunConstraint,
+    # Soft constraints / objectives
+    MaximizeCAI,
+    MinimizeCpG,
+    MinimizeMRNADG,
+    # CSPModel (constraints variant — re-exported for convenience;
+    # the types.CSPModel is also re-exported above)
+    CSPModel as _CSPModelConstraints,  # noqa: F401 — re-exported via types already
+    # Factory function
+    build_csp_model,
+    # Helper functions
+    codon_gc_count,
+    codon_contains_gt,
+    codon_contains_ag,
+    codon_contains_cpg,
+    compute_gc_from_codons,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# MaxEntScan encoding (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
 from .maxent_encoding import (
     SpliceConstraintEncoder,
     precompute_splice_scores,
@@ -59,7 +114,76 @@ from .maxent_encoding import (
     encode_cross_codon_splice_context,
 )
 
+# ═══════════════════════════════════════════════════════════════════════
+# Dispatch (lazy heavy deps — always importable)
+# ═══════════════════════════════════════════════════════════════════════
+from .dispatch import (
+    solve_with_csp,
+    get_csp_availability,
+    csp_optimize,
+    validate_csp_solution,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Enforcement (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
+from .enforcement import (
+    ConstraintEnforcer,
+    EnforcementResult,
+    ConflictResolution as EnforcementConflictResolution,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Scoring (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
+from .scoring import (
+    ConstraintScorer,
+    ScoringResult,
+    SoftConstraintScorer,
+    compute_pareto_frontier,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Conflict resolution (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
+from .conflict_resolution import (
+    ConstraintConflict,
+    ConflictResolver,
+    prioritize_constraints,
+)
+
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Deprecation warnings for old import paths
+# ═══════════════════════════════════════════════════════════════════════
+
+def __getattr__(name: str) -> Any:
+    """Lazy access with deprecation warnings for old import paths.
+
+    Emits a DeprecationWarning when a user imports a symbol directly
+    from a sub-module instead of from the ``biocompiler.solver`` package.
+    """
+    # Map of old sub-module paths to their canonical package-level names
+    _deprecated_aliases: dict[str, str] = {
+        # Old names that may have been used before the package re-exports
+        # were consolidated.  These map old names → canonical names.
+        "is_csp_available": "get_csp_availability",
+    }
+
+    if name in _deprecated_aliases:
+        canonical = _deprecated_aliases[name]
+        warnings.warn(
+            f"biocompiler.solver.{name} is deprecated — use "
+            f"biocompiler.solver.{canonical} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Delegate to the canonical name
+        return globals()[canonical]
+
+    raise AttributeError(f"module 'biocompiler.solver' has no attribute {name!r}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -203,27 +327,73 @@ __all__ = [
     # ── Main solver class ───────────────────────────────────
     "CSPSolver",
 
-    # ── Result & config types ───────────────────────────────
+    # ── Result & config types (from .types) ─────────────────
     "SolverResult",
     "SolverConfig",
     "SolverBackend",
     "SolverStatus",
+    "SolverBackendProtocol",
     "CSPModel",
 
-    # ── Supporting types ────────────────────────────────────
+    # ── Supporting types (from .types) ──────────────────────
     "CodonVariable",
+    "ConstraintPriority",
+    "ConstraintSpec",
+    "ConstraintStrictness",
     "ConstraintType",
     "ConstraintViolation",
     "CrossCodonSpliceConstraint",
     "MUSReport",
     "SpliceConstraint",
 
-    # ── MaxEntScan encoding ─────────────────────────────────
+    # ── Constraint model (from .constraints) ────────────────
+    "HardConstraint",
+    "SoftConstraint",
+    "TranslationConstraint",
+    "NoRestrictionSiteConstraint",
+    "GCRangeConstraint",
+    "NoCrypticSpliceConstraint",
+    "NoCpGIslandConstraint",
+    "NoATTTAMotifConstraint",
+    "NoTRunConstraint",
+    "MaximizeCAI",
+    "MinimizeCpG",
+    "MinimizeMRNADG",
+    "build_csp_model",
+    "codon_gc_count",
+    "codon_contains_gt",
+    "codon_contains_ag",
+    "codon_contains_cpg",
+    "compute_gc_from_codons",
+
+    # ── MaxEntScan encoding (from .maxent_encoding) ─────────
     "SpliceConstraintEncoder",
     "precompute_splice_scores",
     "build_splice_constraint_table",
     "quantize_maxent_scores",
     "encode_cross_codon_splice_context",
+
+    # ── Dispatch (from .dispatch) ───────────────────────────
+    "solve_with_csp",
+    "get_csp_availability",
+    "csp_optimize",
+    "validate_csp_solution",
+
+    # ── Enforcement (from .enforcement) ─────────────────────
+    "ConstraintEnforcer",
+    "EnforcementResult",
+    "EnforcementConflictResolution",
+
+    # ── Scoring (from .scoring) ─────────────────────────────
+    "ConstraintScorer",
+    "ScoringResult",
+    "SoftConstraintScorer",
+    "compute_pareto_frontier",
+
+    # ── Conflict resolution (from .conflict_resolution) ─────
+    "ConstraintConflict",
+    "ConflictResolver",
+    "prioritize_constraints",
 
     # ── Convenience functions ───────────────────────────────
     "solve",

@@ -5,3 +5,43 @@
 #   pip install -e ".[solver]"         # CSP solver backends (OR-Tools + Z3)
 #   pip install -e ".[all]"            # All optional dependencies
 #   pip install -e ".[dev]"            # Development dependencies (pytest, ruff, mypy, etc.)
+
+# Core dependencies (required)
+pyyaml>=6.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0
+
+# Optional: CSP Solver backends
+# ortools>=9.8.0
+# z3-solver>=4.12.0
+
+# Optional: ViennaRNA
+# ViennaRNA>=2.5.0
+
+# Optional: MHCflurry
+# mhcflurry>=2.0.0
+
+# Optional: BioPython
+# biopython>=1.80
+
+# Optional: Comparison / benchmarking
+# dnachisel>=3.0.0
+
+# Optional: API client
+# httpx>=0.24.0
+
+# Optional: HTML parsing
+# beautifulsoup4>=4.12.0
+
+# Optional: Jupyter notebooks
+# ipython>=8.0
+# matplotlib>=3.5
+# ipywidgets>=8.0
+
+# Optional: Development
+# pytest>=7.0
+# pytest-cov>=4.0
+# hypothesis>=6.0
+# ruff>=0.1.0
+# mypy>=1.0

@@ -30,11 +30,18 @@ from . import __version__
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["generate_report"]
+
 # ── Display & layout constants ──────────────────────────────────────────
 _MAX_TOKEN_DISPLAY: int = 50
 _MAX_ISOFORM_DISPLAY: int = 20
 _SEQUENCE_LINE_WIDTH: int = 60
 _STOP_CODON_MARKER: str = "*"
+_DESIGN_ID_DISPLAY_LENGTH: int = 32
+
+# ── GC window computation constants ─────────────────────────────────────
+_DEFAULT_GC_WINDOW_SIZE: int = 50
+_GC_WINDOW_STEP_DIVISOR: int = 4
 
 # ── GC plot SVG constants ───────────────────────────────────────────────
 _GC_PLOT_WIDTH: int = 800
@@ -42,6 +49,31 @@ _GC_PLOT_HEIGHT: int = 200
 _GC_PLOT_MARGIN: int = 40
 _GC_LOW_THRESHOLD: float = 0.3
 _GC_HIGH_THRESHOLD: float = 0.7
+
+# ── Verdict badge symbols ──────────────────────────────────────────────
+_VERDICT_SYMBOLS: dict[str, str] = {
+    "PASS": "&#10003;",
+    "LIKELY_PASS": "&#10003;~",
+    "UNCERTAIN": "?",
+    "LIKELY_FAIL": "&#10007;~",
+    "FAIL": "&#10007;",
+}
+
+# ── Structure SVG constants ────────────────────────────────────────────
+_STRUCT_SVG_WIDTH: int = 800
+_STRUCT_SVG_HEIGHT: int = 80
+_STRUCT_SVG_MARGIN: int = 40
+_STRUCT_SVG_BAR_Y: int = 30
+_STRUCT_SVG_BAR_H: int = 20
+_STRUCT_EXON_COLORS: list[str] = ["#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706"]
+_POSITION_TICK_FRACTIONS: list[float] = [0, 0.25, 0.5, 0.75, 1.0]
+
+# ── Codon heatmap SVG constants ────────────────────────────────────────
+_HEATMAP_CELL_W: int = 40
+_HEATMAP_CELL_H: int = 25
+_HEATMAP_MARGIN_LEFT: int = 30
+_HEATMAP_MARGIN_TOP: int = 40
+_HEATMAP_MAX_CODON_COLS: int = 64
 
 
 def generate_report(
@@ -53,7 +85,7 @@ def generate_report(
     exon_boundaries: Optional[list[tuple[int, int]]] = None,
     tokens: Optional[list[Token]] = None,
     isoforms: Optional[list[SpliceIsoform]] = None,
-    optimization_result: Optional[dict] = None,
+    optimization_result: Optional[dict[str, object]] = None,
     engine_results: Optional[list[BaseEngineResult]] = None,
 ) -> str:
     """
@@ -90,9 +122,25 @@ def generate_report(
         Self-contained HTML string
     """
     seq = sequence.upper()
-    gc = gc_content(seq)
-    protein = translate(seq)
-    cai = compute_cai(seq, organism)
+
+    try:
+        gc = gc_content(seq)
+    except Exception:
+        logger.warning("Failed to compute GC content", exc_info=True)
+        gc = 0.0
+
+    try:
+        protein = translate(seq)
+    except Exception:
+        logger.warning("Failed to translate sequence", exc_info=True)
+        protein = ""
+
+    try:
+        cai = compute_cai(seq, organism)
+    except Exception:
+        logger.warning("Failed to compute CAI for organism=%s", organism, exc_info=True)
+        cai = 0.0
+
     logger.info("Generating report: %s bp, GC=%.1f%%, CAI=%.4f, organism=%s",
                 len(seq), gc * 100, cai, organism)
 
@@ -100,13 +148,21 @@ def generate_report(
         exon_boundaries = [(0, len(seq))]
 
     if tokens is None:
-        tokens = scan_sequence(seq)
+        try:
+            tokens = scan_sequence(seq)
+        except Exception:
+            logger.warning("Failed to scan sequence for tokens", exc_info=True)
+            tokens = []
 
     if isoforms is None and len(exon_boundaries) > 1:
-        isoforms = compute_splice_isoforms(seq, exon_boundaries)
+        try:
+            isoforms = compute_splice_isoforms(seq, exon_boundaries)
+        except Exception:
+            logger.warning("Failed to compute splice isoforms", exc_info=True)
+            isoforms = []
 
     # Compute GC sliding window data
-    gc_window_data = _compute_gc_windows(seq, window_size=50)
+    gc_window_data = _compute_gc_windows(seq, window_size=_DEFAULT_GC_WINDOW_SIZE)
 
     # Compute codon usage data
     codon_usage_data = _compute_codon_usage(seq)
@@ -144,7 +200,7 @@ def _compute_gc_windows(seq: str, window_size: int = 50) -> list[tuple[int, floa
         List of (position, gc_fraction) tuples, one per window step.
     """
     results = []
-    for i in range(0, len(seq) - window_size + 1, max(1, window_size // 4)):
+    for i in range(0, len(seq) - window_size + 1, max(1, window_size // _GC_WINDOW_STEP_DIVISOR)):
         window = seq[i:i + window_size]
         gc_val = gc_content(window)
         results.append((i, gc_val))
@@ -217,7 +273,7 @@ def _build_html(
     isoforms: list[SpliceIsoform],
     gc_window_data: list[tuple[int, float]],
     codon_usage_data: dict[str, dict[str, float]],
-    optimization_result: Optional[dict],
+    optimization_result: Optional[dict[str, object]],
     engine_results: Optional[list[BaseEngineResult]] = None,
 ) -> str:
     """Build the complete self-contained HTML report.
@@ -263,13 +319,6 @@ def _build_html(
 
     # Build predicate rows
     predicate_rows = ""
-    _VERDICT_SYMBOLS = {
-        "PASS": "&#10003;",
-        "LIKELY_PASS": "&#10003;~",
-        "UNCERTAIN": "?",
-        "LIKELY_FAIL": "&#10007;~",
-        "FAIL": "&#10007;",
-    }
     for r in type_results:
         css_class = r.verdict.value.lower()
         symbol = _VERDICT_SYMBOLS.get(r.verdict.value, "?")
@@ -325,7 +374,7 @@ def _build_html(
             <div class="cert-grid">
                 <div class="cert-field">
                     <span class="cert-label">Design ID</span>
-                    <span class="cert-value mono">{html.escape(certificate.design_id[:32])}...</span>
+                    <span class="cert-value mono">{html.escape(certificate.design_id[:_DESIGN_ID_DISPLAY_LENGTH])}...</span>
                 </div>
                 <div class="cert-field">
                     <span class="cert-label">Version</span>
@@ -333,11 +382,11 @@ def _build_html(
                 </div>
                 <div class="cert-field">
                     <span class="cert-label">Timestamp</span>
-                    <span class="cert-value">{html.escape(certificate.provenance.get('timestamp', 'N/A'))}</span>
+                    <span class="cert-value">{html.escape(certificate.provenance.get('timestamp', 'N/A') if isinstance(certificate.provenance, dict) else 'N/A')}</span>
                 </div>
                 <div class="cert-field">
                     <span class="cert-label">Tool</span>
-                    <span class="cert-value">{html.escape(certificate.provenance.get('tool', 'N/A'))}</span>
+                    <span class="cert-value">{html.escape(certificate.provenance.get('tool', 'N/A') if isinstance(certificate.provenance, dict) else 'N/A')}</span>
                 </div>
             </div>
         </section>"""
@@ -1250,11 +1299,11 @@ def _generate_codon_heatmap_svg(codon_usage: dict[str, dict[str, float]]) -> str
         return "<p>No codon usage data</p>"
 
     aas = sorted(codon_usage.keys())
-    cell_w = 40
-    cell_h = 25
-    margin_left = 30
-    margin_top = 40
-    width = margin_left + 64 * cell_w + 20
+    cell_w = _HEATMAP_CELL_W
+    cell_h = _HEATMAP_CELL_H
+    margin_left = _HEATMAP_MARGIN_LEFT
+    margin_top = _HEATMAP_MARGIN_TOP
+    width = margin_left + _HEATMAP_MAX_CODON_COLS * cell_w + 20
     height = margin_top + len(aas) * cell_h + 20
 
     cells = ""
@@ -1293,11 +1342,11 @@ def _generate_structure_svg(
     Returns:
         SVG markup string.
     """
-    width = 800
-    height = 80
-    margin = 40
-    bar_y = 30
-    bar_h = 20
+    width = _STRUCT_SVG_WIDTH
+    height = _STRUCT_SVG_HEIGHT
+    margin = _STRUCT_SVG_MARGIN
+    bar_y = _STRUCT_SVG_BAR_Y
+    bar_h = _STRUCT_SVG_BAR_H
 
     seq_len = max(len(seq), 1)
     scale = (width - 2 * margin) / seq_len
@@ -1308,7 +1357,7 @@ def _generate_structure_svg(
     elements += f'<rect x="{margin}" y="{bar_y}" width="{width - 2 * margin}" height="{bar_h}" fill="#e2e8f0" rx="3"/>'
 
     # Draw exons
-    colors = ["#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706"]
+    colors = _STRUCT_EXON_COLORS
     for i, (start, end) in enumerate(exon_boundaries):
         x = margin + start * scale
         w = (end - start) * scale
@@ -1326,7 +1375,7 @@ def _generate_structure_svg(
             elements += f'<line x1="{x:.1f}" y1="{bar_y + bar_h}" x2="{x:.1f}" y2="{bar_y + bar_h + 8}" stroke="{marker_color}" stroke-width="1.5"/>'
 
     # Position markers
-    for frac in [0, 0.25, 0.5, 0.75, 1.0]:
+    for frac in _POSITION_TICK_FRACTIONS:
         pos = int(frac * seq_len)
         x = margin + frac * (width - 2 * margin)
         elements += f'<text x="{x:.1f}" y="{height - 5}" font-size="9" fill="#64748b" text-anchor="middle">{pos}</text>'

@@ -1,5 +1,5 @@
 """
-BioCompiler Protein Design & Engineering Helpers v7.2.0
+BioCompiler Protein Design & Engineering Helpers v9.2.0
 ========================================================
 Ties together sequence optimization and mutagenesis capabilities
 for goal-directed protein engineering: thermostability, solubility,
@@ -20,12 +20,59 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 from .constants import BLOSUM62, HYDROPATHY, HYDROPHOBIC_AAS
 from .engine_base import BaseEngineResult, EngineTimer, validate_protein_sequence
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "DesignResult",
+    "DesignConstraints",
+    "MutationScore",
+    "score_mutation",
+    "find_disulfide_opportunities",
+    "find_proline_substitution_sites",
+    "design_thermostable",
+    "design_soluble",
+    "design_low_immunogenicity",
+    "design_multi_objective",
+    # Re-exported constants for convenience
+    "STABILITY_BLOSUM_WEIGHT",
+    "STABILITY_HYDROPATHY_WEIGHT",
+    "STABILITY_HYDROPATHY_COEFF",
+    "STABILITY_PROLINE_COEFF",
+    "STABILITY_GLYCINE_COEFF",
+    "STABILITY_DISULFIDE_COEFF",
+    "SOLUBILITY_HYDROPATHY_WEIGHT",
+    "SOLUBILITY_CHARGED_WEIGHT",
+    "SOLUBILITY_AGGREGATION_WEIGHT",
+    "SOLUBILITY_HYDROPATHY_COEFF",
+    "SOLUBILITY_CHARGED_COEFF",
+    "SOLUBILITY_STRETCH_PENALTY",
+    "MHC_II_WINDOW",
+    "IMMUNOGENICITY_SCALE",
+    "IMMUNOGENICITY_NORM_OFFSET",
+    "IMMUNOGENICITY_NORM_RANGE",
+    "HYDROPHOBIC_STRETCH_THRESHOLD",
+    "SOFT_CONSTRAINT_TOLERANCE",
+    "DISULFIDE_OPPORTUNITY_LIMIT",
+    "BLOSUM62_MISSING_SCORE",
+    "RESIDUE_CA_DISTANCE_ANGSTROMS",
+    "MAX_EFFECTIVE_DISTANCE_ANGSTROMS",
+    "DISULFIDE_MIN_RESIDUE_DISTANCE",
+    "DISULFIDE_SHORT_LOOP_MAX_DISTANCE",
+    "DISULFIDE_BASE_STABILIZATION",
+    "DISULFIDE_DISTANCE_COEFF",
+    "DISULFIDE_REFERENCE_DISTANCE",
+    "DISULFIDE_MIN_STABILIZATION",
+    "DISULFIDE_SHORT_LOOP_BONUS",
+    "DEFAULT_WEIGHT_STABILITY",
+    "DEFAULT_WEIGHT_SOLUBILITY",
+    "DEFAULT_WEIGHT_IMMUNOGENICITY",
+    "MULTI_OBJECTIVE_SOLUBILITY_TOLERANCE",
+]
 
 # ────────────────────────────────────────────────────────────
 # Named constants for heuristic weights & thresholds
@@ -37,14 +84,29 @@ STABILITY_HYDROPATHY_WEIGHT: float = 0.05
 PROLINE_BONUS: float = -0.3
 GLYCINE_BONUS: float = 0.3
 
+# Base stability estimation coefficients
+STABILITY_HYDROPATHY_COEFF: float = 0.5
+STABILITY_PROLINE_COEFF: float = 2.0
+STABILITY_GLYCINE_COEFF: float = 1.5
+STABILITY_DISULFIDE_COEFF: float = 2.0
+
 # Solubility estimation weights
 SOLUBILITY_HYDROPATHY_WEIGHT: float = 0.2
 SOLUBILITY_CHARGED_WEIGHT: float = 0.3
 SOLUBILITY_AGGREGATION_WEIGHT: float = 0.2
 
+# Base solubility estimation coefficients
+SOLUBILITY_HYDROPATHY_COEFF: float = 0.3
+SOLUBILITY_CHARGED_COEFF: float = 1.5
+SOLUBILITY_STRETCH_PENALTY: float = 0.1
+
 # Immunogenicity estimation
 MHC_II_WINDOW: int = 9
 IMMUNOGENICITY_SCALE: float = 0.05
+
+# Base immunogenicity normalization constants
+IMMUNOGENICITY_NORM_OFFSET: float = 4.5
+IMMUNOGENICITY_NORM_RANGE: float = 9.0
 
 # Hydrophobic stretch detection
 HYDROPHOBIC_STRETCH_THRESHOLD: int = 5
@@ -55,15 +117,40 @@ SOFT_CONSTRAINT_TOLERANCE: float = 0.3
 # Disulfide bond search limit
 DISULFIDE_OPPORTUNITY_LIMIT: int = 20
 
+# BLOSUM62 missing score fallback (used when a substitution is not in the matrix)
+BLOSUM62_MISSING_SCORE: int = -4
+
+# Disulfide bond geometric & stabilization model constants
+RESIDUE_CA_DISTANCE_ANGSTROMS: float = 3.5   # Å per residue in extended chain
+MAX_EFFECTIVE_DISTANCE_ANGSTROMS: float = 15.0  # Cap for effective Cα-Cα distance (Å)
+DISULFIDE_MIN_RESIDUE_DISTANCE: int = 5        # Minimum sequence separation for disulfide
+DISULFIDE_SHORT_LOOP_MAX_DISTANCE: int = 15    # Max distance for "short loop" bonus
+DISULFIDE_BASE_STABILIZATION: float = -2.0     # Base stabilization (kcal/mol) for disulfide bond
+DISULFIDE_DISTANCE_COEFF: float = 0.02         # Δstabilization per residue beyond reference distance
+DISULFIDE_REFERENCE_DISTANCE: int = 10         # Reference distance for stabilization model
+DISULFIDE_MIN_STABILIZATION: float = -3.0      # Floor for stabilization estimate (kcal/mol)
+DISULFIDE_SHORT_LOOP_BONUS: float = -0.5       # Extra stabilization for short loops (kcal/mol)
+
+# Default weights for multi-objective scoring
+DEFAULT_WEIGHT_STABILITY: float = 0.4
+DEFAULT_WEIGHT_SOLUBILITY: float = 0.3
+DEFAULT_WEIGHT_IMMUNOGENICITY: float = 0.3
+
+# Multi-objective soft solubility tolerance (wider than SOFT_CONSTRAINT_TOLERANCE)
+MULTI_OBJECTIVE_SOLUBILITY_TOLERANCE: float = 0.5
+
 # ────────────────────────────────────────────────────────────
 # Convenience sets for mutation strategies
 # ────────────────────────────────────────────────────────────
 
-# HYDROPHOBIC_AAS imported from constants (Kyte-Doolittle > 1.0)
+# HYDROPHOBIC_AAS imported from constants (Kyte-Doolittle > 1.0): {A, C, F, I, L, M, V}
+# _AGGREGATION_PRONE_AAS is a strict subset of HYDROPHOBIC_AAS, limited to residues
+# most strongly associated with β-aggregation (I, V, L, F, Y, W).  It excludes
+# alanine, cysteine, and methionine which are hydrophobic but less aggregation-prone.
 _CHARGED_AAS = set("DEKR")
 _POLAR_AAS = set("STNQ")
 _SURFACE_FAVORED_AAS = set("DEKRQN")   # charged + polar — good on surface
-_AGGREGATION_PRONE_AAS = set("IVLFYW") # hydrophobic stretches
+_AGGREGATION_PRONE_AAS = set("IVLFYW") # subset of HYDROPHOBIC_AAS most prone to aggregation
 
 # Standard amino acid list (BLOSUM62 order)
 _BLOSUM_SCORES = list("ARNDCQEGHILKMFPSTWYV")
@@ -72,6 +159,23 @@ _BLOSUM_SCORES = list("ARNDCQEGHILKMFPSTWYV")
 # ────────────────────────────────────────────────────────────
 # Data Classes
 # ────────────────────────────────────────────────────────────
+
+class MutationScore(TypedDict):
+    """Structured return type for score_mutation().
+
+    Keys:
+        stability_ddg: Predicted ΔΔG for the mutation (kcal/mol, negative = stabilizing).
+        solubility_delta: Predicted change in solubility score (positive = improved).
+        immunogenicity_delta: Predicted change in immunogenicity (negative = deimmunized).
+        blosum62: BLOSUM62 substitution score for wildtype → mutant.
+        weighted_score: Combined weighted score across all dimensions.
+    """
+    stability_ddg: float
+    solubility_delta: float
+    immunogenicity_delta: float
+    blosum62: int
+    weighted_score: float
+
 
 @dataclass
 class DesignResult(BaseEngineResult):
@@ -163,7 +267,7 @@ def _estimate_ddg(wildtype: str, mutant: str) -> float:
     Negative ΔΔG = stabilizing.
     This is a rough heuristic and should NOT be treated as a physics-based prediction.
     """
-    blosum = BLOSUM62.get(wildtype, {}).get(mutant, -4)
+    blosum = BLOSUM62.get(wildtype, {}).get(mutant, BLOSUM62_MISSING_SCORE)
     dh = HYDROPATHY.get(mutant, 0.0) - HYDROPATHY.get(wildtype, 0.0)
     ddg = STABILITY_BLOSUM_WEIGHT * blosum + STABILITY_HYDROPATHY_WEIGHT * dh
     # Proline stabilization bonus (loop rigidification)
@@ -331,11 +435,11 @@ def _base_solubility(protein: str) -> float:
         if aa in _AGGREGATION_PRONE_AAS:
             run += 1
             if run >= HYDROPHOBIC_STRETCH_THRESHOLD:
-                stretch_penalty += 0.1
+                stretch_penalty += SOLUBILITY_STRETCH_PENALTY
         else:
             run = 0
 
-    score = -avg_hydro * 0.3 + charged_frac * 1.5 - stretch_penalty
+    score = -avg_hydro * SOLUBILITY_HYDROPATHY_COEFF + charged_frac * SOLUBILITY_CHARGED_COEFF - stretch_penalty
     return round(score, 3)
 
 
@@ -354,9 +458,9 @@ def _base_immunogenicity(protein: str) -> float:
         scores.append(avg_h)
     if not scores:
         return 0.0
-    # Normalize: typical range is -4.5 to +4.5; map to 0-1
+    # Normalize: typical range is -IMMUNOGENICITY_NORM_OFFSET to +IMMUNOGENICITY_NORM_OFFSET; map to 0-1
     max_score = max(scores)
-    normalized = (max_score + 4.5) / 9.0
+    normalized = (max_score + IMMUNOGENICITY_NORM_OFFSET) / IMMUNOGENICITY_NORM_RANGE
     return round(max(0.0, min(1.0, normalized)), 3)
 
 
@@ -374,9 +478,9 @@ def _base_stability(protein: str) -> float:
     pro_frac = protein.count("P") / n
     gly_frac = protein.count("G") / n
     cys_count = protein.count("C")
-    # Disulfide pairs contribute ~-2.0 kcal/mol each
+    # Disulfide pairs contribute ~STABILITY_DISULFIDE_COEFF kcal/mol each
     disulfide_pairs = cys_count // 2
-    ddg = -avg_hydro * 0.5 - pro_frac * 2.0 + gly_frac * 1.5 - disulfide_pairs * 2.0
+    ddg = -avg_hydro * STABILITY_HYDROPATHY_COEFF - pro_frac * STABILITY_PROLINE_COEFF + gly_frac * STABILITY_GLYCINE_COEFF - disulfide_pairs * STABILITY_DISULFIDE_COEFF
     return round(ddg, 3)
 
 
@@ -390,7 +494,7 @@ def find_disulfide_opportunities(protein: str) -> list[dict[str, Any]]:
     Criteria:
       - Both positions should be in predicted loop/coil regions (between
         secondary structure elements).
-      - Positions must be at least 5 residues apart in sequence.
+      - Positions must be at least DISULFIDE_MIN_RESIDUE_DISTANCE residues apart in sequence.
       - Neither position is already a cysteine.
 
     Returns:
@@ -409,21 +513,22 @@ def find_disulfide_opportunities(protein: str) -> list[dict[str, Any]]:
             i = loop_positions[idx_a]
             j = loop_positions[idx_b]
             distance = abs(j - i)
-            if distance < 5:
+            if distance < DISULFIDE_MIN_RESIDUE_DISTANCE:
                 continue
-            # Estimate Cα-Cα distance from sequence separation (rough:
-            # ~3.8 Å per residue for extended chain, loops are shorter)
-            distance_estimate = distance * 3.5  # Å
-            # Disulfide bonds are feasible for Cα-Cα distances of ~4-7 Å
+            # Estimate Cα-Cα distance from sequence separation
+            distance_estimate = distance * RESIDUE_CA_DISTANCE_ANGSTROMS
             # In a loop, the effective distance is much shorter than sequence distance
-            effective_distance = min(distance_estimate, 15.0)
+            effective_distance = min(distance_estimate, MAX_EFFECTIVE_DISTANCE_ANGSTROMS)
 
             # Stabilizing estimate: depends on how constrained the loop currently is
             # and the sequence distance (shorter loops with disulfides are more stabilizing)
-            stabilizing_estimate = max(-3.0, -2.0 + 0.02 * (distance - 10))
+            stabilizing_estimate = max(
+                DISULFIDE_MIN_STABILIZATION,
+                DISULFIDE_BASE_STABILIZATION + DISULFIDE_DISTANCE_COEFF * (distance - DISULFIDE_REFERENCE_DISTANCE),
+            )
             # Short loops get more stabilization
-            if distance <= 15:
-                stabilizing_estimate -= 0.5
+            if distance <= DISULFIDE_SHORT_LOOP_MAX_DISTANCE:
+                stabilizing_estimate += DISULFIDE_SHORT_LOOP_BONUS
 
             opportunities.append({
                 "position1": i,
@@ -459,7 +564,7 @@ def find_proline_substitution_sites(protein: str) -> list[dict[str, Any]]:
         wt = protein[i]
         if wt == "P" or wt == "G":
             continue
-        blosum = BLOSUM62.get(wt, {}).get("P", -4)
+        blosum = BLOSUM62.get(wt, {}).get("P", BLOSUM62_MISSING_SCORE)
         if blosum < -1:
             continue
         ddg_est = _estimate_ddg(wt, "P")
@@ -485,7 +590,7 @@ def score_mutation(
     mutant: str,
     organism: str = "Homo_sapiens",
     weights: dict | None = None,
-) -> dict[str, float]:
+) -> MutationScore:
     """Score a single mutation across all dimensions.
 
     Args:
@@ -494,28 +599,32 @@ def score_mutation(
         mutant: Mutant amino acid (1-letter code).
         organism: Target organism for CAI lookup.
         weights: Optional weight dict with keys 'stability', 'solubility',
-                 'immunogenicity'. Defaults to {0.4, 0.3, 0.3}.
+                 'immunogenicity'. Defaults to DEFAULT_WEIGHT_* constants.
 
     Returns:
-        Dict with keys: stability_ddg, solubility_delta, immunogenicity_delta,
+        MutationScore with keys: stability_ddg, solubility_delta, immunogenicity_delta,
         blosum62, weighted_score.
     """
     if weights is None:
-        weights = {"stability": 0.4, "solubility": 0.3, "immunogenicity": 0.3}
+        weights = {
+            "stability": DEFAULT_WEIGHT_STABILITY,
+            "solubility": DEFAULT_WEIGHT_SOLUBILITY,
+            "immunogenicity": DEFAULT_WEIGHT_IMMUNOGENICITY,
+        }
 
     wildtype = protein[position]
     ddg = _estimate_ddg(wildtype, mutant)
     sol_delta = _estimate_solubility_delta(wildtype, mutant)
     imm_delta = _estimate_immunogenicity_delta(protein, position, mutant)
-    blosum = BLOSUM62.get(wildtype, {}).get(mutant, -4)
+    blosum = BLOSUM62.get(wildtype, {}).get(mutant, BLOSUM62_MISSING_SCORE)
 
     # Normalize components for weighted score:
     #   stability: lower ddg is better → score = -ddg (positive = good)
     #   solubility: higher delta is better → score = delta
     #   immunogenicity: lower delta is better → score = -delta
-    w_stab = weights.get("stability", 0.4)
-    w_sol = weights.get("solubility", 0.3)
-    w_imm = weights.get("immunogenicity", 0.3)
+    w_stab = weights.get("stability", DEFAULT_WEIGHT_STABILITY)
+    w_sol = weights.get("solubility", DEFAULT_WEIGHT_SOLUBILITY)
+    w_imm = weights.get("immunogenicity", DEFAULT_WEIGHT_IMMUNOGENICITY)
 
     weighted_score = (
         w_stab * (-ddg) +
@@ -530,6 +639,378 @@ def score_mutation(
         "blosum62": blosum,
         "weighted_score": round(weighted_score, 4),
     }
+
+
+# ────────────────────────────────────────────────────────────
+# Internal: Mutation proposal callbacks
+# ────────────────────────────────────────────────────────────
+
+def _propose_thermostable(
+    current: list[str],
+    current_protein: str,
+    current_sol: float,
+    current_imm: float,
+    current_stab: float,
+    cons: DesignConstraints,
+) -> dict[str, Any] | None:
+    """Propose the best stabilizing mutation using three strategies.
+
+    Strategies (in order of consideration):
+      1. Single-point mutations that lower ΔΔG.
+      2. Proline substitutions in loop regions.
+      3. Disulfide bond introduction (Cys pairs in loops).
+    """
+    best_mutation = None
+    best_ddg = 0.0  # only accept stabilizing (negative ddg)
+
+    # --- Strategy 1: Scan all single-point mutations for best stabilizing one ---
+    for pos in range(len(current)):
+        wt = current[pos]
+        if _is_preserved(pos, wt, cons):
+            continue
+        for mutant_aa in _BLOSUM_SCORES:
+            if mutant_aa == wt:
+                continue
+            blosum = BLOSUM62.get(wt, {}).get(mutant_aa, BLOSUM62_MISSING_SCORE)
+            if blosum < cons.blosum62_min:
+                continue
+            ddg = _estimate_ddg(wt, mutant_aa)
+            if ddg >= 0:
+                continue  # not stabilizing
+            if abs(ddg) > cons.max_ddg_per_mutation:
+                continue  # too large a change per step
+            # Soft constraint checks: don't make things significantly worse
+            sol_delta = _estimate_solubility_delta(wt, mutant_aa)
+            imm_delta = _estimate_immunogenicity_delta(
+                current_protein, pos, mutant_aa
+            )
+            new_sol = current_sol + sol_delta
+            new_imm = current_imm + imm_delta
+            if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
+                continue
+            if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
+                continue
+            if ddg < best_ddg:
+                best_ddg = ddg
+                best_mutation = {
+                    "position": pos,
+                    "wildtype": wt,
+                    "mutant": mutant_aa,
+                    "ddg": ddg,
+                    "solubility_delta": sol_delta,
+                    "immunogenicity_delta": imm_delta,
+                    "blosum62": blosum,
+                    "strategy": "single_point",
+                }
+
+    # --- Strategy 2: Proline substitutions in loops ---
+    proline_sites = find_proline_substitution_sites(current_protein)
+    for site in proline_sites:
+        pos = site["position"]
+        wt = current[pos]
+        if _is_preserved(pos, wt, cons):
+            continue
+        ddg = site["ddg_estimate"]
+        if ddg >= 0 or ddg >= best_ddg:
+            continue
+        blosum = BLOSUM62.get(wt, {}).get("P", BLOSUM62_MISSING_SCORE)
+        if blosum < cons.blosum62_min:
+            continue
+        sol_delta = _estimate_solubility_delta(wt, "P")
+        imm_delta = _estimate_immunogenicity_delta(
+            current_protein, pos, "P"
+        )
+        new_sol = current_sol + sol_delta
+        new_imm = current_imm + imm_delta
+        if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
+            continue
+        if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
+            continue
+        best_ddg = ddg
+        best_mutation = {
+            "position": pos,
+            "wildtype": wt,
+            "mutant": "P",
+            "ddg": ddg,
+            "solubility_delta": sol_delta,
+            "immunogenicity_delta": imm_delta,
+            "blosum62": blosum,
+            "strategy": "proline_in_loop",
+        }
+
+    # --- Strategy 3: Disulfide bond introduction ---
+    disulfide_ops = find_disulfide_opportunities(current_protein)
+    for opp in disulfide_ops[:DISULFIDE_OPPORTUNITY_LIMIT]:
+        pos1 = opp["position1"]
+        pos2 = opp["position2"]
+        wt1 = current[pos1]
+        wt2 = current[pos2]
+        if _is_preserved(pos1, wt1, cons):
+            continue
+        if _is_preserved(pos2, wt2, cons):
+            continue
+        ddg_pair = opp["stabilizing_estimate"]
+        if ddg_pair >= best_ddg:
+            continue
+        # Check constraints for both mutations combined
+        sol1 = _estimate_solubility_delta(wt1, "C")
+        sol2 = _estimate_solubility_delta(wt2, "C")
+        imm1 = _estimate_immunogenicity_delta(current_protein, pos1, "C")
+        imm2 = _estimate_immunogenicity_delta(current_protein, pos2, "C")
+        new_sol = current_sol + sol1 + sol2
+        new_imm = current_imm + imm1 + imm2
+        if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
+            continue
+        if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
+            continue
+        best_ddg = ddg_pair
+        best_mutation = {
+            "position": pos1,
+            "wildtype": wt1,
+            "mutant": "C",
+            "ddg": ddg_pair / 2,
+            "solubility_delta": sol1,
+            "immunogenicity_delta": imm1,
+            "blosum62": BLOSUM62.get(wt1, {}).get("C", BLOSUM62_MISSING_SCORE),
+            "strategy": "disulfide_pair",
+            "pair_position": pos2,
+            "pair_wildtype": wt2,
+        }
+
+    return best_mutation
+
+
+def _apply_disulfide_partner(
+    current: list[str],
+    mutation: dict[str, Any],
+    total_ddg: float,
+) -> tuple[float, list[dict[str, Any]]]:
+    """Apply the partner cysteine for a disulfide pair mutation."""
+    if mutation.get("strategy") != "disulfide_pair":
+        return total_ddg, []
+    pair_pos = mutation["pair_position"]
+    pair_wt = mutation["pair_wildtype"]
+    current[pair_pos] = "C"
+    total_ddg += mutation["ddg"]  # symmetric contribution
+    partner = {
+        "position": pair_pos,
+        "wildtype": pair_wt,
+        "mutant": "C",
+        "ddg": mutation["ddg"],
+        "solubility_delta": _estimate_solubility_delta(pair_wt, "C"),
+        "immunogenicity_delta": _estimate_immunogenicity_delta(
+            "".join(current), pair_pos, "C"
+        ),
+        "blosum62": BLOSUM62.get(pair_wt, {}).get("C", BLOSUM62_MISSING_SCORE),
+        "strategy": "disulfide_pair_partner",
+    }
+    return total_ddg, [partner]
+
+
+def _propose_soluble(
+    current: list[str],
+    current_protein: str,
+    current_sol: float,
+    current_imm: float,
+    current_stab: float,
+    cons: DesignConstraints,
+) -> dict[str, Any] | None:
+    """Propose the best solubility-improving mutation.
+
+    Focuses on replacing hydrophobic/aggregation-prone surface residues
+    with charged or polar residues.
+    """
+    best_mutation = None
+    best_sol_delta = 0.0
+
+    for pos in range(len(current)):
+        wt = current[pos]
+        if _is_preserved(pos, wt, cons):
+            continue
+        # Focus on hydrophobic / aggregation-prone residues
+        if wt not in HYDROPHOBIC_AAS and wt not in _AGGREGATION_PRONE_AAS:
+            continue
+        for mutant_aa in _SURFACE_FAVORED_AAS | _POLAR_AAS:
+            if mutant_aa == wt:
+                continue
+            blosum = BLOSUM62.get(wt, {}).get(mutant_aa, BLOSUM62_MISSING_SCORE)
+            if blosum < cons.blosum62_min:
+                continue
+            ddg = _estimate_ddg(wt, mutant_aa)
+            if abs(ddg) > cons.max_ddg_per_mutation:
+                continue
+            # Soft stability check: only block if making stability
+            # significantly worse than current (not vs. threshold)
+            if ddg > cons.max_ddg_per_mutation:
+                continue  # strongly destabilizing
+            sol_delta = _estimate_solubility_delta(wt, mutant_aa)
+            if sol_delta <= best_sol_delta:
+                continue
+            imm_delta = _estimate_immunogenicity_delta(current_protein, pos, mutant_aa)
+            new_imm = current_imm + imm_delta
+            # Soft immunogenicity check: allow some tolerance
+            if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
+                continue
+            best_sol_delta = sol_delta
+            best_mutation = {
+                "position": pos,
+                "wildtype": wt,
+                "mutant": mutant_aa,
+                "ddg": ddg,
+                "solubility_delta": sol_delta,
+                "immunogenicity_delta": imm_delta,
+                "blosum62": blosum,
+                "strategy": "surface_hydrophilic",
+            }
+
+    return best_mutation
+
+
+def _propose_deimmunize(
+    current: list[str],
+    current_protein: str,
+    current_sol: float,
+    current_imm: float,
+    current_stab: float,
+    cons: DesignConstraints,
+) -> dict[str, Any] | None:
+    """Propose the best immunogenicity-reducing mutation.
+
+    Finds the most immunogenic MHC_II_WINDOW-mer window and proposes
+    a substitution within it that reduces hydrophobicity.
+    """
+    # Find the most immunogenic MHC_II_WINDOW-mer window
+    best_window_start = 0
+    best_window_score = -999.0
+    for i in range(len(current_protein) - MHC_II_WINDOW + 1):
+        window = current_protein[i:i + MHC_II_WINDOW]
+        score = sum(HYDROPATHY.get(aa, 0.0) for aa in window) / MHC_II_WINDOW
+        if score > best_window_score:
+            best_window_score = score
+            best_window_start = i
+
+    # Within that window, find the best mutation to reduce hydrophobicity
+    best_mutation = None
+    best_imm_delta = 0.0  # negative = reducing immunogenicity
+
+    for pos in range(best_window_start, best_window_start + MHC_II_WINDOW):
+        if pos >= len(current):
+            break
+        wt = current[pos]
+        if _is_preserved(pos, wt, cons):
+            continue
+        for mutant_aa in _POLAR_AAS | _CHARGED_AAS | set("AST"):
+            if mutant_aa == wt:
+                continue
+            blosum = BLOSUM62.get(wt, {}).get(mutant_aa, BLOSUM62_MISSING_SCORE)
+            if blosum < cons.blosum62_min:
+                continue
+            ddg = _estimate_ddg(wt, mutant_aa)
+            if abs(ddg) > cons.max_ddg_per_mutation:
+                continue
+            # Soft stability check: don't make things much worse
+            if ddg > cons.max_ddg_per_mutation:
+                continue
+            imm_delta = _estimate_immunogenicity_delta(current_protein, pos, mutant_aa)
+            if imm_delta >= best_imm_delta:
+                continue  # want negative (reducing immunogenicity)
+            sol_delta = _estimate_solubility_delta(wt, mutant_aa)
+            new_sol = current_sol + sol_delta
+            # Soft solubility check: allow tolerance
+            if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
+                continue
+            best_imm_delta = imm_delta
+            best_mutation = {
+                "position": pos,
+                "wildtype": wt,
+                "mutant": mutant_aa,
+                "ddg": ddg,
+                "solubility_delta": sol_delta,
+                "immunogenicity_delta": imm_delta,
+                "blosum62": blosum,
+                "strategy": "deimmunize_window",
+            }
+
+    return best_mutation
+
+
+def _propose_multi_objective(
+    current: list[str],
+    current_protein: str,
+    current_sol: float,
+    current_imm: float,
+    current_stab: float,
+    cons: DesignConstraints,
+    weights: dict[str, float],
+) -> dict[str, Any] | None:
+    """Propose the best multi-objective mutation (weighted score improvement).
+
+    Returns None if no mutation improves the weighted score (i.e., best_weighted <= 0).
+    """
+    best_mutation = None
+    best_weighted = -999.0
+
+    w_stab = weights.get("stability", DEFAULT_WEIGHT_STABILITY)
+    w_sol = weights.get("solubility", DEFAULT_WEIGHT_SOLUBILITY)
+    w_imm = weights.get("immunogenicity", DEFAULT_WEIGHT_IMMUNOGENICITY)
+
+    for pos in range(len(current)):
+        wt = current[pos]
+        if _is_preserved(pos, wt, cons):
+            continue
+        for mutant_aa in _BLOSUM_SCORES:
+            if mutant_aa == wt:
+                continue
+            blosum = BLOSUM62.get(wt, {}).get(mutant_aa, BLOSUM62_MISSING_SCORE)
+            if blosum < cons.blosum62_min:
+                continue
+            ddg = _estimate_ddg(wt, mutant_aa)
+            if abs(ddg) > cons.max_ddg_per_mutation:
+                continue
+            # Soft stability check: only block if mutation makes stability
+            # significantly worse than current state (not vs. threshold)
+            if ddg > cons.max_ddg_per_mutation:
+                continue  # strongly destabilizing
+
+            sol_delta = _estimate_solubility_delta(wt, mutant_aa)
+            imm_delta = _estimate_immunogenicity_delta(current_protein, pos, mutant_aa)
+
+            new_sol = current_sol + sol_delta
+            new_imm = current_imm + imm_delta
+
+            # Soft constraints: prefer improvements but don't hard-block
+            # unless the resulting value is clearly worse than threshold
+            if new_sol < cons.min_solubility_score - MULTI_OBJECTIVE_SOLUBILITY_TOLERANCE:
+                continue
+            if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
+                continue
+
+            # Compute weighted score
+            weighted = (
+                w_stab * (-ddg) +
+                w_sol * sol_delta +
+                w_imm * (-imm_delta)
+            )
+
+            if weighted > best_weighted:
+                best_weighted = weighted
+                best_mutation = {
+                    "position": pos,
+                    "wildtype": wt,
+                    "mutant": mutant_aa,
+                    "ddg": ddg,
+                    "solubility_delta": sol_delta,
+                    "immunogenicity_delta": imm_delta,
+                    "blosum62": blosum,
+                    "weighted_score": round(weighted, 4),
+                    "strategy": "multi_objective",
+                }
+
+    # Only return if the best mutation actually improves things
+    if best_weighted <= 0:
+        return None
+
+    return best_mutation
 
 
 # ────────────────────────────────────────────────────────────
@@ -677,163 +1158,8 @@ def design_thermostable(
         DesignResult with all mutations and metrics.
     """
     protein = validate_protein_sequence(protein, "protein_design")
-
     if constraints is None:
         constraints = DesignConstraints()
-
-    # -- propose_mutation callback for thermostability --
-    def _propose_thermostable(
-        current: list[str],
-        current_protein: str,
-        current_sol: float,
-        current_imm: float,
-        current_stab: float,
-        cons: DesignConstraints,
-    ) -> dict[str, Any] | None:
-        best_mutation = None
-        best_ddg = 0.0  # only accept stabilizing (negative ddg)
-
-        # --- Strategy 1: Scan all single-point mutations for best stabilizing one ---
-        for pos in range(len(current)):
-            wt = current[pos]
-            if _is_preserved(pos, wt, cons):
-                continue
-            for mutant_aa in _BLOSUM_SCORES:
-                if mutant_aa == wt:
-                    continue
-                blosum = BLOSUM62.get(wt, {}).get(mutant_aa, -4)
-                if blosum < cons.blosum62_min:
-                    continue
-                ddg = _estimate_ddg(wt, mutant_aa)
-                if ddg >= 0:
-                    continue  # not stabilizing
-                if abs(ddg) > cons.max_ddg_per_mutation:
-                    continue  # too large a change per step
-                # Soft constraint checks: don't make things significantly worse
-                sol_delta = _estimate_solubility_delta(wt, mutant_aa)
-                imm_delta = _estimate_immunogenicity_delta(
-                    current_protein, pos, mutant_aa
-                )
-                new_sol = current_sol + sol_delta
-                new_imm = current_imm + imm_delta
-                if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
-                    continue
-                if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
-                    continue
-                if ddg < best_ddg:
-                    best_ddg = ddg
-                    best_mutation = {
-                        "position": pos,
-                        "wildtype": wt,
-                        "mutant": mutant_aa,
-                        "ddg": ddg,
-                        "solubility_delta": sol_delta,
-                        "immunogenicity_delta": imm_delta,
-                        "blosum62": blosum,
-                        "strategy": "single_point",
-                    }
-
-        # --- Strategy 2: Proline substitutions in loops ---
-        proline_sites = find_proline_substitution_sites(current_protein)
-        for site in proline_sites:
-            pos = site["position"]
-            wt = current[pos]
-            if _is_preserved(pos, wt, cons):
-                continue
-            ddg = site["ddg_estimate"]
-            if ddg >= 0 or ddg >= best_ddg:
-                continue
-            blosum = BLOSUM62.get(wt, {}).get("P", -4)
-            if blosum < cons.blosum62_min:
-                continue
-            sol_delta = _estimate_solubility_delta(wt, "P")
-            imm_delta = _estimate_immunogenicity_delta(
-                current_protein, pos, "P"
-            )
-            new_sol = current_sol + sol_delta
-            new_imm = current_imm + imm_delta
-            if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
-                continue
-            if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
-                continue
-            best_ddg = ddg
-            best_mutation = {
-                "position": pos,
-                "wildtype": wt,
-                "mutant": "P",
-                "ddg": ddg,
-                "solubility_delta": sol_delta,
-                "immunogenicity_delta": imm_delta,
-                "blosum62": blosum,
-                "strategy": "proline_in_loop",
-            }
-
-        # --- Strategy 3: Disulfide bond introduction ---
-        disulfide_ops = find_disulfide_opportunities(current_protein)
-        for opp in disulfide_ops[:DISULFIDE_OPPORTUNITY_LIMIT]:
-            pos1 = opp["position1"]
-            pos2 = opp["position2"]
-            wt1 = current[pos1]
-            wt2 = current[pos2]
-            if _is_preserved(pos1, wt1, cons):
-                continue
-            if _is_preserved(pos2, wt2, cons):
-                continue
-            ddg_pair = opp["stabilizing_estimate"]
-            if ddg_pair >= best_ddg:
-                continue
-            # Check constraints for both mutations combined
-            sol1 = _estimate_solubility_delta(wt1, "C")
-            sol2 = _estimate_solubility_delta(wt2, "C")
-            imm1 = _estimate_immunogenicity_delta(current_protein, pos1, "C")
-            imm2 = _estimate_immunogenicity_delta(current_protein, pos2, "C")
-            new_sol = current_sol + sol1 + sol2
-            new_imm = current_imm + imm1 + imm2
-            if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
-                continue
-            if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
-                continue
-            best_ddg = ddg_pair
-            best_mutation = {
-                "position": pos1,
-                "wildtype": wt1,
-                "mutant": "C",
-                "ddg": ddg_pair / 2,
-                "solubility_delta": sol1,
-                "immunogenicity_delta": imm1,
-                "blosum62": BLOSUM62.get(wt1, {}).get("C", -4),
-                "strategy": "disulfide_pair",
-                "pair_position": pos2,
-                "pair_wildtype": wt2,
-            }
-
-        return best_mutation
-
-    # -- apply_extra callback for disulfide pair partner --
-    def _apply_disulfide_partner(
-        current: list[str],
-        mutation: dict[str, Any],
-        total_ddg: float,
-    ) -> tuple[float, list[dict[str, Any]]]:
-        if mutation.get("strategy") != "disulfide_pair":
-            return total_ddg, []
-        pair_pos = mutation["pair_position"]
-        pair_wt = mutation["pair_wildtype"]
-        current[pair_pos] = "C"
-        total_ddg += mutation["ddg"]  # symmetric contribution
-        partner = {
-            "position": pair_pos,
-            "wildtype": pair_wt,
-            "mutant": "C",
-            "ddg": mutation["ddg"],
-            "solubility_delta": _estimate_solubility_delta(pair_wt, "C"),
-            "immunogenicity_delta": _estimate_immunogenicity_delta(
-                "".join(current), pair_pos, "C"
-            ),
-            "blosum62": BLOSUM62.get(pair_wt, {}).get("C", -4),
-            "strategy": "disulfide_pair_partner",
-        }
-        return total_ddg, [partner]
 
     return _design_iterative(
         protein=protein,
@@ -870,63 +1196,8 @@ def design_soluble(
         DesignResult with all mutations and metrics.
     """
     protein = validate_protein_sequence(protein, "protein_design")
-
     if constraints is None:
         constraints = DesignConstraints()
-
-    # -- propose_mutation callback for solubility --
-    def _propose_soluble(
-        current: list[str],
-        current_protein: str,
-        current_sol: float,
-        current_imm: float,
-        current_stab: float,
-        cons: DesignConstraints,
-    ) -> dict[str, Any] | None:
-        best_mutation = None
-        best_sol_delta = 0.0
-
-        for pos in range(len(current)):
-            wt = current[pos]
-            if _is_preserved(pos, wt, cons):
-                continue
-            # Focus on hydrophobic / aggregation-prone residues
-            if wt not in HYDROPHOBIC_AAS and wt not in _AGGREGATION_PRONE_AAS:
-                continue
-            for mutant_aa in _SURFACE_FAVORED_AAS | _POLAR_AAS:
-                if mutant_aa == wt:
-                    continue
-                blosum = BLOSUM62.get(wt, {}).get(mutant_aa, -4)
-                if blosum < cons.blosum62_min:
-                    continue
-                ddg = _estimate_ddg(wt, mutant_aa)
-                if abs(ddg) > cons.max_ddg_per_mutation:
-                    continue
-                # Soft stability check: only block if making stability
-                # significantly worse than current (not vs. threshold)
-                if ddg > cons.max_ddg_per_mutation:
-                    continue  # strongly destabilizing
-                sol_delta = _estimate_solubility_delta(wt, mutant_aa)
-                if sol_delta <= best_sol_delta:
-                    continue
-                imm_delta = _estimate_immunogenicity_delta(current_protein, pos, mutant_aa)
-                new_imm = current_imm + imm_delta
-                # Soft immunogenicity check: allow some tolerance
-                if new_imm > cons.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
-                    continue
-                best_sol_delta = sol_delta
-                best_mutation = {
-                    "position": pos,
-                    "wildtype": wt,
-                    "mutant": mutant_aa,
-                    "ddg": ddg,
-                    "solubility_delta": sol_delta,
-                    "immunogenicity_delta": imm_delta,
-                    "blosum62": blosum,
-                    "strategy": "surface_hydrophilic",
-                }
-
-        return best_mutation
 
     return _design_iterative(
         protein=protein,
@@ -945,9 +1216,6 @@ def design_low_immunogenicity(
 ) -> DesignResult:
     """Reduce immunogenicity via amino acid substitution.
 
-    Wrapper around deimmunization logic with constraint checking.
-    Additionally verifies stability and solubility aren't compromised.
-
     Strategy:
       - Identify high-immunogenicity MHC_II_WINDOW-mer windows (hydrophobic-rich).
       - Propose substitutions that reduce window hydrophobicity while
@@ -965,72 +1233,8 @@ def design_low_immunogenicity(
         DesignResult with all mutations and metrics.
     """
     protein = validate_protein_sequence(protein, "protein_design")
-
     if constraints is None:
         constraints = DesignConstraints()
-
-    # -- propose_mutation callback for deimmunization --
-    def _propose_deimmunize(
-        current: list[str],
-        current_protein: str,
-        current_sol: float,
-        current_imm: float,
-        current_stab: float,
-        cons: DesignConstraints,
-    ) -> dict[str, Any] | None:
-        # Find the most immunogenic MHC_II_WINDOW-mer window
-        best_window_start = 0
-        best_window_score = -999.0
-        for i in range(len(current_protein) - MHC_II_WINDOW + 1):
-            window = current_protein[i:i + MHC_II_WINDOW]
-            score = sum(HYDROPATHY.get(aa, 0.0) for aa in window) / MHC_II_WINDOW
-            if score > best_window_score:
-                best_window_score = score
-                best_window_start = i
-
-        # Within that window, find the best mutation to reduce hydrophobicity
-        best_mutation = None
-        best_imm_delta = 0.0  # negative = reducing immunogenicity
-
-        for pos in range(best_window_start, best_window_start + MHC_II_WINDOW):
-            if pos >= len(current):
-                break
-            wt = current[pos]
-            if _is_preserved(pos, wt, cons):
-                continue
-            for mutant_aa in _POLAR_AAS | _CHARGED_AAS | set("AST"):
-                if mutant_aa == wt:
-                    continue
-                blosum = BLOSUM62.get(wt, {}).get(mutant_aa, -4)
-                if blosum < cons.blosum62_min:
-                    continue
-                ddg = _estimate_ddg(wt, mutant_aa)
-                if abs(ddg) > cons.max_ddg_per_mutation:
-                    continue
-                # Soft stability check: don't make things much worse
-                if ddg > cons.max_ddg_per_mutation:
-                    continue
-                imm_delta = _estimate_immunogenicity_delta(current_protein, pos, mutant_aa)
-                if imm_delta >= best_imm_delta:
-                    continue  # want negative (reducing immunogenicity)
-                sol_delta = _estimate_solubility_delta(wt, mutant_aa)
-                new_sol = current_sol + sol_delta
-                # Soft solubility check: allow tolerance
-                if new_sol < cons.min_solubility_score - SOFT_CONSTRAINT_TOLERANCE:
-                    continue
-                best_imm_delta = imm_delta
-                best_mutation = {
-                    "position": pos,
-                    "wildtype": wt,
-                    "mutant": mutant_aa,
-                    "ddg": ddg,
-                    "solubility_delta": sol_delta,
-                    "immunogenicity_delta": imm_delta,
-                    "blosum62": blosum,
-                    "strategy": "deimmunize_window",
-                }
-
-        return best_mutation
 
     return _design_iterative(
         protein=protein,
@@ -1065,128 +1269,39 @@ def design_multi_objective(
         DesignResult with all mutations and metrics.
     """
     protein = validate_protein_sequence(protein, "protein_design")
-
     if constraints is None:
         constraints = DesignConstraints()
     if weights is None:
-        weights = {"stability": 0.4, "solubility": 0.3, "immunogenicity": 0.3}
+        weights = {
+            "stability": DEFAULT_WEIGHT_STABILITY,
+            "solubility": DEFAULT_WEIGHT_SOLUBILITY,
+            "immunogenicity": DEFAULT_WEIGHT_IMMUNOGENICITY,
+        }
 
-    _timer = EngineTimer()
-    _timer.__enter__()
-
-    current = list(protein)
-    base_stab = _base_stability(protein)
-    current_stab = base_stab
-    total_ddg = 0.0
-    mutations: list[dict[str, Any]] = []
-    iterations = 0
-
-    for iteration in range(constraints.max_mutations):
-        iterations += 1
-        current_protein = "".join(current)
-        current_sol = _base_solubility(current_protein)
-        current_imm = _base_immunogenicity(current_protein)
-
-        satisfied, violated = _check_constraints(
-            current_protein, constraints, current_stab, current_sol, current_imm,
+    def _propose_mo(
+        current: list[str],
+        current_protein: str,
+        current_sol: float,
+        current_imm: float,
+        current_stab: float,
+        cons: DesignConstraints,
+    ) -> dict[str, Any] | None:
+        return _propose_multi_objective(
+            current, current_protein, current_sol, current_imm,
+            current_stab, cons, weights,
         )
-        if not violated:
-            break  # all constraints satisfied
 
-        best_mutation = None
-        best_weighted = -999.0
+    def _all_constraints_met(stab: float, sol: float, imm: float) -> bool:
+        return (
+            stab <= constraints.min_stability_kcal
+            and sol >= constraints.min_solubility_score
+            and imm <= constraints.max_immunogenicity
+        )
 
-        for pos in range(len(current)):
-            wt = current[pos]
-            if _is_preserved(pos, wt, constraints):
-                continue
-            for mutant_aa in _BLOSUM_SCORES:
-                if mutant_aa == wt:
-                    continue
-                blosum = BLOSUM62.get(wt, {}).get(mutant_aa, -4)
-                if blosum < constraints.blosum62_min:
-                    continue
-                ddg = _estimate_ddg(wt, mutant_aa)
-                if abs(ddg) > constraints.max_ddg_per_mutation:
-                    continue
-                # Soft stability check: only block if mutation makes stability
-                # significantly worse than current state (not vs. threshold)
-                if ddg > constraints.max_ddg_per_mutation:
-                    continue  # strongly destabilizing
-
-                sol_delta = _estimate_solubility_delta(wt, mutant_aa)
-                imm_delta = _estimate_immunogenicity_delta(current_protein, pos, mutant_aa)
-
-                new_sol = current_sol + sol_delta
-                new_imm = current_imm + imm_delta
-
-                # Soft constraints: prefer improvements but don't hard-block
-                # unless the resulting value is clearly worse than threshold
-                if new_sol < constraints.min_solubility_score - 0.5:
-                    continue
-                if new_imm > constraints.max_immunogenicity + SOFT_CONSTRAINT_TOLERANCE:
-                    continue
-
-                # Compute weighted score
-                w_stab = weights.get("stability", 0.4)
-                w_sol = weights.get("solubility", 0.3)
-                w_imm = weights.get("immunogenicity", 0.3)
-
-                weighted = (
-                    w_stab * (-ddg) +
-                    w_sol * sol_delta +
-                    w_imm * (-imm_delta)
-                )
-
-                if weighted > best_weighted:
-                    best_weighted = weighted
-                    best_mutation = {
-                        "position": pos,
-                        "wildtype": wt,
-                        "mutant": mutant_aa,
-                        "ddg": ddg,
-                        "solubility_delta": sol_delta,
-                        "immunogenicity_delta": imm_delta,
-                        "blosum62": blosum,
-                        "weighted_score": round(weighted, 4),
-                        "strategy": "multi_objective",
-                    }
-
-        if best_mutation is None or best_weighted <= 0:
-            logger.info(
-                "No improving multi-objective mutation at iteration %d "
-                "(best_weighted=%.4f)", iteration, best_weighted,
-            )
-            break
-
-        pos = best_mutation["position"]
-        current[pos] = best_mutation["mutant"]
-        total_ddg += best_mutation["ddg"]
-        current_stab = base_stab + total_ddg
-        mutations.append(best_mutation)
-
-    designed = "".join(current)
-    final_sol = _base_solubility(designed)
-    final_imm = _base_immunogenicity(designed)
-    cai = _compute_cai_for_protein(designed, organism)
-
-    satisfied, violated = _check_constraints(
-        designed, constraints, current_stab, final_sol, final_imm,
-    )
-
-    _timer.__exit__(None, None, None)
-
-    return DesignResult(
-        original_protein=protein,
-        designed_protein=designed,
-        mutations=mutations,
-        stability_change=total_ddg,
-        solubility_change=final_sol - _base_solubility(protein),
-        immunogenicity_change=final_imm - _base_immunogenicity(protein),
-        cai=cai,
-        iterations=iterations,
-        constraints_satisfied=satisfied,
-        constraints_violated=violated,
-        success=len(violated) == 0,
-        execution_time_s=round(_timer.elapsed, 4),
+    return _design_iterative(
+        protein=protein,
+        organism=organism,
+        constraints=constraints,
+        propose_mutation=_propose_mo,
+        is_objective_met=_all_constraints_met,
     )

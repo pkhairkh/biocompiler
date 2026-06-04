@@ -53,6 +53,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install build tools
         run: pip install build
@@ -77,6 +78,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -84,9 +87,30 @@ jobs:
           name: dist-packages
           path: dist/
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
       - name: Extract version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Verify version matches pyproject.toml
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PYPROJECT_VERSION=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
+          print(data['project']['version'])
+          ")
+          if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "::error::Version mismatch: tag v${TAG_VERSION} != pyproject.toml ${PYPROJECT_VERSION}"
+            exit 1
+          fi
+          echo "Version verified: v${TAG_VERSION} == pyproject.toml ${PYPROJECT_VERSION}"
 
       - name: Generate changelog
         id: changelog
@@ -94,7 +118,7 @@ jobs:
           # Grab the latest tag before this one
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
-            CHANGES=$(git log --pretty=format:"- %s (%h)" "$PREV_TAG"..HEAD 2>/dev/null || echo "Initial release")
+            CHANGES=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD" 2>/dev/null || echo "Initial release")
           else
             CHANGES=$(git log --pretty=format:"- %s (%h)" HEAD~20..HEAD 2>/dev/null || echo "Initial release")
           fi

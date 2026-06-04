@@ -18,14 +18,22 @@ Round-trip capability: import_seq is the inverse of export.
 import logging
 import re
 from pathlib import Path
+from typing import Any
+
 from .scanner import validate_dna_sequence, gc_content
 from .exceptions import FileFormatError, InvalidSequenceError
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "import_fasta",
+    "import_genbank",
+    "import_sequence",
+]
+
 # GenBank format column constants (RFC 8466 / GenBank flat-file spec)
-_GENBANK_FEATURE_INDENT = 5    # spaces before feature type
-_GENBANK_QUALIFIER_INDENT = 21  # spaces before qualifier /key=value
+_GENBANK_FEATURE_INDENT: int = 5    # spaces before feature type
+_GENBANK_QUALIFIER_INDENT: int = 21  # spaces before qualifier /key=value
 
 
 # ─── FASTA Import ──────────────────────────────────────────────────
@@ -103,7 +111,7 @@ def import_fasta(filepath_or_text: str) -> list[dict]:
     return records
 
 
-def _build_fasta_record(header: str, seq_parts: list[str]) -> dict:
+def _build_fasta_record(header: str, seq_parts: list[str]) -> dict[str, Any]:
     """Build a FASTA record dict from a header line and sequence parts."""
     sequence_raw = "".join(seq_parts).upper()
     # Remove any whitespace that might have been in sequence
@@ -138,7 +146,7 @@ def _build_fasta_record(header: str, seq_parts: list[str]) -> dict:
 
 # ─── GenBank Import ────────────────────────────────────────────────
 
-def import_genbank(filepath_or_text: str) -> dict:
+def import_genbank(filepath_or_text: str) -> dict[str, Any]:
     """
     Parse a GenBank file or text string and return a structured dict.
 
@@ -240,6 +248,7 @@ def _extract_locus(text: str) -> str:
     match = re.search(r'^LOCUS\s+(\S+)', text, re.MULTILINE)
     if match:
         return match.group(1)
+    logger.warning("GenBank record has no LOCUS line")
     return ""
 
 
@@ -254,6 +263,7 @@ def _extract_definition(text: str) -> str:
         if definition.endswith('.'):
             definition = definition[:-1]
         return definition
+    logger.debug("GenBank record has no DEFINITION line")
     return ""
 
 
@@ -262,6 +272,7 @@ def _extract_organism(text: str) -> str:
     match = re.search(r'^\s+ORGANISM\s+(.+?)$', text, re.MULTILINE)
     if match:
         return match.group(1).strip()
+    logger.debug("GenBank record has no ORGANISM line")
     return ""
 
 
@@ -275,6 +286,7 @@ def _extract_origin_sequence(text: str) -> str:
     # Find ORIGIN section (between ORIGIN and //)
     origin_match = re.search(r'^ORIGIN\s*\n(.*?)^//', text, re.MULTILINE | re.DOTALL)
     if not origin_match:
+        logger.warning("GenBank record has no ORIGIN section — no sequence data")
         return ""
 
     origin_text = origin_match.group(1)
@@ -284,7 +296,7 @@ def _extract_origin_sequence(text: str) -> str:
     return seq_chars.upper()
 
 
-def _extract_features(text: str) -> list[dict]:
+def _extract_features(text: str) -> list[dict[str, Any]]:
     """Extract features from the FEATURES section of a GenBank record.
 
     Returns a list of dicts, each with:
@@ -299,6 +311,7 @@ def _extract_features(text: str) -> list[dict]:
         text, re.MULTILINE | re.DOTALL
     )
     if not features_match:
+        logger.debug("GenBank record has no FEATURES section")
         return []
 
     features_text = features_match.group(1)
@@ -373,7 +386,7 @@ def _parse_feature_location(feature_block: str, feat_type: str) -> str:
     return " ".join(location_parts)
 
 
-def _parse_feature_qualifiers(feature_block: str) -> dict:
+def _parse_feature_qualifiers(feature_block: str) -> dict[str, str]:
     """Parse qualifier key-value pairs from a feature block."""
     qualifiers = {}
 
@@ -462,13 +475,15 @@ def _parse_exon_boundaries(location: str) -> list[tuple[int, int]]:
             if pos_match:
                 pos = int(pos_match.group(1))
                 boundaries.append((pos - 1, pos))
+            else:
+                logger.debug("Skipping unparseable exon boundary part: %r", part)
 
     return boundaries
 
 
 # ─── Auto-detect Format ────────────────────────────────────────────
 
-def import_sequence(filepath_or_text: str) -> dict:
+def import_sequence(filepath_or_text: str) -> dict[str, Any]:
     """
     Auto-detect file format and parse accordingly.
 
@@ -587,7 +602,10 @@ def _resolve_input(filepath_or_text: str, format_name: str) -> str:
             try:
                 return path.read_text()
             except (OSError, IOError) as e:
-                raise FileFormatError(filepath_or_text, format_name, f"Cannot read file: {e}")
+                logger.error("Failed to read file %s: %s", filepath_or_text, e)
+                raise FileFormatError(filepath_or_text, format_name, f"Cannot read file: {e}") from e
+        else:
+            logger.debug("Path-like input %r does not exist, treating as text content", filepath_or_text)
     # Treat as raw text content
     return filepath_or_text
 

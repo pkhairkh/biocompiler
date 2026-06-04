@@ -100,6 +100,10 @@ __all__ = [
     "compute_charge_profile",
     "compute_contact_density",
     "HEURISTIC_MAX_CONFIDENCE",
+    "HEURISTIC_MIN_CONFIDENCE",
+    "ChargeProfile",
+    "SecondaryStructureEstimate",
+    "ContactDensityProfile",
 ]
 
 
@@ -251,6 +255,43 @@ _CONTACT_DENSITY_SMOOTHING_WINDOW: int = 3
 #: Default contact density for unknown SS types.
 _DEFAULT_CONTACT_DENSITY: float = 0.8
 
+#: Default charge patch detection window size.
+DEFAULT_CHARGE_PATCH_WINDOW: int = 7
+
+#: Default minimum same-sign charge fraction to count as a patch.
+DEFAULT_CHARGE_PATCH_MIN_FRAC: float = 0.7
+
+#: Chou-Fasman propensity threshold above which an AA is considered a
+#: former for that SS type.
+PROPENSITY_THRESHOLD: float = 1.00
+
+#: Minimum helix length (residues) after extension; shorter are pruned to coil.
+MIN_HELIX_LENGTH: int = 4
+
+#: Minimum sheet length (residues) after extension; shorter are pruned to coil.
+MIN_SHEET_LENGTH: int = 3
+
+#: Per-residue pLDDT length bonus scale factor.
+_LENGTH_BONUS_SCALE: float = 2.0
+
+#: Per-residue pLDDT charge balance bonus scale factor.
+_CHARGE_BONUS_SCALE: float = 2.0
+
+#: Contact density modulation weight (fraction of half-range).
+_CONTACT_DENSITY_MODULATION_WEIGHT: float = 0.6
+
+#: Hydrophobicity modulation weight for structured residues (H, E).
+_HYDRO_MODULATION_STRUCTURED_WEIGHT: float = 0.4
+
+#: Hydrophobicity modulation weight for coil residues.
+_HYDRO_MODULATION_COIL_WEIGHT: float = 0.2
+
+#: Global bonus scaling applied to per-residue length and charge bonuses.
+_GLOBAL_BONUS_SCALE: float = 0.5
+
+#: Hydrophobic balance bonus for structured residues (pLDDT points).
+_HYDRO_BALANCE_BONUS: float = 1.5
+
 #: Disorder penalty thresholds and factors (consecutive disorder run length → factor).
 _DISORDER_PENALTY_THRESHOLDS: list[tuple[int, float]] = [
     (30, 0.75),
@@ -309,7 +350,11 @@ def compute_hydrophobicity_profile(
         return []
 
     # Raw hydrophobicity per residue
-    raw = [KYTE_DOOLITTLE.get(aa, 0.0) for aa in protein]
+    raw: list[float] = []
+    for aa in protein:
+        if aa not in KYTE_DOOLITTLE:
+            logger.warning("Unknown amino acid '%s' in hydrophobicity profile; defaulting to 0.0", aa)
+        raw.append(KYTE_DOOLITTLE.get(aa, 0.0))
 
     # Smooth with sliding window
     half_w = window // 2
@@ -348,7 +393,11 @@ class ChargeProfile:
     charge_patch_count: int
 
 
-def compute_charge_profile(protein: str, window: int = 7, min_frac: float = 0.7) -> ChargeProfile:
+def compute_charge_profile(
+    protein: str,
+    window: int = DEFAULT_CHARGE_PATCH_WINDOW,
+    min_frac: float = DEFAULT_CHARGE_PATCH_MIN_FRAC,
+) -> ChargeProfile:
     """Compute charge distribution statistics for a protein sequence.
 
     Args:
@@ -454,6 +503,8 @@ def _compute_turn_probabilities(protein: str) -> list[float]:
         for j in range(TURN_WINDOW):
             aa = protein[i + j]
             pos_props = TURN_PROPENSITY_BY_POSITION.get(aa, (1.0, 1.0, 1.0, 1.0))
+            if aa not in TURN_PROPENSITY_BY_POSITION:
+                logger.debug("Unknown AA '%s' in turn propensity lookup; using defaults", aa)
             product *= pos_props[j]
             avg_turn += CHOU_FASMAN_PROPENSITY.get(aa, (1.0, 1.0, 1.0))[2]
 
@@ -469,8 +520,8 @@ def _compute_turn_probabilities(protein: str) -> list[float]:
     # over all windows containing each residue
     per_residue: list[float] = [0.0] * n
     for i in range(n):
-        count = 0
-        total = 0.0
+        count: int = 0
+        total: float = 0.0
         # Which windows include position i?
         # Window starting at j covers positions j, j+1, j+2, j+3
         # So j ranges from max(0, i-3) to min(n-4, i)
@@ -530,8 +581,14 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
         )
 
     # Per-residue propensities
-    p_helix = [CHOU_FASMAN_PROPENSITY.get(aa, (1.0, 1.0, 1.0))[0] for aa in protein]
-    p_sheet = [CHOU_FASMAN_PROPENSITY.get(aa, (1.0, 1.0, 1.0))[1] for aa in protein]
+    p_helix: list[float] = []
+    p_sheet: list[float] = []
+    for aa in protein:
+        if aa not in CHOU_FASMAN_PROPENSITY:
+            logger.warning("Unknown amino acid '%s' in SS prediction; using default propensity", aa)
+        props = CHOU_FASMAN_PROPENSITY.get(aa, (1.0, 1.0, 1.0))
+        p_helix.append(props[0])
+        p_sheet.append(props[1])
 
     # Assignments: default to coil
     assignments: list[str] = ["C"] * n
@@ -546,6 +603,8 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
         for j in range(TURN_WINDOW):
             aa = window[j]
             pos_props = TURN_PROPENSITY_BY_POSITION.get(aa, (1.0, 1.0, 1.0, 1.0))
+            if aa not in TURN_PROPENSITY_BY_POSITION:
+                logger.debug("Unknown AA '%s' in turn propensity lookup; using defaults", aa)
             product *= pos_props[j]
             avg_turn += CHOU_FASMAN_PROPENSITY.get(aa, (1.0, 1.0, 1.0))[2]
 
@@ -559,7 +618,7 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
     i = 0
     while i <= n - HELIX_NUCLEATION_WINDOW:
         window_helix = p_helix[i:i + HELIX_NUCLEATION_WINDOW]
-        above_threshold = sum(1 for p in window_helix if p > 1.00)
+        above_threshold = sum(1 for p in window_helix if p > PROPENSITY_THRESHOLD)
         if above_threshold >= HELIX_NUCLEATION_THRESHOLD:
             # Nucleate helix, extend in both directions
             start = i
@@ -571,7 +630,7 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
                 if protein[start - 1] == "P":
                     break
                 avg_helix = sum(p_helix[max(0, start - 1):end]) / (end - start + 1)
-                if avg_helix > 1.00:
+                if avg_helix > PROPENSITY_THRESHOLD:
                     start -= 1
                 else:
                     break
@@ -582,13 +641,13 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
                 if protein[end] == "P":
                     break
                 avg_helix = sum(p_helix[start:min(n, end + 1)]) / (end - start + 1)
-                if avg_helix > 1.00:
+                if avg_helix > PROPENSITY_THRESHOLD:
                     end += 1
                 else:
                     break
 
-            # Prune short helices (< 4 residues after extension)
-            if end - start >= 4:
+            # Prune short helices (< MIN_HELIX_LENGTH residues after extension)
+            if end - start >= MIN_HELIX_LENGTH:
                 helix_regions.append((start, end))
             i = end
         else:
@@ -599,7 +658,7 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
     i = 0
     while i <= n - SHEET_NUCLEATION_WINDOW:
         window_sheet = p_sheet[i:i + SHEET_NUCLEATION_WINDOW]
-        above_threshold = sum(1 for p in window_sheet if p > 1.00)
+        above_threshold = sum(1 for p in window_sheet if p > PROPENSITY_THRESHOLD)
         if above_threshold >= SHEET_NUCLEATION_THRESHOLD:
             start = i
             end = i + SHEET_NUCLEATION_WINDOW
@@ -607,7 +666,7 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
             # Extend N-terminal
             while start > 0:
                 avg_sheet = sum(p_sheet[max(0, start - 1):end]) / (end - start + 1)
-                if avg_sheet > 1.00:
+                if avg_sheet > PROPENSITY_THRESHOLD:
                     start -= 1
                 else:
                     break
@@ -615,13 +674,13 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
             # Extend C-terminal
             while end < n:
                 avg_sheet = sum(p_sheet[start:min(n, end + 1)]) / (end - start + 1)
-                if avg_sheet > 1.00:
+                if avg_sheet > PROPENSITY_THRESHOLD:
                     end += 1
                 else:
                     break
 
-            # Prune short sheets (< 3 residues after extension)
-            if end - start >= 3:
+            # Prune short sheets (< MIN_SHEET_LENGTH residues after extension)
+            if end - start >= MIN_SHEET_LENGTH:
                 sheet_regions.append((start, end))
             i = end
         else:
@@ -826,10 +885,10 @@ def _compute_per_residue_plddt(
     # Sequence length factor: shorter proteins get a slight boost
     # Proteins < 100 aa: factor = 1.0; proteins > 400 aa: factor = 0.0
     length_factor = max(0.0, min(1.0, (LENGTH_LONG_THRESHOLD - sequence_length) / (LENGTH_LONG_THRESHOLD - LENGTH_SHORT_THRESHOLD)))
-    length_bonus = length_factor * 2.0  # 0–2 point bonus for shorter proteins
+    length_bonus = length_factor * _LENGTH_BONUS_SCALE  # 0–2 point bonus for shorter proteins
 
     # Charge balance bonus: 0–2 points
-    charge_bonus = charge_balance * 2.0
+    charge_bonus = charge_balance * _CHARGE_BONUS_SCALE
 
     # Hydrophobic balance factor: optimal is 0.30–0.50
     if 0.30 <= hydrophobic_fraction <= 0.50:
@@ -872,29 +931,29 @@ def _compute_per_residue_plddt(
         # Contact density modulation (0–0.3 of half_range)
         if i < len(contact_density) and cd_range > 0:
             cd_norm = (contact_density[i] - min_cd) / cd_range  # 0–1
-            modulation += (cd_norm - 0.5) * 0.6  # -0.3 to +0.3
+            modulation += (cd_norm - 0.5) * _CONTACT_DENSITY_MODULATION_WEIGHT  # -0.3 to +0.3
 
         # Hydrophobicity modulation (0–0.2 of half_range)
         # More hydrophobic → slight boost for structured regions
         if i < len(hydro_profile) and hydro_range > 0:
             hydro_norm = (hydro_profile[i] - min_hydro) / hydro_range  # 0–1
             if ss_type in ("H", "E"):
-                modulation += (hydro_norm - 0.5) * 0.4  # -0.2 to +0.2
+                modulation += (hydro_norm - 0.5) * _HYDRO_MODULATION_STRUCTURED_WEIGHT  # -0.2 to +0.2
             elif ss_type == "C":
                 # For coil, hydrophobic residues are less well-predicted
                 # (they might be buried but we can't know)
-                modulation -= abs(hydro_norm - 0.5) * 0.2
+                modulation -= abs(hydro_norm - 0.5) * _HYDRO_MODULATION_COIL_WEIGHT
 
         # Apply modulation within the SS-type range
         residue_score = base_score + modulation * half_range
 
         # Add global bonuses
-        residue_score += length_bonus * 0.5  # Scale down since it's per-residue
-        residue_score += charge_bonus * 0.5
+        residue_score += length_bonus * _GLOBAL_BONUS_SCALE  # Scale down since it's per-residue
+        residue_score += charge_bonus * _GLOBAL_BONUS_SCALE
 
         # Apply hydrophobic balance bonus for structured residues
         if ss_type in ("H", "E"):
-            residue_score += hydro_balance_factor * 1.5
+            residue_score += hydro_balance_factor * _HYDRO_BALANCE_BONUS
 
         # Clamp to [HEURISTIC_MIN_CONFIDENCE, HEURISTIC_MAX_CONFIDENCE]
         residue_score = max(HEURISTIC_MIN_CONFIDENCE, min(residue_score, HEURISTIC_MAX_CONFIDENCE))

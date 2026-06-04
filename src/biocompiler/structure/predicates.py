@@ -15,13 +15,24 @@ from __future__ import annotations
 
 import math
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from ..type_system import Verdict, TypeCheckResult
 from ..constants import HYDROPHOBIC_AAS
 
 logger = logging.getLogger(__name__)
 
+
+__all__ = [
+    "evaluate_structure_confidence",
+    "evaluate_no_misfolding_risk",
+    "evaluate_correct_fold_topology",
+    "evaluate_no_unexpected_interaction",
+    "expected_radius_of_gyration",
+    "compute_secondary_structure_fractions",
+    "find_surface_charge_patches",
+    "find_unstructured_regions",
+]
 
 # ────────────────────────────────────────────────────────────
 # Amino acid property sets
@@ -30,12 +41,75 @@ POSITIVELY_CHARGED_AAS = set("KRH")
 NEGATIVELY_CHARGED_AAS = set("DE")
 CHARGED_AAS = POSITIVELY_CHARGED_AAS | NEGATIVELY_CHARGED_AAS
 
+# ────────────────────────────────────────────────────────────
+# Named constants (extracted from magic numbers)
+# ────────────────────────────────────────────────────────────
+
+# Radius of gyration empirical formula: Rg ≈ RG_COEFFICIENT * N^RG_EXPONENT
+RG_EMPIRICAL_COEFFICIENT: float = 2.5
+RG_EMPIRICAL_EXPONENT: float = 0.33
+
+# pLDDT verdict thresholds
+PLDDT_PASS_THRESHOLD: float = 90.0
+PLDDT_LIKELY_PASS_THRESHOLD: float = 70.0
+PLDDT_UNCERTAIN_THRESHOLD: float = 50.0
+
+# Misfolding risk thresholds
+LOW_CONFIDENCE_CONSECUTIVE_LIMIT: int = 10
+RAMACHANDRAN_OUTLIER_FRACTION: float = 0.05
+CA_CLASH_DISTANCE_ANGSTROM: float = 2.0
+
+# Radius of gyration deviation factors (relative to expected)
+RG_DEVIATION_LOW: float = 0.6
+RG_DEVIATION_HIGH: float = 1.4
+
+# Fold topology thresholds
+RG_RATIO_FAILED_LOW: float = 0.6
+RG_RATIO_FAILED_HIGH: float = 1.5
+RG_RATIO_BORDERLINE_LOW: float = 0.7
+RG_RATIO_BORDERLINE_HIGH: float = 1.4
+MIN_STRUCTURED_PROTEIN_LENGTH: int = 50
+COIL_FRACTION_FAILED: float = 0.80
+COIL_FRACTION_BORDERLINE: float = 0.65
+HELIX_FRACTION_FAILED: float = 0.85
+HELIX_FRACTION_BORDERLINE: float = 0.75
+
+# Packing density thresholds
+PACKING_DISTANCE_CUTOFF: float = 10.0
+PACKING_DENSITY_FAILED_MIN: float = 5.0
+PACKING_DENSITY_FAILED_MAX: float = 12.0
+PACKING_DENSITY_BORDERLINE_MIN: float = 6.0
+PACKING_DENSITY_BORDERLINE_MAX: float = 11.0
+
+# Exposure / burial thresholds
+EXPOSURE_CUTOFF_FRACTION: float = 0.7
+BURIAL_CUTOFF_FRACTION: float = 0.7
+EXPOSED_HYDROPHOBIC_THRESHOLD: float = 0.40
+SEQUENCE_HYDROPHOBICITY_THRESHOLD: float = 0.45
+HYDRO_BORDERLINE_EXPOSED_MIN: float = 0.5
+HYDRO_BORDERLINE_RATIO: float = 0.85
+
+# Interaction risk thresholds
+UNSTRUCTURED_REGION_MIN_LENGTH: int = 30
+SIGNIFICANT_PATCH_MIN_LENGTH: int = 5
+
+# Geometry tolerance
+DIHEDRAL_NORM_TOLERANCE: float = 1e-8
+
+# Sequence heuristic thresholds
+FLEXIBLE_REGION_FRACTION: float = 0.60
+
+# PDB parsing
+PDB_MIN_ATOM_LINE_LENGTH: int = 54
+DEFAULT_OCCUPANCY: float = 1.0
+DEFAULT_BFACTOR: float = 0.0
+
 
 # ────────────────────────────────────────────────────────────
 # PDB parsing helpers
 # ────────────────────────────────────────────────────────────
 
-def _parse_pdb_atoms(pdb_string: str) -> list[dict]:
+def _parse_pdb_atoms(pdb_string: str) -> list[dict[str, Any]]:
     """Parse ATOM records from a PDB string.
 
     Returns a list of dicts, each with keys:
@@ -45,7 +119,7 @@ def _parse_pdb_atoms(pdb_string: str) -> list[dict]:
     for line in pdb_string.splitlines():
         if not line.startswith("ATOM") and not line.startswith("HETATM"):
             continue
-        if len(line) < 54:
+        if len(line) < PDB_MIN_ATOM_LINE_LENGTH:
             continue
         try:
             atom = {
@@ -57,12 +131,13 @@ def _parse_pdb_atoms(pdb_string: str) -> list[dict]:
                 "x": float(line[30:38].strip()),
                 "y": float(line[38:46].strip()),
                 "z": float(line[46:54].strip()),
-                "occupancy": float(line[54:60].strip()) if len(line) >= 60 else 1.0,
-                "bfactor": float(line[60:66].strip()) if len(line) >= 66 else 0.0,
+                "occupancy": float(line[54:60].strip()) if len(line) >= 60 else DEFAULT_OCCUPANCY,
+                "bfactor": float(line[60:66].strip()) if len(line) >= 66 else DEFAULT_BFACTOR,
                 "element": line[76:78].strip() if len(line) >= 78 else "",
             }
             atoms.append(atom)
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as exc:
+            logger.debug("Skipping malformed PDB ATOM line: %s", exc)
             continue
     return atoms
 
@@ -162,7 +237,7 @@ def _dihedral_angle(
     n1_norm = _norm(n1)
     n2_norm = _norm(n2)
 
-    if n1_norm < 1e-8 or n2_norm < 1e-8:
+    if n1_norm < DIHEDRAL_NORM_TOLERANCE or n2_norm < DIHEDRAL_NORM_TOLERANCE:
         return 0.0
 
     cos_angle = _dot(n1, n2) / (n1_norm * n2_norm)
@@ -305,10 +380,10 @@ def expected_radius_of_gyration(length: int) -> float:
     """
     if length <= 0:
         return 0.0
-    return 2.5 * (length ** 0.33)
+    return RG_EMPIRICAL_COEFFICIENT * (length ** RG_EMPIRICAL_EXPONENT)
 
 
-def compute_secondary_structure_fractions(pdb_string: str) -> dict:
+def compute_secondary_structure_fractions(pdb_string: str) -> dict[str, float]:
     """Compute secondary structure fractions from a PDB string.
 
     Uses phi/psi dihedral angle-based classification:
@@ -570,10 +645,10 @@ def evaluate_structure_confidence(
         mean_plddt = sum(plddt_scores) / len(plddt_scores)
 
         # Per-category breakdown
-        very_high = sum(1 for s in plddt_scores if s > 90)
-        confident = sum(1 for s in plddt_scores if 70 < s <= 90)
-        low = sum(1 for s in plddt_scores if 50 < s <= 70)
-        very_low = sum(1 for s in plddt_scores if s <= 50)
+        very_high = sum(1 for s in plddt_scores if s > PLDDT_PASS_THRESHOLD)
+        confident = sum(1 for s in plddt_scores if PLDDT_LIKELY_PASS_THRESHOLD < s <= PLDDT_PASS_THRESHOLD)
+        low = sum(1 for s in plddt_scores if PLDDT_UNCERTAIN_THRESHOLD < s <= PLDDT_LIKELY_PASS_THRESHOLD)
+        very_low = sum(1 for s in plddt_scores if s <= PLDDT_UNCERTAIN_THRESHOLD)
         n = len(plddt_scores)
 
         derivation = [
@@ -591,11 +666,11 @@ def evaluate_structure_confidence(
             },
         ]
 
-        if mean_plddt > 90:
+        if mean_plddt > PLDDT_PASS_THRESHOLD:
             verdict = Verdict.PASS
-        elif mean_plddt > 70:
+        elif mean_plddt > PLDDT_LIKELY_PASS_THRESHOLD:
             verdict = Verdict.LIKELY_PASS
-        elif mean_plddt > 50:
+        elif mean_plddt > PLDDT_UNCERTAIN_THRESHOLD:
             verdict = Verdict.UNCERTAIN
         else:
             verdict = Verdict.LIKELY_FAIL
@@ -604,7 +679,7 @@ def evaluate_structure_confidence(
         if mean_plddt < min_mean_plddt:
             violation = (
                 f"Mean pLDDT {mean_plddt:.1f} is below threshold {min_mean_plddt:.1f}; "
-                f"{very_low} residues ({100 * very_low / n:.1f}%) have pLDDT <= 50"
+                f"{very_low} residues ({100 * very_low / n:.1f}%) have pLDDT <= {PLDDT_UNCERTAIN_THRESHOLD:.0f}"
             )
 
         return TypeCheckResult(
@@ -626,11 +701,11 @@ def evaluate_structure_confidence(
             result = model.infer(protein)
             predicted_plddt = float(result["mean_plddt"])
 
-        if predicted_plddt > 90:
+        if predicted_plddt > PLDDT_PASS_THRESHOLD:
             verdict = Verdict.LIKELY_PASS
-        elif predicted_plddt > 70:
+        elif predicted_plddt > PLDDT_LIKELY_PASS_THRESHOLD:
             verdict = Verdict.LIKELY_PASS
-        elif predicted_plddt > 50:
+        elif predicted_plddt > PLDDT_UNCERTAIN_THRESHOLD:
             verdict = Verdict.UNCERTAIN
         else:
             verdict = Verdict.LIKELY_FAIL
@@ -648,7 +723,9 @@ def evaluate_structure_confidence(
             ),
         )
     except ImportError:
-        pass
+        logger.debug("ESMFold not available; falling back to UNCERTAIN verdict")
+    except Exception as exc:
+        logger.warning("ESMFold prediction failed: %s", exc)
 
     # No structure available at all
     return TypeCheckResult(
@@ -711,7 +788,7 @@ def evaluate_no_misfolding_risk(
         consecutive_low = 0
         max_consecutive_low = 0
         for score in plddt_scores:
-            if score < 70:
+            if score < PLDDT_LIKELY_PASS_THRESHOLD:
                 consecutive_low += 1
                 max_consecutive_low = max(max_consecutive_low, consecutive_low)
             else:
@@ -720,14 +797,14 @@ def evaluate_no_misfolding_risk(
         derivation_steps.append({
             "step": "low_confidence_regions",
             "max_consecutive_low_plddt": max_consecutive_low,
-            "threshold": 10,
-            "plddt_threshold": 70,
+            "threshold": LOW_CONFIDENCE_CONSECUTIVE_LIMIT,
+            "plddt_threshold": PLDDT_LIKELY_PASS_THRESHOLD,
         })
 
-        if max_consecutive_low > 10:
+        if max_consecutive_low > LOW_CONFIDENCE_CONSECUTIVE_LIMIT:
             risk_indicators.append(
                 f"Long low-confidence region: {max_consecutive_low} consecutive "
-                f"residues with pLDDT < 70"
+                f"residues with pLDDT < {PLDDT_LIKELY_PASS_THRESHOLD:.0f}"
             )
     else:
         derivation_steps.append({
@@ -745,13 +822,13 @@ def evaluate_no_misfolding_risk(
         "outliers": outliers,
         "total": total,
         "outlier_fraction": round(outlier_frac, 4),
-        "threshold": 0.05,
+        "threshold": RAMACHANDRAN_OUTLIER_FRACTION,
     })
 
-    if total > 0 and outlier_frac > 0.05:
+    if total > 0 and outlier_frac > RAMACHANDRAN_OUTLIER_FRACTION:
         risk_indicators.append(
             f"Ramachandran outliers: {outliers}/{total} "
-            f"({100 * outlier_frac:.1f}%) > 5%"
+            f"({100 * outlier_frac:.1f}%) > {RAMACHANDRAN_OUTLIER_FRACTION * 100:.0f}%"
         )
 
     # (c) Clash score (simplified: count CA-CA contacts < 2.0 Angstroms)
@@ -761,7 +838,7 @@ def evaluate_no_misfolding_risk(
         for i in range(len(ca_coords)):
             for j in range(i + 2, len(ca_coords)):  # skip adjacent residues
                 dist = _distance(ca_coords[i][:3], ca_coords[j][:3])
-                if dist < 2.0:
+                if dist < CA_CLASH_DISTANCE_ANGSTROM:
                     clashes += 1
 
         derivation_steps.append({
@@ -772,7 +849,7 @@ def evaluate_no_misfolding_risk(
 
         if clashes > 0:
             risk_indicators.append(
-                f"Clash score: {clashes} non-bonded CA-CA contacts < 2.0 Angstroms"
+                f"Clash score: {clashes} non-bonded CA-CA contacts < {CA_CLASH_DISTANCE_ANGSTROM:.1f} Angstroms"
             )
 
     # (d) Radius of gyration check
@@ -780,8 +857,8 @@ def evaluate_no_misfolding_risk(
         rg = _compute_radius_of_gyration(ca_coords)
         expected_rg = expected_radius_of_gyration(len(protein))
         # Allow ±40% deviation from expected
-        rg_low = expected_rg * 0.6
-        rg_high = expected_rg * 1.4
+        rg_low = expected_rg * RG_DEVIATION_LOW
+        rg_high = expected_rg * RG_DEVIATION_HIGH
 
         derivation_steps.append({
             "step": "radius_of_gyration",
@@ -877,21 +954,21 @@ def evaluate_correct_fold_topology(
 
     # For proteins of various lengths, the SS content should be reasonable.
     # Very long coil (>80%) or very long helix (>80%) in a large protein is unusual.
-    if n_residues > 50:
-        if ss_fracs["coil"] > 0.80:
+    if n_residues > MIN_STRUCTURED_PROTEIN_LENGTH:
+        if ss_fracs["coil"] > COIL_FRACTION_FAILED:
             failed_checks.append(
                 f"Excessive coil content: {ss_fracs['coil']:.1%} coil "
-                f"(expected <80% for structured proteins)"
+                f"(expected <{COIL_FRACTION_FAILED:.0%} for structured proteins)"
             )
-        elif ss_fracs["coil"] > 0.65:
+        elif ss_fracs["coil"] > COIL_FRACTION_BORDERLINE:
             borderline_checks.append(
                 f"High coil content: {ss_fracs['coil']:.1%} coil"
             )
-        if ss_fracs["helix"] > 0.85:
+        if ss_fracs["helix"] > HELIX_FRACTION_FAILED:
             failed_checks.append(
                 f"Unusually high helix content: {ss_fracs['helix']:.1%} helix"
             )
-        elif ss_fracs["helix"] > 0.75:
+        elif ss_fracs["helix"] > HELIX_FRACTION_BORDERLINE:
             borderline_checks.append(
                 f"High helix content: {ss_fracs['helix']:.1%} helix"
             )
@@ -910,12 +987,12 @@ def evaluate_correct_fold_topology(
             "ratio": round(rg_ratio, 3),
         })
 
-        if rg_ratio < 0.6 or rg_ratio > 1.5:
+        if rg_ratio < RG_RATIO_FAILED_LOW or rg_ratio > RG_RATIO_FAILED_HIGH:
             failed_checks.append(
                 f"Radius of gyration ratio {rg_ratio:.2f} far from expected 1.0 "
                 f"(Rg={rg:.1f}A vs expected {expected_rg:.1f}A)"
             )
-        elif rg_ratio < 0.7 or rg_ratio > 1.4:
+        elif rg_ratio < RG_RATIO_BORDERLINE_LOW or rg_ratio > RG_RATIO_BORDERLINE_HIGH:
             borderline_checks.append(
                 f"Radius of gyration ratio {rg_ratio:.2f} borderline "
                 f"(Rg={rg:.1f}A vs expected {expected_rg:.1f}A)"
@@ -931,7 +1008,7 @@ def evaluate_correct_fold_topology(
             for j, ca_j in enumerate(ca_coords):
                 if i == j:
                     continue
-                if _distance(ca_i[:3], ca_j[:3]) <= 10.0:
+                if _distance(ca_i[:3], ca_j[:3]) <= PACKING_DISTANCE_CUTOFF:
                     count += 1
             neighbor_counts.append(count)
 
@@ -939,15 +1016,16 @@ def evaluate_correct_fold_topology(
         derivation_steps.append({
             "step": "packing_density",
             "mean_ca_neighbors_10A": round(mean_neighbors, 2),
-            "acceptable_range": [5, 12],
+            "acceptable_range": [PACKING_DENSITY_FAILED_MIN, PACKING_DENSITY_FAILED_MAX],
         })
 
-        if mean_neighbors < 5 or mean_neighbors > 12:
+        if mean_neighbors < PACKING_DENSITY_FAILED_MIN or mean_neighbors > PACKING_DENSITY_FAILED_MAX:
             failed_checks.append(
                 f"Packing density out of range: mean {mean_neighbors:.1f} "
-                f"CA neighbors within 10A (expected 5-12)"
+                f"CA neighbors within {PACKING_DISTANCE_CUTOFF:.0f}A "
+                f"(expected {PACKING_DENSITY_FAILED_MIN:.0f}-{PACKING_DENSITY_FAILED_MAX:.0f})"
             )
-        elif mean_neighbors < 6 or mean_neighbors > 11:
+        elif mean_neighbors < PACKING_DENSITY_BORDERLINE_MIN or mean_neighbors > PACKING_DENSITY_BORDERLINE_MAX:
             borderline_checks.append(
                 f"Packing density borderline: mean {mean_neighbors:.1f} CA neighbors"
             )
@@ -955,19 +1033,19 @@ def evaluate_correct_fold_topology(
         borderline_checks.append("Insufficient CA coordinates for packing analysis")
 
     # (d) Hydrophobic burial check (requires PDB)
-    if ca_coords and n_residues > 10:
+    if ca_coords and n_residues > MIN_STRUCTURED_PROTEIN_LENGTH:
         # Compute centroid
         n_ca = len(ca_coords)
         cx = sum(c[0] for c in ca_coords) / n_ca
         cy = sum(c[1] for c in ca_coords) / n_ca
         cz = sum(c[2] for c in ca_coords) / n_ca
 
-        # Define "buried" as within 70% of the max distance from centroid
+        # Define "buried" as within configured fraction of the max distance from centroid
         max_dist = max(
             math.sqrt((c[0] - cx) ** 2 + (c[1] - cy) ** 2 + (c[2] - cz) ** 2)
             for c in ca_coords
         )
-        burial_cutoff = max_dist * 0.7
+        burial_cutoff = max_dist * BURIAL_CUTOFF_FRACTION
 
         buried_hydrophobic = 0
         buried_total = 0
@@ -1006,7 +1084,7 @@ def evaluate_correct_fold_topology(
                     f"Hydrophobic residues more exposed than buried: "
                     f"exposed={exposed_hydro_frac:.1%} vs buried={buried_hydro_frac:.1%}"
                 )
-            elif exposed_hydro_frac > 0.5 and exposed_hydro_frac >= buried_hydro_frac * 0.85:
+            elif exposed_hydro_frac > HYDRO_BORDERLINE_EXPOSED_MIN and exposed_hydro_frac >= buried_hydro_frac * HYDRO_BORDERLINE_RATIO:
                 borderline_checks.append(
                     f"Borderline hydrophobic burial: "
                     f"exposed={exposed_hydro_frac:.1%} vs buried={buried_hydro_frac:.1%}"
@@ -1086,8 +1164,8 @@ def evaluate_no_unexpected_interaction(
                 math.sqrt((c[0] - cx) ** 2 + (c[1] - cy) ** 2 + (c[2] - cz) ** 2)
                 for c in ca_coords
             )
-            # Exposed residues: beyond 70% of max distance from centroid
-            exposure_cutoff = max_dist * 0.7
+            # Exposed residues: beyond configured fraction of max distance from centroid
+            exposure_cutoff = max_dist * EXPOSURE_CUTOFF_FRACTION
 
             exposed_hydrophobic = 0
             exposed_total = 0
@@ -1108,10 +1186,10 @@ def evaluate_no_unexpected_interaction(
                 "exposed_residues": exposed_total,
                 "exposed_hydrophobic": exposed_hydrophobic,
                 "fraction": round(exposed_hydro_frac, 3),
-                "threshold": 0.40,
+                "threshold": EXPOSED_HYDROPHOBIC_THRESHOLD,
             })
 
-            if exposed_hydro_frac > 0.40:
+            if exposed_hydro_frac > EXPOSED_HYDROPHOBIC_THRESHOLD:
                 indicators.append(
                     f"Large exposed hydrophobic surface: "
                     f"{exposed_hydrophobic}/{exposed_total} "
@@ -1130,7 +1208,7 @@ def evaluate_no_unexpected_interaction(
 
     # (b) Long unstructured regions
     if pdb_string is not None:
-        unstructured = find_unstructured_regions(pdb_string, min_length=30)
+        unstructured = find_unstructured_regions(pdb_string, min_length=UNSTRUCTURED_REGION_MIN_LENGTH)
         derivation_steps.append({
             "step": "unstructured_regions",
             "regions_found": len(unstructured),
@@ -1144,7 +1222,7 @@ def evaluate_no_unexpected_interaction(
             )
     else:
         # Sequence-based heuristic: regions with many small/polar residues
-        long_flexible = _find_flexible_regions_sequence(protein, min_length=30)
+        long_flexible = _find_flexible_regions_sequence(protein, min_length=UNSTRUCTURED_REGION_MIN_LENGTH)
         derivation_steps.append({
             "step": "unstructured_regions",
             "method": "sequence_heuristic",
@@ -1160,7 +1238,7 @@ def evaluate_no_unexpected_interaction(
 
     # (c) Surface charge patches
     charge_patches = find_surface_charge_patches(protein)
-    significant_patches = [p for p in charge_patches if p[1] - p[0] >= 5]
+    significant_patches = [p for p in charge_patches if p[1] - p[0] >= SIGNIFICANT_PATCH_MIN_LENGTH]
 
     derivation_steps.append({
         "step": "surface_charge_patches",
@@ -1232,7 +1310,7 @@ def _check_sequence_hydrophobicity(
         "note": "conservative estimate without structure data",
     })
 
-    if hydro_frac > 0.45:
+    if hydro_frac > SEQUENCE_HYDROPHOBICITY_THRESHOLD:
         indicators.append(
             f"High overall hydrophobicity: {hydro_frac:.1%} of residues "
             f"are hydrophobic (no structure to confirm burial)"
@@ -1275,7 +1353,7 @@ def _find_flexible_regions_sequence(
         window = is_flexible[i:i + window_size]
         flex_frac = sum(window) / window_size
 
-        if flex_frac > 0.60:
+        if flex_frac > FLEXIBLE_REGION_FRACTION:
             if not in_flexible_region:
                 region_start = i
                 in_flexible_region = True

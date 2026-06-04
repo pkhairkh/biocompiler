@@ -31,7 +31,7 @@ DNA Chisel API Mapping:
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional, TypedDict
 
 from .benchmark import REFERENCE_GENES
 from .optimization import optimize_sequence, OptimizationResult
@@ -40,6 +40,24 @@ from .scanner import gc_content
 from .constants import RESTRICTION_ENZYMES, CODON_TABLE, AA_TO_CODONS
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "ChiselResult",
+    "ComparisonResult",
+    "ComparativeBenchmarkReport",
+    "MetricComparison",
+    "WinnerInfo",
+    "OptimizerMetrics",
+    "GeneComparisonResult",
+    "MetricWinCounts",
+    "MetricWinsSummary",
+    "ComparativeSummary",
+    "is_dna_chisel_available",
+    "optimize_with_dna_chisel",
+    "compare_optimizers",
+    "run_comparative_benchmark",
+    "format_comparative_report_text",
+]
 
 # ─── Named constants (avoid magic numbers) ───────────────────────────
 
@@ -77,6 +95,127 @@ except ImportError as exc:
 def is_dna_chisel_available() -> bool:
     """Return True if DNA Chisel is installed and importable."""
     return _DNA_CHISEL_AVAILABLE
+
+
+# ─── TypedDict definitions for structured dict fields ────────────────
+
+
+class _MetricComparisonRequired(TypedDict):
+    """Required fields for per-metric comparison between optimizers."""
+    biocompiler: float | None
+    dna_chisel: float | None
+    winner: str  # "biocompiler" | "dna_chisel" | "tie"
+
+
+class MetricComparison(_MetricComparisonRequired, total=False):
+    """Per-metric comparison between BioCompiler and DNA Chisel.
+
+    Required fields: ``biocompiler``, ``dna_chisel``, ``winner``.
+    Optional field: ``note`` (e.g., "target_midpoint=0.500" for GC content).
+    """
+    note: str
+
+
+class WinnerInfo(TypedDict):
+    """Per-metric winner determination and overall assessment.
+
+    ``overall`` is one of "biocompiler", "dna_chisel", "tie",
+    "biocompiler (dna_chisel_unavailable)", or "dna_chisel (biocompiler_failed)".
+    """
+    metrics: dict[str, MetricComparison]
+    overall: str
+
+
+class OptimizerMetrics(TypedDict, total=False):
+    """Metrics for a single optimizer run within a comparison.
+
+    All fields are optional because failed runs may only populate a subset
+    (e.g., ``error`` instead of ``cai``).  Successful runs typically set
+    ``success=True`` along with ``cai``, ``gc_content``, etc.
+    """
+    sequence: str
+    sequence_length: int
+    cai: float
+    gc_content: float
+    restriction_site_count: int
+    execution_time_s: float
+    success: bool
+    error: str
+    satisfied_predicates: list[str]
+    failed_predicates: list[str]
+    fallback_used: bool
+
+
+class _GeneComparisonResultRequired(TypedDict):
+    """Required fields for a per-gene comparison result."""
+    gene: str
+
+
+class GeneComparisonResult(_GeneComparisonResultRequired, total=False):
+    """Per-gene result within a :class:`ComparativeBenchmarkReport`.
+
+    Required field: ``gene``.
+    Optional fields: ``description``, ``organism``, ``protein_length``,
+    ``biocompiler``, ``dna_chisel``, ``winner``, ``error``.
+    """
+    description: str
+    organism: str
+    protein_length: int
+    biocompiler: OptimizerMetrics | None
+    dna_chisel: OptimizerMetrics | None
+    winner: WinnerInfo
+    error: str
+
+
+class MetricWinCounts(TypedDict):
+    """Win counts for a single metric across benchmarked genes."""
+    biocompiler: int
+    dna_chisel: int
+    tie: int
+    unavailable: int
+
+
+class MetricWinsSummary(TypedDict):
+    """Per-metric win counts across all benchmarked genes."""
+    cai: MetricWinCounts
+    gc_content: MetricWinCounts
+    restriction_site_count: MetricWinCounts
+    execution_time_s: MetricWinCounts
+
+
+class _AvgPairRequired(TypedDict):
+    """Required fields for a biocompiler/dna_chisel average pair."""
+    biocompiler: float
+    dna_chisel: float
+
+
+class AvgPair(_AvgPairRequired, total=False):
+    """Average value for a metric, split by optimizer."""
+    pass
+
+
+class OverallWins(TypedDict):
+    """Overall win counts across all benchmarked genes."""
+    biocompiler: int
+    dna_chisel: int
+    tie: int
+    unavailable: int
+
+
+class ComparativeSummary(TypedDict):
+    """Aggregate summary statistics from a comparative benchmark.
+
+    Replaces the previous bare ``dict[str, Any]`` return type of
+    :func:`_compute_comparative_summary`.
+    """
+    total_genes: int
+    genes_with_errors: int
+    metric_wins: MetricWinsSummary
+    overall_wins: OverallWins
+    avg_cai: AvgPair
+    avg_gc: AvgPair
+    avg_restriction_sites: AvgPair
+    avg_execution_time_s: AvgPair
 
 
 # ─── Amino acid conversion utilities ─────────────────────────────────
@@ -140,9 +279,16 @@ def _build_initial_sequence(protein: str, organism: str = "Homo_sapiens") -> str
         if codons:
             sequence_chars.append(codons[0])
         else:
-            # Unknown amino acid — use a neutral codon
-            logger.warning("Unknown amino acid '%s', using NNN placeholder", aa)
-            sequence_chars.append("NNN")
+            # Unknown amino acid — raise rather than silently producing
+            # an incorrect translation. Callers that need lenient
+            # behaviour should pre-validate or strip non-standard codes.
+            raise ValueError(
+                f"Unknown amino acid '{aa}' encountered at position "
+                f"{len(sequence_chars) + 1} of the protein sequence. "
+                f"Only standard single-letter IUPAC codes (A C D E F G H I K L M N P Q R S T V W Y) "
+                f"are supported. Selenocysteine (U) and pyrrolysine (O) are "
+                f"not supported by DNA Chisel's EnforceTranslation constraint."
+            )
 
     return "".join(sequence_chars)
 
@@ -283,10 +429,10 @@ class ComparisonResult:
     """Side-by-side comparison of BioCompiler vs DNA Chisel."""
     protein: str
     organism: str
-    biocompiler: dict[str, Any]
-    dna_chisel: dict[str, Any] | None
+    biocompiler: OptimizerMetrics
+    dna_chisel: OptimizerMetrics | None
     dna_chisel_available: bool
-    winner: dict[str, Any]  # Per-metric comparison
+    winner: WinnerInfo
 
 
 def optimize_with_dna_chisel(
@@ -463,7 +609,7 @@ def compare_optimizers(
         restriction_enzymes=enzyme_names,
     )
 
-    dc_metrics: dict[str, Any] | None = None
+    dc_metrics: OptimizerMetrics | None = None
     if chisel_result.success:
         dc_metrics = {
             "sequence": chisel_result.sequence,
@@ -502,8 +648,8 @@ def compare_optimizers(
 
 
 def _compute_winners(
-    bc: dict[str, Any], dc: dict[str, Any] | None, gc_lo: float, gc_hi: float
-) -> dict[str, Any]:
+    bc: OptimizerMetrics, dc: OptimizerMetrics | None, gc_lo: float, gc_hi: float
+) -> WinnerInfo:
     """
     Compare BioCompiler and DNA Chisel metrics and determine per-metric winners.
 
@@ -512,39 +658,42 @@ def _compute_winners(
     Target-range: gc_content (closer to midpoint is better)
 
     Args:
-        bc: BioCompiler metrics dict
-        dc: DNA Chisel metrics dict (None if unavailable)
+        bc: BioCompiler metrics
+        dc: DNA Chisel metrics (None if unavailable)
         gc_lo: Minimum GC content
         gc_hi: Maximum GC content
 
     Returns:
-        Dict with per-metric winner and overall assessment
+        WinnerInfo with per-metric winner and overall assessment
     """
-    result: dict[str, Any] = {
-        "metrics": {},
-        "overall": "biocompiler",  # Default if no comparison possible
-    }
+    metrics: dict[str, MetricComparison] = {}
 
     if dc is None or not dc.get("success"):
         # No valid DNA Chisel result — BioCompiler wins by default
-        result["overall"] = "biocompiler (dna_chisel_unavailable)"
+        logger.info(
+            "DNA Chisel result unavailable or failed; BioCompiler wins by default"
+        )
+        overall = "biocompiler (dna_chisel_unavailable)"
         for metric in ("cai", "gc_content", "restriction_site_count", "execution_time_s"):
-            result["metrics"][metric] = {
-                "biocompiler": bc.get(metric),
-                "dna_chisel": None,
-                "winner": "biocompiler",
-            }
-        return result
+            metrics[metric] = MetricComparison(
+                biocompiler=bc.get(metric),  # type: ignore[arg-type]
+                dna_chisel=None,
+                winner="biocompiler",
+            )
+        return WinnerInfo(metrics=metrics, overall=overall)
 
     if not bc.get("success"):
-        result["overall"] = "dna_chisel (biocompiler_failed)"
+        logger.warning(
+            "BioCompiler optimization failed; DNA Chisel wins by default"
+        )
+        overall = "dna_chisel (biocompiler_failed)"
         for metric in ("cai", "gc_content", "restriction_site_count", "execution_time_s"):
-            result["metrics"][metric] = {
-                "biocompiler": None,
-                "dna_chisel": dc.get(metric),
-                "winner": "dna_chisel",
-            }
-        return result
+            metrics[metric] = MetricComparison(
+                biocompiler=None,
+                dna_chisel=dc.get(metric),  # type: ignore[arg-type]
+                winner="dna_chisel",
+            )
+        return WinnerInfo(metrics=metrics, overall=overall)
 
     # Both succeeded — fair comparison
     bc_wins = 0
@@ -560,11 +709,11 @@ def _compute_winners(
     elif dc_cai > bc_cai + CAI_COMPARISON_EPSILON:
         cai_winner = "dna_chisel"
         dc_wins += 1
-    result["metrics"]["cai"] = {
-        "biocompiler": bc_cai,
-        "dna_chisel": dc_cai,
-        "winner": cai_winner,
-    }
+    metrics["cai"] = MetricComparison(
+        biocompiler=bc_cai,
+        dna_chisel=dc_cai,
+        winner=cai_winner,
+    )
 
     # GC content: closer to midpoint is better
     gc_mid = (gc_lo + gc_hi) / 2.0
@@ -577,12 +726,12 @@ def _compute_winners(
     elif dc_gc_diff < bc_gc_diff - CAI_COMPARISON_EPSILON:
         gc_winner = "dna_chisel"
         dc_wins += 1
-    result["metrics"]["gc_content"] = {
-        "biocompiler": bc.get("gc_content"),
-        "dna_chisel": dc.get("gc_content"),
-        "winner": gc_winner,
-        "note": f"target_midpoint={gc_mid:.3f}",
-    }
+    metrics["gc_content"] = MetricComparison(
+        biocompiler=bc.get("gc_content"),
+        dna_chisel=dc.get("gc_content"),
+        winner=gc_winner,
+        note=f"target_midpoint={gc_mid:.3f}",
+    )
 
     # Restriction sites: fewer is better
     bc_rs = bc.get("restriction_site_count", 999)
@@ -594,11 +743,11 @@ def _compute_winners(
     elif dc_rs < bc_rs:
         rs_winner = "dna_chisel"
         dc_wins += 1
-    result["metrics"]["restriction_site_count"] = {
-        "biocompiler": bc_rs,
-        "dna_chisel": dc_rs,
-        "winner": rs_winner,
-    }
+    metrics["restriction_site_count"] = MetricComparison(
+        biocompiler=bc_rs,
+        dna_chisel=dc_rs,
+        winner=rs_winner,
+    )
 
     # Execution time: faster is better
     bc_time = bc.get("execution_time_s", float("inf"))
@@ -610,21 +759,21 @@ def _compute_winners(
     elif dc_time < bc_time * 0.9:
         time_winner = "dna_chisel"
         dc_wins += 1
-    result["metrics"]["execution_time_s"] = {
-        "biocompiler": bc_time,
-        "dna_chisel": dc_time,
-        "winner": time_winner,
-    }
+    metrics["execution_time_s"] = MetricComparison(
+        biocompiler=bc_time,
+        dna_chisel=dc_time,
+        winner=time_winner,
+    )
 
     # Overall winner
     if bc_wins > dc_wins:
-        result["overall"] = "biocompiler"
+        overall = "biocompiler"
     elif dc_wins > bc_wins:
-        result["overall"] = "dna_chisel"
+        overall = "dna_chisel"
     else:
-        result["overall"] = "tie"
+        overall = "tie"
 
-    return result
+    return WinnerInfo(metrics=metrics, overall=overall)
 
 
 # ─── Comparative Benchmark Suite ──────────────────────────────────────
@@ -634,8 +783,8 @@ class ComparativeBenchmarkReport:
     """Complete comparative benchmark report."""
     timestamp: str
     dna_chisel_available: bool
-    gene_results: list[dict[str, Any]] = field(default_factory=list)
-    summary: dict[str, Any] = field(default_factory=dict)
+    gene_results: list[GeneComparisonResult] = field(default_factory=list)
+    summary: ComparativeSummary = field(default_factory=dict)  # type: ignore[assignment]
 
     @property
     def total_genes(self) -> int:
@@ -671,7 +820,7 @@ def run_comparative_benchmark(
     from datetime import datetime, timezone
 
     gene_names = genes or list(REFERENCE_GENES.keys())
-    gene_results: list[dict[str, Any]] = []
+    gene_results: list[GeneComparisonResult] = []
 
     for gene_name in gene_names:
         gene_data = REFERENCE_GENES.get(gene_name)
@@ -730,7 +879,7 @@ def run_comparative_benchmark(
     )
 
 
-def _compute_comparative_summary(gene_results: list[dict[str, Any]]) -> dict[str, Any]:
+def _compute_comparative_summary(gene_results: list[GeneComparisonResult]) -> ComparativeSummary:
     """
     Compute aggregate summary statistics from per-gene benchmark results.
 
@@ -741,9 +890,10 @@ def _compute_comparative_summary(gene_results: list[dict[str, Any]]) -> dict[str
         gene_results: List of per-gene comparison dicts
 
     Returns:
-        Summary dict with per-metric win counts and overall assessment
+        :class:`ComparativeSummary` with per-metric win counts and
+        overall assessment.
     """
-    summary: dict[str, Any] = {
+    summary: ComparativeSummary = {
         "total_genes": len(gene_results),
         "genes_with_errors": 0,
         "metric_wins": {
@@ -771,6 +921,11 @@ def _compute_comparative_summary(gene_results: list[dict[str, Any]]) -> dict[str
     for result in gene_results:
         if result.get("error"):
             summary["genes_with_errors"] += 1
+            logger.warning(
+                "Gene '%s' had error: %s",
+                result.get("gene", "unknown"),
+                result.get("error", "unspecified"),
+            )
             continue
 
         winner_info = result.get("winner", {})

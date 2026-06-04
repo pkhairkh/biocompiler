@@ -22,8 +22,25 @@ Usage:
     cpg_cases = get_by_failure_mode("CpG_island")
 """
 
+from __future__ import annotations
+
+import logging
+
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "FailedDesign",
+    "FAILED_DESIGNS",
+    "DESIGN_IDS",
+    "get_by_failure_mode",
+    "get_by_predicate",
+    "get_by_species",
+    "get_failure_mode_summary",
+    "get_predicate_summary",
+    "validate_all_sequences",
+]
 
 
 @dataclass
@@ -44,12 +61,12 @@ class FailedDesign:
     name: str
     sequence: str
     failure_mode: str
-    expected_fail_predicates: List[str]
+    expected_fail_predicates: list[str]
     reference: str
     description: str
     species: str = "Escherichia_coli"
-    enzyme_context: List[str] = field(default_factory=list)
-    cai_context: Optional[Dict[str, float]] = None
+    enzyme_context: list[str] = field(default_factory=list)
+    cai_context: dict[str, float] | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -898,7 +915,7 @@ LENTIVIRAL_CPG_SILENCING = FailedDesign(
 # Master list of all failed designs
 # ═══════════════════════════════════════════════════════════════════════════════
 
-FAILED_DESIGNS: List[FailedDesign] = [
+FAILED_DESIGNS: list[FailedDesign] = [
     CFTR_CRYPTIC_SPLICE,       # 1  - cryptic_splice
     HBB_INTERNAL_STOP,          # 2  - internal_stop
     GFP_CPG_ISLAND,             # 3  - CpG_island
@@ -930,79 +947,88 @@ FAILED_DESIGNS: List[FailedDesign] = [
 # Accessor functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_by_failure_mode(mode: str) -> List[FailedDesign]:
+def get_by_failure_mode(mode: str) -> list[FailedDesign]:
     """Return all designs with a given failure_mode."""
     return [d for d in FAILED_DESIGNS if d.failure_mode == mode]
 
 
-def get_by_predicate(predicate: str) -> List[FailedDesign]:
+def get_by_predicate(predicate: str) -> list[FailedDesign]:
     """Return all designs where the given predicate is expected to FAIL."""
     return [d for d in FAILED_DESIGNS if predicate in d.expected_fail_predicates]
 
 
-def get_by_species(species: str) -> List[FailedDesign]:
+def get_by_species(species: str) -> list[FailedDesign]:
     """Return all designs targeting the given species."""
     return [d for d in FAILED_DESIGNS if d.species == species]
 
 
-def get_failure_mode_summary() -> Dict[str, int]:
+def get_failure_mode_summary() -> dict[str, int]:
     """Return a count of designs per failure mode."""
-    summary: Dict[str, int] = {}
+    summary: dict[str, int] = {}
     for d in FAILED_DESIGNS:
         summary[d.failure_mode] = summary.get(d.failure_mode, 0) + 1
     return summary
 
 
-def get_predicate_summary() -> Dict[str, int]:
+def get_predicate_summary() -> dict[str, int]:
     """Return a count of designs where each predicate is expected to FAIL."""
-    summary: Dict[str, int] = {}
+    summary: dict[str, int] = {}
     for d in FAILED_DESIGNS:
         for p in d.expected_fail_predicates:
             summary[p] = summary.get(p, 0) + 1
     return summary
 
 
-def validate_all_sequences() -> List[Dict]:
+# Known failure-mode categories for validation
+_KNOWN_FAILURE_MODES: frozenset[str] = frozenset({
+    "cryptic_splice", "internal_stop", "CpG_island",
+    "cryptic_promoter", "low_CAI", "GT_dinucleotide",
+    "restriction_site", "invalid_coding", "mRNA_structure",
+    "unintended_TM",
+})
+
+# Valid DNA bases (N allowed for degenerate base case)
+_VALID_DNA_BASES: frozenset[str] = frozenset("ACGTN")
+
+
+def validate_all_sequences() -> list[dict[str, str]]:
     """Run basic validation on all sequences (valid ACGT, length, etc.).
 
     Returns a list of validation issues (empty if all pass).
     """
-    issues = []
-    valid_bases = set("ACGTN")  # N allowed for degenerate base case
+    issues: list[dict[str, str]] = []
 
-    for i, d in enumerate(FAILED_DESIGNS):
+    for d in FAILED_DESIGNS:
         # Check for empty sequence
         if not d.sequence:
             issues.append({"design": d.name, "issue": "Empty sequence"})
+            logger.warning("Empty sequence for design: %s", d.name)
             continue
 
         # Check for invalid bases
-        bad_bases = set(d.sequence.upper()) - valid_bases
+        bad_bases = set(d.sequence.upper()) - _VALID_DNA_BASES
         if bad_bases:
-            issues.append({
-                "design": d.name,
-                "issue": f"Invalid bases: {bad_bases}",
-            })
+            msg = f"Invalid bases: {bad_bases}"
+            issues.append({"design": d.name, "issue": msg})
+            logger.warning("Invalid bases in %s: %s", d.name, bad_bases)
 
         # Check that at least one predicate should fail
         if not d.expected_fail_predicates:
-            issues.append({
-                "design": d.name,
-                "issue": "No expected_fail_predicates specified",
-            })
+            msg = "No expected_fail_predicates specified"
+            issues.append({"design": d.name, "issue": msg})
+            logger.warning("No expected_fail_predicates for design: %s", d.name)
 
         # Check that failure_mode is a known category
-        known_modes = {
-            "cryptic_splice", "internal_stop", "CpG_island",
-            "cryptic_promoter", "low_CAI", "GT_dinucleotide",
-            "restriction_site", "invalid_coding", "mRNA_structure",
-            "unintended_TM",
-        }
-        if d.failure_mode not in known_modes:
-            issues.append({
-                "design": d.name,
-                "issue": f"Unknown failure_mode: {d.failure_mode}",
-            })
+        if d.failure_mode not in _KNOWN_FAILURE_MODES:
+            msg = f"Unknown failure_mode: {d.failure_mode}"
+            issues.append({"design": d.name, "issue": msg})
+            logger.warning("Unknown failure_mode in %s: %s", d.name, d.failure_mode)
+
+    if issues:
+        logger.error(
+            "Sequence validation found %d issue(s) across %d designs",
+            len(issues), len(FAILED_DESIGNS),
+        )
 
     return issues
 

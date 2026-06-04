@@ -11,6 +11,27 @@ Extended with:
 - Organism-specific min intron lengths
 """
 
+__all__ = [
+    # Genetic code
+    "CODON_TABLE", "STOP_CODONS", "START_CODON", "AA_TO_CODONS",
+    # Scanner consensus
+    "DONOR_CONSENSUS", "ACCEPTOR_CONSENSUS", "KOZAK_CONSENSUS",
+    "INSTABILITY_MOTIF", "MIN_INTRON_LENGTHS", "MIN_INTRON_LENGTH",
+    "POLYPYRIMIDINE_WINDOW", "POLYPYRIMIDINE_THRESHOLD",
+    # Restriction enzymes
+    "RESTRICTION_ENZYMES",
+    # Nucleotide encoding
+    "BASE_MAP", "BASE_REV", "COMPLEMENT", "IUPAC_EXPAND",
+    "reverse_complement",
+    # Amino acid constants
+    "STANDARD_AAS", "STANDARD_AAS_BLOSUM_ORDER", "BLOSUM62",
+    "HYDROPATHY", "HYDROPHOBIC_AAS",
+    # Engine shared constants
+    "DEFAULT_ENGINE_TIMEOUT", "DEFAULT_BATCH_SIZE",
+    "DEFAULT_SOLUBILITY_WINDOW", "DEFAULT_SOLUBILITY_SMOOTHING",
+    "DEFAULT_MHC_PEPTIDE_LENGTH",
+]
+
 # ==============================================================================
 # 1. Genetic Code
 # ==============================================================================
@@ -109,6 +130,28 @@ RESTRICTION_ENZYMES: dict[str, str] = {
     "BsrGI": "TGTACA",
     "AgeI": "ACCGGT",
     "MfeI": "CAATTG",
+    # Additional standard enzymes (4-cutters)
+    "AluI": "AGCT",
+    "HaeIII": "GGCC",
+    "MboI": "GATC",
+    "DpnI": "GATC",
+    "TaqI": "TCGA",
+    "MspI": "CCGG",
+    "HpaII": "CCGG",
+    # Additional standard enzymes (6-cutters)
+    "PvuII": "CAGCTG",
+    "ScaI": "AGTACT",
+    "DraI": "TTTAAA",
+    "SspI": "AATATT",
+    "HincII": "GTYRAC",  # Requires IUPAC wildcard matching
+    # Type IIS enzymes (golden gate assembly)
+    "BsaI": "GGTCTC",
+    "BsmBI": "CGTCTC",
+    "BbsI": "GAAGAC",
+    "SapI": "GCTCTTC",
+    # 8-cutter rare cutters
+    "SwaI": "ATTTAAAT",
+    "PmeI": "GTTTAAAC",
 }
 
 # ==============================================================================
@@ -122,6 +165,10 @@ BASE_REV = {"A": 0, "C": 1, "G": 2, "T": 3}
 COMPLEMENT: dict[str, str] = {
     "A": "T", "T": "A", "G": "C", "C": "G",
     "a": "t", "t": "a", "g": "c", "c": "g",
+    # RNA uracil
+    "U": "A", "u": "a",
+    # Gap / alignment character
+    "-": "-",
     # IUPAC ambiguity codes
     "R": "Y", "Y": "R",  # purine/pyrimidine
     "S": "S", "W": "W",  # strong/weak
@@ -157,7 +204,8 @@ def reverse_complement(seq: str) -> str:
     except KeyError as e:
         raise ValueError(
             f"Unknown base '{e.args[0]}' in sequence. "
-            f"Supported: A, C, G, T, N, and IUPAC ambiguity codes (R, Y, S, W, K, M, B, D, H, V)."
+            f"Supported: A, C, G, T, U, N, - (gap), "
+            f"and IUPAC ambiguity codes (R, Y, S, W, K, M, B, D, H, V)."
         ) from None
 
 

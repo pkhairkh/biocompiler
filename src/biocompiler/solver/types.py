@@ -17,6 +17,30 @@ from enum import Enum
 from typing import Any, Optional, Protocol
 
 
+__all__ = [
+    # ── Enums ───────────────────────────────────────────────
+    "SolverBackend",
+    "ConstraintStrictness",
+    "ConstraintType",
+    "ConstraintPriority",
+    "SolverStatus",
+
+    # ── Data classes ────────────────────────────────────────
+    "CodonVariable",
+    "ConstraintSpec",
+    "ConstraintViolation",
+    "MUSReport",
+    "SolverConfig",
+    "SolverResult",
+    "SpliceConstraint",
+    "CrossCodonSpliceConstraint",
+    "CSPModel",
+
+    # ── Protocols ───────────────────────────────────────────
+    "SolverBackendProtocol",
+]
+
+
 class SolverBackend(Enum):
     """Available solver backends for constraint satisfaction.
 
@@ -59,6 +83,9 @@ class ConstraintStrictness(Enum):
         Prefer to satisfy. Soft constraints contribute to the optimization
         objective but may be violated if they conflict with hard constraints.
         Violation severity is tracked in the result.
+
+    Note: Re-exported by solver/__init__.py as part of the solver package's
+    public API.
     """
 
     HARD = "hard"      # Must satisfy (infeasible if violated)
@@ -99,6 +126,85 @@ class ConstraintType(str, Enum):
 
     # Custom / user-defined
     CUSTOM = "custom"
+
+
+class ConstraintPriority(Enum):
+    """Enforcement priority for constraint scoring and violation ranking.
+
+    Each priority level determines how severely a constraint violation
+    impacts the composite solution score:
+
+        CRITICAL: Must satisfy — violation yields a score of 0.0
+            (infeasible solution).  Used for constraints like translation
+            fidelity that cannot be compromised.
+        HIGH: Severe penalty — violation heavily penalises the score.
+            Used for constraints like restriction-site avoidance where
+            violation has serious experimental consequences.
+        MEDIUM: Moderate penalty — default priority.  Used for most
+            biological constraints (GC range, splice sites, CpG islands).
+        LOW: Minor penalty — violation has small score impact.
+            Used for advisory constraints that are nice-to-have.
+
+    The ``penalty_weight`` property returns a numeric multiplier used
+    by :class:`ConstraintScorer` to compute weighted violation penalties.
+    """
+
+    CRITICAL = "critical"   # Must satisfy — violation = score 0.0
+    HIGH = "high"           # Severe penalty
+    MEDIUM = "medium"       # Moderate penalty (default)
+    LOW = "low"             # Minor penalty
+
+    @property
+    def penalty_weight(self) -> float:
+        """Numeric penalty multiplier for this priority level.
+
+        Returns:
+            Float multiplier used to weight violation penalties:
+            - CRITICAL → 1000.0  (effectively infinite)
+            - HIGH     → 10.0
+            - MEDIUM   → 3.0
+            - LOW      → 1.0
+        """
+        return {
+            ConstraintPriority.CRITICAL: 1000.0,
+            ConstraintPriority.HIGH: 10.0,
+            ConstraintPriority.MEDIUM: 3.0,
+            ConstraintPriority.LOW: 1.0,
+        }[self]
+
+    @property
+    def rank(self) -> int:
+        """Numeric rank for sorting (lower = more critical).
+
+        Returns:
+            Integer rank: CRITICAL=0, HIGH=1, MEDIUM=2, LOW=3.
+        """
+        return {
+            ConstraintPriority.CRITICAL: 0,
+            ConstraintPriority.HIGH: 1,
+            ConstraintPriority.MEDIUM: 2,
+            ConstraintPriority.LOW: 3,
+        }[self]
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, ConstraintPriority):
+            return NotImplemented
+        return self.rank < other.rank
+
+    def __le__(self, other: object) -> bool:
+        if not isinstance(other, ConstraintPriority):
+            return NotImplemented
+        return self.rank <= other.rank
+
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, ConstraintPriority):
+            return NotImplemented
+        return self.rank > other.rank
+
+    def __ge__(self, other: object) -> bool:
+        if not isinstance(other, ConstraintPriority):
+            return NotImplemented
+        return self.rank >= other.rank
 
 
 class SolverStatus(str, Enum):
@@ -144,7 +250,13 @@ class ConstraintSpec:
         strictness: Whether this is a hard or soft constraint.
         params: Constraint-specific parameters (e.g. GC bounds, threshold).
         positions: Codon positions this constraint applies to (empty = global).
-        priority: Suggestion priority for relaxation (lower = harder to relax).
+        priority: Enforcement priority for scoring — determines penalty weight
+            when this constraint is violated.  CRITICAL constraints yield a
+            composite score of 0.0 if violated; HIGH/MEDIUM/LOW impose
+            progressively smaller penalties.  Defaults to MEDIUM.
+        weight: Soft constraint weight multiplier for scoring.  Controls the
+            relative contribution of this constraint to the overall solution
+            score.  Defaults to 1.0.
     """
 
     ctype: ConstraintType
@@ -152,7 +264,8 @@ class ConstraintSpec:
     strictness: ConstraintStrictness = ConstraintStrictness.HARD
     params: dict[str, Any] = field(default_factory=dict)
     positions: list[int] = field(default_factory=list)
-    priority: int = 5  # 1=critical, 10=easiest to relax
+    priority: ConstraintPriority = ConstraintPriority.MEDIUM
+    weight: float = 1.0
 
     def __hash__(self) -> int:
         # Intentional: only ctype + name used for hashing/equality.
@@ -165,6 +278,147 @@ class ConstraintSpec:
         if not isinstance(other, ConstraintSpec):
             return NotImplemented
         return self.ctype == other.ctype and self.name == other.name
+
+    def check(self, sequence: str) -> bool:
+        """Return True if the constraint is satisfied for *sequence*.
+
+        Dispatches to the appropriate checking logic based on ``self.ctype``,
+        using ``self.params`` for constraint-specific parameters (GC bounds,
+        thresholds, forbidden sites, etc.).  Returns True for unknown
+        constraint types (no violation).
+
+        This method enables :func:`validate_csp_solution` and other
+        post-solve verification code to check ``ConstraintSpec`` objects
+        directly, without requiring a full ``HardConstraint`` / ``SoftConstraint``
+        instance.
+
+        Parameters
+        ----------
+        sequence : str
+            Full DNA sequence to validate.
+
+        Returns
+        -------
+        bool
+            True if the constraint is satisfied, False if violated.
+        """
+        if not sequence:
+            return True
+
+        seq = sequence.upper()
+
+        # ── GC content ────────────────────────────────────────
+        if self.ctype == ConstraintType.GC_CONTENT:
+            gc_lo = self.params.get("gc_lo", 0.30)
+            gc_hi = self.params.get("gc_hi", 0.70)
+            gc_frac = sum(1 for b in seq if b in "GC") / len(seq)
+            return gc_lo <= gc_frac <= gc_hi
+
+        # ── CpG island avoidance ──────────────────────────────
+        if self.ctype == ConstraintType.NO_CPG:
+            window = self.params.get("window", 200)
+            threshold = self.params.get("threshold", 0.6)
+            if len(seq) < window:
+                return True
+            for start in range(len(seq) - window + 1):
+                w = seq[start : start + window]
+                c_count = w.count("C")
+                g_count = w.count("G")
+                cg_count = sum(
+                    1 for i in range(len(w) - 1) if w[i : i + 2] == "CG"
+                )
+                expected = (c_count * g_count) / window if window > 0 else 0
+                if expected > 0 and cg_count / expected > threshold:
+                    return False
+            return True
+
+        # ── Cryptic splice site avoidance ─────────────────────
+        if self.ctype in (
+            ConstraintType.NO_CRYPTIC_SPLICE,
+            ConstraintType.SPLICE_DONOR_AVOIDANCE,
+        ):
+            threshold = self.params.get("threshold", 3.0)
+            from ..maxentscan import score_donor, score_acceptor
+
+            for i in range(len(seq) - 1):
+                if seq[i : i + 2] == "GT":
+                    if score_donor(sequence, i) >= threshold:
+                        return False
+                if seq[i : i + 2] == "AG":
+                    if score_acceptor(sequence, i) >= threshold:
+                        return False
+            return True
+
+        # ── Restriction site avoidance ────────────────────────
+        if self.ctype == ConstraintType.RESTRICTION_SITE:
+            sites = self.params.get("sites", [])
+            from ..constants import reverse_complement
+
+            for site in sites:
+                site_upper = site.upper()
+                if site_upper in seq:
+                    return False
+                rc = reverse_complement(site).upper()
+                if rc != site_upper and rc in seq:
+                    return False
+            return True
+
+        # ── Instability motif avoidance (ATTTA) ───────────────
+        if self.ctype == ConstraintType.NO_INSTABILITY_MOTIF:
+            motif = self.params.get("motif", "ATTTA")
+            return motif.upper() not in seq
+
+        # ── mRNA stability / T-run constraint ─────────────────
+        if self.ctype == ConstraintType.MRNA_STABILITY:
+            max_run = self.params.get("max_run", 5)
+            run_length = 0
+            for base in seq:
+                if base == "T":
+                    run_length += 1
+                    if run_length > max_run:
+                        return False
+                else:
+                    run_length = 0
+            return True
+
+        # ── Amino acid identity (translation fidelity) ────────
+        if self.ctype == ConstraintType.AMINO_ACID_IDENTITY:
+            protein = self.params.get("protein", "")
+            if not protein:
+                return True
+            if len(sequence) != len(protein) * 3:
+                return False
+            from ..constants import CODON_TABLE
+
+            for i, expected_aa in enumerate(protein):
+                codon = sequence[i * 3 : i * 3 + 3]
+                if CODON_TABLE.get(codon) != expected_aa:
+                    return False
+            return True
+
+        # ── Codon usage (soft/optimization — always satisfied) ─
+        if self.ctype == ConstraintType.CODON_USAGE:
+            return True
+
+        # ── GT dinucleotide avoidance ─────────────────────────
+        if self.ctype == ConstraintType.NO_GT_DINUCLEOTIDE:
+            return "GT" not in seq
+
+        # ── Immunogenicity / MHC / T-cell (no sequence check) ─
+        if self.ctype in (
+            ConstraintType.MHC_BINDING,
+            ConstraintType.TCELL_EPITOPE,
+        ):
+            # These require specialized immunogenicity models; default
+            # to satisfied since we cannot check from sequence alone.
+            return True
+
+        # ── Protein stability (no sequence check) ─────────────
+        if self.ctype == ConstraintType.PROTEIN_STABILITY:
+            return True
+
+        # ── Custom / unknown — assume satisfied ───────────────
+        return True
 
 
 @dataclass
@@ -181,6 +435,11 @@ class ConstraintViolation:
         positions: Nucleotide positions involved in the violation.
         severity: How badly the constraint is violated, on a 0-1 scale.
             0.0 = marginally violated, 1.0 = severely violated.
+        priority: Enforcement priority of the violated constraint.
+            Used by :class:`ConstraintScorer` to rank violations by
+            severity.  Defaults to MEDIUM.
+        weight: Weight multiplier from the violated constraint's spec.
+            Defaults to 1.0.
     """
 
     constraint_name: str
@@ -188,6 +447,23 @@ class ConstraintViolation:
     description: str
     positions: list[int] = field(default_factory=list)
     severity: float = 0.0  # 0-1, how badly violated
+    priority: ConstraintPriority = ConstraintPriority.MEDIUM
+    weight: float = 1.0
+
+    def __hash__(self) -> int:
+        # Consistent with ConstraintSpec: identity is name + type.
+        # Two violations of the same constraint name and type are considered
+        # identical regardless of positions or severity — supports dedup in
+        # sets and dicts.
+        return hash((self.constraint_name, self.constraint_type))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ConstraintViolation):
+            return NotImplemented
+        return (
+            self.constraint_name == other.constraint_name
+            and self.constraint_type == other.constraint_type
+        )
 
 
 @dataclass
@@ -237,13 +513,21 @@ class SolverConfig:
     objective weights. All parameters have sensible defaults for mammalian
     gene optimization.
 
+    Abbreviation convention: short field names (gc_lo, gc_hi) are used for
+    frequently-referenced numeric bounds to keep call-sites concise, while
+    descriptive names (timeout_seconds, solve_time_seconds) are used for
+    one-off or less frequently used fields. Readable aliases (gc_low,
+    gc_high) are provided as @property accessors.
+
     Attributes:
         backend: Which solver backend to use.
         timeout_seconds: Maximum solve time before falling back.
         max_codons: Maximum sequence length the solver handles.
             Sequences longer than this are split or fall back to greedy.
         gc_lo: Minimum acceptable GC content fraction (hard constraint).
+            Alias: gc_low
         gc_hi: Maximum acceptable GC content fraction (hard constraint).
+            Alias: gc_high
         cryptic_splice_threshold: MaxEnt score threshold for cryptic splice
             site detection. Sites scoring above this are forbidden.
             Used as default for both donor and acceptor thresholds unless
@@ -268,8 +552,8 @@ class SolverConfig:
     backend: SolverBackend = SolverBackend.ORTOOLS
     timeout_seconds: float = 60.0
     max_codons: int = 5000  # Max sequence length the solver handles
-    gc_lo: float = 0.30  # gc_lo/gc_hi use abbreviated names for conciseness; keep in sync with SolverConfig
-    gc_hi: float = 0.70
+    gc_lo: float = 0.30  # Abbreviated; use gc_low property for readable access
+    gc_hi: float = 0.70  # Abbreviated; use gc_high property for readable access
     cryptic_splice_threshold: float = 3.0
     donor_threshold: Optional[float] = None  # Falls back to cryptic_splice_threshold
     acceptor_threshold: Optional[float] = None  # Falls back to cryptic_splice_threshold
@@ -282,6 +566,16 @@ class SolverConfig:
     cpg_weight: float = 0.5
     mrna_dg_weight: float = 0.3  # Weight for mRNA structure objective (ViennaRNA)
     verbose: bool = False
+
+    @property
+    def gc_low(self) -> float:
+        """Readable alias for gc_lo."""
+        return self.gc_lo
+
+    @property
+    def gc_high(self) -> float:
+        """Readable alias for gc_hi."""
+        return self.gc_hi
 
     @property
     def effective_donor_threshold(self) -> float:
@@ -434,6 +728,9 @@ class SolverBackendProtocol(Protocol):
 
     This allows the MUS module to call the solver without depending
     on a specific implementation (Z3, OR-Tools, etc.).
+
+    Note: Re-exported by solver/__init__.py as part of the solver package's
+    public API.
     """
     # Protocol for MUS dependency injection — used internally by solver/mus.py
 

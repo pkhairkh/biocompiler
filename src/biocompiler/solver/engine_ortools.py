@@ -33,7 +33,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from .types import (
     CodonVariable,
@@ -61,12 +61,40 @@ from ..organisms import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ORTOOLSEngine",
+    "CSPModel",
+    "greedy_fallback",
+]
+
 # CAI scaling factor: multiply float log-CAI by this to get integer objective
 _CAI_SCALE = 10000
 
 # Maximum number of transitions in a DFA before we refuse to add the automaton
 # constraint (CP-SAT has practical limits on automaton size)
 _MAX_AUTOMATON_TRANSITIONS = 100000
+
+# Default number of parallel search workers for CP-SAT solver
+_DEFAULT_NUM_WORKERS = 8
+
+# Threshold below which an objective bound is considered negative infinity
+_NEGATIVE_INFINITY_THRESHOLD = -1e18
+
+# Maximum protein length (in codons) for ATTTA automaton constraint
+_ATTTA_AUTOMATON_MAX_CODONS = 50
+
+# Maximum consecutive T bases allowed before T-run avoidance kicks in
+_MAX_T_RUN_LENGTH = 5
+
+# Minimum fraction of cross-codon pairs that must remain viable (1/N);
+# if fewer than total_pairs // N pairs survive, skip the constraint
+_MIN_VIABLE_PAIR_DENOMINATOR = 4
+
+# Nucleotide alphabet size (A, C, G, T)
+_NUCLEOTIDE_ALPHABET_SIZE = 4
+
+# Default CAI weight for codons missing from adaptiveness tables
+_DEFAULT_CAI_WEIGHT = 0.01
 
 
 class ORTOOLSEngine:
@@ -247,7 +275,7 @@ class ORTOOLSEngine:
         # ── 10. Solve ─────────────────────────────────────────────────
         solver = ortools_cp.CpSolver()
         solver.parameters.max_time_in_seconds = self.config.timeout_seconds
-        solver.parameters.num_workers = 8  # Use parallel search
+        solver.parameters.num_workers = _DEFAULT_NUM_WORKERS  # Use parallel search
 
         if self.config.verbose:
             solver.parameters.log_search_progress = True
@@ -323,7 +351,7 @@ class ORTOOLSEngine:
             # Try to get the best incumbent solution
             try:
                 bound = solver.BestObjectiveBound()
-                if bound > -1e18:
+                if bound > _NEGATIVE_INFINITY_THRESHOLD:
                     sequence = self._extract_solution(
                         solver, codon_vars, codon_domains, protein
                     )
@@ -345,8 +373,7 @@ class ORTOOLSEngine:
                         ],
                     )
             except Exception:
-                logger.debug("Solution hinting failed", exc_info=True)
-                pass
+                logger.warning("OR-Tools engine error", exc_info=True)
 
             return SolverResult(
                 sequence="",
@@ -365,11 +392,11 @@ class ORTOOLSEngine:
 
     def _build_nucleotide_variables(
         self,
-        cp_model,
-        codon_vars: list,
+        cp_model: Any,
+        codon_vars: list[Any],
         codon_domains: list[list[str]],
         protein: str,
-    ) -> list:
+    ) -> list[Any]:
         """Create nucleotide IntVars linked to codon variables via element constraints.
 
         For each codon position i and nucleotide offset j (0,1,2), we create
@@ -409,11 +436,11 @@ class ORTOOLSEngine:
 
     def _add_gc_constraint(
         self,
-        cp_model,
-        codon_vars: list,
+        cp_model: Any,
+        codon_vars: list[Any],
         codon_domains: list[list[str]],
         n_codons: int,
-    ) -> Optional:
+    ) -> Any | None:
         """Add GC content range constraint to the model.
 
         For each codon variable, compute the GC count (0-3 G/C bases) as
@@ -463,8 +490,8 @@ class ORTOOLSEngine:
 
     def _add_composite_automaton_constraint(
         self,
-        cp_model,
-        nucleotide_vars: list,
+        cp_model: Any,
+        nucleotide_vars: list[Any],
         n_codons: int,
     ) -> int:
         """Add a single composite automaton for all forbidden nucleotide patterns.
@@ -516,7 +543,7 @@ class ORTOOLSEngine:
         # handled as a post-processing step by the greedy optimizer, which
         # uses context-aware motif detection. Set avoid_attta=True to enable
         # the automaton approach (works well for short proteins < 50 AA).
-        if self.config.avoid_attta and n_codons <= 50:
+        if self.config.avoid_attta and n_codons <= _ATTTA_AUTOMATON_MAX_CODONS:
             all_patterns.append(INSTABILITY_MOTIF)
             rc_attta = reverse_complement(INSTABILITY_MOTIF)
             if rc_attta != INSTABILITY_MOTIF and all(ch in "ACGT" for ch in rc_attta):
@@ -527,7 +554,7 @@ class ORTOOLSEngine:
             dfa_tuple = build_composite_dfa(all_patterns)
             transition_table, accepting_states = dfa_tuple
 
-            if accepting_states and len(transition_table) * 4 <= _MAX_AUTOMATON_TRANSITIONS:
+            if accepting_states and len(transition_table) * _NUCLEOTIDE_ALPHABET_SIZE <= _MAX_AUTOMATON_TRANSITIONS:
                 init_state, trans_list, final_states = dfa_to_ortools_format(
                     transition_table, accepting_states
                 )
@@ -544,7 +571,7 @@ class ORTOOLSEngine:
         # T count, not substring matching. It doesn't conflict with the
         # substring DFA.)
         if self.config.avoid_t_runs:
-            trun_dfa = build_trun_dfa(max_t=5)
+            trun_dfa = build_trun_dfa(max_t=_MAX_T_RUN_LENGTH)
             trun_trans, trun_accepting = trun_dfa
 
             if trun_accepting:
@@ -567,8 +594,8 @@ class ORTOOLSEngine:
 
     def _add_splice_constraints(
         self,
-        cp_model,
-        codon_vars: list,
+        cp_model: Any,
+        codon_vars: list[Any],
         codon_domains: list[list[str]],
         protein: str,
     ) -> int:
@@ -667,7 +694,7 @@ class ORTOOLSEngine:
             n_allowed = len(allowed_pairs)
             if 0 < n_allowed < total_pairs:
                 # Only add if at least 25% of pairs remain viable
-                min_required = max(1, total_pairs // 4)
+                min_required = max(1, total_pairs // _MIN_VIABLE_PAIR_DENOMINATOR)
                 if n_allowed >= min_required:
                     cp_model.AddAllowedAssignments(
                         [codon_vars[i], codon_vars[i + 1]],
@@ -683,8 +710,8 @@ class ORTOOLSEngine:
 
     def _add_cpg_constraints(
         self,
-        cp_model,
-        codon_vars: list,
+        cp_model: Any,
+        codon_vars: list[Any],
         codon_domains: list[list[str]],
         protein: str,
     ) -> int:
@@ -741,7 +768,7 @@ class ORTOOLSEngine:
             n_allowed = len(allowed_pairs)
             if 0 < n_allowed < total_pairs:
                 # Only add if at least 25% of pairs remain viable
-                min_required = max(1, total_pairs // 4)
+                min_required = max(1, total_pairs // _MIN_VIABLE_PAIR_DENOMINATOR)
                 if n_allowed >= min_required:
                     cp_model.AddAllowedAssignments(
                         [codon_vars[i], codon_vars[i + 1]],
@@ -757,8 +784,8 @@ class ORTOOLSEngine:
 
     def _set_cai_objective(
         self,
-        cp_model,
-        codon_vars: list,
+        cp_model: Any,
+        codon_vars: list[Any],
         codon_domains: list[list[str]],
         organism: str,
     ) -> None:
@@ -787,9 +814,9 @@ class ORTOOLSEngine:
             # Compute scaled log-CAI for each codon in the domain
             cai_values = []
             for codon in domain:
-                w = adaptiveness.get(codon, 0.01)  # Small default for missing data
+                w = adaptiveness.get(codon, _DEFAULT_CAI_WEIGHT)  # Small default for missing data
                 if w <= 0:
-                    w = 0.01  # Avoid log(0)
+                    w = _DEFAULT_CAI_WEIGHT  # Avoid log(0)
                 scaled = int(round(math.log(w) * _CAI_SCALE))
                 cai_values.append(scaled)
 
@@ -816,8 +843,8 @@ class ORTOOLSEngine:
 
     def _extract_solution(
         self,
-        solver,
-        codon_vars: list,
+        solver: Any,
+        codon_vars: list[Any],
         codon_domains: list[list[str]],
         protein: str,
     ) -> str:
@@ -887,9 +914,9 @@ class ORTOOLSEngine:
         n = 0
         for i, aa in enumerate(protein):
             codon = sequence[i * 3 : i * 3 + 3]
-            w = adaptiveness.get(codon, 0.01)
+            w = adaptiveness.get(codon, _DEFAULT_CAI_WEIGHT)
             if w <= 0:
-                w = 0.01
+                w = _DEFAULT_CAI_WEIGHT
             log_sum += math.log(w)
             n += 1
 

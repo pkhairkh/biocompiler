@@ -28,6 +28,7 @@ Public API
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -40,6 +41,17 @@ from .types import (
     SolverBackendProtocol,
 )
 from ..constants import AA_TO_CODONS
+
+logger = logging.getLogger(__name__)
+
+
+__all__ = [
+    "FeasibilityReport",
+    "compute_mus",
+    "explain_conflict",
+    "suggest_relaxations",
+    "quick_feasibility_check",
+]
 
 # ---- Named constants (replace magic numbers) ----
 BASES_PER_CODON: int = 3
@@ -106,6 +118,10 @@ def quick_feasibility_check(model: CSPModel) -> FeasibilityReport:
     FeasibilityReport
         A report with feasibility status, warnings, and suggestions.
     """
+    # Validate model structure before inspection
+    if not model.protein_sequence:
+        logger.warning("quick_feasibility_check called with empty protein sequence")
+        return FeasibilityReport(feasible=True)
     warnings: list[str] = []
     impossible: list[str] = []
     suggestions: list[str] = []
@@ -281,11 +297,30 @@ def compute_mus(model: CSPModel, backend: SolverBackendProtocol) -> MUSReport:
     MUSReport
         The minimal unsatisfiable subset with metadata.
     """
-    start_time = time.monotonic()
-    all_constraints = list(model.constraints)
+    # Validate backend conforms to SolverBackendProtocol at runtime
+    if not hasattr(backend, "solve"):
+        logger.error(
+            "Backend %r does not implement SolverBackendProtocol "
+            "(missing 'solve' method)", type(backend).__name__,
+        )
+        raise TypeError(
+            f"Backend {type(backend).__name__!r} does not implement "
+            f"SolverBackendProtocol (missing 'solve' method)"
+        )
+
+    start_time: float = time.monotonic()
+    all_constraints: list[ConstraintSpec] = list(model.constraints)
 
     # First verify the full model is indeed infeasible
-    full_result = backend.solve(model)
+    try:
+        full_result = backend.solve(model)
+    except Exception:
+        logger.exception(
+            "Solver backend %r raised an exception during "
+            "initial full-model solve in MUS extraction",
+            type(backend).__name__,
+        )
+        raise
     if full_result.solved:
         # Not infeasible — MUS is undefined
         return MUSReport(
@@ -297,13 +332,13 @@ def compute_mus(model: CSPModel, backend: SolverBackendProtocol) -> MUSReport:
         )
 
     # Deletion-based MUS extraction
-    remaining = list(all_constraints)
+    remaining: list[ConstraintSpec] = list(all_constraints)
     mus: list[ConstraintSpec] = []
-    iterations = 1  # already counted the full solve
+    iterations: int = 1  # already counted the full solve
 
     for constraint in list(remaining):
         # Build a reduced model without this constraint
-        test_constraints = [c for c in remaining if c != constraint]
+        test_constraints: list[ConstraintSpec] = [c for c in remaining if c != constraint]
         test_model = CSPModel(
             protein_sequence=model.protein_sequence,
             codon_domains=model.codon_domains,
@@ -311,7 +346,15 @@ def compute_mus(model: CSPModel, backend: SolverBackendProtocol) -> MUSReport:
             config=model.config,
         )
 
-        result = backend.solve(test_model)
+        try:
+            result = backend.solve(test_model)
+        except Exception:
+            logger.exception(
+                "Solver backend %r raised an exception during "
+                "MUS iteration %d (testing constraint %r)",
+                type(backend).__name__, iterations, constraint.name,
+            )
+            raise
         iterations += 1
 
         if result.solved:
@@ -326,7 +369,12 @@ def compute_mus(model: CSPModel, backend: SolverBackendProtocol) -> MUSReport:
     # Find conflict positions from MUS constraints
     conflict_positions = _extract_conflict_positions(mus)
 
-    elapsed = time.monotonic() - start_time
+    elapsed: float = time.monotonic() - start_time
+    logger.info(
+        "MUS extraction completed: %d constraints in MUS out of %d total, "
+        "%d solver iterations, %.2fs",
+        len(mus), len(all_constraints), iterations, elapsed,
+    )
 
     return MUSReport(
         mus_constraints=mus,
@@ -539,7 +587,8 @@ def suggest_relaxations(mus_report: MUSReport, model: CSPModel) -> list[str]:
 # =====================================================================
 
 def _codons_avoiding_site(
-    codons: Sequence[str], site: str
+    codons: Sequence[str],
+    site: str,
 ) -> list[str]:
     """Return the subset of *codons* that do NOT contain *site*.
 

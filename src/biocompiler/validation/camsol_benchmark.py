@@ -49,6 +49,17 @@ from ..camsol import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "BENCHMARK_DATASET",
+    "BenchmarkEntry",
+    "BenchmarkReport",
+    "compute_enhanced_benchmark_score",
+    "run_benchmark",
+    "format_report",
+    "report_to_dict",
+    "main",
+]
+
 
 # ────────────────────────────────────────────────────────────
 # Curated benchmark dataset
@@ -290,6 +301,18 @@ BENCHMARK_DATASET: list[tuple[str, str, str, str, str]] = [
 _PATCH_PENALTY_K: float = 8.0
 _PATCH_THRESHOLD: float = 0.0
 
+# CamSol scoring range bounds
+_SCORE_MIN: float = -3.0
+_SCORE_MAX: float = 3.0
+
+# Ordinal encoding for Pearson correlation with known solubility
+_ORDINAL_HIGH: int = 2
+_ORDINAL_MEDIUM: int = 1
+_ORDINAL_LOW: int = 0
+
+# Enhanced score threshold for classification
+_SOLUBILITY_SCORE_THRESHOLD: float = 0.0
+
 
 def compute_enhanced_benchmark_score(
     result: CamSolResult,
@@ -320,7 +343,7 @@ def compute_enhanced_benchmark_score(
     penalty = sum(max(0.0, threshold - s) for s in prs) / n * penalty_k
 
     enhanced = mean - penalty
-    return max(-3.0, min(3.0, enhanced))
+    return max(_SCORE_MIN, min(_SCORE_MAX, enhanced))
 
 
 # ────────────────────────────────────────────────────────────
@@ -385,9 +408,9 @@ def _classify_prediction(
         return True, "Medium solubility: accepted by default (borderline)"
 
     # Score-based check using enhanced score
-    if known_solubility == "high" and enhanced_score > 0:
+    if known_solubility == "high" and enhanced_score > _SOLUBILITY_SCORE_THRESHOLD:
         return True, f"Enhanced score {enhanced_score:+.4f} > 0 for soluble protein"
-    elif known_solubility == "low" and enhanced_score < 0:
+    elif known_solubility == "low" and enhanced_score < _SOLUBILITY_SCORE_THRESHOLD:
         return True, f"Enhanced score {enhanced_score:+.4f} < 0 for aggregation-prone protein"
 
     # Fallback: class-based check for high solubility
@@ -446,6 +469,10 @@ def run_benchmark(
                 result, penalty_k=penalty_k, threshold=threshold
             )
         except Exception as exc:
+            logger.error(
+                "CamSol computation failed for %s (%s): %s",
+                name, uniprot_id, exc, exc_info=True,
+            )
             entries.append(BenchmarkEntry(
                 name=name,
                 uniprot_id=uniprot_id,
@@ -484,23 +511,23 @@ def run_benchmark(
 
     # Sensitivity: fraction of truly aggregation-prone correctly identified (enhanced < 0)
     low_entries = [e for e in entries if e.known_solubility == "low"]
-    true_positives = sum(1 for e in low_entries if e.enhanced_score < 0)
+    true_positives = sum(1 for e in low_entries if e.enhanced_score < _SOLUBILITY_SCORE_THRESHOLD)
     sensitivity = true_positives / len(low_entries) if low_entries else 0.0
 
     # Specificity: fraction of truly soluble correctly identified (enhanced > 0)
     high_entries = [e for e in entries if e.known_solubility == "high"]
-    true_negatives = sum(1 for e in high_entries if e.enhanced_score > 0)
+    true_negatives = sum(1 for e in high_entries if e.enhanced_score > _SOLUBILITY_SCORE_THRESHOLD)
     specificity = true_negatives / len(high_entries) if high_entries else 0.0
 
     # Precision: of those predicted aggregation-prone (enhanced<0), how many truly are
-    predicted_low = [e for e in entries if e.enhanced_score < 0]
+    predicted_low = [e for e in entries if e.enhanced_score < _SOLUBILITY_SCORE_THRESHOLD]
     if predicted_low:
         precision = sum(1 for e in predicted_low if e.known_solubility == "low") / len(predicted_low)
     else:
         precision = 0.0
 
     # Mean enhanced scores by known solubility
-    def _mean_score(group: list[BenchmarkEntry], field: str = "enhanced_score") -> float:
+    def _mean_score(group: list[BenchmarkEntry], field: str = "enhanced_score") -> float:  # noqa: ARG001
         if not group:
             return 0.0
         return sum(getattr(e, field) for e in group) / len(group)
@@ -510,8 +537,7 @@ def run_benchmark(
     mean_score_low = _mean_score([e for e in entries if e.known_solubility == "low"])
 
     # Pearson correlation: use ordinal encoding for known solubility
-    # high=2, medium=1, low=0
-    ordinal_map = {"high": 2, "medium": 1, "low": 0}
+    ordinal_map: dict[str, int] = {"high": _ORDINAL_HIGH, "medium": _ORDINAL_MEDIUM, "low": _ORDINAL_LOW}
     ordinal_known = [ordinal_map[e.known_solubility] for e in entries]
     enhanced_scores = [e.enhanced_score for e in entries]
 
@@ -523,7 +549,7 @@ def run_benchmark(
         confusion[actual] = {"positive_score": 0, "negative_score": 0}
         for e in entries:
             if e.known_solubility == actual:
-                if e.enhanced_score >= 0:
+                if e.enhanced_score >= _SOLUBILITY_SCORE_THRESHOLD:
                     confusion[actual]["positive_score"] += 1
                 else:
                     confusion[actual]["negative_score"] += 1
@@ -665,7 +691,7 @@ def format_report(report: BenchmarkReport) -> str:
     return "\n".join(lines)
 
 
-def report_to_dict(report: BenchmarkReport) -> dict:
+def report_to_dict(report: BenchmarkReport) -> dict[str, object]:
     """Convert a benchmark report to a JSON-serializable dictionary.
 
     Args:

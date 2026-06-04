@@ -98,6 +98,22 @@ def combined_verdict(verdicts: list[Verdict]) -> Verdict:
     return result
 
 
+__all__ = [
+    "SLOTMode",
+    "Verdict",
+    "five_valued_and",
+    "five_valued_or",
+    "three_valued_and",
+    "three_valued_or",
+    "combined_verdict",
+    "PositionRange",
+    "Token",
+    "SpliceIsoform",
+    "TypeCheckResult",
+    "Certificate",
+]
+
+
 @dataclass(frozen=True)
 class PositionRange:
     """Half-open interval [start, end) on a sequence."""

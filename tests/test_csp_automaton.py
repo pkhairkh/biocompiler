@@ -10,6 +10,8 @@ Test categories:
   4. DFA acceptance testing — dfa_accepts function
   5. Edge cases — short/empty sequences, overlapping patterns, single-char
   6. Alphabet encoding — BASE_MAP correctness
+  7. DFA structural properties
+  8. Integration / real-world scenarios
 """
 
 from __future__ import annotations
@@ -20,12 +22,13 @@ from biocompiler.solver.automaton import (
     BASE_MAP,
     build_composite_dfa,
     build_forbidden_pattern_dfa,
-    build_pattern_dfa,
     build_reverse_complement_dfa,
     build_trun_dfa,
     dfa_accepts,
-    reverse_complement,
+    negate_dfa,
 )
+
+from biocompiler.constants import BASE_REV, reverse_complement
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -46,20 +49,16 @@ def bamhi_dfa():
 
 @pytest.fixture
 def composite_dfa():
-    """Composite DFA forbidding GAATTC, GGATCC, and CTCGAG (no RCs)."""
-    return build_composite_dfa(
-        ["GAATTC", "GGATCC", "CTCGAG"],
-        include_reverse_complements=False,
-    )
+    """Composite DFA forbidding GAATTC, GGATCC, and CTCGAG."""
+    return build_composite_dfa(["GAATTC", "GGATCC", "CTCGAG"])
 
 
 @pytest.fixture
 def composite_dfa_with_rc():
     """Composite DFA forbidding GAATTC, GGATCC, CTCGAG and their RCs."""
-    return build_composite_dfa(
-        ["GAATTC", "GGATCC", "CTCGAG"],
-        include_reverse_complements=True,
-    )
+    patterns = ["GAATTC", "GGATCC", "CTCGAG"]
+    all_patterns = list(set(patterns + [reverse_complement(p) for p in patterns]))
+    return build_composite_dfa(all_patterns)
 
 
 @pytest.fixture
@@ -151,29 +150,34 @@ class TestSinglePatternDFA:
     # --- General single-pattern properties --------------------------------
 
     def test_dfa_has_correct_initial_state(self, ecori_dfa):
-        """The initial state should be 0."""
-        initial, _, _ = ecori_dfa
-        assert initial == 0
+        """The initial state is always 0 by convention."""
+        transitions, accepting = ecori_dfa
+        # Initial state is 0 — it must be an accepting state
+        # (no pattern matched yet)
+        assert len(transitions) > 0  # state 0 exists
+        assert 0 in accepting
 
     def test_dfa_has_transitions(self, ecori_dfa):
-        """The DFA should have at least one transition."""
-        _, transitions, _ = ecori_dfa
+        """The DFA should have at least one transition row."""
+        transitions, _ = ecori_dfa
         assert len(transitions) > 0
 
     def test_dfa_has_forbidden_states(self, ecori_dfa):
-        """The DFA should have at least one forbidden (accepting) state."""
-        _, _, forbidden = ecori_dfa
+        """The DFA should have at least one forbidden (non-accepting/trap) state."""
+        transitions, accepting = ecori_dfa
+        all_states = set(range(len(transitions)))
+        forbidden = all_states - set(accepting)
         assert len(forbidden) > 0
 
     def test_pattern_length_equals_forbidden_state(self, ecori_dfa):
-        """For a single pattern of length n, the forbidden state is n."""
-        _, _, forbidden = ecori_dfa
-        assert 6 in forbidden  # GAATTC has length 6
+        """For a single pattern of length n, state n is the forbidden (trap) state."""
+        transitions, accepting = ecori_dfa
+        assert 6 not in accepting  # GAATTC has length 6; state 6 is the trap
 
-    def test_build_pattern_dfa_raises_on_invalid_base(self):
-        """build_pattern_dfa should raise ValueError for invalid bases."""
+    def test_build_forbidden_pattern_dfa_raises_on_invalid_base(self):
+        """build_forbidden_pattern_dfa should raise ValueError for invalid bases."""
         with pytest.raises(ValueError, match="Invalid base"):
-            build_pattern_dfa("GAXTC")
+            build_forbidden_pattern_dfa("GAXTC")
 
     def test_build_forbidden_pattern_dfa_accepts_lowercase(self):
         """The DFA builder should accept lowercase input (uppercased internally)."""
@@ -240,44 +244,35 @@ class TestCompositeDFA:
         assert dfa_accepts(composite_dfa, "CTCGA")
 
     def test_composite_without_rc_excludes_rc(self):
-        """When include_reverse_complements=False, RC patterns are not forbidden."""
+        """When only the forward pattern is given, RC patterns are not forbidden."""
         # 'AACG' → RC = 'CGTT'
-        dfa = build_composite_dfa(["AACG"], include_reverse_complements=False)
+        dfa = build_composite_dfa(["AACG"])
         assert not dfa_accepts(dfa, "AACG")  # original is rejected
         assert dfa_accepts(dfa, "CGTT")       # RC is accepted (not forbidden)
 
     def test_composite_with_rc_includes_rc(self):
-        """When include_reverse_complements=True, both pattern and RC are forbidden."""
+        """When both pattern and RC are included, both are forbidden."""
         # 'AACG' → RC = 'CGTT'
-        dfa = build_composite_dfa(["AACG"], include_reverse_complements=True)
+        dfa = build_reverse_complement_dfa("AACG")
         assert not dfa_accepts(dfa, "AACG")   # original is rejected
         assert not dfa_accepts(dfa, "CGTT")    # RC is also rejected
 
     def test_composite_palindrome_rc_not_duplicated(self):
         """For palindromic patterns, RC = pattern, so no duplication effect."""
         # GAATTC RC = GAATTC (palindrome)
-        dfa = build_composite_dfa(
-            ["GAATTC"], include_reverse_complements=True,
-        )
+        dfa = build_reverse_complement_dfa("GAATTC")
         assert not dfa_accepts(dfa, "GAATTC")
 
     def test_empty_patterns_gives_trivial_dfa(self):
         """An empty pattern list should produce a DFA that accepts everything."""
-        dfa = build_composite_dfa([], include_reverse_complements=False)
+        dfa = build_composite_dfa([])
         assert dfa_accepts(dfa, "GAATTC")
         assert dfa_accepts(dfa, "GGATCC")
 
-    def test_iupac_patterns_are_skipped(self):
-        """Patterns with IUPAC ambiguity codes (e.g. 'N') are silently skipped."""
-        dfa = build_composite_dfa(
-            ["GAATTC", "GATNNN"], include_reverse_complements=False,
-        )
-        # Only GAATTC is valid; GATNNN is skipped
-        assert not dfa_accepts(dfa, "GAATTC")
-        # GATNNN is not a valid DFA pattern, so 'GATNNN' won't be checked
-        # by dfa_accepts (which skips non-ACGT chars). A sequence like
-        # 'GATCAA' won't be rejected by the skipped pattern.
-        assert dfa_accepts(dfa, "GATCAA")
+    def test_iupac_patterns_raise_error(self):
+        """Patterns with IUPAC ambiguity codes (e.g. 'N') should raise ValueError."""
+        with pytest.raises(ValueError, match="Invalid base"):
+            build_composite_dfa(["GAATTC", "GATNNN"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -331,24 +326,24 @@ class TestReverseComplementDFA:
         rc_dfa = build_reverse_complement_dfa("AACG")
         assert not dfa_accepts(rc_dfa, "CGTT")
 
-    def test_rc_dfa_for_non_palindrome_accepts_original(self):
-        """RC DFA for a non-palindromic pattern does NOT reject the original.
+    def test_rc_dfa_rejects_original_for_non_palindrome(self):
+        """RC DFA for a non-palindromic pattern also rejects the original.
 
-        build_reverse_complement_dfa only builds a DFA for the RC.
-        To reject both, use build_composite_dfa with include_reverse_complements=True.
+        build_reverse_complement_dfa builds a composite DFA that rejects
+        BOTH the pattern and its reverse complement.
         """
         rc_dfa = build_reverse_complement_dfa("AACG")
-        assert dfa_accepts(rc_dfa, "AACG")
+        assert not dfa_accepts(rc_dfa, "AACG")
 
     def test_composite_rejects_both_original_and_rc(self):
-        """Composite DFA with RC should reject both the pattern and its RC."""
-        dfa = build_composite_dfa(["AACG"], include_reverse_complements=True)
+        """RC DFA should reject both the pattern and its RC."""
+        dfa = build_reverse_complement_dfa("AACG")
         assert not dfa_accepts(dfa, "AACG")
         assert not dfa_accepts(dfa, "CGTT")
 
     def test_composite_accepts_neither_original_nor_rc(self):
-        """Composite DFA with RC accepts sequences with neither pattern nor RC."""
-        dfa = build_composite_dfa(["AACG"], include_reverse_complements=True)
+        """RC DFA accepts sequences with neither pattern nor RC."""
+        dfa = build_reverse_complement_dfa("AACG")
         assert dfa_accepts(dfa, "TTTTTTTT")
 
     # --- Other restriction enzyme RCs -------------------------------------
@@ -364,7 +359,9 @@ class TestReverseComplementDFA:
     def test_multiple_restriction_sites_with_rc(self):
         """Composite DFA for multiple enzymes with RC rejects all variants."""
         patterns = ["GAATTC", "AACG"]
-        dfa = build_composite_dfa(patterns, include_reverse_complements=True)
+        # Include reverse complements explicitly
+        all_patterns = list(set(patterns + [reverse_complement(p) for p in patterns]))
+        dfa = build_composite_dfa(all_patterns)
         # Palindrome
         assert not dfa_accepts(dfa, "GAATTC")
         # Non-palindrome + RC
@@ -560,66 +557,82 @@ class TestEdgeCases:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestAlphabetEncoding:
-    """Tests for BASE_MAP encoding consistency."""
+    """Tests for BASE_MAP and BASE_REV encoding consistency."""
 
-    def test_base_map_a_is_0(self):
-        """A should be encoded as 0."""
-        assert BASE_MAP["A"] == 0
+    def test_base_map_0_is_a(self):
+        """0 should map to 'A'."""
+        assert BASE_MAP[0] == "A"
 
-    def test_base_map_c_is_1(self):
-        """C should be encoded as 1."""
-        assert BASE_MAP["C"] == 1
+    def test_base_map_1_is_c(self):
+        """1 should map to 'C'."""
+        assert BASE_MAP[1] == "C"
 
-    def test_base_map_g_is_2(self):
-        """G should be encoded as 2."""
-        assert BASE_MAP["G"] == 2
+    def test_base_map_2_is_g(self):
+        """2 should map to 'G'."""
+        assert BASE_MAP[2] == "G"
 
-    def test_base_map_t_is_3(self):
-        """T should be encoded as 3."""
-        assert BASE_MAP["T"] == 3
+    def test_base_map_3_is_t(self):
+        """3 should map to 'T'."""
+        assert BASE_MAP[3] == "T"
 
     def test_base_map_has_four_entries(self):
-        """BASE_MAP should have exactly 4 entries (A, C, G, T)."""
+        """BASE_MAP should have exactly 4 entries."""
         assert len(BASE_MAP) == 4
 
-    def test_base_map_values_are_zero_to_three(self):
-        """BASE_MAP values should be exactly {0, 1, 2, 3}."""
-        assert set(BASE_MAP.values()) == {0, 1, 2, 3}
+    def test_base_map_keys_are_zero_to_three(self):
+        """BASE_MAP keys should be exactly {0, 1, 2, 3}."""
+        assert set(BASE_MAP.keys()) == {0, 1, 2, 3}
 
-    def test_base_map_keys_are_acgt(self):
-        """BASE_MAP keys should be exactly {A, C, G, T}."""
-        assert set(BASE_MAP.keys()) == {"A", "C", "G", "T"}
+    def test_base_map_values_are_acgt(self):
+        """BASE_MAP values should be exactly {'A', 'C', 'G', 'T'}."""
+        assert set(BASE_MAP.values()) == {"A", "C", "G", "T"}
+
+    def test_base_rev_a_is_0(self):
+        """'A' should encode as 0."""
+        assert BASE_REV["A"] == 0
+
+    def test_base_rev_c_is_1(self):
+        """'C' should encode as 1."""
+        assert BASE_REV["C"] == 1
+
+    def test_base_rev_g_is_2(self):
+        """'G' should encode as 2."""
+        assert BASE_REV["G"] == 2
+
+    def test_base_rev_t_is_3(self):
+        """'T' should encode as 3."""
+        assert BASE_REV["T"] == 3
 
     def test_automaton_uses_correct_encoding(self):
-        """The DFA transitions should use the BASE_MAP encoding.
+        """The DFA transitions should use the BASE_REV encoding.
 
         Verifying that the DFA correctly encodes 'G' → 2 and 'A' → 0
         by checking a specific transition for the EcoRI pattern GAATTC.
         """
         dfa = build_forbidden_pattern_dfa("GAATTC")
-        initial, transitions, forbidden = dfa
+        transitions, accepting = dfa
 
         # From state 0, reading 'G' (index 2) should advance to state 1
         # because GAATTC starts with 'G'
-        assert transitions[(0, BASE_MAP["G"])] == 1
+        assert transitions[0][BASE_REV["G"]] == 1
 
         # From state 0, reading 'A' (index 0) should stay at state 0
         # because GAATTC doesn't start with 'A'
-        assert transitions[(0, BASE_MAP["A"])] == 0
+        assert transitions[0][BASE_REV["A"]] == 0
 
     def test_transition_from_state_1_reads_a(self):
         """From state 1 (matched 'G'), reading 'A' should advance to state 2."""
         dfa = build_forbidden_pattern_dfa("GAATTC")
-        _, transitions, _ = dfa
+        transitions, _ = dfa
         # State 1 means we've matched 'G'; next char is 'A' (index 0)
-        assert transitions[(1, BASE_MAP["A"])] == 2
+        assert transitions[1][BASE_REV["A"]] == 2
 
     def test_transition_from_state_1_reads_wrong_char(self):
         """From state 1 (matched 'G'), reading 'C' should fall back."""
         dfa = build_forbidden_pattern_dfa("GAATTC")
-        _, transitions, _ = dfa
+        transitions, _ = dfa
         # State 1 means we've matched 'G'; reading 'C' doesn't match 'A'
-        next_state = transitions[(1, BASE_MAP["C"])]
+        next_state = transitions[1][BASE_REV["C"]]
         # Should NOT advance to state 2
         assert next_state != 2
 
@@ -651,73 +664,62 @@ class TestDFAStructure:
     def test_single_pattern_num_states(self):
         """A single-pattern DFA should have len(pattern)+1 states."""
         dfa = build_forbidden_pattern_dfa("GAATTC")
-        initial, transitions, _ = dfa
+        transitions, accepting = dfa
         # States: 0, 1, 2, 3, 4, 5, 6 (7 states for a 6-char pattern)
-        all_states = set()
-        for (s, _), ns in transitions.items():
-            all_states.add(s)
-            all_states.add(ns)
-        all_states.add(initial)
-        assert len(all_states) == 7
+        # Number of states = number of rows in transition table
+        assert len(transitions) == 7
 
     def test_every_state_has_four_transitions(self):
         """Every state in the DFA should have transitions for all 4 bases."""
         dfa = build_forbidden_pattern_dfa("GAATTC")
-        _, transitions, _ = dfa
-        all_states = set()
-        for (s, _), ns in transitions.items():
-            all_states.add(s)
-            all_states.add(ns)
-        for state in all_states:
-            for base in range(4):
-                assert (state, base) in transitions, (
-                    f"Missing transition for state {state}, base {base}"
-                )
+        transitions, _ = dfa
+        for state in range(len(transitions)):
+            assert len(transitions[state]) == 4
 
-    def test_forbidden_state_allows_overlapping_detection(self):
-        """The pattern-matching DFA continues from the accepting state.
+    def test_forbidden_state_is_trap(self):
+        """The pattern-matching DFA's forbidden state is a trap.
 
-        Unlike a simple sink, the Aho-Corasick DFA can transition out of
-        the accepting state to support overlapping pattern detection.
-        This is correct — dfa_accepts() returns False as soon as the
-        accepting/forbidden state is entered (early exit).
+        Once the forbidden state is entered, the DFA never leaves.
+        dfa_accepts() returns False because the final state is not accepting.
         """
         dfa = build_forbidden_pattern_dfa("GAATTC")
-        initial, transitions, forbidden = dfa
-        # The accepting state (6) exists but is NOT a sink — it transitions
-        # to a fallback state for overlap detection
-        f_state = 6
-        assert f_state in forbidden
-        # At least one transition should lead away from the forbidden state
-        # (e.g. for overlapping pattern detection)
-        # The dfa_accepts function catches the pattern before it can escape
+        transitions, accepting = dfa
+        # State 6 is the trap (forbidden) state
+        assert 6 not in accepting
+        # All transitions from state 6 loop back to itself
+        for c in range(4):
+            assert transitions[6][c] == 6
         assert not dfa_accepts(dfa, "GAATTC")
 
     def test_composite_dfa_has_transitions(self, composite_dfa):
         """Composite DFA should have a non-empty transition table."""
-        _, transitions, _ = composite_dfa
+        transitions, _ = composite_dfa
         assert len(transitions) > 0
 
     def test_composite_dfa_has_forbidden_states(self, composite_dfa):
-        """Composite DFA should have at least one forbidden state."""
-        _, _, forbidden = composite_dfa
+        """Composite DFA should have at least one non-accepting (trap) state."""
+        transitions, accepting = composite_dfa
+        all_states = set(range(len(transitions)))
+        forbidden = all_states - set(accepting)
         assert len(forbidden) > 0
 
     def test_dfa_is_deterministic(self, ecori_dfa):
-        """Each (state, symbol) pair should have exactly one transition."""
-        _, transitions, _ = ecori_dfa
-        # The dict representation guarantees this, but let's verify
-        for (state, base), next_state in transitions.items():
-            # Each key appears only once in a dict
-            pass  # dict keys are unique by construction
-        # Also check that there are no missing transitions for defined states
-        all_states = set()
-        for (s, _), ns in transitions.items():
-            all_states.add(s)
-            all_states.add(ns)
-        for state in all_states:
+        """Each state should have exactly one transition per symbol."""
+        transitions, _ = ecori_dfa
+        for state in range(len(transitions)):
+            assert len(transitions[state]) == 4
             for base in range(4):
-                assert (state, base) in transitions
+                assert isinstance(transitions[state][base], int)
+
+    def test_negate_dfa_swaps_acceptance(self):
+        """negate_dfa should swap accepting and non-accepting states."""
+        transitions, accepting = build_forbidden_pattern_dfa("AA")
+        # Original: accepts strings WITHOUT "AA"
+        assert dfa_accepts((transitions, accepting), "AC")
+        assert not dfa_accepts((transitions, accepting), "AAC")
+        # Negated: accepts strings WITH "AA"
+        n_trans, n_acc = negate_dfa(transitions, accepting)
+        assert dfa_accepts((n_trans, n_acc), "AAC")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -742,7 +744,9 @@ class TestRealWorldScenarios:
     def test_multiple_enzymes_simultaneously(self):
         """DFA for many restriction enzymes should reject all their sites."""
         sites = ["GAATTC", "GGATCC", "CTCGAG", "AAGCTT", "GTCGAC"]
-        dfa = build_composite_dfa(sites, include_reverse_complements=True)
+        # Include reverse complements explicitly
+        all_sites = list(set(sites + [reverse_complement(s) for s in sites]))
+        dfa = build_composite_dfa(all_sites)
         for site in sites:
             assert not dfa_accepts(dfa, site), f"Should reject {site}"
         # Clean sequence
@@ -764,8 +768,8 @@ class TestRealWorldScenarios:
         from biocompiler.solver.automaton import dfa_to_ortools_format
 
         dfa = build_forbidden_pattern_dfa("GAATTC")
-        initial, transitions, forbidden = dfa
-        init, trans_list, final = dfa_to_ortools_format(initial, transitions, forbidden)
+        transitions, accepting = dfa
+        init, trans_list, final = dfa_to_ortools_format(transitions, accepting)
 
         assert init == 0
         assert len(trans_list) > 0

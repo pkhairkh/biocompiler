@@ -45,15 +45,33 @@ negate_dfa                    — swap accepting / non-accepting states
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict, deque
 
 from ..constants import BASE_MAP, BASE_REV, reverse_complement
+
+__all__ = [
+    "build_forbidden_pattern_dfa",
+    "build_composite_dfa",
+    "build_reverse_complement_dfa",
+    "build_trun_dfa",
+    "dfa_accepts",
+    "dfa_to_dot",
+    "dfa_to_ortools_format",
+    "negate_dfa",
+]
+
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Internal constants
 # ---------------------------------------------------------------------------
 
 _ALPHABET_SIZE = 4  # A=0, C=1, G=2, T=3
+_INITIAL_STATE = 0  # Start state for all DFAs in this module
+_UNDEFINED_GOTO = -1  # Placeholder for undefined trie edges in Aho-Corasick
+_DEFAULT_MAX_T_RUN = 5  # Default maximum allowed consecutive T bases
+_T_BASE_IDX: int = BASE_REV["T"]  # Numeric index of T in the alphabet
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +99,7 @@ def _encode_pattern(pattern: str) -> list[int]:
     try:
         return [BASE_REV[c] for c in pattern.upper()]
     except KeyError as exc:
+        _logger.debug("Invalid base in pattern '%s': %s", pattern, exc)
         raise ValueError(
             f"Invalid base '{exc.args[0]}' in pattern '{pattern}'. "
             f"Allowed: A, C, G, T."
@@ -95,8 +114,8 @@ def _compute_kmp_failure(encoded: list[int]) -> list[int]:
 
     Returns a list of length ``len(encoded) + 1`` with ``fail[0] = 0``.
     """
-    m = len(encoded)
-    fail = [0] * (m + 1)
+    m: int = len(encoded)
+    fail: list[int] = [0] * (m + 1)
     for i in range(2, m + 1):
         k = fail[i - 1]
         while k > 0 and encoded[k] != encoded[i - 1]:
@@ -149,14 +168,14 @@ def build_forbidden_pattern_dfa(
 
     if m == 0:
         # Nothing is forbidden — accept everything with a single state.
-        return [[0] * _ALPHABET_SIZE], [0]
+        return [[_INITIAL_STATE] * _ALPHABET_SIZE], [_INITIAL_STATE]
 
     # KMP failure function
     fail = _compute_kmp_failure(encoded)
 
     # Build transition table for states 0 .. m
-    num_states = m + 1
-    delta: list[list[int]] = [[0] * _ALPHABET_SIZE for _ in range(num_states)]
+    num_states: int = m + 1
+    delta: list[list[int]] = [[_INITIAL_STATE] * _ALPHABET_SIZE for _ in range(num_states)]
 
     for state in range(m):
         for c in range(_ALPHABET_SIZE):
@@ -167,20 +186,20 @@ def build_forbidden_pattern_dfa(
                 # Follow failure links to find the longest prefix of
                 # the pattern that could serve as the current match
                 # after seeing character c.
-                k = state
+                k: int = state
                 while k > 0 and c != encoded[k]:
                     k = fail[k]
                 if c == encoded[k]:
                     delta[state][c] = k + 1
                 else:
-                    delta[state][c] = 0
+                    delta[state][c] = _INITIAL_STATE
 
     # Trap state: once the full pattern is matched, stay trapped.
     for c in range(_ALPHABET_SIZE):
         delta[m][c] = m
 
     # Accepting states: everything except the trap.
-    accepting = list(range(m))
+    accepting: list[int] = list(range(m))
     return delta, accepting
 
 
@@ -236,52 +255,52 @@ def build_composite_dfa(
     """
     if not patterns:
         # No patterns to forbid — accept everything.
-        return [[0] * _ALPHABET_SIZE], [0]
+        return [[_INITIAL_STATE] * _ALPHABET_SIZE], [_INITIAL_STATE]
 
     # Remove empty patterns (they trivially match everything if kept).
     patterns = [p for p in patterns if p]
     if not patterns:
-        return [[0] * _ALPHABET_SIZE], [0]
+        return [[_INITIAL_STATE] * _ALPHABET_SIZE], [_INITIAL_STATE]
 
     # Encode all patterns.
     encoded_patterns = [_encode_pattern(p) for p in patterns]
 
     # ---- Phase 1: Build trie -------------------------------------------
-    # goto[s][c] = next state, or -1 if undefined.
-    goto: list[list[int]] = [[-1] * _ALPHABET_SIZE]
+    # goto[s][c] = next state, or _UNDEFINED_GOTO if undefined.
+    goto: list[list[int]] = [[_UNDEFINED_GOTO] * _ALPHABET_SIZE]
     direct_output: set[int] = set()  # states that are the end of a pattern
-    num_states = 1  # root = state 0
+    num_states: int = 1  # root = _INITIAL_STATE
 
     for encoded in encoded_patterns:
-        current = 0
+        current: int = _INITIAL_STATE
         for c in encoded:
-            if goto[current][c] == -1:
+            if goto[current][c] == _UNDEFINED_GOTO:
                 goto[current][c] = num_states
-                goto.append([-1] * _ALPHABET_SIZE)
+                goto.append([_UNDEFINED_GOTO] * _ALPHABET_SIZE)
                 num_states += 1
             current = goto[current][c]
         direct_output.add(current)
 
     # ---- Phase 2: BFS to compute failure links & delta ------------------
-    fail = [0] * num_states
-    delta: list[list[int]] = [[0] * _ALPHABET_SIZE for _ in range(num_states)]
+    fail: list[int] = [_INITIAL_STATE] * num_states
+    delta: list[list[int]] = [[_INITIAL_STATE] * _ALPHABET_SIZE for _ in range(num_states)]
     queue: deque[int] = deque()
 
     # Root transitions: undefined edges loop back to root.
     for c in range(_ALPHABET_SIZE):
-        if goto[0][c] != -1:
-            child = goto[0][c]
-            fail[child] = 0
-            delta[0][c] = child
+        if goto[_INITIAL_STATE][c] != _UNDEFINED_GOTO:
+            child: int = goto[_INITIAL_STATE][c]
+            fail[child] = _INITIAL_STATE
+            delta[_INITIAL_STATE][c] = child
             queue.append(child)
         else:
-            delta[0][c] = 0
+            delta[_INITIAL_STATE][c] = _INITIAL_STATE
 
     # BFS: for each trie node, compute failure links and fill delta.
     while queue:
-        state = queue.popleft()
+        state: int = queue.popleft()
         for c in range(_ALPHABET_SIZE):
-            if goto[state][c] != -1:
+            if goto[state][c] != _UNDEFINED_GOTO:
                 child = goto[state][c]
                 # Failure link = parent's failure transition on c.
                 fail[child] = delta[fail[state]][c]
@@ -296,11 +315,11 @@ def build_composite_dfa(
     # from it is a direct-output state.  This ensures that e.g. state
     # representing "ATG" is marked as output when "G" is a forbidden pattern
     # (since fail["ATG"] → state for "G").
-    output = set(direct_output)
+    output: set[int] = set(direct_output)
 
     # Iterate until fixed-point.  Each pass can only add states, so this
     # converges in at most num_states passes.
-    changed = True
+    changed: bool = True
     while changed:
         changed = False
         for state in range(1, num_states):
@@ -314,7 +333,7 @@ def build_composite_dfa(
             delta[state][c] = state
 
     # ---- Phase 5: Accepting = non-output states -------------------------
-    accepting = [s for s in range(num_states) if s not in output]
+    accepting: list[int] = [s for s in range(num_states) if s not in output]
 
     return delta, accepting
 
@@ -363,7 +382,7 @@ def build_reverse_complement_dfa(
     >>> dfa_accepts((trans, acc), "AAGCTT")   # check revcomp
     False
     """
-    rc = reverse_complement(pattern)
+    rc: str = reverse_complement(pattern)
 
     if pattern.upper() == rc.upper():
         # Palindromic — pattern and reverse complement are identical.
@@ -408,11 +427,11 @@ def dfa_accepts(
     False
     """
     delta, accepting = dfa_tuple
-    accepting_set = set(accepting)
-    state = 0  # Start state is always 0.
+    accepting_set: set[int] = set(accepting)
+    state: int = _INITIAL_STATE  # Start state is always _INITIAL_STATE.
 
     for char in sequence.upper():
-        c = BASE_REV[char]
+        c: int = BASE_REV[char]
         state = delta[state][c]
 
     return state in accepting_set
@@ -453,8 +472,8 @@ def dfa_to_dot(
     True
     """
     delta, accepting = dfa_tuple
-    accepting_set = set(accepting)
-    num_states = len(delta)
+    accepting_set: set[int] = set(accepting)
+    num_states: int = len(delta)
 
     lines: list[str] = [
         f"digraph {name} {{",
@@ -468,7 +487,7 @@ def dfa_to_dot(
         lines.append(f"    node [shape=doublecircle]; {acc_str};")
 
     # Non-accepting states → single circle.
-    non_accepting = sorted(s for s in range(num_states) if s not in accepting_set)
+    non_accepting: list[int] = sorted(s for s in range(num_states) if s not in accepting_set)
     if non_accepting:
         nacc_str = " ".join(str(s) for s in non_accepting)
         lines.append(f"    node [shape=circle]; {nacc_str};")
@@ -477,18 +496,18 @@ def dfa_to_dot(
 
     # Invisible start node + arrow to state 0.
     lines.append('    "" [shape=point];')
-    lines.append('    "" -> 0 [label="start"];')
+    lines.append(f'    "" -> {_INITIAL_STATE} [label="start"];')
     lines.append("")
 
     # Merge parallel edges for readability.
     edges: dict[tuple[int, int], list[str]] = defaultdict(list)
     for state in range(num_states):
         for c in range(_ALPHABET_SIZE):
-            target = delta[state][c]
+            target: int = delta[state][c]
             edges[(state, target)].append(BASE_MAP[c])
 
     for (src, dst), labels in sorted(edges.items()):
-        merged = ",".join(labels)
+        merged: str = ",".join(labels)
         lines.append(f"    {src} -> {dst} [label=\"{merged}\"];")
 
     lines.append("}")
@@ -540,9 +559,9 @@ def negate_dfa(
     >>> dfa_accepts((ntrans, nacc), "AAC")
     True
     """
-    num_states = len(transition_table)
-    old_accepting = set(accepting_states)
-    new_accepting = [s for s in range(num_states) if s not in old_accepting]
+    num_states: int = len(transition_table)
+    old_accepting: set[int] = set(accepting_states)
+    new_accepting: list[int] = [s for s in range(num_states) if s not in old_accepting]
     return transition_table, new_accepting
 
 
@@ -551,7 +570,7 @@ def negate_dfa(
 # ---------------------------------------------------------------------------
 
 def build_trun_dfa(
-    max_t: int = 5,
+    max_t: int = _DEFAULT_MAX_T_RUN,
 ) -> tuple[list[list[int]], list[int]]:
     """Build a DFA that rejects strings with *max_t*+1 or more consecutive T's.
 
@@ -582,11 +601,10 @@ def build_trun_dfa(
     >>> dfa_accepts((trans, acc), "TTTATTT")  # Broken run — OK
     True
     """
-    T_IDX = BASE_REV["T"]
-    trap = max_t + 1
-    n_states = trap + 1  # states 0..trap
+    trap: int = max_t + 1
+    n_states: int = trap + 1  # states 0..trap
 
-    delta: list[list[int]] = [[0] * _ALPHABET_SIZE for _ in range(n_states)]
+    delta: list[list[int]] = [[_INITIAL_STATE] * _ALPHABET_SIZE for _ in range(n_states)]
 
     for state in range(n_states):
         if state == trap:
@@ -595,15 +613,15 @@ def build_trun_dfa(
                 delta[state][c] = trap
         else:
             for c in range(_ALPHABET_SIZE):
-                if c == T_IDX:
+                if c == _T_BASE_IDX:
                     # T base: increment T count (or enter trap).
                     delta[state][c] = state + 1 if state < max_t else trap
                 else:
                     # Non-T base: reset counter to 0.
-                    delta[state][c] = 0
+                    delta[state][c] = _INITIAL_STATE
 
     # Accepting states: everything except the trap.
-    accepting = list(range(max_t + 1))
+    accepting: list[int] = list(range(max_t + 1))
     return delta, accepting
 
 
@@ -656,7 +674,7 @@ def dfa_to_ortools_format(
     transition_list: list[list[int]] = []
     for state in range(len(transition_table)):
         for symbol in range(_ALPHABET_SIZE):
-            target = transition_table[state][symbol]
+            target: int = transition_table[state][symbol]
             transition_list.append([state, symbol, target])
 
-    return 0, transition_list, sorted(accepting_states)
+    return _INITIAL_STATE, transition_list, sorted(accepting_states)

@@ -7,8 +7,12 @@ FIXES from toy model:
 - Detailed translation metadata
 """
 
+from __future__ import annotations
+
 import logging
 import math
+from typing import TypedDict
+
 from .constants import CODON_TABLE, START_CODON, reverse_complement
 from .scanner import validate_dna_sequence
 from .organisms import (
@@ -16,10 +20,40 @@ from .organisms import (
 )
 from .exceptions import UnsupportedOrganismError
 
+__all__ = [
+    "translate",
+    "compute_cai",
+    "find_orfs",
+    "ORFResult",
+    "DEFAULT_MIN_ORF_LENGTH_AA",
+]
+
 logger = logging.getLogger(__name__)
+
+# --- Named constants (replacing magic numbers) ---
+
+# Number of nucleotides per codon
+_CODON_LENGTH: int = 3
+
+# Default minimum ORF length in amino acids for find_orfs()
+DEFAULT_MIN_ORF_LENGTH_AA: int = 30
+
+# Decimal places for rounding CAI values
+_CAI_ROUND_PRECISION: int = 4
 
 # Epsilon floor for zero-adaptiveness codons in CAI computation
 _ZERO_ADAPTIVENESS_EPSILON: float = 1e-10
+
+
+class ORFResult(TypedDict):
+    """Structured type for ORF results returned by find_orfs."""
+
+    start: int
+    end: int
+    frame: int
+    strand: str
+    protein: str
+    length: int
 
 
 def translate(sequence: str, to_stop: bool = True) -> str:
@@ -41,15 +75,15 @@ def translate(sequence: str, to_stop: bool = True) -> str:
         return ""
 
     # Warn about partial codons
-    if len(sequence) % 3 != 0:
+    if len(sequence) % _CODON_LENGTH != 0:
         logger.warning(
-            "Sequence length %d is not a multiple of 3; last %d base(s) will be ignored",
-            len(sequence), len(sequence) % 3,
+            "Sequence length %d is not a multiple of %d; last %d base(s) will be ignored",
+            len(sequence), _CODON_LENGTH, len(sequence) % _CODON_LENGTH,
         )
 
     protein: list[str] = []
-    for i in range(0, len(sequence) - 2, 3):
-        codon = sequence[i:i+3]
+    for i in range(0, len(sequence) - (_CODON_LENGTH - 1), _CODON_LENGTH):
+        codon = sequence[i:i + _CODON_LENGTH]
         aa = CODON_TABLE.get(codon)
         if aa is None:
             logger.warning("Unknown codon '%s' at position %d — mapping to 'X'", codon, i)
@@ -86,8 +120,8 @@ def compute_cai(sequence: str, organism: str = "Homo_sapiens") -> float:
     adaptiveness = CODON_ADAPTIVENESS_TABLES[organism]
     ratios: list[float] = []
 
-    for i in range(0, len(sequence) - 2, 3):
-        codon = sequence[i:i+3]
+    for i in range(0, len(sequence) - (_CODON_LENGTH - 1), _CODON_LENGTH):
+        codon = sequence[i:i + _CODON_LENGTH]
         aa = CODON_TABLE.get(codon)
         if aa is None or aa == "*" or aa == "M":
             continue
@@ -100,12 +134,12 @@ def compute_cai(sequence: str, organism: str = "Homo_sapiens") -> float:
         return 0.0
 
     # Geometric mean via log-based computation
-    log_sum = sum(math.log(r) for r in ratios)
+    log_sum: float = sum(math.log(r) for r in ratios)
     cai = math.exp(log_sum / len(ratios))
-    return round(cai, 4)
+    return round(cai, _CAI_ROUND_PRECISION)
 
 
-def find_orfs(sequence: str, min_length_aa: int = 30) -> list[dict]:
+def find_orfs(sequence: str, min_length_aa: int = DEFAULT_MIN_ORF_LENGTH_AA) -> list[ORFResult]:
     """
     Find all Open Reading Frames in all 6 frames (3 forward + 3 reverse complement).
 
@@ -119,39 +153,45 @@ def find_orfs(sequence: str, min_length_aa: int = 30) -> list[dict]:
         List of ORF dicts with keys: start, end, frame, strand, protein, length
     """
     sequence = validate_dna_sequence(sequence)
-    orfs: list[dict] = []
+    orfs: list[ORFResult] = []
 
-    def _find_forward_orfs(seq: str, strand: str) -> list[dict]:
+    def _find_forward_orfs(seq: str, strand: str) -> list[ORFResult]:
         """Scan a single-strand sequence for ORFs in all 3 forward frames."""
-        found: list[dict] = []
-        for frame in range(3):
-            i = frame
-            while i < len(seq) - 2:
-                codon = seq[i:i+3]
+        found: list[ORFResult] = []
+        for frame in range(_CODON_LENGTH):
+            i: int = frame
+            while i < len(seq) - (_CODON_LENGTH - 1):
+                codon = seq[i:i + _CODON_LENGTH]
                 if codon == START_CODON:
                     # Found start codon — translate until stop
-                    protein = []
-                    orf_start = i
-                    j = i
-                    while j < len(seq) - 2:
-                        c = seq[j:j+3]
-                        aa = CODON_TABLE.get(c, "X")
+                    protein: list[str] = []
+                    orf_start: int = i
+                    j: int = i
+                    while j < len(seq) - (_CODON_LENGTH - 1):
+                        c = seq[j:j + _CODON_LENGTH]
+                        aa = CODON_TABLE.get(c)
+                        if aa is None:
+                            logger.warning(
+                                "Unknown codon '%s' at position %d in ORF scan — mapping to 'X'",
+                                c, j,
+                            )
+                            aa = "X"
                         if aa == "*":
                             break
                         protein.append(aa)
-                        j += 3
+                        j += _CODON_LENGTH
                     if len(protein) >= min_length_aa:
                         found.append({
                             "start": orf_start,
-                            "end": j + 3,
+                            "end": j + _CODON_LENGTH,
                             "frame": frame,
                             "strand": strand,
                             "protein": "".join(protein),
                             "length": len(protein),
                         })
-                    i = j + 3
+                    i = j + _CODON_LENGTH
                 else:
-                    i += 3
+                    i += _CODON_LENGTH
         return found
 
     # Forward strand

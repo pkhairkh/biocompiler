@@ -1,5 +1,5 @@
 """
-BioCompiler CamSol Solubility Module v9.1.0
+BioCompiler CamSol Solubility Module v9.2.0
 =============================================
 CamSol-inspired solubility prediction algorithm in pure Python.
 
@@ -78,16 +78,19 @@ try:
     from .constants import DEFAULT_SOLUBILITY_WINDOW as _DEFAULT_WINDOW
 except ImportError:
     _DEFAULT_WINDOW: int = 7  # type: ignore[misc]
+    logger.debug("DEFAULT_SOLUBILITY_WINDOW not found in constants; using fallback %d", _DEFAULT_WINDOW)
 
 try:
     from .constants import DEFAULT_SOLUBILITY_SMOOTHING as _DEFAULT_SMOOTHING
 except ImportError:
     _DEFAULT_SMOOTHING: int = 3  # type: ignore[misc]
+    logger.debug("DEFAULT_SOLUBILITY_SMOOTHING not found in constants; using fallback %d", _DEFAULT_SMOOTHING)
 
 try:
     from .constants import DEFAULT_BATCH_SIZE as _DEFAULT_BATCH_SIZE
 except ImportError:
     _DEFAULT_BATCH_SIZE: int = 8  # type: ignore[misc]
+    logger.debug("DEFAULT_BATCH_SIZE not found in constants; using fallback %d", _DEFAULT_BATCH_SIZE)
 
 
 logger = logging.getLogger(__name__)
@@ -95,7 +98,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CamSolResult",
-    "SolubilityResult",
+    # SolubilityResult is intentionally omitted: use CamSolResult instead.
+    # (Legacy alias removed — callers should import CamSolResult directly.)
     "HydrophobicityScale",
     "compute_intrinsic_solubility",
     "compute_solubility",
@@ -372,7 +376,7 @@ def predict_idp(sequence: str) -> bool:
 
 def select_hydropathy_scale(
     sequence: str,
-    scale: str = "auto",
+    scale: str | HydrophobicityScale = "auto",
 ) -> tuple[dict[str, float], str]:
     """Select the hydropathy scale to use for solubility prediction.
 
@@ -476,6 +480,15 @@ _PDB_MIN_LINE_LENGTH = 54
 # ── SASA sigmoid transformation ──
 _SASA_SIGMOID_K = 0.4
 _SASA_SIGMOID_MIDPOINT = 12.0
+
+# ── SASA neighbor-counting cutoff distance (Angstroms) ──
+_SASA_NEIGHBOR_CUTOFF = 10.0
+
+# ── Mutation scoring: fraction of worst residues to target ──
+_WORST_RESIDUE_TARGET_FRACTION = 10
+
+# ── Charged-substitution BLOSUM62 threshold ──
+_CHARGED_SUB_BLOSUM_THRESHOLD = -1
 
 
 # ────────────────────────────────────────────────────────────
@@ -983,6 +996,13 @@ def compute_solubility_batch(
             )
             return (idx, error_result)
         except Exception as exc:
+            logger.error(
+                "CamSol batch: unexpected error for sequence %d (%s): %s",
+                idx,
+                seq[:10] + "..." if len(seq) > 10 else seq,
+                exc,
+                exc_info=True,
+            )
             error_result = CamSolResult(
                 sequence=seq,
                 primary_score=0.0,
@@ -1077,7 +1097,7 @@ def find_solubility_mutations(
     # Also consider positions with the lowest per-residue scores
     if not target_positions and result.intrinsic_score < min_score:
         # Target the worst-scoring residues
-        n_target = max(1, len(protein) // 10)
+        n_target = max(1, len(protein) // _WORST_RESIDUE_TARGET_FRACTION)
         indexed = sorted(
             enumerate(result.per_residue_scores), key=lambda x: x[1]
         )
@@ -1480,7 +1500,7 @@ def _best_charged_substitution(aa: str) -> str | None:
 
     for candidate in charged:
         blosum = BLOSUM62.get(aa, {}).get(candidate, _BLOSUM_DEFAULT_SCORE)
-        if blosum >= -1 and blosum > best_blosum:
+        if blosum >= _CHARGED_SUB_BLOSUM_THRESHOLD and blosum > best_blosum:
             best_blosum = blosum
             best = candidate
 
@@ -1570,6 +1590,10 @@ def _parse_pdb_ca_coords(
                         z = float(line[46:54])
                         coords.append((x, y, z))
                     except (ValueError, IndexError):
+                        logger.warning(
+                            "Skipping malformed CA coordinate line in PDB: %r",
+                            line.strip(),
+                        )
                         continue
 
     return coords
@@ -1577,7 +1601,7 @@ def _parse_pdb_ca_coords(
 
 def _approximate_sasa(
     ca_coords: list[tuple[float, float, float]],
-    cutoff: float = 10.0,
+    cutoff: float = _SASA_NEIGHBOR_CUTOFF,
 ) -> list[float]:
     """Approximate relative SASA using CA neighbor counting.
 
@@ -1647,6 +1671,10 @@ def _parse_disulfide_bonds(pdb_string: str) -> set[int]:
                 residues.add(res1 - 1)
                 residues.add(res2 - 1)
             except (ValueError, IndexError):
+                logger.warning(
+                    "Skipping malformed SSBOND record in PDB: %r",
+                    line.strip(),
+                )
                 continue
 
     return residues

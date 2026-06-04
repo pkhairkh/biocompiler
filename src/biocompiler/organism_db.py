@@ -39,6 +39,24 @@ from .exceptions import UnsupportedOrganismError
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "SCHEMA_VERSION",
+    "DEFAULT_DB_PATH",
+    "KAZUSA_API_URL",
+    "CACHE_TTL_SECONDS",
+    "MAX_RETRIES",
+    "RETRY_BACKOFF_BASE",
+    "REQUEST_TIMEOUT",
+    "MIN_CODON_COUNT",
+    "TOTAL_CODONS",
+    "NUM_STOP_CODONS",
+    "MAX_FREQUENCY_PER_CODON",
+    "MIN_TOTAL_FREQUENCY",
+    "PER_THOUSAND_SCALE",
+    "KAZUSA_ORGANISM_IDS",
+    "OrganismDatabase",
+]
+
 # ─── Database Schema Versioning ─────────────────────────────────────
 
 SCHEMA_VERSION = 2
@@ -754,7 +772,7 @@ class OrganismDatabase:
             else:
                 codon_usage.clear()
         except ImportError:
-            pass  # BS4 not installed, fall through to regex strategies
+            logger.debug("BeautifulSoup4 not installed, falling back to regex parsing")
         except Exception as exc:
             logger.debug("BeautifulSoup parsing failed, falling back to regex: %s", exc)
             codon_usage.clear()
@@ -831,8 +849,8 @@ class OrganismDatabase:
                                 elif val <= PER_THOUSAND_SCALE and freq == 0.0:
                                     freq = val / PER_THOUSAND_SCALE if val > 1.0 else val
                             codon_usage[codon] = (aa, freq, 0.0, count)
-                        except (ValueError, IndexError):
-                            pass
+                        except (ValueError, IndexError) as exc:
+                            logger.debug("Failed to parse codon %s from fragment: %s", codon, exc)
 
             if len(codon_usage) >= MIN_CODON_COUNT:
                 logger.info("Kazusa parsing Strategy 2 (fragment) succeeded: %d/%d codons", len(codon_usage), TOTAL_CODONS)

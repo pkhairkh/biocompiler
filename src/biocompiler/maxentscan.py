@@ -18,11 +18,30 @@ are comparable to the original Perl implementation outputs.
 Deterministic: same input always produces same output.
 """
 
+from __future__ import annotations
+
+import logging
 import math
 from typing import List, Tuple, Dict
 
+__all__ = [
+    "BASE_TO_INDEX",
+    "BG_PROB",
+    "DONOR_PWM",
+    "DONOR_PWM_SCORE",
+    "ACCEPTOR_PWM",
+    "ACCEPTOR_PWM_SCORE",
+    "score_donor",
+    "score_acceptor",
+    "scan_splice_sites",
+    "max_donor_score",
+    "max_acceptor_score",
+]
+
+_logger = logging.getLogger(__name__)
+
 BASE_TO_INDEX: Dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
-BG_PROB = 0.25  # Uniform background
+BG_PROB: float = 0.25  # Uniform background
 
 # ==============================================================================
 # Donor site PWM (9 positions: -3 to +6 relative to GT dinucleotide)
@@ -40,8 +59,14 @@ DONOR_PWM: List[List[float]] = [
     [+5, 0.154, 0.150, 0.408, 0.288],  # +5: G preference
     [+6, 0.209, 0.213, 0.297, 0.281],  # +6: moderate G preference
 ]
+# Column indices in the PWM tables (0 = position label, 1-4 = A/C/G/T probs)
+_PWM_PROB_START_COL: int = 1
+_PWM_PROB_END_COL: int = 5
+
 # Strip the position column for scoring
-DONOR_PWM_SCORE = [[row[1], row[2], row[3], row[4]] for row in DONOR_PWM]
+DONOR_PWM_SCORE: List[List[float]] = [
+    [row[i] for i in range(_PWM_PROB_START_COL, _PWM_PROB_END_COL)] for row in DONOR_PWM
+]
 
 # ==============================================================================
 # Acceptor site PWM (23 positions: -20 to +3 relative to AG dinucleotide)
@@ -73,13 +98,22 @@ ACCEPTOR_PWM: List[List[float]] = [
     [+1,  0.260, 0.200, 0.330, 0.210],  # +1: exonic, moderate G preference
     [+2,  0.230, 0.240, 0.280, 0.250],  # +2: exonic
 ]
-ACCEPTOR_PWM_SCORE = [[row[1], row[2], row[3], row[4]] for row in ACCEPTOR_PWM]
+ACCEPTOR_PWM_SCORE: List[List[float]] = [
+    [row[i] for i in range(_PWM_PROB_START_COL, _PWM_PROB_END_COL)] for row in ACCEPTOR_PWM
+]
 
 # Small epsilon for positions with zero probability to avoid -inf in log space
-_EPSILON = 0.001
+_EPSILON: float = 0.001
 
 # Sentinel score for impossible / out-of-range events
 _IMPOSSIBLE_SCORE: float = -50.0
+
+# Number of decimal places for score rounding
+_SCORE_DECIMAL_PLACES: int = 4
+
+# Default thresholds for splice site scanning
+_DEFAULT_DONOR_THRESHOLD: float = 3.0
+_DEFAULT_ACCEPTOR_THRESHOLD: float = 3.0
 
 # Donor model offsets: 9-mer spans positions -3 to +6 relative to GT
 _DONOR_UPSTREAM: int = 3
@@ -123,15 +157,25 @@ def score_donor(seq: str, position: int) -> float:
     start = position - _DONOR_UPSTREAM
     end = position + _DONOR_DOWNSTREAM
     if start < 0 or end > len(seq):
+        _logger.debug(
+            "Donor site at position %d out of range for sequence of length %d "
+            "(needs [%d, %d))",
+            position, len(seq), start, end,
+        )
         return _IMPOSSIBLE_SCORE
     score = 0.0
     for pwm_idx in range(len(DONOR_PWM_SCORE)):
         base = seq[start + pwm_idx]
         if base not in BASE_TO_INDEX:
+            _logger.warning(
+                "Invalid base '%s' at position %d in donor scoring; "
+                "returning impossible score",
+                base, start + pwm_idx,
+            )
             return _IMPOSSIBLE_SCORE
         prob = _safe_prob(DONOR_PWM_SCORE[pwm_idx][BASE_TO_INDEX[base]])
         score += _log2(prob / BG_PROB)
-    return round(score, 4)
+    return round(score, _SCORE_DECIMAL_PLACES)
 
 
 def score_acceptor(seq: str, position: int) -> float:
@@ -155,21 +199,31 @@ def score_acceptor(seq: str, position: int) -> float:
     start = position - _ACCEPTOR_UPSTREAM
     end = position + _ACCEPTOR_DOWNSTREAM
     if start < 0 or end > len(seq):
+        _logger.debug(
+            "Acceptor site at position %d out of range for sequence of length %d "
+            "(needs [%d, %d))",
+            position, len(seq), start, end,
+        )
         return _IMPOSSIBLE_SCORE
     score = 0.0
     for pwm_idx in range(len(ACCEPTOR_PWM_SCORE)):
         base = seq[start + pwm_idx]
         if base not in BASE_TO_INDEX:
+            _logger.warning(
+                "Invalid base '%s' at position %d in acceptor scoring; "
+                "returning impossible score",
+                base, start + pwm_idx,
+            )
             return _IMPOSSIBLE_SCORE
         prob = _safe_prob(ACCEPTOR_PWM_SCORE[pwm_idx][BASE_TO_INDEX[base]])
         score += _log2(prob / BG_PROB)
-    return round(score, 4)
+    return round(score, _SCORE_DECIMAL_PLACES)
 
 
 def scan_splice_sites(
     seq: str,
-    donor_threshold: float = 3.0,
-    acceptor_threshold: float = 3.0,
+    donor_threshold: float = _DEFAULT_DONOR_THRESHOLD,
+    acceptor_threshold: float = _DEFAULT_ACCEPTOR_THRESHOLD,
 ) -> List[Tuple[int, str, float]]:
     """
     Scan entire sequence for donor and acceptor splice sites above threshold.
@@ -212,7 +266,7 @@ def max_donor_score(seq: str) -> float:
             s = score_donor(seq, i)
             if s > best:
                 best = s
-    return round(best, 4)
+    return round(best, _SCORE_DECIMAL_PLACES)
 
 
 def max_acceptor_score(seq: str) -> float:
@@ -224,4 +278,4 @@ def max_acceptor_score(seq: str) -> float:
             s = score_acceptor(seq, i)
             if s > best:
                 best = s
-    return round(best, 4)
+    return round(best, _SCORE_DECIMAL_PLACES)

@@ -12,14 +12,26 @@ The export transforms internal designed sequences + type-check results
 into standard bioinformatics formats accepted by NCBI, Benchling, SnapGene, etc.
 """
 
+__all__ = [
+    "RestrictionSiteInfo",
+    "FastaSequenceEntry",
+    "export_fasta",
+    "export_genbank",
+    "export_genbank_with_certificate",
+    "export_multi_fasta",
+    "GENBANK_MAX_LINE",
+    "GENBANK_SEQ_LINE",
+    "GENBANK_SEQ_GROUP",
+]
+
 import logging
+import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional, TypedDict
 
 from .types import Certificate, TypeCheckResult, Verdict, combined_verdict
 from .scanner import gc_content
 from .translation import translate
-from .constants import CODON_TABLE, RESTRICTION_ENZYMES
 from . import __version__
 
 logger = logging.getLogger(__name__)
@@ -41,9 +53,14 @@ def _wrap_text(text: str, width: int = GENBANK_MAX_LINE, indent: int = 0) -> str
     return "\n".join(lines)
 
 
-def _format_genbank_sequence(seq: str, line_width: int = GENBANK_SEQ_LINE,
+def _format_sequence_numbered(seq: str, line_width: int = GENBANK_SEQ_LINE,
                               group_size: int = GENBANK_SEQ_GROUP) -> str:
-    """Format a DNA sequence in GenBank style (numbered groups of 10)."""
+    """Format a DNA sequence in GenBank style (numbered groups of 10).
+
+    This is a standalone utility that returns a single formatted string.
+    For the full ORIGIN section of a GenBank record (returning a list of
+    lines), see :func:`_format_genbank_sequence`.
+    """
     seq = seq.upper()
     lines = []
     for i in range(0, len(seq), line_width):
@@ -59,6 +76,209 @@ def _format_fasta_sequence(seq: str, line_width: int = 60) -> str:
     seq = seq.upper()
     lines = [seq[i:i + line_width] for i in range(0, len(seq), line_width)]
     return "\n".join(lines)
+
+
+def _generate_accession() -> str:
+    """Generate a unique accession ID using UUID4 and a timestamp.
+
+    Produces a pseudo-accession of the form ``BC_`` followed by the first
+    8 hex characters of a UUID4, guaranteeing uniqueness without relying
+    on a placeholder locus name.
+
+    Returns:
+        A unique pseudo-accession string, e.g. ``BC_a1b2c3d4``.
+    """
+    return f"BC_{uuid.uuid4().hex[:8].upper()}"
+
+
+class _RestrictionSiteInfoRequired(TypedDict):
+    """Required fields for a restriction site annotation."""
+    enzyme: str
+    site: str
+    position: int
+
+
+class RestrictionSiteInfo(_RestrictionSiteInfoRequired, total=False):
+    """A restriction enzyme recognition site annotation.
+
+    Required fields: ``enzyme``, ``site``, ``position``.
+    Optional field: ``strand`` (``"+"`` or ``"-"``, default ``"+"``).
+    """
+    strand: str
+
+
+class _FastaSequenceEntryRequired(TypedDict):
+    """Required fields for a FASTA sequence entry."""
+    sequence: str
+
+
+class FastaSequenceEntry(_FastaSequenceEntryRequired, total=False):
+    """An entry for :func:`export_multi_fasta`.
+
+    Required field: ``sequence``.
+    Optional fields: ``id``, ``description``, ``organism``, ``protein``.
+    """
+    id: str
+    description: str
+    organism: str
+    protein: str
+
+
+def _format_genbank_header(
+    locus: str,
+    seq_len: int,
+    molecule_type: str,
+    topology: str,
+    date_str: str,
+    definition: str,
+    acc: str,
+    organism: str,
+    gc: float,
+    protein: Optional[str],
+    type_results: Optional[list[TypeCheckResult]],
+    certificate: Optional[Certificate],
+) -> list[str]:
+    """Format the LOCUS, DEFINITION, ACCESSION, VERSION, SOURCE, ORGANISM, and COMMENT sections."""
+    lines: list[str] = []
+
+    # ── LOCUS / DEFINITION / ACCESSION / VERSION ──
+    length_str = f"{seq_len} bp"
+    mol_str = f"{molecule_type}    "
+    lines.append(
+        f"LOCUS       {locus:<16} {length_str:>12}   {mol_str} {topology:<8}   SYN"
+    )
+    lines.append(f"DEFINITION  {definition}.")
+
+    lines.append(f"ACCESSION   {acc}")
+    lines.append(f"VERSION     {acc}.1")
+
+    # ── SOURCE / ORGANISM ──
+    taxonomy = _get_taxonomy(organism)
+    lines.append(f"SOURCE      {organism}")
+    lines.append(f"  ORGANISM  {organism}")
+    for i in range(0, len(taxonomy), 70):
+        chunk = taxonomy[i:i + 70]
+        indent = "            " if i > 0 else "  "
+        lines.append(f"{indent}{chunk}")
+    if not taxonomy.endswith("."):
+        lines[-1] += "."
+
+    # ── COMMENT ──
+    comments: list[str] = []
+    comments.append("Designed and verified by BioCompiler — Machine-Verified Gene Design")
+    comments.append(f"Version: {__version__}")
+    comments.append(f"GC content: {gc:.4f}")
+    comments.append(f"Protein length: {len(protein)} aa" if protein else "")
+
+    if type_results:
+        overall = combined_verdict([r.verdict for r in type_results])
+        comments.append(f"Type-check verdict: {overall.value}")
+        for r in type_results:
+            symbol = {"PASS": "+", "FAIL": "X", "UNCERTAIN": "?"}[r.verdict.value]
+            comments.append(f"  [{symbol}] {r.predicate}")
+
+    if certificate:
+        comments.append(f"Certificate ID: {certificate.design_id[:16]}...")
+        comments.append(f"Certificate timestamp: {certificate.provenance.get('timestamp', 'N/A')}")
+
+    if any(c for c in comments):
+        lines.append("COMMENT     " + comments[0])
+        for c in comments[1:]:
+            if c:
+                lines.append("            " + c)
+
+    return lines
+
+
+def _format_genbank_features(
+    seq_len: int,
+    gene_name: Optional[str],
+    protein: Optional[str],
+    exon_boundaries: Optional[list[tuple[int, int]]],
+    restriction_sites: Optional[list[RestrictionSiteInfo]],
+    type_results: Optional[list[TypeCheckResult]],
+) -> list[str]:
+    """Format the FEATURE TABLE section of a GenBank record."""
+    lines: list[str] = []
+
+    lines.append("FEATURES             Location/Qualifiers")
+
+    # Gene feature
+    if gene_name:
+        lines.append(f"     gene            1..{seq_len}")
+        lines.append(f'                     /gene="{gene_name}"')
+        lines.append(f'                     /note="Designed by BioCompiler"')
+
+    # CDS feature
+    if protein:
+        if exon_boundaries and len(exon_boundaries) > 1:
+            # Multi-exon: join operator
+            exon_parts = []
+            for start, end in exon_boundaries:
+                # Convert 0-based [start, end) to 1-based [start+1, end]
+                exon_parts.append(f"{start + 1}..{end}")
+            location = f"join({','.join(exon_parts)})"
+        else:
+            location = f"1..{seq_len}"
+        lines.append(f"     CDS             {location}")
+        if gene_name:
+            lines.append(f'                     /gene="{gene_name}"')
+        lines.append(f'                     /note="Designed by BioCompiler"')
+        lines.append(f'                     /codon_start=1')
+        lines.append(f'                     /transl_table=1')
+        # Protein translation (wrapped)
+        if protein:
+            prot_chunks = [protein[i:i + 40] for i in range(0, len(protein), 40)]
+            lines.append(f'                     /translation="{prot_chunks[0]}"')
+            for chunk in prot_chunks[1:]:
+                lines.append(f'                     "{chunk}"')
+
+    # Exon features
+    if exon_boundaries:
+        for i, (start, end) in enumerate(exon_boundaries):
+            lines.append(f"     exon            {start + 1}..{end}")
+            if gene_name:
+                lines.append(f'                     /gene="{gene_name}"')
+            lines.append(f'                     /number={i + 1}')
+
+    # Restriction site features
+    if restriction_sites:
+        for site in restriction_sites[:20]:  # Limit to 20 annotations
+            pos = site.get("position", 0)
+            enz = site.get("enzyme", site.get("site", "unknown"))
+            strand = site.get("strand", "+")
+            site_len = len(site.get("site", ""))
+            lines.append(f"     misc_feature    {pos + 1}..{pos + site_len}")
+            lines.append(f'                     /note="Restriction site: {enz} ({strand} strand)"')
+            lines.append(f'                     /label={enz}')
+
+    # Type-check result features (as misc_feature for failed predicates)
+    if type_results:
+        for r in type_results:
+            if r.verdict == Verdict.FAIL and r.violation:
+                lines.append(f"     misc_feature    1..{seq_len}")
+                lines.append(f'                     /note="TYPE FAIL: {r.predicate} - {r.violation[:80]}"')
+                lines.append(f'                     /label="typecheck_fail"')
+
+    return lines
+
+
+def _format_genbank_sequence(seq: str) -> list[str]:
+    """Format the ORIGIN section (numbered sequence) and GenBank terminator."""
+    lines: list[str] = []
+
+    lines.append("ORIGIN")
+
+    for i in range(0, len(seq), 60):
+        chunk = seq[i:i + 60]
+        # Group in blocks of 10
+        groups = [chunk[j:j + 10] for j in range(0, len(chunk), 10)]
+        line_num = i + 1
+        lines.append(f"{line_num:>9} {' '.join(groups)}")
+
+    lines.append("//")  # GenBank terminator
+
+    return lines
 
 
 def export_fasta(
@@ -122,7 +342,7 @@ def export_genbank(
     molecule_type: str = "DNA",
     topology: str = "linear",
     exon_boundaries: Optional[list[tuple[int, int]]] = None,
-    restriction_sites: Optional[list[dict[str, Any]]] = None,
+    restriction_sites: Optional[list[RestrictionSiteInfo]] = None,
     certificate: Optional[Certificate] = None,
     type_results: Optional[list[TypeCheckResult]] = None,
     gene_name: Optional[str] = None,
@@ -149,7 +369,7 @@ def export_genbank(
         topology: circular or linear
         exon_boundaries: List of (start, end) tuples for exon features
             (GenBank convention: 1-based, inclusive end)
-        restriction_sites: List of dicts with 'enzyme', 'position', 'strand' keys
+        restriction_sites: List of :class:`RestrictionSiteInfo` dicts
         certificate: Optional Certificate to embed in COMMENT section
         type_results: Optional type-check results for FEATURE notes
         gene_name: Optional gene name for the gene feature
@@ -171,147 +391,32 @@ def export_genbank(
     # Date in DD-MON-YYYY format
     date_str = now.strftime("%d-%b-%Y").upper()
 
-    lines: list[str] = []
-
-    # ─── LOCUS line ─────────────────────────────────────────────────
-    # Format: LOCUS       name       length bp    mol_type   topology   division
-    length_str = f"{len(seq)} bp"
-    mol_str = f"{molecule_type}    "
-    lines.append(
-        f"LOCUS       {locus:<16} {length_str:>12}   {mol_str} {topology:<8}   SYN"
-    )
-    lines.append(f"DEFINITION  {definition}.")
-
-    # ─── ACCESSION / VERSION ────────────────────────────────────────
-    # Use certificate design_id if available, else placeholder
+    # ─── ACCESSION ──────────────────────────────────────────────────
     if certificate:
         acc = certificate.design_id[:12].upper()
     else:
-        acc = locus  # TODO: placeholder accession — replace with real GenBank accession
-    lines.append(f"ACCESSION   {acc}")
-    lines.append(f"VERSION     {acc}.1")
+        acc = _generate_accession()
 
-    # ─── SOURCE / ORGANISM ──────────────────────────────────────────
-    taxonomy = _get_taxonomy(organism)
-    lines.append(f"SOURCE      {organism}")
-    lines.append(f"  ORGANISM  {organism}")
-    for i in range(0, len(taxonomy), 70):
-        chunk = taxonomy[i:i + 70]
-        indent = "            " if i > 0 else "  "
-        lines.append(f"{indent}{chunk}")
-    if not taxonomy.endswith("."):
-        lines[-1] += "."
-
-    # ─── COMMENT ────────────────────────────────────────────────────
-    comments = []
-    comments.append("Designed and verified by BioCompiler — Machine-Verified Gene Design")
-    comments.append(f"Version: {__version__}")
-    comments.append(f"GC content: {gc:.4f}")
-    comments.append(f"Protein length: {len(protein)} aa" if protein else "")
-
-    if type_results:
-        overall = combined_verdict([r.verdict for r in type_results])
-        comments.append(f"Type-check verdict: {overall.value}")
-        for r in type_results:
-            symbol = {"PASS": "+", "FAIL": "X", "UNCERTAIN": "?"}[r.verdict.value]
-            comments.append(f"  [{symbol}] {r.predicate}")
-
-    if certificate:
-        comments.append(f"Certificate ID: {certificate.design_id[:16]}...")
-        comments.append(f"Certificate timestamp: {certificate.provenance.get('timestamp', 'N/A')}")
-
-    if any(c for c in comments):
-        lines.append("COMMENT     " + comments[0])
-        for c in comments[1:]:
-            if c:
-                lines.append("            " + c)
-
-    # ─── FEATURES ───────────────────────────────────────────────────
-    lines.append("FEATURES             Location/Qualifiers")
-
-    # Gene feature
-    if gene_name:
-        lines.append(f"     gene            1..{len(seq)}")
-        lines.append(f'                     /gene="{gene_name}"')
-        lines.append(f'                     /note="Designed by BioCompiler"')
-
-    # CDS feature
-    if protein:
-        if exon_boundaries and len(exon_boundaries) > 1:
-            # Multi-exon: join operator
-            exon_parts = []
-            for start, end in exon_boundaries:
-                # Convert 0-based [start, end) to 1-based [start+1, end]
-                exon_parts.append(f"{start + 1}..{end}")
-            location = f"join({','.join(exon_parts)})"
-        else:
-            location = f"1..{len(seq)}"
-        lines.append(f"     CDS             {location}")
-        if gene_name:
-            lines.append(f'                     /gene="{gene_name}"')
-        lines.append(f'                     /note="Designed by BioCompiler"')
-        lines.append(f'                     /codon_start=1')
-        lines.append(f'                     /transl_table=1')
-        # Protein translation (wrapped)
-        if protein:
-            prot_chunks = [protein[i:i + 40] for i in range(0, len(protein), 40)]
-            prot_str = " ".join(prot_chunks)
-            lines.append(f'                     /translation="{prot_chunks[0]}"')
-            for chunk in prot_chunks[1:]:
-                lines.append(f'                     "{chunk}"')
-
-    # Exon features
-    if exon_boundaries:
-        for i, (start, end) in enumerate(exon_boundaries):
-            lines.append(f"     exon            {start + 1}..{end}")
-            if gene_name:
-                lines.append(f'                     /gene="{gene_name}"')
-            lines.append(f'                     /number={i + 1}')
-
-    # Restriction site features
-    if restriction_sites:
-        for site in restriction_sites[:20]:  # Limit to 20 annotations
-            pos = site.get("position", 0)
-            enz = site.get("enzyme", site.get("site", "unknown"))
-            strand = site.get("strand", "+")
-            site_len = len(site.get("site", ""))
-            lines.append(f"     misc_feature    {pos + 1}..{pos + site_len}")
-            lines.append(f'                     /note="Restriction site: {enz} ({strand} strand)"')
-            lines.append(f'                     /label={enz}')
-
-    # Type-check result features (as misc_feature for failed predicates)
-    if type_results:
-        for r in type_results:
-            if r.verdict == Verdict.FAIL and r.violation:
-                lines.append(f"     misc_feature    1..{len(seq)}")
-                lines.append(f'                     /note="TYPE FAIL: {r.predicate} - {r.violation[:80]}"')
-                lines.append(f'                     /label="typecheck_fail"')
-
-    # ─── ORIGIN ─────────────────────────────────────────────────────
-    lines.append("ORIGIN")
-
-    # Sequence with base numbering
-    for i in range(0, len(seq), 60):
-        chunk = seq[i:i + 60]
-        # Group in blocks of 10
-        groups = [chunk[j:j + 10] for j in range(0, len(chunk), 10)]
-        line_num = i + 1
-        lines.append(f"{line_num:>9} {' '.join(groups)}")
-
-    lines.append("//")  # GenBank terminator
+    # ─── Assemble GenBank record from helper functions ──────────────
+    lines: list[str] = []
+    lines.extend(_format_genbank_header(
+        locus, len(seq), molecule_type, topology, date_str,
+        definition, acc, organism, gc, protein, type_results, certificate,
+    ))
+    lines.extend(_format_genbank_features(len(seq), gene_name, protein, exon_boundaries, restriction_sites, type_results))
+    lines.extend(_format_genbank_sequence(seq))
 
     return "\n".join(lines)
 
 
 def export_multi_fasta(
-    sequences: list[dict[str, Any]],
+    sequences: list[FastaSequenceEntry],
 ) -> str:
     """
     Export multiple designed sequences as a multi-FASTA file.
 
     Args:
-        sequences: List of dicts with keys: 'sequence', 'id', 'description',
-                   'organism', 'protein' (optional)
+        sequences: List of :class:`FastaSequenceEntry` dicts
 
     Returns:
         Multi-FASTA formatted string

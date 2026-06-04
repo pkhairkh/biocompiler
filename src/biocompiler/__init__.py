@@ -24,6 +24,7 @@ __version__ = "9.2.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
+_logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════
 # Core types & exceptions
@@ -113,6 +114,7 @@ from .type_system import (
 try:
     from .certificate import generate_certificate, verify_certificate, compute_certificate, format_certificate
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     generate_certificate = None
     verify_certificate = None
     compute_certificate = None
@@ -128,6 +130,7 @@ try:
         max_donor_score, max_acceptor_score,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     score_donor = None
     score_acceptor = None
     scan_splice_sites = None
@@ -147,6 +150,7 @@ from .optimization import BioOptimizer, optimize_sequence, OptimizationResult
 try:
     from .grammar_loader import load_grammar, grammar_to_predicate_params, load_builtin_grammar, list_builtin_grammars
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     load_grammar = None
     grammar_to_predicate_params = None
     load_builtin_grammar = None
@@ -155,6 +159,7 @@ except ImportError:
 try:
     from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     export_fasta = None
     export_genbank = None
     export_genbank_with_certificate = None
@@ -163,6 +168,7 @@ except ImportError:
 try:
     from .report import generate_report
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     generate_report = None
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -183,10 +189,12 @@ try:
         run_comprehensive_benchmark,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     try:
         from .benchmark import run_benchmark as run_benchmarks
         BenchmarkReport = None
     except ImportError:
+        _logger.debug("Could not import optional module, using None fallbacks")
         run_benchmarks = None
         BenchmarkReport = None
     # Names only available in the extended benchmark API
@@ -212,6 +220,7 @@ try:
         SPECIES, ECOLI_CAI, HUMAN_CAI, compute_cai_weights,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     OrganismDatabase = None
     get_database = None
     SPECIES = {}
@@ -226,6 +235,7 @@ except ImportError:
 try:
     from .tissue_data import get_tissue_weights, list_available_tissues, add_custom_tissue
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     get_tissue_weights = None
     list_available_tissues = None
     add_custom_tissue = None
@@ -237,6 +247,7 @@ except ImportError:
 try:
     from .dna_chisel_compat import compare_optimizers, run_comparative_benchmark
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     compare_optimizers = None
     run_comparative_benchmark = None
 
@@ -247,6 +258,7 @@ except ImportError:
 try:
     from .dataset_validation import run_dataset_validation, DatasetValidationReport
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     run_dataset_validation = None
     DatasetValidationReport = None
 
@@ -257,6 +269,7 @@ except ImportError:
 try:
     from .import_seq import import_fasta, import_genbank, import_sequence
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     import_fasta = None
     import_genbank = None
     import_sequence = None
@@ -264,6 +277,7 @@ except ImportError:
 try:
     from .biopython_compat import to_seqrecord, from_seqrecord, optimize_to_seqrecord
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     to_seqrecord = None
     from_seqrecord = None
     optimize_to_seqrecord = None
@@ -271,6 +285,7 @@ except ImportError:
 try:
     from .jupyter import display_sequence, display_optimization_result, display_type_check, plot_gc_content, plot_codon_usage
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     display_sequence = None
     display_optimization_result = None
     display_type_check = None
@@ -292,6 +307,7 @@ try:
         apply_substitution,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     MutagenesisResult = None
     AASubstitution = None
     GT_MANDATORY_AAS = None
@@ -323,6 +339,7 @@ try:
         CAMSOL_BETA_STRAND,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     compute_intrinsic_solubility = None
     compute_solubility = None
     compute_structural_solubility = None
@@ -345,6 +362,7 @@ try:
         find_hydrophobic_stretches, PKA_VALUES,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     evaluate_soluble_expression = None
     evaluate_no_aggregation_prone_region = None
     evaluate_charge_composition = None
@@ -370,6 +388,7 @@ try:
         clear_cache as esmfold_clear_cache,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     ESMFoldResult = None
     # ESMFoldError is already imported unconditionally from .exceptions above
     ESMFoldCache = None
@@ -419,6 +438,7 @@ try:
         CHOU_FASMAN_TURN, EMINI_SCALE,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     ImmunogenicityResult = None
     predict_t_cell_epitopes = None
     predict_b_cell_epitopes = None
@@ -475,6 +495,7 @@ try:
         compute_mutation_impact,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     DeimmunizationResult = None
     EpitopeMutation = None
     deimmunize = None
@@ -511,6 +532,7 @@ try:
         plot_plddt_bar_svg, plot_solubility_profile_svg,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     Atom = None
     Residue = None
     Chain = None
@@ -565,6 +587,7 @@ try:
         identify_hotspot_regions,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     FoldXResult = None
     # FoldXError is already imported unconditionally from .exceptions above
     FoldXCache = None
@@ -597,6 +620,7 @@ try:
         classify_score,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     EngineResult = None
     BaseEngineResult = None
     MutationResult = None
@@ -619,6 +643,7 @@ try:
         find_proline_substitution_sites,
     )
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     DesignResult = None
     DesignConstraints = None
     design_thermostable = None
@@ -637,6 +662,7 @@ try:
     from .solver import CSPSolver, SolverConfig, SolverResult, SolverBackend
     from .solver.dispatch import solve_with_csp, is_solver_available, csp_optimize
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     CSPSolver = None
     SolverConfig = None
     SolverResult = None
@@ -653,6 +679,7 @@ try:
     from . import viennarna
     from . import viennarna_fallback
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     viennarna = None  # type: ignore[assignment]
     viennarna_fallback = None  # type: ignore[assignment]
 
@@ -664,8 +691,41 @@ try:
     from . import mhcflurry_adapter
     from . import mhcflurry_population
 except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
     mhcflurry_adapter = None  # type: ignore[assignment]
     mhcflurry_population = None  # type: ignore[assignment]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provenance (decision audit trail)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .provenance import (
+        DecisionRecord, ProvenanceTracker, OptimizationProvenance,
+        OptimizationRecord, generate_provenance_report,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    DecisionRecord = None
+    ProvenanceTracker = None
+    OptimizationProvenance = None
+    OptimizationRecord = None
+    generate_provenance_report = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Organism configuration
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .organism_config import (
+        OrganismConfig, ORGANISM_CONFIGS, get_organism_config,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    OrganismConfig = None
+    ORGANISM_CONFIGS = None
+    get_organism_config = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Public API — organized by domain
@@ -874,4 +934,11 @@ __all__ = [
 
     # ── MHCflurry ────────────────────────────────────────────────
     "mhcflurry_adapter", "mhcflurry_population",
+
+    # ── Provenance ───────────────────────────────────────────
+    "DecisionRecord", "ProvenanceTracker", "OptimizationProvenance",
+    "OptimizationRecord", "generate_provenance_report",
+
+    # ── Organism configuration ───────────────────────────────
+    "OrganismConfig", "ORGANISM_CONFIGS", "get_organism_config",
 ]

@@ -46,6 +46,7 @@ from .quality import (
     compute_sasa_approximation,
     KYTE_DOOLITTLE,
     VDW_RADII,
+    MAX_SASA,
 )
 
 # ── Predicates (type-system structure predicates) ──────────────
@@ -54,6 +55,10 @@ from .predicates import (
     evaluate_no_misfolding_risk,
     evaluate_correct_fold_topology,
     evaluate_no_unexpected_interaction,
+    expected_radius_of_gyration,
+    compute_secondary_structure_fractions,
+    find_surface_charge_patches,
+    find_unstructured_regions,
 )
 
 # ── Report (assessment reporting & visualization) ──────────────
@@ -94,11 +99,16 @@ __all__ = [
     "compute_sasa_approximation",
     "KYTE_DOOLITTLE",
     "VDW_RADII",
+    "MAX_SASA",
     # predicates
     "evaluate_structure_confidence",
     "evaluate_no_misfolding_risk",
     "evaluate_correct_fold_topology",
     "evaluate_no_unexpected_interaction",
+    "expected_radius_of_gyration",
+    "compute_secondary_structure_fractions",
+    "find_surface_charge_patches",
+    "find_unstructured_regions",
     # report
     "ProteinAssessmentReport",
     "assess_protein",

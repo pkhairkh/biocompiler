@@ -43,6 +43,26 @@ from .types import Verdict
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "HUMAN_REFERENCE_GENES",
+    "ECOLI_REFERENCE_GENES",
+    "YEAST_REFERENCE_GENES",
+    "SYNTHETIC_BENCHMARKS",
+    "PUBLISHED_CAI_BENCHMARKS",
+    "ALL_DATASETS",
+    "DatasetValidationResult",
+    "DatasetValidationReport",
+    "validate_translation_fidelity",
+    "validate_gc_content",
+    "validate_cai_bounds",
+    "validate_cross_organism_consistency",
+    "validate_protein_length",
+    "validate_optimization_improvement",
+    "validate_no_cpg_island",
+    "run_dataset_validation",
+    "format_dataset_report_text",
+]
+
 
 # ============================================================================
 # Reference Gene Datasets — Curated with Ground-Truth Properties
@@ -589,21 +609,21 @@ def validate_cross_organism_consistency(
 
         # The E. coli-optimized sequence should have higher CAI under E. coli
         # codon usage than under human codon usage
-        ecoli_home_advantage = ecoli_result.cai - ecoli_seq_cai_human
-        # The human-optimized sequence should have higher CAI under human
-        # codon usage than under E. coli codon usage
-        human_home_advantage = human_result.cai - human_seq_cai_ecoli
-
         # Both should show positive home advantage (organism-specific optimization works)
-        # Tolerance of 0.20 accounts for:
+        _ECOLI_HOME_ADVANTAGE_TOLERANCE: float = -0.20
+        _HUMAN_HOME_ADVANTANCE_TOLERANCE: float = -0.08
+        # Tolerances account for:
         # 1. Organism-specific GC targeting that shifts codon choices
         # 2. Short proteins with limited codon flexibility
         # 3. Known data quality issues (e.g., recA synthetic sequence)
-        # The human_home_advantage is the critical check — human optimization
-        # should strongly favor human codon usage. E. coli optimization may
-        # occasionally produce human-favored codons for short/synthetic proteins
-        # where GC targeting dominates over CAI.
-        passed = ecoli_home_advantage > -0.20 and human_home_advantage > -0.08
+
+        ecoli_home_advantage = ecoli_result.cai - ecoli_seq_cai_human
+        human_home_advantage = human_result.cai - human_seq_cai_ecoli
+
+        passed = (
+            ecoli_home_advantage > _ECOLI_HOME_ADVANTAGE_TOLERANCE
+            and human_home_advantage > _HUMAN_HOME_ADVANTANCE_TOLERANCE
+        )
         elapsed = (time.perf_counter() - t0) * 1000
 
         return DatasetValidationResult(
@@ -728,8 +748,9 @@ def validate_optimization_improvement(
         # cause a slight CAI reduction vs random, since GC adjustment can
         # override the highest-CAI codon to achieve biologically appropriate GC.
         # Tolerance of -0.02 accounts for this tradeoff.
+        _OPTIMIZATION_IMPROVEMENT_TOLERANCE: float = -0.02  # Slight negative acceptable for GC-targeted short proteins
         improvement = result.cai - random_cai
-        passed = improvement > -0.02  # Slight negative acceptable for GC-targeted short proteins
+        passed = improvement > _OPTIMIZATION_IMPROVEMENT_TOLERANCE
         elapsed = (time.perf_counter() - t0) * 1000
 
         return DatasetValidationResult(
@@ -931,7 +952,7 @@ def run_dataset_validation(
     return report
 
 
-def _compute_dataset_summary(results: list[DatasetValidationResult]) -> dict:
+def _compute_dataset_summary(results: list[DatasetValidationResult]) -> dict[str, dict]:
     """Compute summary statistics for the validation report."""
     by_dataset: dict[str, dict] = {}
     by_test: dict[str, dict] = {}

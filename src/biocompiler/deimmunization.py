@@ -1,5 +1,5 @@
 """
-BioCompiler Deimmunization Engine v7.5.0
+BioCompiler Deimmunization Engine v9.2.0
 ==========================================
 Reduces protein immunogenicity while preserving function by disrupting
 T-cell epitopes through conservative amino acid substitutions.
@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import TypedDict
 
 from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS
 from .engine_base import (
@@ -45,8 +46,13 @@ logger = logging.getLogger(__name__)
 
 
 __all__ = [
+    "AppliedMutation",
+    "BindingImpactEntry",
     "DeimmunizationResult",
     "EpitopeMutation",
+    "MutationImpactResult",
+    "MutationValidation",
+    "ValidationReport",
     "compute_mutation_impact",
     "deimmunize",
     "find_epitope_disrupting_mutations",
@@ -81,6 +87,106 @@ _DEFAULT_MHC_ALLELES: dict[str, list[str]] = {
     "Saccharomyces_cerevisiae": [],
 }
 
+# BLOSUM62 score range divisor for combined scoring formula
+_BLOSUM62_RANGE_DIVISOR = 4.0
+
+# ΔΔG scaling divisor for combined scoring formula
+_DDG_SCALING_DIVISOR = 5.0
+
+# Default BLOSUM62 score for unknown amino-acid pairs
+_DEFAULT_BLOSUM62_SCORE = -4
+
+# Number of top epitope scores used for immunogenicity calculation
+_TOP_EPITOPES_FOR_SCORING = 5
+
+# Multiplier for cumulative ΔΔG threshold (relative to max_ddg)
+_CUMULATIVE_DDG_MULTIPLIER = 2
+
+# Maximum cumulative ΔΔG for stability preservation (kcal/mol)
+_MAX_CUMULATIVE_DDG_KCAL = 5.0
+
+# Maximum allowed solubility score decrease
+_SOLUBILITY_DECREASE_TOLERANCE = 1.0
+
+# Minimum BLOSUM62 score for a conservative mutation
+_CONSERVATIVE_BLOSUM_THRESHOLD = -2
+
+# BLOSUM62-to-ddG linear scaling factor
+_BLOSUM_DDG_SCALE = 0.3
+
+# BLOSUM62 offset in ddG estimation
+_BLOSUM_DDG_OFFSET = 4
+
+# Hydropathy-to-ddG scaling factor
+_HYDRO_DDG_SCALE = 0.2
+
+# Proline introduction penalty (kcal/mol)
+_PROLINE_INTRODUCTION_PENALTY = 1.0
+
+# Proline removal penalty (kcal/mol)
+_PROLINE_REMOVAL_PENALTY = 0.5
+
+
+# ────────────────────────────────────────────────────────────
+# TypedDict definitions
+# ────────────────────────────────────────────────────────────
+
+class BindingImpactEntry(TypedDict):
+    """A single MHC binding impact entry for a mutated epitope."""
+    epitope: str
+    start: int
+    end: int
+    allele: str
+    original_binding: float
+    mutated_binding: float
+    binding_reduction: float
+
+
+class MutationImpactResult(TypedDict):
+    """Result of computing the impact of a single amino acid mutation."""
+    binding_impact: list[BindingImpactEntry]
+    stability_impact: float
+    solubility_impact: float
+    blosum62: int
+
+
+class AppliedMutation(TypedDict):
+    """Record of a single mutation applied during deimmunization."""
+    position: int
+    wildtype: str
+    mutant: str
+    epitope_removed: str
+    ddg: float
+    blosum62: int
+    binding_reduction: float
+    solubility_impact: float
+
+
+class MutationValidation(TypedDict):
+    """Validation result for a single mutation in a deimmunized protein."""
+    position: int
+    wildtype: str
+    mutant: str
+    blosum62: int
+    ddg_estimate: float
+    conservative: bool
+
+
+class ValidationReport(TypedDict):
+    """Validation report for a deimmunized protein."""
+    immunogenicity_reduced: bool
+    original_immunogenicity: float
+    optimized_immunogenicity: float
+    stability_preserved: bool
+    total_ddg: float
+    solubility_preserved: bool
+    original_solubility: float
+    optimized_solubility: float
+    solubility_change: float
+    all_mutations_conservative: bool
+    mutations: list[MutationValidation]
+    overall_valid: bool
+
 
 # ────────────────────────────────────────────────────────────
 # Data classes
@@ -114,7 +220,7 @@ class DeimmunizationResult(BaseEngineResult):
     # Domain-specific fields (backward-compatible)
     original_protein: str = ""
     optimized_protein: str = ""
-    mutations_applied: list[dict] = field(default_factory=list)  # [{position, wildtype, mutant, epitope_removed, ddg, blosum62}]
+    mutations_applied: list[AppliedMutation] = field(default_factory=list)
     original_immunogenicity: float = 0.0  # immunogenicity score before
     optimized_immunogenicity: float = 0.0  # immunogenicity score after
     original_t_cell_epitopes: int = 0
@@ -257,24 +363,24 @@ def _estimate_ddg(
             logger.debug("FoldX empirical_stability failed, falling back to BLOSUM62 heuristic")
 
     # Local BLOSUM62 heuristic fallback
-    blosum = BLOSUM62.get(wildtype, {}).get(mutant, -4)
+    blosum = BLOSUM62.get(wildtype, {}).get(mutant, _DEFAULT_BLOSUM62_SCORE)
 
     # BLOSUM62-based estimate: map [-4, 4] -> [0, ~5] kcal/mol
     # Higher blosum = more conservative = less destabilizing
-    blosum_component = max(0.0, (-blosum + 4) * 0.3)
+    blosum_component = max(0.0, (-blosum + _BLOSUM_DDG_OFFSET) * _BLOSUM_DDG_SCALE)
 
     # Hydropathy change: large hydro changes destabilize
     hydro_wt = HYDROPATHY.get(wildtype, 0.0)
     hydro_mt = HYDROPATHY.get(mutant, 0.0)
     hydro_change = abs(hydro_wt - hydro_mt)
-    hydro_component = hydro_change * 0.2
+    hydro_component = hydro_change * _HYDRO_DDG_SCALE
 
     # Proline substitutions in non-Pro positions are especially destabilizing
     proline_penalty = 0.0
     if mutant == "P" and wildtype != "P":
-        proline_penalty = 1.0
+        proline_penalty = _PROLINE_INTRODUCTION_PENALTY
     elif wildtype == "P" and mutant != "P":
-        proline_penalty = 0.5
+        proline_penalty = _PROLINE_REMOVAL_PENALTY
 
     ddg = blosum_component + hydro_component + proline_penalty
     return round(ddg, 3)
@@ -377,7 +483,7 @@ def _filter_binder_epitopes(epitopes: list[dict]) -> list[dict]:
 def compute_mutation_impact(
     protein: str, position: int, mutant_aa: str,
     mhc_alleles: list[str] | None = None,
-) -> dict:
+) -> MutationImpactResult:
     """Compute the impact of a single amino acid mutation.
 
     Assesses the effect on MHC binding, stability, and solubility.
@@ -402,21 +508,21 @@ def compute_mutation_impact(
         mhc_alleles = _DEFAULT_MHC_ALLELES.get("Homo_sapiens", [])
 
     if not protein or position < 0 or position >= len(protein):
-        return {
-            "binding_impact": [],
-            "stability_impact": 0.0,
-            "solubility_impact": 0.0,
-            "blosum62": 0,
-        }
+        return MutationImpactResult(
+            binding_impact=[],
+            stability_impact=0.0,
+            solubility_impact=0.0,
+            blosum62=0,
+        )
 
     wildtype = protein[position]
     if wildtype not in BLOSUM62 or mutant_aa not in BLOSUM62:
-        return {
-            "binding_impact": [],
-            "stability_impact": 0.0,
-            "solubility_impact": 0.0,
-            "blosum62": 0,
-        }
+        return MutationImpactResult(
+            binding_impact=[],
+            stability_impact=0.0,
+            solubility_impact=0.0,
+            blosum62=0,
+        )
 
     # Compute BLOSUM62 score
     blosum = BLOSUM62[wildtype][mutant_aa]
@@ -463,12 +569,12 @@ def compute_mutation_impact(
                     "binding_reduction": round(orig_score - mut_score, 4),
                 })
 
-    return {
-        "binding_impact": binding_impact,
-        "stability_impact": ddg,
-        "solubility_impact": sol_impact,
-        "blosum62": blosum,
-    }
+    return MutationImpactResult(
+        binding_impact=binding_impact,
+        stability_impact=ddg,
+        solubility_impact=sol_impact,
+        blosum62=blosum,
+    )
 
 
 def find_epitope_disrupting_mutations(
@@ -626,8 +732,8 @@ def rank_deimmunization_mutations(
     def _combined_score(m: MutationResult) -> float:
         blosum62 = m.details.get("blosum62", 0)
         ddg = m.details.get("ddg_estimate", 0.0)
-        conservation_factor = 1.0 - abs(blosum62) / 4.0
-        stability_factor = 1.0 - max(0.0, ddg) / 5.0
+        conservation_factor = 1.0 - abs(blosum62) / _BLOSUM62_RANGE_DIVISOR
+        stability_factor = 1.0 - max(0.0, ddg) / _DDG_SCALING_DIVISOR
         # Ensure factors are non-negative
         conservation_factor = max(0.0, conservation_factor)
         stability_factor = max(0.0, stability_factor)
@@ -686,7 +792,7 @@ def _compute_immunogenicity_score(
         return 0.0
 
     # Take top 5 epitope scores (or fewer if < 5)
-    top_scores = [e["score"] for e in binder_epitopes[:5]]
+    top_scores = [e["score"] for e in binder_epitopes[:_TOP_EPITOPES_FOR_SCORING]]
 
     # Scores from predict_t_cell_epitopes are already normalized to [0, 1]
     avg_score = sum(top_scores) / len(top_scores)
@@ -746,10 +852,9 @@ def _compute_solubility_score(protein: str) -> float:
             return result.overall_score
         return float(result)
     except ImportError:
-        pass
+        logger.debug("CamSol module unavailable, falling back to internal heuristic")
     except Exception:
-        logger.debug("Falling back to alternative deimmunization path", exc_info=True)
-        pass  # Fall back to internal heuristic
+        logger.warning("Deimmunization fallback triggered", exc_info=True)
 
     # Simplified CamSol-like intrinsic solubility
     # Based on average hydrophilicity and charge distribution
@@ -871,8 +976,8 @@ def deimmunize(
             def _combined_score(m: MutationResult) -> float:
                 blosum62 = m.details.get("blosum62", 0)
                 ddg = m.details.get("ddg_estimate", 0.0)
-                conservation_factor = 1.0 - abs(blosum62) / 4.0
-                stability_factor = 1.0 - max(0.0, ddg) / 5.0
+                conservation_factor = 1.0 - abs(blosum62) / _BLOSUM62_RANGE_DIVISOR
+                stability_factor = 1.0 - max(0.0, ddg) / _DDG_SCALING_DIVISOR
                 conservation_factor = max(0.0, conservation_factor)
                 stability_factor = max(0.0, stability_factor)
                 return m.score * conservation_factor * stability_factor
@@ -898,7 +1003,7 @@ def deimmunize(
                     continue
 
                 # Check cumulative ΔΔG
-                if total_ddg + ddg_est >= max_ddg * 2:
+                if total_ddg + ddg_est >= max_ddg * _CUMULATIVE_DDG_MULTIPLIER:
                     continue
 
                 # Check if this position was already mutated
@@ -995,7 +1100,7 @@ def validate_deimmunized_protein(
     protein: str,
     original_protein: str,
     organism: str = "Homo_sapiens",
-) -> dict:
+) -> ValidationReport:
     """Validate that a deimmunized protein meets quality criteria.
 
     Checks:
@@ -1050,19 +1155,19 @@ def validate_deimmunized_protein(
     optimized_solubility = _compute_solubility_score(protein)
     solubility_change = optimized_solubility - original_solubility
     # Allow up to 1.0 decrease in solubility score
-    solubility_preserved = solubility_change > -1.0
+    solubility_preserved = solubility_change > -_SOLUBILITY_DECREASE_TOLERANCE
 
     # Analyze mutations
     mutations = []
     total_ddg = 0.0
     all_conservative = True
-    min_blosum_threshold = -2  # Mutations below this are non-conservative
+    min_blosum_threshold = _CONSERVATIVE_BLOSUM_THRESHOLD  # Mutations below this are non-conservative
 
     for i, (wt_aa, mt_aa) in enumerate(zip(original_protein, protein)):
         if wt_aa == mt_aa:
             continue
 
-        blosum = BLOSUM62.get(wt_aa, {}).get(mt_aa, -4)
+        blosum = BLOSUM62.get(wt_aa, {}).get(mt_aa, _DEFAULT_BLOSUM62_SCORE)
         ddg = _estimate_ddg(wt_aa, mt_aa)
         total_ddg += ddg
 
@@ -1080,7 +1185,7 @@ def validate_deimmunized_protein(
         })
 
     # Stability: cumulative ΔΔG should be < 5.0 kcal/mol
-    stability_preserved = total_ddg < 5.0
+    stability_preserved = total_ddg < _MAX_CUMULATIVE_DDG_KCAL
 
     # Overall validation
     overall_valid = (
@@ -1104,17 +1209,17 @@ def validate_deimmunized_protein(
             "Deimmunized protein validation failed: %s", "; ".join(reasons)
         )
 
-    return {
-        "immunogenicity_reduced": immunogenicity_reduced,
-        "original_immunogenicity": original_immuno,
-        "optimized_immunogenicity": optimized_immuno,
-        "stability_preserved": stability_preserved,
-        "total_ddg": round(total_ddg, 3),
-        "solubility_preserved": solubility_preserved,
-        "original_solubility": original_solubility,
-        "optimized_solubility": optimized_solubility,
-        "solubility_change": round(solubility_change, 4),
-        "all_mutations_conservative": all_conservative,
-        "mutations": mutations,
-        "overall_valid": overall_valid,
-    }
+    return ValidationReport(
+        immunogenicity_reduced=immunogenicity_reduced,
+        original_immunogenicity=original_immuno,
+        optimized_immunogenicity=optimized_immuno,
+        stability_preserved=stability_preserved,
+        total_ddg=round(total_ddg, 3),
+        solubility_preserved=solubility_preserved,
+        original_solubility=original_solubility,
+        optimized_solubility=optimized_solubility,
+        solubility_change=round(solubility_change, 4),
+        all_mutations_conservative=all_conservative,
+        mutations=mutations,
+        overall_valid=overall_valid,
+    )

@@ -8,6 +8,14 @@ from __future__ import annotations
 
 from typing import TypeAlias
 
+__all__ = [
+    "CodonUsageTable",
+    "STOP_CODON_AA",
+    "ZERO_FREQUENCY",
+    "compute_codon_adaptiveness",
+    "compute_preferred_codons",
+]
+
 # Type alias for the codon usage table format:
 # {codon: (amino_acid, fraction, per_thousand, count)}
 CodonUsageTable: TypeAlias = dict[str, tuple[str, float, float, int]]
@@ -15,6 +23,11 @@ CodonUsageTable: TypeAlias = dict[str, tuple[str, float, float, int]]
 # Stop codon indicator used in codon usage tables.
 # Codons mapping to "*" are stop codons and excluded from adaptiveness/preferred computations.
 STOP_CODON_AA: str = "*"
+
+# Zero-frequency sentinel used as the initial / fallback value when
+# computing per-amino-acid maximum frequencies.  Extracted as a named
+# constant so the intent is explicit at every call-site.
+ZERO_FREQUENCY: float = 0.0
 
 
 def compute_codon_adaptiveness(
@@ -38,7 +51,7 @@ def compute_codon_adaptiveness(
     for _codon, (aa, _frac, freq, _count) in usage.items():
         if aa == STOP_CODON_AA:
             continue
-        current = aa_max_freq.get(aa, 0.0)
+        current = aa_max_freq.get(aa, ZERO_FREQUENCY)
         if freq > current:
             aa_max_freq[aa] = freq
 
@@ -48,7 +61,7 @@ def compute_codon_adaptiveness(
         if aa == STOP_CODON_AA:
             continue
         max_freq = aa_max_freq[aa]
-        adaptiveness[codon] = freq / max_freq if max_freq > 0.0 else 0.0
+        adaptiveness[codon] = freq / max_freq if max_freq > ZERO_FREQUENCY else 0.0
 
     return adaptiveness
 

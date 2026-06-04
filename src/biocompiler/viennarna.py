@@ -35,9 +35,11 @@ from typing import TypedDict
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "StemLoop", "MFEResult", "AccessibilityResult",
+    "StemLoop", "MFEResult", "AccessibilityResult", "MRNAStructureResult",
     "is_viennarna_available", "predict_mfe", "predict_accessibility",
     "find_stable_structures", "compute_5prime_dg",
+    "check_mrna_structure_viennarna", "predict_mfe_batch",
+    "predict_accessibility_batch",
 ]
 
 # ── Constants ──────────────────────────────────────────────
@@ -52,11 +54,10 @@ REGION_5UTR = "5utr"
 REGION_START_CODON = "start_codon"
 
 # Named constants replacing raw magic numbers
-REGION_5UTR_LENGTH: int = 50
-REGION_START_CODON_LENGTH: int = 100
-VERSION_CHECK_TIMEOUT: int = 5
-RNAFOLD_CLI_TIMEOUT: int = 30
-OVERLAP_MERGE_THRESHOLD: float = 0.5
+DEFAULT_FULL_LENGTH_CUTOFF: int = 100
+DEFAULT_FOLD_TIMEOUT_SECONDS: int = 5
+MAX_FOLD_TIMEOUT_SECONDS: int = 30
+DEFAULT_OVERLAP_THRESHOLD: float = 0.5
 
 # Keep in sync with solver/constraints.py NEAREST_NEIGHBOR_* constants
 NEAREST_NEIGHBOR_GC: float = -1.5
@@ -146,9 +147,9 @@ def _extract_region(dna: str, region: str) -> str:
     if region == REGION_FULL:
         return dna
     if region == REGION_5UTR:
-        return dna[:REGION_5UTR_LENGTH]
+        return dna[:DEFAULT_5PRIME_WINDOW]
     if region == REGION_START_CODON:
-        return dna[:REGION_START_CODON_LENGTH]
+        return dna[:DEFAULT_FULL_LENGTH_CUTOFF]
     logger.debug("Unknown region %r, using full sequence", region)
     return dna
 
@@ -215,10 +216,10 @@ def is_viennarna_available() -> bool:
         import RNA  # noqa: F401
         return True
     except ImportError:
-        pass
+        logger.debug("ViennaRNA Python bindings not available, trying CLI")
     try:
         r = subprocess.run(["RNAfold", "--version"],
-                           capture_output=True, text=True, timeout=VERSION_CHECK_TIMEOUT)
+                           capture_output=True, text=True, timeout=DEFAULT_FOLD_TIMEOUT_SECONDS)
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
@@ -233,14 +234,14 @@ def _get_viennarna_version() -> tuple[int, int, int] | None:
             v = RNA.fold_version()
         return _parse_version(v)
     except ImportError:
-        pass
+        logger.debug("ViennaRNA Python bindings not available for version check, trying CLI")
     try:
         r = subprocess.run(["RNAfold", "--version"],
-                           capture_output=True, text=True, timeout=VERSION_CHECK_TIMEOUT)
+                           capture_output=True, text=True, timeout=DEFAULT_FOLD_TIMEOUT_SECONDS)
         if r.returncode == 0:
             return _parse_version(r.stdout + r.stderr)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
+        logger.debug("RNAfold CLI not found or timed out for version check")
     return None
 
 
@@ -300,7 +301,7 @@ def _predict_mfe_cli(rna_sequence: str) -> tuple[str, float] | None:
     try:
         proc = subprocess.run(
             ["RNAfold", "--noPS"], input=rna_sequence,
-            capture_output=True, text=True, timeout=RNAFOLD_CLI_TIMEOUT,
+            capture_output=True, text=True, timeout=MAX_FOLD_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
         return None
@@ -513,7 +514,7 @@ def find_stable_structures(
         prev = merged[-1]
         overlap = max(0, min(prev.end, cur.end) - max(prev.start, cur.start))
         shorter = min(prev.end - prev.start, cur.end - cur.start)
-        if shorter > 0 and overlap / shorter >= OVERLAP_MERGE_THRESHOLD:
+        if shorter > 0 and overlap / shorter >= DEFAULT_OVERLAP_THRESHOLD:
             if cur.mfe < prev.mfe:
                 merged[-1] = cur
         else:
@@ -553,11 +554,29 @@ def compute_5prime_dg(
 # ── Integration helper for type_system.py ──────────────────
 
 class MRNAStructureResult(TypedDict):
-    """Return type for check_mrna_structure_viennarna."""
+    """Return type for check_mrna_structure_viennarna.
+
+    Attributes:
+        dg: Free energy of the folded structure (kcal/mol).
+            More negative = more stable. 0.0 for trivial/unavailable.
+        method: Backend used — ``"viennarna_python"``, ``"viennarna_cli"``,
+            ``"toy_hairpin_fallback"``, or ``"trivial"``.
+        structure: Dot-bracket notation for the folded region.
+            Empty string when ViennaRNA is unavailable.
+        viennarna_used: True when the result came from ViennaRNA
+            (Python bindings or CLI); False for toy/trivial fallback.
+        has_hairpin: True when at least one stem-loop with ΔG below
+            *dg_threshold* was detected in the analysis window.
+        hairpin_positions: List of ``(start, end)`` tuples for each
+            detected hairpin, 0-based within the *window_start:window_end*
+            subsequence.  Empty when no hairpins are found.
+    """
     dg: float
     method: str
     structure: str
     viennarna_used: bool
+    has_hairpin: bool
+    hairpin_positions: list[tuple[int, int]]
 
 
 def check_mrna_structure_viennarna(
@@ -579,17 +598,31 @@ def check_mrna_structure_viennarna(
         dg_threshold: ΔG threshold for FAIL verdict (default -15.0).
 
     Returns:
-        Dict with keys ``dg``, ``method``, ``structure``, ``viennarna_used``.
+        :class:`MRNAStructureResult` with keys ``dg``, ``method``,
+        ``structure``, ``viennarna_used``, ``has_hairpin``,
+        ``hairpin_positions``.
     """
     rna = _dna_to_rna(dna_sequence[window_start:window_end])
     if len(rna) < 4:
         return {"dg": 0.0, "method": "trivial",
-                "structure": "." * len(rna), "viennarna_used": False}
+                "structure": "." * len(rna), "viennarna_used": False,
+                "has_hairpin": False, "hairpin_positions": []}
 
     result = _fold_mfe(rna)
     if result.success:
+        # Detect hairpins in the folded result
+        hairpin_positions: list[tuple[int, int]] = []
+        for start, end, _ in _identify_stem_loops(result.structure):
+            sub_rna = rna[start:end]
+            if len(sub_rna) < 4:
+                continue
+            sub_result = _fold_mfe(sub_rna)
+            if sub_result.success and sub_result.mfe < dg_threshold:
+                hairpin_positions.append((start, end))
         return {"dg": result.mfe, "method": result.method,
-                "structure": result.structure, "viennarna_used": True}
+                "structure": result.structure, "viennarna_used": True,
+                "has_hairpin": len(hairpin_positions) > 0,
+                "hairpin_positions": hairpin_positions}
 
     # Fallback: toy hairpin model (mirrors type_system.py logic)
     gc = au = gu = 0
@@ -605,7 +638,8 @@ def check_mrna_structure_viennarna(
             gu += 1
     return {"dg": NEAREST_NEIGHBOR_GC * gc + NEAREST_NEIGHBOR_AU * au + NEAREST_NEIGHBOR_GU * gu,
             "method": "toy_hairpin_fallback", "structure": "",
-            "viennarna_used": False}
+            "viennarna_used": False,
+            "has_hairpin": False, "hairpin_positions": []}
 
 
 # ── Batch processing ───────────────────────────────────────
@@ -659,4 +693,4 @@ def _log_version_info() -> None:
 try:
     _log_version_info()
 except Exception:
-    logger.debug("Version info logging failed", exc_info=True)
+    logger.warning("ViennaRNA operation failed", exc_info=True)

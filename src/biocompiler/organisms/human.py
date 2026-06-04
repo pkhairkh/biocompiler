@@ -6,7 +6,7 @@ Source: Kazusa Codon Usage Database
 Coding GC: 52.27%
 """
 
-from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
 
 __all__ = [
     "HUMAN_CODON_USAGE",
@@ -16,7 +16,7 @@ __all__ = [
 ]
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
-HUMAN_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
+HUMAN_CODON_USAGE: CodonUsageTable = {
     "TTT": ("F", 0.46, 17.6, 714298),
     "TTC": ("F", 0.54, 20.3, 824692),
     "TTA": ("L", 0.08, 7.7, 311881),

@@ -6,7 +6,7 @@ CHO cells are the most commonly used mammalian host for
 biopharmaceutical protein production.
 """
 
-from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
 
 __all__ = [
     "CHO_CODON_USAGE",
@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
-CHO_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
+CHO_CODON_USAGE: CodonUsageTable = {
     "TTT": ("F", 0.45, 17.2, 234567),
     "TTC": ("F", 0.55, 20.9, 285123),
     "TTA": ("L", 0.07, 7.4, 100892),

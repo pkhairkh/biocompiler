@@ -14,23 +14,36 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "display_sequence",
+    "display_optimization_result",
+    "display_type_check",
+    "plot_gc_content",
+    "plot_codon_usage",
+    "interactive_optimize",
+]
 
 # ==============================================================================
 # Color Constants for HTML Display
 # ==============================================================================
 
-_VERDICT_COLORS = {
+_VERDICT_COLORS: dict[str, str] = {
     "PASS": "#28a745",
     "FAIL": "#dc3545",
     "UNCERTAIN": "#ffc107",
 }
 
-_BASE_COLORS = {
+_BASE_COLORS: dict[str, str] = {
     "A": "#4CAF50",  # Green
     "T": "#F44336",  # Red
     "G": "#FF9800",  # Orange
     "C": "#2196F3",  # Blue
 }
+
+# GC content display thresholds
+_GC_LOW_THRESHOLD: float = 0.30
+_GC_HIGH_THRESHOLD: float = 0.70
+_CAI_DISPLAY_THRESHOLD: float = 0.5
 
 
 def _check_ipython() -> None:
@@ -200,8 +213,8 @@ def display_optimization_result(result) -> None:
     gc = result.gc_content
     seq_len = len(result.sequence)
 
-    cai_color = _VERDICT_COLORS["PASS"] if cai >= 0.5 else _VERDICT_COLORS["FAIL"]
-    gc_color = _VERDICT_COLORS["PASS"] if 0.30 <= gc <= 0.70 else _VERDICT_COLORS["FAIL"]
+    cai_color = _VERDICT_COLORS["PASS"] if cai >= _CAI_DISPLAY_THRESHOLD else _VERDICT_COLORS["FAIL"]
+    gc_color = _VERDICT_COLORS["PASS"] if _GC_LOW_THRESHOLD <= gc <= _GC_HIGH_THRESHOLD else _VERDICT_COLORS["FAIL"]
 
     metrics_html = f"""
     <div style="display:flex;gap:16px;margin-bottom:12px;">
@@ -657,7 +670,7 @@ def interactive_optimize(
                 try:
                     display_optimization_result(result)
                 except ImportError:
-                    pass  # IPython not available, text output is fine
+                    logger.debug("IPython not available for rich HTML display")
 
             except Exception as e:
                 print(f"\n❌ Optimization failed: {e}")
