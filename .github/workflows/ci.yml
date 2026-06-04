@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11"]
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - name: Checkout code
@@ -77,13 +77,6 @@ jobs:
 
       - name: Check Lean4 proofs (proof/)
         working-directory: proof
-        run: |
-          lake exe cache get || true
-          lake build
-        continue-on-error: true
-
-      - name: Check Lean4 proofs (lean/)
-        working-directory: lean
         run: |
           lake exe cache get || true
           lake build

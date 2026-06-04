@@ -5,7 +5,7 @@ Hypothesis-based property tests verifying that the Python mutagenesis
 and conservation implementation matches the Lean4 theorems from:
 
   - proof/BioCompiler/Mutagenesis.lean
-  - lean/BioCompiler/Predicates.lean
+  - proof/BioCompiler/TypeSystem.lean (previously lean/BioCompiler/Predicates.lean)
 
 Mapped Lean4 theorems → Python property tests:
 

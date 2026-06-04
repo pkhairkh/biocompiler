@@ -1,4 +1,4 @@
-# ADR-012: CpG Avoidance in Greedy Optimizer
+# ADR-0012: CpG Avoidance in Greedy Optimizer
 
 ## Status: Accepted
 
@@ -85,5 +85,5 @@ as unrepairable.
 
 ## References
 
-- ADR-0011: Predicate Checking Delegation (NoCpGIsland in type system)
+- ADR-0014: Predicate Checking Delegation (NoCpGIsland in type system)
 - ADR-0008: Greedy Multi-Objective Optimizer as Default (step architecture)

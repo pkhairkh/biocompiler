@@ -1,5 +1,5 @@
 """
-BioCompiler — Machine-Verified Gene Design  (v9.0.0)
+BioCompiler — Machine-Verified Gene Design  (v9.2.0)
 
 A compiler framework for human protein synthesis using intermediate
 representations. Pipeline:
@@ -8,7 +8,7 @@ representations. Pipeline:
 
 All computation is DETERMINISTIC: same input always produces identical output.
 
-v9.0.0 highlights:
+v9.2.0 highlights:
   - Unified engine API: BaseEngineResult, MutationResult, BatchResult
     shared across all 6 analysis engines (ESMFold, FoldX, CamSol,
     Immunogenicity, Deimmunization, Protein Design)

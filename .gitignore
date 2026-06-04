@@ -1,14 +1,55 @@
-# BioCompiler
-
-# Python bytecode
+# Python
 __pycache__/
-*.pyc
-*.pyo
-
-# Lean build artifacts
-lean/.lake/build/
-lean/.lake/config/
-
-# OS files
-.DS_Store
+*.py[cod]
+*$py.class
+*.so
+.eggs/
+*.egg-info/
+*.egg
+dist/
+build/
 .venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Lean4 / Lake
+.lake/
+*.olean
+*.ilean
+*.trace
+*.hash
+
+# LaTeX
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.toc
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.c

@@ -429,7 +429,7 @@ predicates correctly identify aggregation-prone regions.
 For $\alpha$-synuclein, CamSol (dual Wimley--White + Urry scale) flags
 the NAC region (residues~61--95) as aggregation-prone (solubility score
 $< -1.0$ at 27/35~positions), consistent with experimental
-data~\cite{giasson2001nacfibrillization}.  The
+data~\cite{giasson2002nacfibrillization}.  The
 $\mathit{SolubilityProfile}$ predicate returns \FAIL{} for the wild-type
 sequence.  After type-directed mutagenesis (3~substitutions in the NAC
 region: A76$\to$G, V74$\to$T, A78$\to$S, each BLOSUM62~$\ge 0$), the
@@ -781,11 +781,11 @@ multi-parameter gene design tool without formal guarantees or
 certificate-based verification.  DNAworks~\cite{vandenbergh2015dnaworks}
 uses a Monte Carlo approach for oligonucleotide assembly design,
 providing probabilistic rather than categorical assurances.
-GeneOptimizer~\cite{fath2008geneoptimizer} performs multi-parameter
+GeneOptimizer~\cite{fath2011geneoptimizer} performs multi-parameter
 optimization but lacks compositional soundness.
 jCAT~\cite{gage2006jcat} focuses on single-objective CAI maximization
 and does not check cryptic splice sites, instability motifs, or
-restriction sites.  NUPACK/Nuskell~\cite{zadeh2015nupack} optimizes
+restriction sites.  NUPACK/Nuskell~\cite{zadeh2011nupack} optimizes
 nucleic acid sequences for structure without formal verification.
 
 None of these tools provide: (1)~a three-valued logic that handles
@@ -837,7 +837,7 @@ than type-system soundness.  Their work ensures that a counting program
 computes the right answer; our work ensures that a type checker's
 verdicts are sound.
 
-Hinton and Kwiatkowski~\cite{hinton2004prism} used PRISM for
+Hinton and Kwiatkowski~\cite{hinton2006prism} used PRISM for
 probabilistic model checking of biological systems, providing
 quantitative bounds on system behavior.  PRISM's guarantees are
 probabilistic (``the system satisfies property $\phi$ with probability
@@ -847,7 +847,7 @@ PRISM models what is likely; BioCompiler certifies what is certain.
 
 \paragraph{Type systems for non-standard domains.}
 Type systems have been applied to security (information-flow
-types~\cite{abadi1999security}), hardware (Haskell HDLs with
+types~\cite{abadi2000security}), hardware (Haskell HDLs with
 type-level scheduling constraints~\cite{hanna2010hardware}), and network
 protocols (session types~\cite{mandel2005bidirectional}).  BioCompiler
 extends this line of work to biological sequences, showing that the

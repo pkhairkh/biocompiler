@@ -16,21 +16,9 @@ type_soundness: ∀ P, ∀ seq, ∀ C, evaluate(P, seq, C) = PASS → propertyHo
 
 This is, to our knowledge, the first formal verification of a type system governing biological sequence analysis.
 
----
+Where existing gene design tools provide scores, heuristics, or ML predictions, BioCompiler provides a categorical answer — not a better heuristic, but a different *kind* of answer — using three-valued logic (PASS / FAIL / UNCERTAIN), type predicates enforcing biological constraints, and compositional soundness that preserves guarantees without independence assumptions.
 
-## The Core Idea
-
-| Question Every Other Tool Asks | Question BioCompiler Asks |
-|-------------------------------|--------------------------|
-| "What is the probability this gene design works?" | "What is **guaranteed** about this gene design?" |
-
-Existing gene design tools (GeneDesign, DNAWorks, IDT codon optimizer, SpliceAI) provide scores, heuristics, or ML predictions. None provide a machine-verified guarantee. BioCompiler provides a categorical answer — not a better heuristic, but a different *kind* of answer — by using:
-
-- **Three-valued logic** (PASS / FAIL / UNCERTAIN) instead of probability scores
-- **Type predicates** that enforce biological constraints (splice correctness, reading frame, codon adaptation, GC content, restriction sites, instability motifs, CpG islands)
-- **Compositional soundness** — combining predicates preserves guarantees without independence assumptions
-- **NDFSTs** (Non-Deterministic Finite State Transducers) to model biological non-determinism deterministically
-- **Type-directed mutagenesis** — when the type system proves a predicate unsatisfiable at the codon level, it proposes conservative amino acid substitutions to make satisfaction possible
+For safety-critical gene design — gene therapy, clinical-grade synthetic biology — a false positive can kill a patient. No existing gene design tool provides a machine-verified guarantee that its output is correct. BioCompiler does.
 
 ---
 
@@ -38,219 +26,15 @@ Existing gene design tools (GeneDesign, DNAWorks, IDT codon optimizer, SpliceAI)
 
 | Result | Status |
 |--------|--------|
-| **Soundness proof** — 0 `sorry`, 0 axioms, 5 explicit TCB assumptions | Lean4 formalization |
+| **Soundness proof** — 0 `sorry`, 0 axioms, 5 TCB assumptions | Lean4 formalization |
 | **Compositional soundness** — composing predicates preserves soundness under three-valued logic | Proved in Lean4 |
-| **SLOT independence** — FFI (external tool) calls never produce PASS | Proved in Lean4 |
-| **Per-predicate soundness** — all 28 type predicates covered (13 core proved sound + 19 SLOT-dependent proved UNCERTAIN) | Proved in Lean4 |
-| **Production pipeline** — Scanner → NDFST → Translation → TypeCheck → Certificate → Verify | Python package (420+ tests) |
-| **HBB full pass** — all 8 optimizer predicates pass simultaneously (NoStopCodons, NoCrypticSplice, NoCpGIsland, NoRestrictionSite, NoGTDinucleotide, ValidCodingSeq, ConservationScore, CodonOptimality) | HBB CAI=0.97 |
-| **Unified engine API** — `BaseEngineResult`, `MutationResult`, `BatchResult` shared across all 6 engines | engine_base.py |
-| **28-predicate type system** — 12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity | type_system.py |
-| **SLOT architecture** — 13 core predicates (PASS/FAIL) + 19 SLOT-dependent predicates (always UNCERTAIN) | Lean4 proved |
-| **CpG reconciliation** — post-CAI aggressive CpG elimination without reintroduction | NoCpGIsland now passes |
-| **CAI reconciliation** — post-constraint CAI maximization with hard-constraint preservation | CodonOptimality now passes |
-| **Cross-codon coordination** — pairwise codon-boundary resolution of GT/CG/RS violations | Optimizer phase |
-| **GT-free codon prioritization** — Phase 7 rewrite with 3-strategy approach for cryptic splice elimination | NoCrypticSplice pass rate ~60%+ |
+| **SLOT independence** — FFI calls never produce PASS | Proved in Lean4 |
+| **Per-predicate soundness** — 13 core proved sound + 19 SLOT-dependent proved UNCERTAIN | Proved in Lean4 |
+| **Production pipeline** — Scanner → NDFST → Translation → TypeCheck → Certificate → Verify | Python (420+ tests) |
+| **HBB full pass** — 8 optimizer predicates pass simultaneously | HBB CAI=0.97 |
+| **28-predicate type system** — 12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity | 13 core + 19 SLOT |
 | **Type-directed mutagenesis** — V→I substitutions make HBB feasible (BLOSUM62=+3) | Proof of concept |
-| **Graduated certificates** — partial compliance documentation with mutagenesis metadata | JSON format |
-| **Greedy optimizer** — multi-codon coordinated solving, scales to 1500+ AA proteins | Default solver |
 | **SE specification** — 11 IEEE/ISO-standard documents + 14 ADRs | Complete |
-
----
-
-## 28-Predicate Type System (v9.0.0)
-
-BioCompiler v9.0.0 extends the type system from 8 to 28 predicates, organized into five domains. The Lean4 soundness proof covers all 28 predicates: 13 core predicates produce PASS/FAIL verdicts (individually proved sound), and 19 SLOT-dependent predicates always return UNCERTAIN (vacuously sound — they never produce PASS, so the implication `evaluate(P) = PASS → propertyHolds(P)` holds trivially).
-
-### DNA-Level Predicates (12)
-
-| # | Predicate | Checks | Category |
-|---|-----------|--------|----------|
-| 1 | `NoStopCodons` | No internal stop codons | Core |
-| 2 | `NoCrypticSplice` | No splice-site-like motifs exceeding MaxEntScan threshold | Core |
-| 3 | `NoCpGIsland` | No CpG islands (sliding window GC + Obs/Exp CG ratio) | Core |
-| 4 | `NoRestrictionSite` | No enzyme recognition sites present | Core |
-| 5 | `NoGTDinucleotide` | No avoidable GT dinucleotides (cross-codon aware) | Core |
-| 6 | `ValidCodingSeq` | In-frame, valid codons only | Core |
-| 7 | `ConservationScore` | BLOSUM62-based AA conservation | Core |
-| 8 | `CodonOptimality` | Geometric mean CAI ≥ threshold | Core |
-| 9 | `NoCrypticPromoter` | Cryptic promoter avoidance | SLOT-dependent |
-| 10 | `NoUnexpectedTMDomain` | Unexpected transmembrane domain detection | SLOT-dependent |
-| 11 | `mRNASecondaryStructure` | mRNA secondary structure around RBS | SLOT-dependent |
-| 12 | `CoTranslationalFolding` | Co-translational folding pause-site preservation | SLOT-dependent |
-
-### Structure Predicates (4)
-
-| # | Predicate | Checks | Category |
-|---|-----------|--------|----------|
-| 13 | `StructureConfidence` | ESMFold structure quality confidence | SLOT-dependent |
-| 14 | `NoMisfoldingRisk` | Misfolding risk indicators | SLOT-dependent |
-| 15 | `CorrectFoldTopology` | Fold topology validation | SLOT-dependent |
-| 16 | `NoUnexpectedInteraction` | Unwanted protein-protein interactions | SLOT-dependent |
-
-### Stability Predicates (4)
-
-| # | Predicate | Checks | Category |
-|---|-----------|--------|----------|
-| 17 | `StableFolding` | Thermodynamic stability (ΔG) | SLOT-dependent |
-| 18 | `NoDestabilizingMutation` | No high-ΔΔG mutations | SLOT-dependent |
-| 19 | `DisulfideBondIntegrity` | Cysteine pairing check | SLOT-dependent |
-| 20 | `HydrophobicCoreQuality` | Hydrophobic core composition | SLOT-dependent |
-
-### Solubility Predicates (4)
-
-| # | Predicate | Checks | Category |
-|---|-----------|--------|----------|
-| 21 | `SolubleExpression` | CamSol solubility score | SLOT-dependent |
-| 22 | `NoAggregationProneRegion` | Aggregation-prone region detection | SLOT-dependent |
-| 23 | `ChargeComposition` | Charge balance and pI | Core |
-| 24 | `NoLongHydrophobicStretch` | Long hydrophobic stretch detection | Core |
-
-### Immunogenicity Predicates (4)
-
-| # | Predicate | Checks | Category |
-|---|-----------|--------|----------|
-| 25 | `LowImmunogenicity` | Overall immunogenicity score | SLOT-dependent |
-| 26 | `NoStrongTCellEpitope` | MHC binding epitope detection | SLOT-dependent |
-| 27 | `NoDominantBCellEpitope` | B-cell epitope coverage | SLOT-dependent |
-| 28 | `PopulationCoverageSafe` | MHC allele population coverage | SLOT-dependent |
-
-> **Note on SLOT-dependent predicates:** SLOT-dependent predicates rely on external tool output (FFI) and cannot produce PASS in the formal model. They always return UNCERTAIN, which is the correct and safe behavior — the system declines to guarantee what it cannot verify deterministically. The Lean4 proof formally establishes that SLOT-dependent predicates never produce PASS (`ffi_never_pass`), so they cannot compromise compositional soundness. Certificate validity is independent of SLOT values. See the [SLOT Architecture](#slot-architecture) section below.
-
----
-
-## Unified Engine API (v9.0.0)
-
-All six analysis engines (ESMFold, FoldX, CamSol, Immunogenicity, Deimmunization, Protein Design) now share a unified result type hierarchy:
-
-- **`BaseEngineResult`** — base class with `sequence`, `primary_score`, `classification`, `engine_name`, `primary_score_label`, `passed`, `success`, `execution_time_s`
-- **`MutationResult`** — unified mutation representation with `position`, `original`, `mutant`, `delta_score`, `score_type`, `engine`, `recommendation`
-- **`BatchResult[T]`** — batch result container with `results`, `errors`, `successful`, `failed`, `total_time_s`
-- **`EngineTimer`** — context manager for execution timing
-- **`EngineConfig`** — shared configuration (`use_cache`, `timeout_s`, `verbose`, `max_workers`)
-- **`classify_score()`** — threshold-based score classification shared across engines
-
-Each engine result type inherits from `BaseEngineResult` and provides backward-compatible property aliases (e.g., `FoldXResult.ddg` → `primary_score`, `ESMFoldResult.plddt` → `primary_score`, `CamSolResult.score` → `primary_score`).
-
-```python
-from biocompiler.engine_base import BaseEngineResult, MutationResult, BatchResult, EngineTimer
-
-# All engine results share the unified interface
-result = empirical_stability("MVHLTPEEK...")  # Returns FoldXResult(BaseEngineResult)
-print(result.primary_score)    # ΔΔG value
-print(result.classification)   # "stable", "unstable", etc.
-print(result.passed)           # True if success
-print(result.engine_name)      # "foldx"
-
-# Batch operations return BatchResult
-batch = predict_structure_batch(sequences)  # Returns BatchResult[ESMFoldResult]
-print(f"{batch.successful}/{batch.total} succeeded")
-```
-
----
-
-## SLOT Architecture
-
-The 28-predicate type system is partitioned into **core** and **SLOT-dependent** predicates based on whether evaluation requires external tool output (FFI).
-
-**Core predicates** (13) evaluate deterministically from the nucleotide sequence and grammar rules alone. They produce PASS or FAIL verdicts and are individually proved sound in Lean4.
-
-**SLOT-dependent predicates** (19) require external tool output — structure prediction (AlphaFold/ESMFold), stability calculation (FoldX), solubility scoring (CamSol), immunogenicity prediction (MHC binding), etc. In the formal model, these always return UNCERTAIN because the external tool is treated as a non-deterministic black box.
-
-The Lean4 proof establishes three key properties:
-
-1. **`ffi_never_pass`**: SLOT-dependent predicates never produce PASS, regardless of SLOT values
-2. **`slot_predicates_dont_affect_pass`**: If any SLOT-dependent predicate is in the evaluation list, `evaluateAll` cannot return PASS
-3. **`certificate_slot_independent`**: Certificate validity does not change when SLOT values are modified
-
-This means the soundness guarantee is preserved even when the type system includes SLOT-dependent predicates — they are safely isolated from the PASS/FAIL logic.
-
----
-
-## Type-Directed Protein Mutagenesis
-
-The key innovation: the type predicate doesn't just **verify** — it **directs design** across the central dogma boundary (DNA→RNA→Protein).
-
-When the type system proves that NO codon assignment can satisfy all predicates (e.g., Valine's codons ALL contain GT, making cryptic splice donor elimination impossible), the mutagenesis engine proposes conservative amino acid substitutions ranked by BLOSUM62 score.
-
-**v7.1 improvement**: The mutagenesis engine now distinguishes between GT-mandatory positions (Valine only — all codons contain GT) and optimizer weaknesses (GT-free codons exist but weren't used). Mutagenesis is only proposed for GT-mandatory positions, preventing unnecessary protein modifications and exposing optimizer bugs for repair.
-
-**HBB proof of concept**: 15 V→I substitutions (BLOSUM62=+3 each) turn an impossible constraint (5/6 predicates failing) into a solvable one, at only 0.2% CAI cost and 99.3% protein identity.
-
-```
-Optimizer → Type System → [FAIL: NoCrypticSplice at V positions]
-                           |
-                    Mutagenesis Engine
-                    (V→I, BLOSUM62=+3, GT-free codons)
-                           |
-                    Modified Protein → Optimizer → Type System → [PASS]
-```
-
----
-
-## Repository Structure
-
-```
-biocompiler/
-├── proof/                        # Lean4 machine-verified soundness proof
-│   ├── lakefile.lean             # Build configuration
-│   ├── BioCompiler/              # Proof modules
-│   │   ├── Soundness.lean        # Central soundness theorem
-│   │   ├── TypeSystem.lean       # Type predicate evaluation + per-predicate proofs
-│   │   ├── ThreeValued.lean      # Three-valued logic algebra (12 theorems)
-│   │   ├── Scanners.lean         # Concrete scanner implementations with completeness proofs
-│   │   ├── Sequence.lean         # Pattern matching with completeness proofs
-│   │   ├── NDFST.lean            # NDFST semantics with path-based characterization
-│   │   ├── Compositional.lean    # Compositional soundness proof
-│   │   └── SLOTIndependence.lean # FFI/certificate SLOT independence proofs
-│   └── doc/
-│       └── DOC-11-Formal-Soundness-Proof.md
-│
-├── src/biocompiler/              # Production Python package
-│   ├── __init__.py               # Public API (160 exports)
-│   ├── types.py                  # Core data structures (Verdict, Token, Certificate)
-│   ├── exceptions.py             # Typed exception hierarchy (10 exception types)
-│   ├── constants.py              # Biological constants (codon table, enzymes, IUPAC)
-│   ├── scanner.py                # Multi-DFA motif detection
-│   ├── maxentscan.py             # MaxEntScan splice site scoring
-│   ├── splicing.py               # NDFST isoform computation
-│   ├── translation.py            # Codon-to-amino-acid FST + CAI computation
-│   ├── type_system.py            # Predicate registry + 8 evaluator functions
-│   ├── optimization.py           # Greedy multi-phase optimizer (Phases 1-8.5) + mutagenesis loop
-│   ├── mutagenesis.py            # Type-directed mutagenesis (GT-mandatory distinction)
-│   ├── certificate.py            # Graduated certificate generation + verification
-│   ├── organisms/                # Organism-specific data (5 organisms)
-│   ├── grammar_loader.py         # YAML grammar loading
-│   ├── export.py                 # FASTA/GenBank export
-│   ├── api.py                    # REST API (FastAPI)
-│   ├── cli.py                    # Command-line interface
-│   └── jupyter.py                # Jupyter integration
-│
-├── tests/                        # Test suite (348 tests)
-│   ├── test_biocompiler_unified.py  # Core functionality tests
-│   ├── test_mutagenesis.py       # Mutagenesis engine tests
-│   ├── test_v31_enhancements.py  # v3.1 enhancement tests
-│   ├── test_v32_hardening.py     # v3.2 hardening tests
-│   ├── test_production_features.py # Production feature tests
-│   └── test_dataset_validation.py  # Dataset validation (120 sequences)
-│
-├── docs/                         # Complete SE specification
-│   ├── 00-README.md              # Document map and reading order
-│   ├── 01-SRS.md                 # IEEE 830/29148 — Software Requirements
-│   ├── 02-SAD.md                 # ISO/IEC/IEEE 42010 — Software Architecture
-│   ├── 03-SDD.md                 # IEEE 1016 — Software Design
-│   ├── 04-ICD.md                 # MIL-STD-2549/IEEE 1320 — Interface Control
-│   ├── 05-SVVP.md                # IEEE 1012 — Verification & Validation Plan
-│   ├── 06-Design-Rationale.md    # ISO/IEC/IEEE 42010 §7 — Design Rationale
-│   ├── 07-Project-Plan.md        # IEEE 16326/PMBOK — Project Plan
-│   ├── 08-Traceability-Matrix.md # ISO/IEC/IEEE 15289 — Traceability
-│   ├── 09-Critical-Analysis.md   # Nine fatal flaws in the original proposal
-│   ├── 10-Deterministic-Methods.md # Six deterministic methods for non-deterministic biology
-│   └── adr/                      # Architecture Decision Records (14 ADRs)
-│
-└── paper/                        # Publication
-    └── main.tex                  # LaTeX manuscript
-```
 
 ---
 
@@ -276,10 +60,8 @@ result = optimize_sequence(
 )
 
 print(f"CAI: {result.cai:.4f}")
-print(f"GC: {result.gc_content:.4f}")
-print(f"Mutagenesis: {result.mutagenesis_applied}")
 print(f"Satisfied: {result.satisfied_predicates}")
-print(f"Failed: {result.failed_predicates}")
+print(f"Mutagenesis: {result.mutagenesis_applied}")
 
 # Generate and verify a certificate
 results = evaluate_all_predicates(seq=result.sequence, known_exon_boundaries=[(0, len(result.sequence))])
@@ -288,84 +70,64 @@ status, failures = verify_certificate(cert.to_dict())
 print(f"Certificate: {status}")
 ```
 
-### CLI
+### CLI / REST API
 
 ```bash
 biocompiler optimize --protein "MVHLTPEEK..." --organism Homo_sapiens --enable-mutagenesis
-biocompiler check --sequence ATGGTGCATCTG... --organism Homo_sapiens
-biocompiler certify --sequence ATGGTGCATCTG... --organism Homo_sapiens
-```
-
-### REST API
-
-```bash
 uvicorn biocompiler.api:app --host 0.0.0.0 --port 8000
-curl -X POST http://localhost:8000/optimize -d '{"protein": "MVHLTPEEK...", "organism": "Homo_sapiens"}'
 ```
 
----
-
-## Building the Proof
-
-### Prerequisites
-
-- [Lean4](https://leanprover.github.io/) (via [elan](https://github.com/leanprover/elan))
-- [Lake](https://github.com/leanprover/lake) build system (included with Lean4)
-
-### Build
+### Building the Proof
 
 ```bash
 cd proof/
-lake build
+lake build    # Requires Lean4 (via elan)
 ```
 
-This compiles all proof modules and verifies the soundness theorem. A successful build confirms that all proofs machine-check with 0 `sorry` and 0 axioms.
+A successful build confirms all proofs machine-check with 0 `sorry` and 0 axioms.
 
 ---
 
-## The Trusted Computing Base
+## Architecture
 
-The soundness proof rests on 5 explicitly stated assumptions. These are the boundaries beyond which the proof does not extend:
+```
+DNA Sequence → Scanner → NDFST (Splicing) → Translation → TypeCheck → Certificate → Verify
+                  ↓                          ↓              ↓
+              IR-Seq tokens            IR-Peptide     PASS/FAIL/UNCERTAIN
+```
 
-| TCB | Assumption | Rationale |
-|-----|-----------|-----------|
-| TCB-1 | The NDFST grammar faithfully models the splicing process for the target cell type | Grammar curation from experimental data (ENCODE/GTEx) |
-| TCB-2 | The codon usage table accurately reflects translation efficiency in the target organism | Standard biochemistry data (Kazusa) |
-| TCB-3 | The scanner thresholds are conservative upper bounds for non-functional sites | Domain-expert curation |
-| TCB-4 | The restriction enzyme recognition sequences are correct | REBASE database |
-| TCB-5 | Pattern matching is implemented correctly | Standard algorithm; could itself be verified |
+The pipeline processes gene sequences through typed intermediate representations. Core predicates (13) evaluate deterministically; SLOT-dependent predicates (19) delegate to external tools and return UNCERTAIN in the formal model. Type-directed mutagenesis proposes conservative amino acid substitutions when no codon assignment satisfies all predicates.
 
-Every guarantee is conditional on these assumptions. The proof is honest about where the modeling ends and the biology begins.
+### Repository Structure
 
----
-
-## Honest Limitations
-
-1. **UNCERTAIN is the common case for complex genes.** For genes with many cryptic splice sites or GC content near boundaries, the type system may return UNCERTAIN. This is correct behavior — the system declines to guarantee what it cannot verify.
-
-2. **The proof guarantees correctness of the model, not of biology.** If the NDFST grammar is wrong (TCB-1), the guarantee is about a wrong model. Wet-lab validation is needed to close this gap.
-
-3. **No quantitative predictions.** The framework cannot answer "what fraction of transcripts will include exon 5?" For those, probability is unavoidable — but the system explicitly declines to answer rather than giving misleading deterministic answers.
-
-4. **Grammar curation requires domain expertise.** The YAML grammar configuration (ADR-0007) must be curated by someone who understands the splicing biology of the target gene and cell type.
-
-5. **Mutagenesis changes the protein.** Type-directed mutagenesis proposes conservative substitutions (BLOSUM62 ≥ 0 by default), but these are not guaranteed to preserve protein function. The biologist must evaluate whether each substitution is acceptable for their application.
+```
+biocompiler/
+├── proof/              # Lean4 soundness proof
+├── src/biocompiler/    # Production Python package
+├── tests/              # Test suite (420+ tests)
+├── docs/               # Full SE specification (14 docs + 14 ADRs)
+└── paper/              # LaTeX manuscript
+```
 
 ---
 
-## Why This Matters
+## Documentation
 
-For safety-critical gene design — gene therapy, clinical-grade synthetic biology — a false positive can kill a patient. No existing gene design tool provides a machine-verified guarantee that its output is correct. BioCompiler does.
+Full technical documentation is in [`docs/`](docs/):
 
-The compiler metaphor is a **design pattern**, not a scientific theory. The system does not claim that biology implements compilation. It claims that compiler-engineering techniques — type systems, formal verification, compositional analysis — can be productively applied to the formalizable stages of gene processing. The soundness proof makes this claim machine-checkable.
-
-The type-directed mutagenesis engine demonstrates that type systems can do more than verify — they can *direct design*, crossing the central dogma boundary to propose protein modifications that make DNA-level constraint satisfaction possible.
+| Document | Content |
+|----------|---------|
+| [DOC-00](docs/00-README.md) | Document map and reading order |
+| [DOC-02](docs/02-SAD.md) | Software Architecture (ISO 42010) |
+| [DOC-06](docs/06-Design-Rationale.md) | Design Rationale and critical analysis of the original proposal |
+| [DOC-10](docs/10-Deterministic-Methods.md) | Six deterministic methods for non-deterministic biology |
+| [DOC-14](docs/14-SLOT-Proof-Implementation-Gap.md) | SLOT predicate proof-implementation gap |
+| [DOC-15](docs/15-Reference.md) | Technical reference: 28-predicate tables, engine API, TCB, limitations |
+| [docs/adr/](docs/adr/) | 14 Architecture Decision Records |
 
 ---
 
 ## Citation
-
-If you use this work, please cite:
 
 ```bibtex
 @misc{biocompiler2026,

@@ -4,7 +4,7 @@
 
 This document maps each Lean4 theorem to its Python implementation, establishing a traceable connection between the formal model and the running code. The central caveat of the BioCompiler project is that "the Lean4 proofs are about a simplified model, not the actual Python implementation." This refinement mapping makes that gap explicit, theorem by theorem, and describes how each gap could be closed.
 
-**Scope**: This document covers all 11 proof modules in `proof/BioCompiler/`, all 4 library modules in `lean/BioCompiler/`, and the corresponding Python modules in `src/biocompiler/`.
+**Scope**: This document covers all 11+ proof modules in `proof/BioCompiler/`, and the corresponding Python modules in `src/biocompiler/`. (The former `lean/BioCompiler/` library modules were removed as redundant; their content is superseded by the proof/ modules.)
 
 ---
 
@@ -238,9 +238,11 @@ Proves that certificate validity is independent of FFI output. 6 main theorems.
 
 ---
 
-### 2.11 Lean4 Library Modules
+### 2.11 Lean4 Library Modules (now superseded by proof/ modules)
 
-#### CodonTable.lean
+> **Note**: The former `lean/BioCompiler/` directory (CodonTable.lean, Predicates.lean, Optimization.lean, Certificate.lean) was a simplified v7.0.0 model that has been superseded by the `proof/BioCompiler/` modules. The theorem mappings below remain valid as they describe concepts now covered more rigorously in the proof/ modules.
+
+#### CodonTable.lean (superseded by Sequence.lean + TypeSystem.lean)
 
 | # | Lean4 Theorem | Python Counterpart | Refinement Gap | Gap Closure Strategy |
 |---|---|---|---|---|
@@ -250,7 +252,7 @@ Proves that certificate validity is independent of FFI output. 6 main theorems.
 | 64 | `cross_codon_gt_resolvable` — cross-codon GT can be resolved when not M/W | Cross-codon GT resolution in optimizer | Python handles M/W as special cases (methionine ATG, tryptophan TGG both end in G) | Integration test |
 | 65 | `cross_codon_cg_resolvable` — cross-codon CG always resolvable | CpG avoidance in optimizer | Direct correspondence | Integration test |
 
-#### Predicates.lean
+#### Predicates.lean (superseded by TypeSystem.lean)
 
 | # | Lean4 Theorem | Python Counterpart | Refinement Gap | Gap Closure Strategy |
 |---|---|---|---|---|
@@ -258,7 +260,7 @@ Proves that certificate validity is independent of FFI output. 6 main theorems.
 | 67 | `validCoding_implies_noInternalStops` | `check_valid_coding_seq` passing implies `check_no_stop_codons` passing | Direct correspondence | Unit test |
 | 68 | `dual_threshold_monotonicity` — PASS at strict threshold → PASS at permissive | `classifySplice` threshold comparison | Direct correspondence for float-based thresholds | Property-based test |
 
-#### Optimization.lean
+#### Optimization.lean (superseded by TypeSystem.lean + Mutagenesis.lean)
 
 | # | Lean4 Theorem | Python Counterpart | Refinement Gap | Gap Closure Strategy |
 |---|---|---|---|---|
@@ -267,7 +269,7 @@ Proves that certificate validity is independent of FFI output. 6 main theorems.
 | 71 | `phase5_preserves_translation` — CpG avoidance preserves protein | CpG avoidance step in optimizer | Same | Same |
 | 72 | `pipeline_preserves_protein` — end-to-end pipeline preserves protein | `optimize_sequence()` overall pipeline | Same | End-to-end property-based test |
 
-#### Certificate.lean (library)
+#### Certificate.lean (library, superseded by Certificates.lean)
 
 | # | Lean4 Theorem | Python Counterpart | Refinement Gap | Gap Closure Strategy |
 |---|---|---|---|---|

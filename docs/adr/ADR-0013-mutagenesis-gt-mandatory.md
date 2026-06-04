@@ -1,4 +1,4 @@
-# ADR-013: Mutagenesis GT-Mandatory vs Optimizer Weakness Distinction
+# ADR-0013: Mutagenesis GT-Mandatory vs Optimizer Weakness Distinction
 
 ## Status: Accepted
 
@@ -50,7 +50,7 @@ to determine whether a failing position is GT-mandatory or an optimizer weakness
 3. Only propose AA substitutions for GT-mandatory positions in
    `type_directed_mutagenesis`. Positions where `gt_mandatory=False` are skipped
    — these represent optimizer weaknesses that should be addressed by improving
-   the optimizer (cryptic splice elimination step GT-free codon prioritization, ADR-011), not by changing
+   the optimizer (cryptic splice elimination step GT-free codon prioritization, ADR-0011), not by changing
    the protein.
 
 4. Add `diagnose_optimizer_weakness()` function that identifies positions where
@@ -87,6 +87,6 @@ to determine whether a failing position is GT-mandatory or an optimizer weakness
 ## References
 
 - ADR-0009: Type-Directed Protein Mutagenesis (BLOSUM62 substitution engine)
-- ADR-011: GT-Free Codon Prioritization in Cryptic Splice Elimination (fixes
+- ADR-0011: GT-Free Codon Prioritization in Cryptic Splice Elimination (fixes
   optimizer weaknesses for non-Valine amino acids)
-- ADR-0011: Predicate Checking Delegation (rich derivations from type system)
+- ADR-0014: Predicate Checking Delegation (rich derivations from type system)

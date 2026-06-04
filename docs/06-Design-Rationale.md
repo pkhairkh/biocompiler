@@ -635,7 +635,7 @@ The following table maps each design principle to the architectural decisions th
 
 Version 7.1 introduces three interrelated design decisions that significantly improve the optimizer's ability to satisfy the NoCrypticSplice and NoCpGIsland predicates. These decisions were driven by empirical observation of optimization failures on real gene sequences and represent a refinement of the greedy optimizer's multi-step architecture (ADR-0008).
 
-### 9.1 GT-Free Codon Prioritization (ADR-011)
+### 9.1 GT-Free Codon Prioritization (ADR-0011)
 
 **Problem**: The cryptic splice elimination step was failing on ~80% of genes because it did not prioritize GT-free codons for amino acids that have them. The GT dinucleotide is the core recognition sequence for splice donors. Any codon containing GT is a potential cryptic splice donor. For Valine, ALL four codons (GTT, GTC, GTA, GTG) contain GT — no codon swap can eliminate it. But for Alanine, Glycine, Arginine, and Serine, GT-free alternatives exist and provide a guaranteed path to eliminating the cryptic donor.
 
@@ -651,7 +651,7 @@ Version 7.1 introduces three interrelated design decisions that significantly im
 
 **Rationale for priority ordering**: Strategy 1 is tried first because it is guaranteed to work and has minimal CAI impact. Strategy 2 is tried second because it may work but is not guaranteed. Strategy 3 is not an optimizer action — it delegates to the mutagenesis engine, which is a separate concern.
 
-### 9.2 CpG Avoidance (ADR-012)
+### 9.2 CpG Avoidance (ADR-0012)
 
 **Problem**: The NoCpGIsland predicate was failing on many optimized sequences because the optimizer had no step to avoid CG dinucleotides. High-CAI codon selection in human often favors GC-rich codons (GCC, GGC, CGC), which naturally create CpG dinucleotides both within codons and at codon boundaries.
 
@@ -661,7 +661,7 @@ Version 7.1 introduces three interrelated design decisions that significantly im
 
 **Best-effort nature**: The CpG avoidance step is best-effort — not all CG dinucleotides can be eliminated without changing the amino acid sequence. Arginine codons (CGN) all contain CG, and the alternative AGA/AGG codons may violate other constraints. This step reports unrepairable positions rather than silently accepting them.
 
-### 9.3 GT-Mandatory vs Optimizer Weakness Distinction (ADR-013)
+### 9.3 GT-Mandatory vs Optimizer Weakness Distinction (ADR-0013)
 
 **Problem**: The mutagenesis engine was proposing amino acid substitutions for positions where the optimizer should have fixed the problem by choosing a GT-free codon. This conflated two fundamentally different issues: (1) GT-mandatory positions where no codon swap can help (Valine), and (2) optimizer weaknesses where GT-free codons exist but weren't used.
 
@@ -678,9 +678,9 @@ Version 7.1 introduces three interrelated design decisions that significantly im
 
 The three v7.1 decisions form a coherent improvement to the optimizer-mutagenesis pipeline:
 
-1. ADR-011 (GT-free codon prioritization) fixes the optimizer for non-Valine amino acids — these positions are now resolved by the cryptic splice elimination step, not by mutagenesis.
-2. ADR-012 (CpG avoidance) adds a new optimization capability that was entirely missing — the optimizer now actively disrupts CpG dinucleotides.
-3. ADR-013 (GT-mandatory distinction) ensures that the mutagenesis engine only acts on positions that the optimizer truly cannot fix (Valine), rather than masking optimizer bugs with unnecessary protein modifications.
+1. ADR-0011 (GT-free codon prioritization) fixes the optimizer for non-Valine amino acids — these positions are now resolved by the cryptic splice elimination step, not by mutagenesis.
+2. ADR-0012 (CpG avoidance) adds a new optimization capability that was entirely missing — the optimizer now actively disrupts CpG dinucleotides.
+3. ADR-0013 (GT-mandatory distinction) ensures that the mutagenesis engine only acts on positions that the optimizer truly cannot fix (Valine), rather than masking optimizer bugs with unnecessary protein modifications.
 
 The net effect is: more constraints satisfied by the optimizer, fewer protein modifications by the mutagenesis engine, and clearer diagnostic information when constraints cannot be satisfied.
 

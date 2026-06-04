@@ -1,4 +1,4 @@
-# ADR-011: GT-Free Codon Prioritization in Cryptic Splice Elimination
+# ADR-0011: GT-Free Codon Prioritization in Cryptic Splice Elimination
 
 ## Status: Accepted
 
@@ -76,5 +76,5 @@ acid where all codons contain GT).
 ## References
 
 - ADR-0009: Type-Directed Protein Mutagenesis (V→I substitution)
-- ADR-0011: Predicate Checking Delegation (standalone strong donor detection)
-- ADR-013: Mutagenesis GT-Mandatory vs Optimizer Weakness Distinction
+- ADR-0014: Predicate Checking Delegation (standalone strong donor detection)
+- ADR-0013: Mutagenesis GT-Mandatory vs Optimizer Weakness Distinction

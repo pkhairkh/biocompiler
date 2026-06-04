@@ -2,7 +2,7 @@
 Property-based tests for BioCompiler Certificate Computation Consistency.
 
 Verifies that the Python certificate implementation matches the Lean4 theorems
-from lean/BioCompiler/Certificate.lean, specifically:
+from proof/BioCompiler/Certificates.lean (previously lean/BioCompiler/Certificate.lean), specifically:
 
   1. gold_implies_all_optimization   — GOLD ⇒ every predicate passed via optimization alone
   2. silver_implies_all_passed       — SILVER ⇒ no predicate is unsatisfied

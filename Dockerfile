@@ -10,9 +10,9 @@ WORKDIR /build
 COPY pyproject.toml ./
 COPY src/ src/
 
-# Install package with all optional dependencies
+# Install package with API optional dependencies
 RUN pip install --no-cache-dir --prefix=/install \
-    -e ".[dev,api]" 2>/dev/null || \
+    ".[api]" 2>/dev/null || \
     pip install --no-cache-dir --prefix=/install .
 
 # ─── Runtime Stage ────────────────────────────────────────────────
@@ -20,7 +20,7 @@ FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="BioCompiler"
 LABEL org.opencontainers.image.description="Machine-verified gene design REST API"
-LABEL org.opencontainers.image.version="3.1.0"
+LABEL org.opencontainers.image.version="9.2.0"
 LABEL org.opencontainers.image.source="https://github.com/pkhairkh/biocompiler"
 
 # Create non-root user for security

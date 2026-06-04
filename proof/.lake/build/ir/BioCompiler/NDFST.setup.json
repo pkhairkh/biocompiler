@@ -1,9 +1,0 @@
-{"plugins": [],
- "package": "BioCompiler",
- "options": {},
- "name": "BioCompiler.NDFST",
- "isModule": false,
- "importArts":
- {"BioCompiler.Sequence":
-  ["/home/z/my-project/biocompiler/proof/.lake/build/lib/lean/BioCompiler/Sequence.olean"]},
- "dynlibs": []}

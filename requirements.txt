@@ -1,3 +1,9 @@
 # BioCompiler Dependencies
-# Core (no external dependencies for poc)
-z3-solver>=4.12.0  # For CSP optimizer in mvp/
+# Core
+pyyaml>=6.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0
+
+# Optional: optimizer
+z3-solver>=4.12.0
