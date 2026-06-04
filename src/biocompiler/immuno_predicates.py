@@ -8,7 +8,7 @@ Each predicate returns a TypeCheckResult with a Verdict.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from .types import Verdict, TypeCheckResult
 from .immunogenicity import compute_immunogenicity
@@ -16,7 +16,7 @@ from .immunogenicity import predict_all as predict_mhc_all
 from .immunogenicity import predict_epitopes
 
 
-def evaluate_low_immunogenicity(sequence, protein, organism, **kwargs) -> TypeCheckResult:
+def evaluate_low_immunogenicity(sequence: str, protein: str, organism: str, **kwargs: Any) -> TypeCheckResult:
     """Evaluate whether a protein has low overall immunogenicity.
 
     PASS: Score < 0.2 (very low risk)
@@ -77,7 +77,7 @@ def evaluate_low_immunogenicity(sequence, protein, organism, **kwargs) -> TypeCh
     )
 
 
-def evaluate_no_strong_t_cell_epitope(sequence, protein, organism, **kwargs) -> TypeCheckResult:
+def evaluate_no_strong_t_cell_epitope(sequence: str, protein: str, organism: str, **kwargs: Any) -> TypeCheckResult:
     """Evaluate whether the protein lacks strong T-cell epitopes.
 
     PASS: No strong T-cell epitopes
@@ -137,7 +137,7 @@ def evaluate_no_strong_t_cell_epitope(sequence, protein, organism, **kwargs) -> 
     )
 
 
-def evaluate_no_dominant_b_cell_epitope(sequence, protein, organism, **kwargs) -> TypeCheckResult:
+def evaluate_no_dominant_b_cell_epitope(sequence: str, protein: str, organism: str, **kwargs: Any) -> TypeCheckResult:
     """Evaluate whether the protein lacks dominant B-cell epitopes.
 
     PASS: No B-cell epitopes with score >= threshold
@@ -194,10 +194,10 @@ def evaluate_no_dominant_b_cell_epitope(sequence, protein, organism, **kwargs) -
 
 
 def evaluate_population_coverage_safe(
-    sequence,
-    protein,
-    organism,
-    **kwargs,
+    sequence: str,
+    protein: str,
+    organism: str,
+    **kwargs: Any,
 ) -> TypeCheckResult:
     """Evaluate whether the protein's MHC binding profile is safe for
     population coverage (i.e., doesn't bind too many common alleles).

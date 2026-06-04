@@ -80,7 +80,6 @@ import concurrent.futures
 import hashlib
 import logging
 import math
-import time
 from dataclasses import dataclass, field
 
 from typing import List, Optional
@@ -169,7 +168,7 @@ IMMUNOGENICITY_BCELL_AUC_ROC: float = 0.60
 # ═══════════════════════════════════════════════════════════════════════════
 
 _STANDARD_AA_SET: set[str] = set(STANDARD_AAS)
-_AA_INDEX: dict[str, int] = {aa: i for i, aa in enumerate(STANDARD_AAS)}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MHC allele defaults and population coverage
@@ -883,7 +882,7 @@ def predict_mhc_i_binding(
     # Try NetMHCpan if requested
     if use_netmhcpan:
         try:
-            from .netmhcpan import NetMHCpanClient, NetMHCpanError
+            from .netmhcpan import NetMHCpanClient
             client = NetMHCpanClient()
             results = client.batch_predict(
                 protein, alleles, epitope_lengths=[peptide_length],
@@ -1046,7 +1045,7 @@ def predict_mhc_ii_binding(
     # Try NetMHCpan if requested
     if use_netmhcpan:
         try:
-            from .netmhcpan import NetMHCpanClient, NetMHCpanError
+            from .netmhcpan import NetMHCpanClient
             client = NetMHCpanClient()
             results = client.batch_predict(
                 protein, alleles, epitope_lengths=[peptide_length],

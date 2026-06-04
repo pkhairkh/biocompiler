@@ -47,10 +47,24 @@ from ..organisms import (
     ORGANISM_GC_TARGETS,
     SUPPORTED_ORGANISMS,
 )
-from ..splicing import maxent_score
 from ..maxentscan import score_donor, score_acceptor
 
 logger = logging.getLogger(__name__)
+
+
+# ==============================================================================
+# Module-level named constants
+# ==============================================================================
+
+DEFAULT_GC_LO = 0.30
+DEFAULT_GC_HI = 0.70
+DEFAULT_CPG_WINDOW = 200
+DEFAULT_CPG_THRESHOLD = 0.6
+DEFAULT_MAX_T_RUN = 5
+CAI_LOG_EPSILON = 1e-10
+NEAREST_NEIGHBOR_GC = -1.5
+NEAREST_NEIGHBOR_AU = -0.5
+NEAREST_NEIGHBOR_GU = -0.3
 
 
 # ==============================================================================
@@ -429,8 +443,9 @@ class GCRangeConstraint(HardConstraint):
         gc_hi: Maximum acceptable GC fraction.
     """
 
-    def __init__(self, gc_lo: float = 0.30, gc_hi: float = 0.70) -> None:
-        assert 0.0 <= gc_lo < gc_hi <= 1.0, f"Invalid GC range: [{gc_lo}, {gc_hi}]"
+    def __init__(self, gc_lo: float = DEFAULT_GC_LO, gc_hi: float = DEFAULT_GC_HI) -> None:
+        if not (0.0 <= gc_lo < gc_hi <= 1.0):
+            raise ValueError(f"Invalid GC range: [{gc_lo}, {gc_hi}]")
         self._gc_lo = gc_lo
         self._gc_hi = gc_hi
 
@@ -450,11 +465,16 @@ class GCRangeConstraint(HardConstraint):
     def gc_hi(self) -> float:
         return self._gc_hi
 
+    @staticmethod
+    def _gc_count(sequence: str) -> int:
+        """Count G/C bases in a sequence."""
+        return sum(1 for b in sequence if b in "GC")
+
     def check(self, sequence: str) -> bool:
         """Return True if GC content is within the allowed range."""
         if not sequence:
             return True
-        gc = sum(1 for b in sequence if b in "GC")
+        gc = self._gc_count(sequence)
         frac = gc / len(sequence)
         return self._gc_lo <= frac <= self._gc_hi
 
@@ -469,7 +489,7 @@ class GCRangeConstraint(HardConstraint):
         if not sequence or self.check(sequence):
             return []
 
-        gc = sum(1 for b in sequence if b in "GC")
+        gc = self._gc_count(sequence)
         frac = gc / len(sequence)
 
         if frac > self._gc_hi:
@@ -495,7 +515,8 @@ class NoCrypticSpliceConstraint(HardConstraint):
     """
 
     def __init__(self, threshold: float = 3.0) -> None:
-        assert threshold > 0, f"Threshold must be positive, got {threshold}"
+        if threshold <= 0:
+            raise ValueError(f"Threshold must be positive, got {threshold}")
         self._threshold = threshold
 
     @property
@@ -510,44 +531,36 @@ class NoCrypticSpliceConstraint(HardConstraint):
     def threshold(self) -> float:
         return self._threshold
 
-    def check(self, sequence: str) -> bool:
-        """Return True if no cryptic splice site exceeds the threshold."""
-        sequence = sequence.upper()
+    def _scan_splice_sites(self, sequence: str, threshold: float) -> list[int]:
+        """Scan for cryptic splice sites at or above *threshold*.
 
-        # Check donor sites (GT dinucleotides)
-        for i in range(len(sequence) - 1):
-            if sequence[i : i + 2] == "GT":
-                score = score_donor(sequence, i)
-                if score >= self._threshold:
-                    return False
-
-        # Check acceptor sites (AG dinucleotides)
-        for i in range(len(sequence) - 1):
-            if sequence[i : i + 2] == "AG":
-                score = score_acceptor(sequence, i)
-                if score >= self._threshold:
-                    return False
-
-        return True
-
-    def violated_positions(self, sequence: str) -> list[int]:
-        """Return positions of cryptic splice sites above threshold."""
+        Returns a list of positions (0-based) where GT donor or AG acceptor
+        dinucleotides have MaxEntScan scores >= threshold.
+        """
         sequence = sequence.upper()
         positions: list[int] = []
 
         for i in range(len(sequence) - 1):
             if sequence[i : i + 2] == "GT":
-                score = score_donor(sequence, i)
-                if score >= self._threshold:
+                s = score_donor(sequence, i)
+                if s >= threshold:
                     positions.append(i)
 
         for i in range(len(sequence) - 1):
             if sequence[i : i + 2] == "AG":
-                score = score_acceptor(sequence, i)
-                if score >= self._threshold:
+                s = score_acceptor(sequence, i)
+                if s >= threshold:
                     positions.append(i)
 
-        return sorted(set(positions))
+        return positions
+
+    def check(self, sequence: str) -> bool:
+        """Return True if no cryptic splice site exceeds the threshold."""
+        return not self._scan_splice_sites(sequence, self._threshold)
+
+    def violated_positions(self, sequence: str) -> list[int]:
+        """Return positions of cryptic splice sites above threshold."""
+        return sorted(set(self._scan_splice_sites(sequence, self._threshold)))
 
 
 class NoCpGIslandConstraint(HardConstraint):
@@ -562,9 +575,11 @@ class NoCpGIslandConstraint(HardConstraint):
         threshold: Maximum allowed Obs/Exp CG ratio (default 0.6).
     """
 
-    def __init__(self, window: int = 200, threshold: float = 0.6) -> None:
-        assert window > 0, f"Window must be positive, got {window}"
-        assert threshold > 0, f"Threshold must be positive, got {threshold}"
+    def __init__(self, window: int = DEFAULT_CPG_WINDOW, threshold: float = DEFAULT_CPG_THRESHOLD) -> None:
+        if window <= 0:
+            raise ValueError(f"Window must be positive, got {window}")
+        if threshold <= 0:
+            raise ValueError(f"Threshold must be positive, got {threshold}")
         self._window = window
         self._threshold = threshold
 
@@ -584,48 +599,40 @@ class NoCpGIslandConstraint(HardConstraint):
     def threshold(self) -> float:
         return self._threshold
 
-    def check(self, sequence: str) -> bool:
-        """Return True if no sliding window has CpG Obs/Exp above threshold."""
-        sequence = sequence.upper()
-        if len(sequence) < self._window:
-            return True  # Sequence too short to form an island
+    def _scan_cpg(self, sequence: str, window: int, threshold: float) -> list[int]:
+        """Scan for CpG islands in sliding windows.
 
-        for start in range(len(sequence) - self._window + 1):
-            window_seq = sequence[start : start + self._window]
+        Returns start positions of windows where the Obs/Exp CG ratio
+        exceeds *threshold*.
+        """
+        sequence = sequence.upper()
+        violating_starts: list[int] = []
+
+        if len(sequence) < window:
+            return violating_starts
+
+        for start in range(len(sequence) - window + 1):
+            window_seq = sequence[start : start + window]
             c_count = window_seq.count("C")
             g_count = window_seq.count("G")
             cg_count = sum(
                 1 for i in range(len(window_seq) - 1) if window_seq[i : i + 2] == "CG"
             )
-            expected = (c_count * g_count) / self._window if self._window > 0 else 0
+            expected = (c_count * g_count) / window if window > 0 else 0
             if expected > 0:
                 obs_exp = cg_count / expected
-                if obs_exp > self._threshold:
-                    return False
-        return True
+                if obs_exp > threshold:
+                    violating_starts.append(start)
+
+        return violating_starts
+
+    def check(self, sequence: str) -> bool:
+        """Return True if no sliding window has CpG Obs/Exp above threshold."""
+        return not self._scan_cpg(sequence, self._window, self._threshold)
 
     def violated_positions(self, sequence: str) -> list[int]:
         """Return start positions of windows with CpG island violations."""
-        sequence = sequence.upper()
-        positions: list[int] = []
-
-        if len(sequence) < self._window:
-            return positions
-
-        for start in range(len(sequence) - self._window + 1):
-            window_seq = sequence[start : start + self._window]
-            c_count = window_seq.count("C")
-            g_count = window_seq.count("G")
-            cg_count = sum(
-                1 for i in range(len(window_seq) - 1) if window_seq[i : i + 2] == "CG"
-            )
-            expected = (c_count * g_count) / self._window if self._window > 0 else 0
-            if expected > 0:
-                obs_exp = cg_count / expected
-                if obs_exp > self._threshold:
-                    positions.append(start)
-
-        return positions
+        return self._scan_cpg(sequence, self._window, self._threshold)
 
 
 class NoATTTAMotifConstraint(HardConstraint):
@@ -674,8 +681,9 @@ class NoTRunConstraint(HardConstraint):
             runs of 6+ are forbidden).
     """
 
-    def __init__(self, max_run: int = 5) -> None:
-        assert max_run >= 1, f"max_run must be >= 1, got {max_run}"
+    def __init__(self, max_run: int = DEFAULT_MAX_T_RUN) -> None:
+        if max_run < 1:
+            raise ValueError(f"max_run must be >= 1, got {max_run}")
         self._max_run = max_run
 
     @property
@@ -791,12 +799,11 @@ class MaximizeCAI(SoftConstraint):
             The sum of log(adaptiveness) across all codon positions.
             If any adaptiveness is 0, uses a small epsilon to avoid -inf.
         """
-        eps = 1e-10
         total = 0.0
         for i in range(len(self._protein)):
             codon = sequence[i * 3 : i * 3 + 3]
-            w = self._adaptiveness.get(codon, eps)
-            total += math.log(max(w, eps))
+            w = self._adaptiveness.get(codon, CAI_LOG_EPSILON)
+            total += math.log(max(w, CAI_LOG_EPSILON))
         return total
 
     def cai(self, sequence: str) -> float:
@@ -805,7 +812,6 @@ class MaximizeCAI(SoftConstraint):
         Returns:
             CAI in [0.0, 1.0]. Returns 0.0 if any adaptiveness is zero.
         """
-        eps = 1e-10
         n = len(self._protein)
         if n == 0:
             return 0.0
@@ -947,9 +953,9 @@ class MinimizeMRNADG(SoftConstraint):
                 window_seq = sequence[self._window_start : self._window_end]
                 return compute_5prime_dg(window_seq, window=window_len)
         except ImportError:
-            pass  # ViennaRNA module not importable — fall through
+            logger.warning("ViennaRNA unavailable, using fallback dG approximation", exc_info=True)
         except Exception:
-            pass  # ViennaRNA failed — fall through to approximation
+            logger.warning("ViennaRNA unavailable, using fallback dG approximation", exc_info=True)
 
         # --- Fallback: simplified nearest-neighbor approximation ---
         sequence = sequence.upper()
@@ -981,7 +987,7 @@ class MinimizeMRNADG(SoftConstraint):
             elif (base_5 == "G" and base_3 == "U") or (base_5 == "U" and base_3 == "G"):
                 gu_pairs += 1
 
-        return -1.5 * gc_pairs - 0.5 * au_pairs - 0.3 * gu_pairs
+        return NEAREST_NEIGHBOR_GC * gc_pairs + NEAREST_NEIGHBOR_AU * au_pairs + NEAREST_NEIGHBOR_GU * gu_pairs
 
 
 # ==============================================================================

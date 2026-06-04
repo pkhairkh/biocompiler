@@ -748,6 +748,7 @@ def _compute_solubility_score(protein: str) -> float:
     except ImportError:
         pass
     except Exception:
+        logger.debug("Falling back to alternative deimmunization path", exc_info=True)
         pass  # Fall back to internal heuristic
 
     # Simplified CamSol-like intrinsic solubility

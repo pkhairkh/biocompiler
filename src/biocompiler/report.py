@@ -16,20 +16,32 @@ archived, or opened offline. No external JavaScript or CSS required.
 """
 
 import html
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from .types import Certificate, TypeCheckResult, Verdict, Token, SpliceIsoform
+from .types import Certificate, TypeCheckResult, Token, SpliceIsoform, combined_verdict
 from .scanner import gc_content, scan_sequence
 from .translation import translate, compute_cai
 from .splicing import compute_splice_isoforms
-from .constants import CODON_TABLE, AA_TO_CODONS
+from .constants import CODON_TABLE
 from .engine_base import BaseEngineResult
 from . import __version__
 
 logger = logging.getLogger(__name__)
+
+# ── Display & layout constants ──────────────────────────────────────────
+_MAX_TOKEN_DISPLAY: int = 50
+_MAX_ISOFORM_DISPLAY: int = 20
+_SEQUENCE_LINE_WIDTH: int = 60
+_STOP_CODON_MARKER: str = "*"
+
+# ── GC plot SVG constants ───────────────────────────────────────────────
+_GC_PLOT_WIDTH: int = 800
+_GC_PLOT_HEIGHT: int = 200
+_GC_PLOT_MARGIN: int = 40
+_GC_LOW_THRESHOLD: float = 0.3
+_GC_HIGH_THRESHOLD: float = 0.7
 
 
 def generate_report(
@@ -81,6 +93,8 @@ def generate_report(
     gc = gc_content(seq)
     protein = translate(seq)
     cai = compute_cai(seq, organism)
+    logger.info("Generating report: %s bp, GC=%.1f%%, CAI=%.4f, organism=%s",
+                len(seq), gc * 100, cai, organism)
 
     if exon_boundaries is None:
         exon_boundaries = [(0, len(seq))]
@@ -120,7 +134,15 @@ def generate_report(
 
 
 def _compute_gc_windows(seq: str, window_size: int = 50) -> list[tuple[int, float]]:
-    """Compute GC content in sliding windows."""
+    """Compute GC content in sliding windows.
+
+    Args:
+        seq: DNA sequence to analyze.
+        window_size: Width of the sliding window in base pairs.
+
+    Returns:
+        List of (position, gc_fraction) tuples, one per window step.
+    """
     results = []
     for i in range(0, len(seq) - window_size + 1, max(1, window_size // 4)):
         window = seq[i:i + window_size]
@@ -130,12 +152,19 @@ def _compute_gc_windows(seq: str, window_size: int = 50) -> list[tuple[int, floa
 
 
 def _compute_codon_usage(seq: str) -> dict[str, dict[str, float]]:
-    """Compute codon frequency per amino acid."""
+    """Compute codon frequency per amino acid.
+
+    Args:
+        seq: DNA sequence to analyze.
+
+    Returns:
+        Nested dict mapping amino-acid → {codon → frequency}.
+    """
     aa_codons: dict[str, dict[str, int]] = {}
     for i in range(0, len(seq) - 2, 3):
         codon = seq[i:i + 3]
         aa = CODON_TABLE.get(codon)
-        if aa and aa != "*":
+        if aa and aa != _STOP_CODON_MARKER:
             if aa not in aa_codons:
                 aa_codons[aa] = {}
             aa_codons[aa][codon] = aa_codons[aa].get(codon, 0) + 1
@@ -150,7 +179,14 @@ def _compute_codon_usage(seq: str) -> dict[str, dict[str, float]]:
 
 
 def _element_type_description(element_type: str) -> str:
-    """Return a human-readable description for a token element type."""
+    """Return a human-readable description for a token element type.
+
+    Args:
+        element_type: Internal element type identifier string.
+
+    Returns:
+        Human-readable description string.
+    """
     descriptions = {
         "start_codon": "Start codon — initiates translation (ATG)",
         "stop_codon": "Stop codon — terminates translation (TAA, TAG, TGA)",
@@ -182,16 +218,36 @@ def _build_html(
     gc_window_data: list[tuple[int, float]],
     codon_usage_data: dict[str, dict[str, float]],
     optimization_result: Optional[dict],
-    engine_results: list[BaseEngineResult] = None,
+    engine_results: Optional[list[BaseEngineResult]] = None,
 ) -> str:
-    """Build the complete HTML report."""
+    """Build the complete self-contained HTML report.
+
+    Args:
+        seq: Uppercase DNA sequence.
+        gc: Overall GC fraction.
+        cai: Codon Adaptation Index value.
+        protein: Translated amino-acid sequence.
+        organism: Target organism name.
+        gene_name: Optional gene name for the header.
+        exon_boundaries: Exon start/end positions.
+        type_results: Type-check predicate results.
+        certificate: Optional design certificate.
+        tokens: Scanned biological elements.
+        isoforms: Computed splice isoforms.
+        gc_window_data: GC sliding-window data points.
+        codon_usage_data: Per-amino-acid codon frequencies.
+        optimization_result: Optional optimization metrics dict.
+        engine_results: Optional analysis engine results.
+
+    Returns:
+        Complete HTML document as a string.
+    """
 
     # Overall verdict
     overall_verdict = "N/A"
     overall_class = "uncertain"
     if type_results:
         verdicts = [r.verdict for r in type_results]
-        from .types import combined_verdict
         overall = combined_verdict(verdicts)
         overall_verdict = overall.value
         overall_class = overall.value.lower()
@@ -237,7 +293,7 @@ def _build_html(
 
     # Build token rows
     token_rows = ""
-    for t in tokens[:50]:  # Limit display
+    for t in tokens[:_MAX_TOKEN_DISPLAY]:  # Limit display
         token_rows += f"""
             <tr data-element-type="{html.escape(t.element_type.lower())}" data-match-sequence="{html.escape(t.match_sequence.lower())}">
                 <td>{t.position}</td>
@@ -250,7 +306,7 @@ def _build_html(
 
     # Build isoform rows
     isoform_rows = ""
-    for i, iso in enumerate(isoforms[:20]):
+    for i, iso in enumerate(isoforms[:_MAX_ISOFORM_DISPLAY]):
         isoform_rows += f"""
             <tr>
                 <td>{i + 1}</td>
@@ -1089,7 +1145,15 @@ body.dark-mode .tooltip::after {{
 
 
 def _format_sequence_html(seq: str, exon_boundaries: list[tuple[int, int]]) -> str:
-    """Format sequence with exon highlighting."""
+    """Format sequence with exon highlighting.
+
+    Args:
+        seq: DNA sequence to format.
+        exon_boundaries: List of (start, end) exon positions.
+
+    Returns:
+        HTML string with exon bases highlighted and line breaks.
+    """
     exon_positions = set()
     for start, end in exon_boundaries:
         for i in range(start, min(end, len(seq))):
@@ -1105,20 +1169,28 @@ def _format_sequence_html(seq: str, exon_boundaries: list[tuple[int, int]]) -> s
     # Add line breaks every 60 characters
     formatted = ""
     for i, char in enumerate(result):
-        if i > 0 and i % 60 == 0:
+        if i > 0 and i % _SEQUENCE_LINE_WIDTH == 0:
             formatted += "\n"
         formatted += char
     return formatted
 
 
 def _generate_gc_plot_svg(data: list[tuple[int, float]], avg_gc: float) -> str:
-    """Generate SVG line chart for GC content."""
+    """Generate SVG line chart for GC content.
+
+    Args:
+        data: List of (position, gc_fraction) tuples from sliding window.
+        avg_gc: Overall average GC fraction for the reference line.
+
+    Returns:
+        SVG markup string, or a fallback <p> element when data is empty.
+    """
     if not data:
         return "<p>No GC data available</p>"
 
-    width = 800
-    height = 200
-    margin = 40
+    width = _GC_PLOT_WIDTH
+    height = _GC_PLOT_HEIGHT
+    margin = _GC_PLOT_MARGIN
     plot_w = width - 2 * margin
     plot_h = height - 2 * margin
 
@@ -1138,9 +1210,9 @@ def _generate_gc_plot_svg(data: list[tuple[int, float]], avg_gc: float) -> str:
     # Average line
     avg_y = margin + plot_h - avg_gc * plot_h
 
-    # Threshold lines (0.3 and 0.7)
-    y30 = margin + plot_h - 0.3 * plot_h
-    y70 = margin + plot_h - 0.7 * plot_h
+    # Threshold lines
+    y30 = margin + plot_h - _GC_LOW_THRESHOLD * plot_h
+    y70 = margin + plot_h - _GC_HIGH_THRESHOLD * plot_h
 
     return f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
     <rect width="100%" height="100%" fill="white"/>
@@ -1166,7 +1238,14 @@ def _generate_gc_plot_svg(data: list[tuple[int, float]], avg_gc: float) -> str:
 
 
 def _generate_codon_heatmap_svg(codon_usage: dict[str, dict[str, float]]) -> str:
-    """Generate SVG codon usage heatmap."""
+    """Generate SVG codon usage heatmap.
+
+    Args:
+        codon_usage: Nested dict mapping amino-acid → {codon → frequency}.
+
+    Returns:
+        SVG markup string, or a fallback <p> element when data is empty.
+    """
     if not codon_usage:
         return "<p>No codon usage data</p>"
 
@@ -1204,7 +1283,16 @@ def _generate_structure_svg(
     exon_boundaries: list[tuple[int, int]],
     tokens: list[Token],
 ) -> str:
-    """Generate SVG diagram of exon/intron structure."""
+    """Generate SVG diagram of exon/intron structure.
+
+    Args:
+        seq: DNA sequence (used for length scaling).
+        exon_boundaries: List of (start, end) exon positions.
+        tokens: Scan tokens (splice donor/acceptor markers are drawn).
+
+    Returns:
+        SVG markup string.
+    """
     width = 800
     height = 80
     margin = 40

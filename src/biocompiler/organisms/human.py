@@ -6,6 +6,15 @@ Source: Kazusa Codon Usage Database
 Coding GC: 52.27%
 """
 
+from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+
+__all__ = [
+    "HUMAN_CODON_USAGE",
+    "HUMAN_CODON_ADAPTIVENESS",
+    "HUMAN_PREFERRED_CODONS",
+    "HUMAN_CODON_USAGE_SIMPLE",
+]
+
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
 HUMAN_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "TTT": ("F", 0.46, 17.6, 714298),
@@ -75,27 +84,10 @@ HUMAN_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
 }
 
 # Compute relative adaptiveness: w_i = freq_i / max_freq_for_same_aa
-_AA_MAX_FREQ: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in HUMAN_CODON_USAGE.items():
-    if _aa != "*":
-        _current = _AA_MAX_FREQ.get(_aa, 0.0)
-        if _freq > _current:
-            _AA_MAX_FREQ[_aa] = _freq
-
-HUMAN_CODON_ADAPTIVENESS: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in HUMAN_CODON_USAGE.items():
-    if _aa != "*":
-        HUMAN_CODON_ADAPTIVENESS[_codon] = _freq / _AA_MAX_FREQ[_aa] if _AA_MAX_FREQ[_aa] > 0 else 0.0
+HUMAN_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(HUMAN_CODON_USAGE)
 
 # Preferred (highest-frequency) codon for each amino acid
-HUMAN_PREFERRED_CODONS: dict[str, str] = {}
-_AA_CODONS: dict[str, list[tuple[str, float]]] = {}
-for _codon, (_aa, _frac, _freq, _count) in HUMAN_CODON_USAGE.items():
-    if _aa != "*":
-        _AA_CODONS.setdefault(_aa, []).append((_codon, _freq))
-
-for _aa, _codons in _AA_CODONS.items():
-    HUMAN_PREFERRED_CODONS[_aa] = max(_codons, key=lambda x: x[1])[0]
+HUMAN_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(HUMAN_CODON_USAGE)
 
 # ────────────────────────────────────────────────────────────
 # Legacy per-thousand codon usage (migrated from species.py)

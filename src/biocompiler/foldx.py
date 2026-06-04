@@ -76,8 +76,7 @@ import os
 import re
 import subprocess
 import tempfile
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .constants import BLOSUM62, HYDROPATHY, STANDARD_AAS, HYDROPHOBIC_AAS
 from .engine_base import (

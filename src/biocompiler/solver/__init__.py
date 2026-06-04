@@ -26,7 +26,14 @@ Module structure:
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
+
+if TYPE_CHECKING:
+    from .engine_ortools import ORTOOLSEngine
+    from .engine_z3 import Z3Engine
+    from .engine_greedy import GreedyEngine
+
+    EngineType = Union[ORTOOLSEngine, Z3Engine, GreedyEngine]
 
 # ── Core types (always available, no heavy deps) ────────────────────────
 from .types import (
@@ -118,13 +125,13 @@ class CSPSolver:
 
     def __init__(self, config: Optional[SolverConfig] = None) -> None:
         self.config = config or SolverConfig()
-        self._engine: Optional[object] = None
+        self._engine: Optional[EngineType] = None
 
     def solve(
         self,
         protein: str,
         organism: str = "Homo_sapiens",
-        **overrides: object,
+        **overrides: Any,
     ) -> SolverResult:
         """Solve the codon optimization CSP for the given protein.
 
@@ -140,7 +147,7 @@ class CSPSolver:
         engine = self._get_engine(config)
         return engine.solve(protein, organism)
 
-    def _merge_overrides(self, **overrides: object) -> SolverConfig:
+    def _merge_overrides(self, **overrides: Any) -> SolverConfig:
         """Create a copy of config with per-call overrides applied."""
         if not overrides:
             return self.config
@@ -148,14 +155,14 @@ class CSPSolver:
         changes = {k: v for k, v in overrides.items() if v is not None}
         return dataclasses.replace(self.config, **changes)
 
-    def _get_engine(self, config: SolverConfig) -> object:
+    def _get_engine(self, config: SolverConfig) -> EngineType:
         """Instantiate the appropriate solver engine with fallback."""
         backend = config.backend
 
         if backend == SolverBackend.ORTOOLS:
             if _check_backend(SolverBackend.ORTOOLS):
-                from .engine_ortools import ORToolsEngine
-                return ORToolsEngine(config)
+                from .engine_ortools import ORTOOLSEngine
+                return ORTOOLSEngine(config)
             logger.warning("OR-Tools not available, falling back to Z3")
             backend = SolverBackend.Z3
 
@@ -181,7 +188,7 @@ def solve(
     protein: str,
     organism: str = "Homo_sapiens",
     config: Optional[SolverConfig] = None,
-    **overrides: object,
+    **overrides: Any,
 ) -> SolverResult:
     """Convenience function: solve a codon optimization CSP in one call."""
     solver = CSPSolver(config)

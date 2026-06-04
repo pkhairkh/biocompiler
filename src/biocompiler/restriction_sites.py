@@ -4,9 +4,7 @@ BioCompiler Restriction Site Database v7.0.0
 Common restriction enzyme recognition sequences.
 """
 
-from typing import Dict, Optional
-
-RESTRICTION_SITES: Dict[str, str] = {
+RESTRICTION_SITES: dict[str, str] = {
     "EcoRI":   "GAATTC",
     "BamHI":   "GGATCC",
     "HindIII": "AAGCTT",
@@ -39,7 +37,17 @@ RESTRICTION_SITES: Dict[str, str] = {
     "PacI":    "TTAATTAA",
 }
 
+# Lowercase-keyed lookup for case-insensitive enzyme name resolution.
+_LOWER_LOOKUP: dict[str, str] = {name.lower(): seq for name, seq in RESTRICTION_SITES.items()}
 
-def get_recognition_site(enzyme: str) -> Optional[str]:
-    """Get recognition sequence for a restriction enzyme (case-insensitive)."""
-    return RESTRICTION_SITES.get(enzyme) or RESTRICTION_SITES.get(enzyme.lower())
+
+def get_recognition_site(enzyme: str) -> str | None:
+    """Get recognition sequence for a restriction enzyme (case-insensitive).
+
+    Args:
+        enzyme: Name of the restriction enzyme (e.g. ``"EcoRI"``, ``"ecori"``).
+
+    Returns:
+        Recognition sequence string, or ``None`` if the enzyme is unknown.
+    """
+    return _LOWER_LOOKUP.get(enzyme.lower())

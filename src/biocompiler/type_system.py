@@ -6,10 +6,13 @@ for certified gene optimization: 12 DNA-level + 4 structure + 4 stability +
 4 solubility + 4 immunogenicity.
 """
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Dict, Set, Optional, Tuple
 from .types import Verdict, SLOTMode
+
+logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────
 # Standard Genetic Code — CODON_TABLE (fixed: no invalid entries)
@@ -701,6 +704,7 @@ def check_mrna_secondary_structure(
                              f"ΔG={dg:.1f} kcal/mol"),
                 )
         except Exception:
+            logger.debug("Structure prediction fallback triggered", exc_info=True)
             pass  # Fall through to Nussinov fallback
 
         try:
@@ -724,6 +728,7 @@ def check_mrna_secondary_structure(
                          f"ΔG≈{dg:.1f} kcal/mol"),
             )
         except Exception:
+            logger.debug("Structure prediction fallback triggered", exc_info=True)
             pass  # Fall through to legacy toy model
 
     # Legacy toy model (original implementation, backward-compatible)

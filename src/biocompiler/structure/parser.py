@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import logging
 from dataclasses import dataclass, field
+from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────
 # Amino acid code mappings
 # ────────────────────────────────────────────────────────────
+# NOTE: These are defined locally because constants.py does not yet export
+# THREE_TO_ONE / ONE_TO_THREE. If they are added to constants.py in the
+# future, import them from there instead of redefining here.
 
 THREE_TO_ONE: dict[str, str] = {
     "ALA": "A",
@@ -690,6 +694,30 @@ def parse_pdb_file(filepath: str, include_het: bool = False) -> ProteinStructure
 
 
 # ────────────────────────────────────────────────────────────
+# Structural analysis constants
+# ────────────────────────────────────────────────────────────
+
+# Threshold below which the central bond vector is considered degenerate
+# (atoms are collinear), making the dihedral angle undefined.
+DEGENERATE_DIHEDRAL_THRESHOLD: float = 1e-10
+
+# Ramachandran angle targets for secondary structure estimation
+# Source: Morris et al. (1992), simplified DSSP-like classification
+RAMA_ALPHA_HELIX_PHI: float = -57.0
+RAMA_ALPHA_HELIX_PSI: float = -47.0
+RAMA_BETA_SHEET_PHI: float = -120.0
+RAMA_BETA_SHEET_PSI: float = 120.0
+RAMA_ANGLE_TOLERANCE: float = 30.0
+
+
+class RamachandranResult(TypedDict):
+    """Typed result of Ramachandran angle computation."""
+    phi: list[float | None]
+    psi: list[float | None]
+    residues: list[str]
+
+
+# ────────────────────────────────────────────────────────────
 # Structural analysis functions
 # ────────────────────────────────────────────────────────────
 
@@ -735,7 +763,7 @@ def compute_dihedral(
 
     # Normalized b2 for m1 computation
     b2_len = math.sqrt(b2[0] ** 2 + b2[1] ** 2 + b2[2] ** 2)
-    if b2_len < 1e-10:
+    if b2_len < DEGENERATE_DIHEDRAL_THRESHOLD:
         return 0.0
     b2_norm = (b2[0] / b2_len, b2[1] / b2_len, b2[2] / b2_len)
 
@@ -770,7 +798,7 @@ def _cross(
     )
 
 
-def compute_ramachandran(structure: ProteinStructure) -> dict:
+def compute_ramachandran(structure: ProteinStructure) -> RamachandranResult:
     """Compute phi/psi dihedral angles for each residue (except termini).
 
     Phi (φ) is defined by atoms: C(i-1) - N(i) - CA(i) - C(i)
@@ -877,11 +905,11 @@ def secondary_structure_estimate(structure: ProteinStructure) -> list[str]:
             ss.append("C")
             continue
 
-        # Alpha-helix: phi ≈ -57, psi ≈ -47
-        if abs(p - (-57.0)) <= 30.0 and abs(s - (-47.0)) <= 30.0:
+        # Alpha-helix: phi ≈ RAMA_ALPHA_HELIX_PHI, psi ≈ RAMA_ALPHA_HELIX_PSI
+        if abs(p - RAMA_ALPHA_HELIX_PHI) <= RAMA_ANGLE_TOLERANCE and abs(s - RAMA_ALPHA_HELIX_PSI) <= RAMA_ANGLE_TOLERANCE:
             ss.append("H")
-        # Beta-sheet: phi ≈ -120, psi ≈ 120
-        elif abs(p - (-120.0)) <= 30.0 and abs(s - 120.0) <= 30.0:
+        # Beta-sheet: phi ≈ RAMA_BETA_SHEET_PHI, psi ≈ RAMA_BETA_SHEET_PSI
+        elif abs(p - RAMA_BETA_SHEET_PHI) <= RAMA_ANGLE_TOLERANCE and abs(s - RAMA_BETA_SHEET_PSI) <= RAMA_ANGLE_TOLERANCE:
             ss.append("E")
         else:
             ss.append("C")

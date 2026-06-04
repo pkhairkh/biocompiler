@@ -1,9 +1,7 @@
 # BioCompiler Dependencies
-# Core
-pyyaml>=6.0
-fastapi>=0.100.0
-uvicorn>=0.23.0
-pydantic>=2.0
-
-# Optional: optimizer
-z3-solver>=4.12.0
+# See pyproject.toml for the complete, authoritative dependency specification.
+# Install options:
+#   pip install -e .                   # Core dependencies only
+#   pip install -e ".[solver]"         # CSP solver backends (OR-Tools + Z3)
+#   pip install -e ".[all]"            # All optional dependencies
+#   pip install -e ".[dev]"            # Development dependencies (pytest, ruff, mypy, etc.)

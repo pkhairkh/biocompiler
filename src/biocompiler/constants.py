@@ -223,7 +223,7 @@ HYDROPATHY: dict[str, float] = {
 }
 
 # Hydrophobic residues (Kyte-Doolittle > 1.0)
-HYDROPHOBIC_AAS: set[str] = {"A", "I", "L", "M", "F", "W", "V"}
+HYDROPHOBIC_AAS: set[str] = {"A", "C", "F", "I", "L", "M", "V"}
 
 # ==============================================================================
 # 6. Engine Shared Constants

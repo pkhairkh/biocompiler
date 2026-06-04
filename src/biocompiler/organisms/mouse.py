@@ -6,6 +6,14 @@ Source: Kazusa Codon Usage Database
 Coding GC: 52.25%
 """
 
+from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+
+__all__ = [
+    "MOUSE_CODON_USAGE",
+    "MOUSE_CODON_ADAPTIVENESS",
+    "MOUSE_PREFERRED_CODONS",
+]
+
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
 MOUSE_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "TTT": ("F", 0.46, 17.5, 420837),
@@ -74,24 +82,8 @@ MOUSE_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "GGG": ("G", 0.24, 16.3, 391856),
 }
 
-# Compute relative adaptiveness
-_AA_MAX_FREQ: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in MOUSE_CODON_USAGE.items():
-    if _aa != "*":
-        _current = _AA_MAX_FREQ.get(_aa, 0.0)
-        if _freq > _current:
-            _AA_MAX_FREQ[_aa] = _freq
+# Compute relative adaptiveness using shared utility
+MOUSE_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(MOUSE_CODON_USAGE)
 
-MOUSE_CODON_ADAPTIVENESS: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in MOUSE_CODON_USAGE.items():
-    if _aa != "*":
-        MOUSE_CODON_ADAPTIVENESS[_codon] = _freq / _AA_MAX_FREQ[_aa] if _AA_MAX_FREQ[_aa] > 0 else 0.0
-
-MOUSE_PREFERRED_CODONS: dict[str, str] = {}
-_AA_CODONS: dict[str, list[tuple[str, float]]] = {}
-for _codon, (_aa, _frac, _freq, _count) in MOUSE_CODON_USAGE.items():
-    if _aa != "*":
-        _AA_CODONS.setdefault(_aa, []).append((_codon, _freq))
-
-for _aa, _codons in _AA_CODONS.items():
-    MOUSE_PREFERRED_CODONS[_aa] = max(_codons, key=lambda x: x[1])[0]
+# Preferred (highest-frequency) codon for each amino acid
+MOUSE_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(MOUSE_CODON_USAGE)

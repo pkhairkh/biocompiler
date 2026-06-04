@@ -43,7 +43,7 @@ def _to_dict(obj: object) -> object:
         if hasattr(obj, "__dataclass_fields__"):
             return asdict(obj)
     except Exception:
-        pass
+        logger.warning("Serialization failed", exc_info=True)
     if hasattr(obj, "__dict__"):
         return dict(obj.__dict__)
     return {"value": str(obj)}

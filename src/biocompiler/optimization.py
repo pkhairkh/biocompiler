@@ -21,17 +21,15 @@ from typing import List, Dict, Optional, Tuple, Set
 from dataclasses import dataclass, field
 
 from .type_system import (
-    CODON_TABLE, AA_TO_CODONS, BLOSUM62, SpliceVerdict, PredicateResult,
+    CODON_TABLE, AA_TO_CODONS, BLOSUM62, PredicateResult,
     check_no_stop_codons, check_no_cryptic_splice, check_no_cpg_island,
-    check_no_restriction_site, check_no_gt_dinucleotide, check_no_avoidable_gt,
+    check_no_restriction_site, check_no_avoidable_gt,
     check_valid_coding_seq,
-    check_conservation_score, check_codon_optimality,
     find_cross_codon_gt, find_cross_codon_cg, find_cross_codon_restriction,
-    PREDICATE_NAMES,
 )
 from .organisms import SPECIES
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
-from .certificate import compute_certificate, format_certificate
+from .certificate import format_certificate
 from .exceptions import InvalidProteinError, UnsupportedOrganismError
 
 
@@ -1535,7 +1533,7 @@ class BioOptimizer:
         min_cai: float = 0.0,
         avoid_gt: bool = True,
         strategy: str = "constraint_first",
-    ):
+    ) -> None:
         self.species = species
         self.species_cai: Dict[str, float] = SPECIES.get(species, SPECIES["ecoli"])
         self.enzymes: List[str] = enzymes or []

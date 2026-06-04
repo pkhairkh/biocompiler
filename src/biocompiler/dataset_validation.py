@@ -36,11 +36,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .scanner import gc_content, validate_dna_sequence
 from .translation import translate, compute_cai
-from .optimization import optimize_sequence, OptimizationResult
-from .organisms import CODON_ADAPTIVENESS_TABLES, SUPPORTED_ORGANISMS
-from .constants import CODON_TABLE, AA_TO_CODONS
+from .optimization import optimize_sequence
+from .constants import AA_TO_CODONS
 from .types import Verdict
 
 logger = logging.getLogger(__name__)

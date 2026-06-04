@@ -9,9 +9,8 @@ Extended with:
 - Certificate validation in from_dict/to_dict
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Dict, List
 
 
 class SLOTMode(Enum):
@@ -60,7 +59,7 @@ class Verdict(str, Enum):
 
 
 # Internal ordering: PASS > LIKELY_PASS > UNCERTAIN > LIKELY_FAIL > FAIL
-_VERDICT_ORDER = {
+_VERDICT_ORDER: dict[Verdict, int] = {
     Verdict.PASS: 4,
     Verdict.LIKELY_PASS: 3,
     Verdict.UNCERTAIN: 2,
@@ -106,12 +105,15 @@ class PositionRange:
     end: int
 
     def __len__(self) -> int:
+        """Return the length of the half-open interval."""
         return self.end - self.start
 
     def overlaps(self, other: "PositionRange") -> bool:
+        """Return True if this range overlaps with *other*."""
         return self.start < other.end and other.start < self.end
 
     def contains(self, position: int) -> bool:
+        """Return True if *position* falls within [start, end)."""
         return self.start <= position < self.end
 
 
@@ -127,6 +129,7 @@ class Token:
 
     @property
     def range(self) -> PositionRange:
+        """Return the PositionRange covered by this token."""
         return PositionRange(self.position, self.position + len(self.match_sequence))
 
 
@@ -151,9 +154,9 @@ class TypeCheckResult:
     """Result of evaluating a type predicate against a sequence."""
     predicate: str
     verdict: Verdict
-    derivation: Optional[list[dict]] = None
-    violation: Optional[str] = None
-    knowledge_gap: Optional[str] = None
+    derivation: list[dict] | None = None
+    violation: str | None = None
+    knowledge_gap: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -164,7 +167,7 @@ class TypeCheckResult:
         return f"TypeCheckResult({self.predicate}={self.verdict.value})"
 
 
-_CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}
+_CERT_REQUIRED_KEYS: set[str] = {"version", "design_id", "sequence", "types", "provenance"}
 
 
 @dataclass

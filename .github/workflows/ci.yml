@@ -43,8 +43,7 @@ jobs:
 
       - name: Type-check with mypy
         run: |
-          mypy src/biocompiler --ignore-missing-imports || true
-        continue-on-error: true
+          mypy src/biocompiler --ignore-missing-imports
 
       - name: Run tests with coverage
         run: |
@@ -73,14 +72,12 @@ jobs:
         with:
           lean-toolchain: leanprover/lean4:v4.30.0
           workdir: proof
-        continue-on-error: true
 
       - name: Check Lean4 proofs (proof/)
         working-directory: proof
         run: |
           lake exe cache get || true
           lake build
-        continue-on-error: true
 
   # ──────────────────────────────────────────────
   # Docker build verification
@@ -94,7 +91,6 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t biocompiler-ci .
-        continue-on-error: true
 
   # ──────────────────────────────────────────────
   # CI gate – all jobs must pass
@@ -103,12 +99,12 @@ jobs:
     name: CI Pass
     if: always()
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [test, lean4-proofs, docker]
     steps:
-      - name: Check test result
+      - name: Check all job results
         run: |
-          if [[ "${{ needs.test.result }}" == "failure" ]]; then
-            echo "::error::Python tests failed"
+          if [[ "${{ needs.test.result }}" == "failure" || "${{ needs.lean4-proofs.result }}" == "failure" || "${{ needs.docker.result }}" == "failure" ]]; then
+            echo "::error::One or more CI jobs failed"
             exit 1
           fi
           echo "All CI checks passed"

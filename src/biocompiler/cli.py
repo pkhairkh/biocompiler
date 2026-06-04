@@ -19,8 +19,6 @@ Commands:
 from __future__ import annotations
 
 import argparse
-import json
-import logging
 import os
 import sys
 import time
@@ -29,7 +27,6 @@ from typing import List, Optional
 from . import __version__
 from .optimization import BioOptimizer
 from .type_system import (
-    CODON_TABLE,
     check_no_stop_codons,
     check_no_cryptic_splice,
     check_no_cpg_island,
@@ -44,9 +41,6 @@ from .certificate import format_certificate, compute_certificate
 #   from .foldx import clear_cache as foldx_clear_cache
 #   from .camsol import clear_cache as camsol_clear_cache
 #   from .immunogenicity import clear_cache as immunogenicity_clear_cache
-
-logger = logging.getLogger(__name__)
-
 
 # ── ANSI colour helpers ──────────────────────────────────────────────────────
 

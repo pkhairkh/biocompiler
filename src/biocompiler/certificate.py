@@ -17,15 +17,16 @@ acceptable for their cloning workflow.
 
 import hashlib
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
-from .types import Verdict, TypeCheckResult, Certificate, combined_verdict, SLOTMode
+from .types import Verdict, TypeCheckResult, Certificate, SLOTMode
 try:
     from .type_system import registry
 except ImportError:
     # Fallback: registry not available in type_system
     registry = None
 from .type_system import CertLevel, PredicateResult
-from .exceptions import CertificateGenerationError, CertificateVerificationError
+from .exceptions import CertificateGenerationError
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,24 @@ try:
 except ImportError:
     VERSION = "7.2.0"
 
+try:
+    from .slot_verification import is_slot_predicate
+except ImportError:
+    is_slot_predicate = lambda name: False  # type: ignore[assignment]
+
 # Required keys in a certificate dict for verification
 _CERT_REQUIRED_KEYS = {"version", "design_id", "sequence", "types", "provenance"}
 _PROVENANCE_REQUIRED_KEYS = {"tool", "version", "timestamp", "input_hash"}
+
+# Default parameter constants (avoids magic numbers)
+_DEFAULT_ORGANISM = "Homo_sapiens"
+_DEFAULT_CELL_TYPE = "HEK293T"
+_DEFAULT_GC_LO = 0.30
+_DEFAULT_GC_HI = 0.70
+_DEFAULT_CAI_THRESHOLD = 0.5
+_DEFAULT_ENZYMES = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
+_DEFAULT_CRYPTIC_SPLICE_THRESHOLD = 3.0
+_CERT_FORMAT_WIDTH = 60
 
 
 def generate_certificate(
@@ -74,15 +90,13 @@ def generate_certificate(
         Certificate object with all predicate results documented
 
     Raises:
+        ValueError: if sequence is empty or type_results is empty
         CertificateGenerationError: only if require_all_pass=True and any predicate failed
-
-    Pre-conditions:
-    - sequence is a non-empty DNA string
-    - type_results is a non-empty list
-    - input_params is a dict (may be empty)
     """
-    assert sequence, "Sequence must not be empty"
-    assert type_results, "Type results must not be empty"
+    if not sequence:
+        raise ValueError("Sequence must not be empty")
+    if not type_results:
+        raise ValueError("Type results must not be empty")
     failures = [r for r in type_results if r.verdict != Verdict.PASS]
 
     if require_all_pass and failures:
@@ -98,13 +112,13 @@ def generate_certificate(
 
     # Ensure all verification parameters are embedded
     complete_params = dict(input_params)
-    complete_params.setdefault("organism", "Homo_sapiens")
-    complete_params.setdefault("cell_type", "HEK293T")
-    complete_params.setdefault("gc_lo", 0.30)
-    complete_params.setdefault("gc_hi", 0.70)
-    complete_params.setdefault("cai_threshold", 0.5)
-    complete_params.setdefault("enzymes", ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"])
-    complete_params.setdefault("cryptic_splice_threshold", 3.0)
+    complete_params.setdefault("organism", _DEFAULT_ORGANISM)
+    complete_params.setdefault("cell_type", _DEFAULT_CELL_TYPE)
+    complete_params.setdefault("gc_lo", _DEFAULT_GC_LO)
+    complete_params.setdefault("gc_hi", _DEFAULT_GC_HI)
+    complete_params.setdefault("cai_threshold", _DEFAULT_CAI_THRESHOLD)
+    complete_params.setdefault("enzymes", list(_DEFAULT_ENZYMES))
+    complete_params.setdefault("cryptic_splice_threshold", _DEFAULT_CRYPTIC_SPLICE_THRESHOLD)
     complete_params.setdefault("exon_boundaries", [(0, len(sequence))])
 
     # Build provenance dict
@@ -179,21 +193,21 @@ def _validate_cert_structure(cert_dict: dict) -> list[str]:
 
 
 # Mapping from predicate name pattern to registry name and required kwargs
-_PREDICATE_KWARGS_MAP = {
+_PREDICATE_KWARGS_MAP: dict[str, Callable[[dict], dict]] = {
     "NoCrypticSplice": lambda params: {
         "known_exon_boundaries": params.get("exon_boundaries", []),
     },
     "SpliceCorrect": lambda params: {
         "known_exon_boundaries": params.get("exon_boundaries", []),
-        "cellular_context": params.get("cell_type", "HEK293T"),
+        "cellular_context": params.get("cell_type", _DEFAULT_CELL_TYPE),
     },
     "GCInRange": lambda params: {
-        "gc_lo": params.get("gc_lo", 0.30),
-        "gc_hi": params.get("gc_hi", 0.70),
+        "gc_lo": params.get("gc_lo", _DEFAULT_GC_LO),
+        "gc_hi": params.get("gc_hi", _DEFAULT_GC_HI),
     },
     "CodonAdapted": lambda params: {
-        "organism": params.get("organism", "Homo_sapiens"),
-        "threshold": params.get("cai_threshold", 0.5),
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+        "threshold": params.get("cai_threshold", _DEFAULT_CAI_THRESHOLD),
     },
     "NoRestrictionSite": lambda params: {
         "enzyme_set": params.get("enzymes", []),
@@ -350,14 +364,14 @@ def format_certificate(results: list[PredicateResult], seq: str, species: str, s
     """Format a human-readable certificate report."""
     cert = compute_certificate(results, slot_mode)
     lines = [
-        "=" * 60,
-        "  BioCompiler v7.0.0 — Optimization Certificate",
-        "=" * 60,
+        "=" * _CERT_FORMAT_WIDTH,
+        f"  BioCompiler v{VERSION} — Optimization Certificate",
+        "=" * _CERT_FORMAT_WIDTH,
         f"  Sequence length: {len(seq)} bp",
         f"  Species:         {species}",
         f"  Certificate:     {cert.value}",
         f"  SLOT Mode:       {slot_mode.value}",
-        "-" * 60,
+        "-" * _CERT_FORMAT_WIDTH,
         "  Predicate Results:",
     ]
     for r in results:
@@ -370,10 +384,9 @@ def format_certificate(results: list[PredicateResult], seq: str, species: str, s
         elif "unavoidable" in r.details.lower() and r.passed:
             mutagenesis_marker = " [UNAVOIDABLE]"
         # Mark SLOT predicates
-        from .slot_verification import is_slot_predicate
         slot_marker = " [SLOT]" if is_slot_predicate(r.predicate) else ""
         lines.append(f"    [{status}{verdict_str}{mutagenesis_marker}{slot_marker}] {r.predicate}: {r.details}")
-    lines.append("=" * 60)
+    lines.append("=" * _CERT_FORMAT_WIDTH)
     lines.append("")
     lines.append("  Certificate Levels:")
     lines.append("    GOLD   — All constraints satisfied by synonymous optimization")
@@ -384,5 +397,5 @@ def format_certificate(results: list[PredicateResult], seq: str, species: str, s
     lines.append("    CONSERVATIVE — SLOT predicates always UNCERTAIN (Lean4 model)")
     lines.append("    VERIFIED     — SLOT predicates PASS when verification conditions met")
     lines.append("    PERMISSIVE   — SLOT predicates PASS with weaker evidence")
-    lines.append("=" * 60)
+    lines.append("=" * _CERT_FORMAT_WIDTH)
     return "\n".join(lines)

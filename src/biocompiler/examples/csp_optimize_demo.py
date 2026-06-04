@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,8 @@ if __name__ == "__main__" and __package__ is None:
     _src_dir = os.path.join(_repo_root, "src")
     if _src_dir not in sys.path:
         sys.path.insert(0, _src_dir)
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Hardcoded protein sequences
@@ -162,7 +165,7 @@ def _try_solver_dispatch(protein: str) -> Optional[str]:
         if result and hasattr(result, "sequence") and result.sequence:
             return result.sequence
     except Exception:
-        pass
+        logger.warning("CSP solver dispatch failed, skipping", exc_info=True)
 
     return None
 

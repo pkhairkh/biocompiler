@@ -14,9 +14,9 @@ into standard bioinformatics formats accepted by NCBI, Benchling, SnapGene, etc.
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from .types import Certificate, TypeCheckResult, Verdict, SpliceIsoform, combined_verdict
+from .types import Certificate, TypeCheckResult, Verdict, combined_verdict
 from .scanner import gc_content
 from .translation import translate
 from .constants import CODON_TABLE, RESTRICTION_ENZYMES
@@ -122,7 +122,7 @@ def export_genbank(
     molecule_type: str = "DNA",
     topology: str = "linear",
     exon_boundaries: Optional[list[tuple[int, int]]] = None,
-    restriction_sites: Optional[list[dict]] = None,
+    restriction_sites: Optional[list[dict[str, Any]]] = None,
     certificate: Optional[Certificate] = None,
     type_results: Optional[list[TypeCheckResult]] = None,
     gene_name: Optional[str] = None,
@@ -187,7 +187,7 @@ def export_genbank(
     if certificate:
         acc = certificate.design_id[:12].upper()
     else:
-        acc = locus
+        acc = locus  # TODO: placeholder accession — replace with real GenBank accession
     lines.append(f"ACCESSION   {acc}")
     lines.append(f"VERSION     {acc}.1")
 
@@ -304,7 +304,7 @@ def export_genbank(
 
 
 def export_multi_fasta(
-    sequences: list[dict],
+    sequences: list[dict[str, Any]],
 ) -> str:
     """
     Export multiple designed sequences as a multi-FASTA file.

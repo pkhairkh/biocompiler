@@ -155,6 +155,10 @@ class ConstraintSpec:
     priority: int = 5  # 1=critical, 10=easiest to relax
 
     def __hash__(self) -> int:
+        # Intentional: only ctype + name used for hashing/equality.
+        # Two constraints of the same type and name are considered identical
+        # regardless of positions, params, or priority — this supports dedup
+        # in sets and dicts (e.g. MUS constraint sets).
         return hash((self.ctype, self.name))
 
     def __eq__(self, other: object) -> bool:
@@ -264,7 +268,7 @@ class SolverConfig:
     backend: SolverBackend = SolverBackend.ORTOOLS
     timeout_seconds: float = 60.0
     max_codons: int = 5000  # Max sequence length the solver handles
-    gc_lo: float = 0.30
+    gc_lo: float = 0.30  # gc_lo/gc_hi use abbreviated names for conciseness; keep in sync with SolverConfig
     gc_hi: float = 0.70
     cryptic_splice_threshold: float = 3.0
     donor_threshold: Optional[float] = None  # Falls back to cryptic_splice_threshold
@@ -431,6 +435,7 @@ class SolverBackendProtocol(Protocol):
     This allows the MUS module to call the solver without depending
     on a specific implementation (Z3, OR-Tools, etc.).
     """
+    # Protocol for MUS dependency injection — used internally by solver/mus.py
 
     def solve(self, model: CSPModel) -> SolverResult:
         """Solve the CSP model and return the result."""

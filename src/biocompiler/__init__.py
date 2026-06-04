@@ -189,6 +189,18 @@ except ImportError:
     except ImportError:
         run_benchmarks = None
         BenchmarkReport = None
+    # Names only available in the extended benchmark API
+    REFERENCE_GENES = None
+    run_structured_benchmarks = None
+    format_benchmark_report_json = None
+    format_benchmark_report_text = None
+    run_head_to_head_benchmark = None
+    compare_tools = None
+    HeadToHeadReport = None
+    format_head_to_head_text = None
+    format_head_to_head_json = None
+    is_dna_chisel_available = None
+    run_comprehensive_benchmark = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Organism data (merged from species.py)
@@ -359,7 +371,7 @@ try:
     )
 except ImportError:
     ESMFoldResult = None
-    ESMFoldError = None
+    # ESMFoldError is already imported unconditionally from .exceptions above
     ESMFoldCache = None
     is_esmfold_available = None
     predict_structure = None
@@ -503,7 +515,7 @@ except ImportError:
     Residue = None
     Chain = None
     ProteinStructure = None
-    parse_pdb = None
+    # parse_pdb may already be defined from .esmfold; don't clobber it
     parse_pdb_file = None
     compute_dihedral = None
     compute_ramachandran = None
@@ -554,7 +566,7 @@ try:
     )
 except ImportError:
     FoldXResult = None
-    FoldXError = None
+    # FoldXError is already imported unconditionally from .exceptions above
     FoldXCache = None
     StabilityLandscape = None
     ConservationScore = None
@@ -778,10 +790,10 @@ __all__ = [
     "find_hydrophobic_stretches", "PKA_VALUES",
 
     # ── ESMFold structure prediction ─────────────────────────
-    "ESMFoldResult", "ESMFoldError", "ESMFoldCache",
+    "ESMFoldResult", "ESMFoldCache",
     "is_esmfold_available", "predict_structure", "predict_structure_batch",
     "predict_batch", "predict_proteins", "format_batch_report",
-    "parse_pdb", "compute_backbone_dihedrals", "classify_plddt",
+    "compute_backbone_dihedrals", "classify_plddt",
     "estimate_contact_map", "analyze_structure",
     "validate_batch_input", "estimate_batch_time",
     "BatchStructureRequest", "BatchStructureResult",
@@ -836,7 +848,7 @@ __all__ = [
     "plot_plddt_bar_svg", "plot_solubility_profile_svg",
 
     # ── FoldX stability ──────────────────────────────────────
-    "FoldXResult", "FoldXError", "FoldXCache",
+    "FoldXResult", "FoldXCache",
     "StabilityLandscape", "ConservationScore",
     "is_foldx_available", "run_foldx_stability", "run_foldx_repair",
     "run_foldx_mutation", "empirical_stability",
@@ -855,7 +867,7 @@ __all__ = [
 
     # ── CSP/SMT Solver ───────────────────────────────────────────
     "CSPSolver", "SolverConfig", "SolverResult", "SolverBackend",
-    "solve_with_csp", "is_solver_available",
+    "solve_with_csp", "is_solver_available", "csp_optimize",
 
     # ── ViennaRNA ────────────────────────────────────────────────
     "viennarna", "viennarna_fallback",

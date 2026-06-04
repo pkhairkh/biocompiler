@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,8 @@ class ValidationResult:
     true_negative: bool = False
     details: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Classify the result as TP, FN, FP, or TN based on prediction vs ground truth."""
         if self.ground_truth_flagged and self.predicted_flagged:
             self.true_positive = True
         elif self.ground_truth_flagged and not self.predicted_flagged:
@@ -126,7 +127,7 @@ class DomainReport:
     accuracy: float = 0.0
     cases: List[ValidationResult] = field(default_factory=list)
 
-    def compute_metrics(self):
+    def compute_metrics(self) -> None:
         """Compute sensitivity, specificity, precision, accuracy."""
         tp = self.true_positives
         fn = self.false_negatives

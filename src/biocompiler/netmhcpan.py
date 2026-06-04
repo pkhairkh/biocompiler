@@ -33,25 +33,17 @@ References
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import os
 import re
-import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
 from .constants import DEFAULT_ENGINE_TIMEOUT
-from .engine_base import (
-    BaseEngineResult,
-    EngineTimer,
-    classify_score,
-    validate_protein_sequence,
-)
+from .engine_base import validate_protein_sequence
 from .exceptions import ImmunogenicityError
 
 __all__ = [
@@ -96,6 +88,9 @@ STRONG_BINDER_RANK_THRESHOLD = 0.5  # rank < 0.5% → strong binder
 WEAK_BINDER_RANK_THRESHOLD = 2.0  # rank < 2% → weak binder
 
 # NetMHCpan config file identifiers for the webface2 CGI
+# NOTE: These look like local filesystem paths but are actually external service
+# identifiers required by the DTU NetMHCpan webface2 CGI API. They reference
+# config paths on the remote DTU server, NOT local files.
 _NETMHCPAN_CONFIG = "/usr/opt/www/pub/CBS/services/NetMHCpan-4.1/webface.NetMHCpan-4.1.cfg"
 _NETMHCIIPAN_CONFIG = "/usr/opt/www/pub/CBS/services/NetMHCIIpan-4.0/webface.NetMHCIIpan-4.0.cfg"
 

@@ -38,11 +38,18 @@ from .types import (
     CSPModel,
     MUSReport,
     SolverBackendProtocol,
-    SolverConfig,
-    SolverResult,
-    SolverStatus,
 )
-from ..constants import AA_TO_CODONS, CODON_TABLE
+from ..constants import AA_TO_CODONS
+
+# ---- Named constants (replace magic numbers) ----
+BASES_PER_CODON: int = 3
+"""Number of nucleotide bases per codon."""
+
+GC_RELAXATION_WIDTH: float = 0.05
+"""Width (in fractional GC) by which to widen GC bounds in relaxation suggestions."""
+
+CRYPTIC_SPLICE_THRESHOLD_INCREMENT: float = 1.0
+"""Amount to increase the cryptic splice score threshold in relaxation suggestions."""
 
 
 # =====================================================================
@@ -140,7 +147,7 @@ def quick_feasibility_check(model: CSPModel) -> FeasibilityReport:
     # Compute the absolute min/max GC possible across all positions
     min_gc_count = 0
     max_gc_count = 0
-    total_bases = len(protein) * 3
+    total_bases = len(protein) * BASES_PER_CODON
     for i, aa in enumerate(protein):
         codons = model.codon_domains.get(i, AA_TO_CODONS.get(aa, []))
         if not codons:
@@ -428,8 +435,8 @@ def suggest_relaxations(mus_report: MUSReport, model: CSPModel) -> list[str]:
     # --- GC content relaxation ---
     if ConstraintType.GC_CONTENT in types_in_mus:
         gc_min, gc_max = config.gc_lo, config.gc_hi
-        widened_min = max(0.0, gc_min - 0.05)
-        widened_max = min(1.0, gc_max + 0.05)
+        widened_min = max(0.0, gc_min - GC_RELAXATION_WIDTH)
+        widened_max = min(1.0, gc_max + GC_RELAXATION_WIDTH)
         suggestions.append(
             f"Widen GC bounds from [{gc_min:.0%}, {gc_max:.0%}] to "
             f"[{widened_min:.0%}, {widened_max:.0%}] — "
@@ -440,7 +447,7 @@ def suggest_relaxations(mus_report: MUSReport, model: CSPModel) -> list[str]:
     # --- Cryptic splice relaxation ---
     if ConstraintType.NO_CRYPTIC_SPLICE in types_in_mus:
         threshold = config.cryptic_splice_threshold
-        new_threshold = threshold + 1.0
+        new_threshold = threshold + CRYPTIC_SPLICE_THRESHOLD_INCREMENT
         suggestions.append(
             f"Increase cryptic splice threshold from {threshold:.1f} to "
             f"{new_threshold:.1f} — impact: allows weaker splice sites, "
@@ -553,7 +560,7 @@ def _codons_avoiding_site(
     """
     from ..constants import reverse_complement
 
-    site_rc = reverse_complement(site)
+    site_rc: str = reverse_complement(site)
     return [
         c for c in codons
         if site not in c and site_rc not in c

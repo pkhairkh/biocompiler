@@ -9,7 +9,7 @@ FIXES from toy model:
 
 import logging
 import math
-from .constants import CODON_TABLE, STOP_CODONS, START_CODON
+from .constants import CODON_TABLE, START_CODON, reverse_complement
 from .scanner import validate_dna_sequence
 from .organisms import (
     CODON_ADAPTIVENESS_TABLES, SUPPORTED_ORGANISMS,
@@ -17,6 +17,9 @@ from .organisms import (
 from .exceptions import UnsupportedOrganismError
 
 logger = logging.getLogger(__name__)
+
+# Epsilon floor for zero-adaptiveness codons in CAI computation
+_ZERO_ADAPTIVENESS_EPSILON: float = 1e-10
 
 
 def translate(sequence: str, to_stop: bool = True) -> str:
@@ -47,8 +50,6 @@ def translate(sequence: str, to_stop: bool = True) -> str:
     protein: list[str] = []
     for i in range(0, len(sequence) - 2, 3):
         codon = sequence[i:i+3]
-        if len(codon) < 3:
-            break  # Partial codon at end
         aa = CODON_TABLE.get(codon)
         if aa is None:
             logger.warning("Unknown codon '%s' at position %d — mapping to 'X'", codon, i)
@@ -92,7 +93,7 @@ def compute_cai(sequence: str, organism: str = "Homo_sapiens") -> float:
             continue
         w = adaptiveness.get(codon, 0.0)
         if w <= 0:
-            w = 1e-10  # Small epsilon for zero-adaptiveness codons
+            w = _ZERO_ADAPTIVENESS_EPSILON  # Floor for zero-adaptiveness codons
         ratios.append(w)
 
     if not ratios:
@@ -117,13 +118,12 @@ def find_orfs(sequence: str, min_length_aa: int = 30) -> list[dict]:
     Returns:
         List of ORF dicts with keys: start, end, frame, strand, protein, length
     """
-    from .constants import reverse_complement
-
     sequence = validate_dna_sequence(sequence)
     orfs: list[dict] = []
 
     def _find_forward_orfs(seq: str, strand: str) -> list[dict]:
-        found = []
+        """Scan a single-strand sequence for ORFs in all 3 forward frames."""
+        found: list[dict] = []
         for frame in range(3):
             i = frame
             while i < len(seq) - 2:

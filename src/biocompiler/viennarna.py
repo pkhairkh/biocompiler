@@ -30,6 +30,7 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
+from typing import TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,18 @@ DEFAULT_5PRIME_WINDOW: int = 50
 REGION_FULL = "full"
 REGION_5UTR = "5utr"
 REGION_START_CODON = "start_codon"
+
+# Named constants replacing raw magic numbers
+REGION_5UTR_LENGTH: int = 50
+REGION_START_CODON_LENGTH: int = 100
+VERSION_CHECK_TIMEOUT: int = 5
+RNAFOLD_CLI_TIMEOUT: int = 30
+OVERLAP_MERGE_THRESHOLD: float = 0.5
+
+# Keep in sync with solver/constraints.py NEAREST_NEIGHBOR_* constants
+NEAREST_NEIGHBOR_GC: float = -1.5
+NEAREST_NEIGHBOR_AU: float = -0.5
+NEAREST_NEIGHBOR_GU: float = -0.3
 
 # ── Data classes ───────────────────────────────────────────
 
@@ -133,9 +146,9 @@ def _extract_region(dna: str, region: str) -> str:
     if region == REGION_FULL:
         return dna
     if region == REGION_5UTR:
-        return dna[:50]
+        return dna[:REGION_5UTR_LENGTH]
     if region == REGION_START_CODON:
-        return dna[:100]
+        return dna[:REGION_START_CODON_LENGTH]
     logger.debug("Unknown region %r, using full sequence", region)
     return dna
 
@@ -205,7 +218,7 @@ def is_viennarna_available() -> bool:
         pass
     try:
         r = subprocess.run(["RNAfold", "--version"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=VERSION_CHECK_TIMEOUT)
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
@@ -223,7 +236,7 @@ def _get_viennarna_version() -> tuple[int, int, int] | None:
         pass
     try:
         r = subprocess.run(["RNAfold", "--version"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=VERSION_CHECK_TIMEOUT)
         if r.returncode == 0:
             return _parse_version(r.stdout + r.stderr)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -287,7 +300,7 @@ def _predict_mfe_cli(rna_sequence: str) -> tuple[str, float] | None:
     try:
         proc = subprocess.run(
             ["RNAfold", "--noPS"], input=rna_sequence,
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=RNAFOLD_CLI_TIMEOUT,
         )
     except FileNotFoundError:
         return None
@@ -500,7 +513,7 @@ def find_stable_structures(
         prev = merged[-1]
         overlap = max(0, min(prev.end, cur.end) - max(prev.start, cur.start))
         shorter = min(prev.end - prev.start, cur.end - cur.start)
-        if shorter > 0 and overlap / shorter >= 0.5:
+        if shorter > 0 and overlap / shorter >= OVERLAP_MERGE_THRESHOLD:
             if cur.mfe < prev.mfe:
                 merged[-1] = cur
         else:
@@ -539,12 +552,20 @@ def compute_5prime_dg(
 
 # ── Integration helper for type_system.py ──────────────────
 
+class MRNAStructureResult(TypedDict):
+    """Return type for check_mrna_structure_viennarna."""
+    dg: float
+    method: str
+    structure: str
+    viennarna_used: bool
+
+
 def check_mrna_structure_viennarna(
     dna_sequence: str,
     window_start: int = 0,
     window_end: int = 50,
     dg_threshold: float = -15.0,
-) -> dict:
+) -> MRNAStructureResult:
     """ViennaRNA-backed mRNA secondary structure check for predicate 11.
 
     Drop-in replacement for the toy hairpin model in
@@ -582,7 +603,7 @@ def check_mrna_structure_viennarna(
             au += 1
         elif (b5 + b3) in ("GU", "UG"):
             gu += 1
-    return {"dg": -1.5 * gc - 0.5 * au - 0.3 * gu,
+    return {"dg": NEAREST_NEIGHBOR_GC * gc + NEAREST_NEIGHBOR_AU * au + NEAREST_NEIGHBOR_GU * gu,
             "method": "toy_hairpin_fallback", "structure": "",
             "viennarna_used": False}
 
@@ -638,4 +659,4 @@ def _log_version_info() -> None:
 try:
     _log_version_info()
 except Exception:
-    pass
+    logger.debug("Version info logging failed", exc_info=True)

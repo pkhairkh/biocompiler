@@ -95,10 +95,29 @@ for full transparency.
 ──────────────────────────────────────────────────────────────────────────────
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 from .types import Verdict, SLOTMode
+
+
+# ────────────────────────────────────────────────────────────
+# Named constants (avoids magic numbers)
+# ────────────────────────────────────────────────────────────
+_PERMISSIVE_SPLICE_RELAXATION: float = 1.5      # Multiplier for high_thresh in PERMISSIVE mode
+_PERMISSIVE_PROMOTER_RELAXATION: float = 0.85   # Multiplier for promoter threshold in PERMISSIVE
+_PERMISSIVE_TM_RELAXATION: float = 0.9         # Multiplier for TM domain threshold in PERMISSIVE
+_PERMISSIVE_DG_RELAXATION: float = 0.8         # Multiplier for ΔG threshold in PERMISSIVE
+_PERMISSIVE_CAI_RELAXATION: float = 0.8        # Multiplier for CAI threshold in PERMISSIVE
+_PERMISSIVE_BLOSUM_RELAXATION: int = 1          # Points relaxed for BLOSUM62 in PERMISSIVE
+_BLOSUM_MIN_SCORE_FLOOR: int = -10              # Floor for permissive BLOSUM score adjustment
+_TM_WINDOW_SIZE: int = 19                       # Amino acid window size for TM domain scan
+_VERIFIED_STABLE_DG_KCAL: float = -5.0          # ΔG threshold for stable (VERIFIED, kcal/mol)
+_PERMISSIVE_STABLE_DG_KCAL: float = -2.0        # ΔG threshold for stable (PERMISSIVE, kcal/mol)
+_PERMISSIVE_BORDERLINE_DG_KCAL: float = 5.0     # ΔG threshold for borderline unstable (PERMISSIVE)
+_VERIFIED_SOLUBILITY_THRESHOLD: float = 0.3     # Solubility score threshold (VERIFIED)
+_PERMISSIVE_SOLUBILITY_THRESHOLD: float = 0.1   # Solubility score threshold (PERMISSIVE)
+_BORDERLINE_SOLUBILITY_FACTOR: float = 0.5      # Factor of threshold for borderline solubility
 
 
 # ────────────────────────────────────────────────────────────
@@ -203,7 +222,7 @@ def _check_esmfold_available() -> bool:
     try:
         from .esmfold import is_esmfold_available
         return is_esmfold_available()
-    except (ImportError, Exception):
+    except Exception:
         return False
 
 
@@ -212,7 +231,7 @@ def _check_foldx_available() -> bool:
     try:
         from .foldx import is_foldx_available
         return is_foldx_available()
-    except (ImportError, Exception):
+    except Exception:
         return False
 
 
@@ -221,7 +240,7 @@ def _check_camsol_available() -> bool:
     try:
         from .camsol import compute_solubility
         return callable(compute_solubility)
-    except (ImportError, Exception):
+    except Exception:
         return False
 
 
@@ -230,7 +249,7 @@ def _check_mhc_available() -> bool:
     try:
         from .immunogenicity import predict_mhc_i_binding
         return callable(predict_mhc_i_binding)
-    except (ImportError, Exception):
+    except Exception:
         return False
 
 
@@ -239,7 +258,7 @@ def _check_maxent_available() -> bool:
     try:
         from .splicing import maxent_score
         return callable(maxent_score)
-    except (ImportError, Exception):
+    except Exception:
         return False
 
 
@@ -255,9 +274,19 @@ def verify_no_cryptic_splice(
 ) -> tuple[Verdict, VerificationEvidence]:
     """Verification conditions for NoCrypticSplice SLOT predicate.
 
-    CONSERVATIVE: Always UNCERTAIN.
-    VERIFIED: PASS if MaxEntScan is available and no GT sites exceed high_thresh.
-    PERMISSIVE: PASS if no GT sites exceed high_thresh * 1.5 (relaxed threshold).
+    Args:
+        seq: DNA sequence to check.
+        low_thresh: Low MaxEntScan score threshold (acceptor sites).
+        high_thresh: High MaxEntScan score threshold (donor sites).
+        slot_mode: SLOT evaluation mode.
+
+    Returns:
+        Tuple of (Verdict, VerificationEvidence).
+
+    Behavior:
+        CONSERVATIVE: Always UNCERTAIN.
+        VERIFIED: PASS if MaxEntScan is available and no GT sites exceed high_thresh.
+        PERMISSIVE: PASS if no GT sites exceed high_thresh * 1.5 (relaxed threshold).
     """
     tool_available = _check_maxent_available()
 
@@ -330,7 +359,7 @@ def verify_no_cryptic_splice(
 
     # With MaxEntScan but relaxed threshold
     try:
-        relaxed_high = high_thresh * 1.5
+        relaxed_high = high_thresh * _PERMISSIVE_SPLICE_RELAXATION
         from .type_system import check_no_cryptic_splice
         result = check_no_cryptic_splice(seq, low_thresh, relaxed_high)
         # In permissive mode, UNCERTAIN becomes PASS
@@ -373,7 +402,17 @@ def verify_no_cryptic_promoter(
     threshold: float = 0.7,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> tuple[Verdict, VerificationEvidence]:
-    """Verification conditions for NoCrypticPromoter SLOT predicate."""
+    """Verification conditions for NoCrypticPromoter SLOT predicate.
+
+    Args:
+        seq: DNA sequence to check.
+        organism: Target organism for promoter PWM scoring.
+        threshold: PWM score threshold for cryptic promoter detection.
+        slot_mode: SLOT evaluation mode.
+
+    Returns:
+        Tuple of (Verdict, VerificationEvidence).
+    """
     tool_available = True  # PWM scanner is always available (built-in)
 
     if slot_mode == SLOTMode.CONSERVATIVE:
@@ -389,7 +428,7 @@ def verify_no_cryptic_promoter(
     # VERIFIED and PERMISSIVE: run the actual check
     try:
         from .type_system import check_no_cryptic_promoter
-        effective_threshold = threshold if slot_mode == SLOTMode.VERIFIED else threshold * 0.85
+        effective_threshold = threshold if slot_mode == SLOTMode.VERIFIED else threshold * _PERMISSIVE_PROMOTER_RELAXATION
         result = check_no_cryptic_promoter(seq, organism, effective_threshold)
 
         if slot_mode == SLOTMode.PERMISSIVE and result.verdict == Verdict.UNCERTAIN:
@@ -432,7 +471,17 @@ def verify_no_unexpected_tm_domain(
     threshold: float = 0.68,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> tuple[Verdict, VerificationEvidence]:
-    """Verification conditions for NoUnexpectedTMDomain SLOT predicate."""
+    """Verification conditions for NoUnexpectedTMDomain SLOT predicate.
+
+    Args:
+        seq: Protein sequence to check.
+        is_cytosolic: Whether the protein is expected to be cytosolic.
+        threshold: Hydrophobic fraction threshold for TM domain detection.
+        slot_mode: SLOT evaluation mode.
+
+    Returns:
+        Tuple of (Verdict, VerificationEvidence).
+    """
     tool_available = True  # Hydrophobic fraction heuristic is built-in
 
     if slot_mode == SLOTMode.CONSERVATIVE:
@@ -447,8 +496,8 @@ def verify_no_unexpected_tm_domain(
 
     try:
         from .type_system import check_no_unexpected_tm_domain
-        effective_threshold = threshold if slot_mode == SLOTMode.VERIFIED else threshold * 0.9
-        result = check_no_unexpected_tm_domain(seq, is_cytosolic, 19, effective_threshold)
+        effective_threshold = threshold if slot_mode == SLOTMode.VERIFIED else threshold * _PERMISSIVE_TM_RELAXATION
+        result = check_no_unexpected_tm_domain(seq, is_cytosolic, _TM_WINDOW_SIZE, effective_threshold)
 
         if slot_mode == SLOTMode.PERMISSIVE and result.verdict == Verdict.UNCERTAIN:
             return Verdict.PASS, VerificationEvidence(
@@ -491,7 +540,18 @@ def verify_mrna_secondary_structure(
     dg_threshold: float = -15.0,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> tuple[Verdict, VerificationEvidence]:
-    """Verification conditions for mRNASecondaryStructure SLOT predicate."""
+    """Verification conditions for mRNASecondaryStructure SLOT predicate.
+
+    Args:
+        seq: DNA/mRNA sequence to check.
+        window_start: Start position of the scanning window.
+        window_end: End position of the scanning window.
+        dg_threshold: ΔG threshold for stable secondary structure (kcal/mol).
+        slot_mode: SLOT evaluation mode.
+
+    Returns:
+        Tuple of (Verdict, VerificationEvidence).
+    """
     tool_available = True  # Simplified folding model is built-in
 
     if slot_mode == SLOTMode.CONSERVATIVE:
@@ -506,7 +566,7 @@ def verify_mrna_secondary_structure(
 
     try:
         from .type_system import check_mrna_secondary_structure
-        effective_threshold = dg_threshold if slot_mode == SLOTMode.VERIFIED else dg_threshold * 0.8
+        effective_threshold = dg_threshold if slot_mode == SLOTMode.VERIFIED else dg_threshold * _PERMISSIVE_DG_RELAXATION
         result = check_mrna_secondary_structure(seq, window_start, window_end, effective_threshold)
 
         if slot_mode == SLOTMode.PERMISSIVE and result.verdict == Verdict.UNCERTAIN:
@@ -546,11 +606,22 @@ def verify_mrna_secondary_structure(
 def verify_co_translational_folding(
     seq: str,
     organism: str = "Homo_sapiens",
-    domain_boundaries: List[int] | None = None,
+    domain_boundaries: Optional[List[int]] = None,
     min_pause_cai: float = 0.3,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> tuple[Verdict, VerificationEvidence]:
-    """Verification conditions for CoTranslationalFolding SLOT predicate."""
+    """Verification conditions for CoTranslationalFolding SLOT predicate.
+
+    Args:
+        seq: Coding DNA sequence to check.
+        organism: Target organism for codon usage / CAI lookup.
+        domain_boundaries: Optional list of domain boundary positions.
+        min_pause_cai: Minimum CAI for translational pause sites.
+        slot_mode: SLOT evaluation mode.
+
+    Returns:
+        Tuple of (Verdict, VerificationEvidence).
+    """
     tool_available = True  # CAI-based heuristic is built-in
 
     if slot_mode == SLOTMode.CONSERVATIVE:
@@ -605,7 +676,17 @@ def verify_conservation_score(
     min_score: int = 0,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> tuple[Verdict, VerificationEvidence]:
-    """Verification conditions for ConservationScore SLOT predicate."""
+    """Verification conditions for ConservationScore SLOT predicate.
+
+    Args:
+        original_aa: Original amino acid single-letter code.
+        new_aa: Replacement amino acid single-letter code.
+        min_score: Minimum BLOSUM62 substitution score for conservation.
+        slot_mode: SLOT evaluation mode.
+
+    Returns:
+        Tuple of (Verdict, VerificationEvidence).
+    """
     tool_available = True  # BLOSUM62 is built-in
 
     if slot_mode == SLOTMode.CONSERVATIVE:
@@ -620,7 +701,7 @@ def verify_conservation_score(
 
     try:
         from .type_system import check_conservation_score, BLOSUM62
-        effective_min = min_score if slot_mode == SLOTMode.VERIFIED else max(min_score - 1, -10)
+        effective_min = min_score if slot_mode == SLOTMode.VERIFIED else max(min_score - _PERMISSIVE_BLOSUM_RELAXATION, _BLOSUM_MIN_SCORE_FLOOR)
         result = check_conservation_score(original_aa, new_aa, effective_min)
         verified = result.verdict == Verdict.PASS
         return result.verdict, VerificationEvidence(
@@ -650,7 +731,17 @@ def verify_codon_optimality(
     min_cai: float = 0.0,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> tuple[Verdict, VerificationEvidence]:
-    """Verification conditions for CodonOptimality SLOT predicate."""
+    """Verification conditions for CodonOptimality SLOT predicate.
+
+    Args:
+        codon: Three-letter codon to evaluate.
+        species_cai: Dictionary mapping codons to CAI values for the target species.
+        min_cai: Minimum codon adaptation index for optimality.
+        slot_mode: SLOT evaluation mode.
+
+    Returns:
+        Tuple of (Verdict, VerificationEvidence).
+    """
     tool_available = bool(species_cai)  # CAI data is the "tool"
 
     if slot_mode == SLOTMode.CONSERVATIVE:
@@ -675,7 +766,7 @@ def verify_codon_optimality(
 
     try:
         from .type_system import check_codon_optimality
-        effective_min = min_cai if slot_mode == SLOTMode.VERIFIED else min_cai * 0.8
+        effective_min = min_cai if slot_mode == SLOTMode.VERIFIED else min_cai * _PERMISSIVE_CAI_RELAXATION
         result = check_codon_optimality(codon, species_cai, effective_min)
         verified = result.verdict == Verdict.PASS
         return result.verdict, VerificationEvidence(
@@ -791,17 +882,17 @@ def verify_stability_predicate(
         dg = stability.get("dg", 0.0)
 
         if slot_mode == SLOTMode.VERIFIED:
-            # Strict threshold: ΔG < -5 kcal/mol for stable
-            if dg < -5.0:
+            # Strict threshold: ΔG < _VERIFIED_STABLE_DG_KCAL for stable
+            if dg < _VERIFIED_STABLE_DG_KCAL:
                 return Verdict.PASS, VerificationEvidence(
                     predicate=predicate_name,
                     slot_mode=slot_mode,
                     tool_available=tool_available,
                     tool_name="FoldX" if tool_available else "empirical_stability",
                     tool_result=f"ΔG={dg:.1f} kcal/mol",
-                    threshold_used=-5.0,
+                    threshold_used=_VERIFIED_STABLE_DG_KCAL,
                     verified=True,
-                    details=f"VERIFIED mode: ΔG={dg:.1f} kcal/mol < -5.0 (stable)",
+                    details=f"VERIFIED mode: ΔG={dg:.1f} kcal/mol < {_VERIFIED_STABLE_DG_KCAL} (stable)",
                 )
             elif dg < 0:
                 return Verdict.LIKELY_PASS, VerificationEvidence(
@@ -810,7 +901,7 @@ def verify_stability_predicate(
                     tool_available=tool_available,
                     tool_name="FoldX" if tool_available else "empirical_stability",
                     tool_result=f"ΔG={dg:.1f} kcal/mol",
-                    threshold_used=-5.0,
+                    threshold_used=_VERIFIED_STABLE_DG_KCAL,
                     verified=True,
                     details=f"VERIFIED mode: ΔG={dg:.1f} kcal/mol (likely stable)",
                 )
@@ -821,31 +912,31 @@ def verify_stability_predicate(
                     tool_available=tool_available,
                     tool_name="FoldX" if tool_available else "empirical_stability",
                     tool_result=f"ΔG={dg:.1f} kcal/mol",
-                    threshold_used=-5.0,
+                    threshold_used=_VERIFIED_STABLE_DG_KCAL,
                     verified=True,
                     details=f"VERIFIED mode: ΔG={dg:.1f} kcal/mol >= 0 (unstable)",
                 )
 
         # PERMISSIVE: weaker threshold
-        if dg < -2.0:
+        if dg < _PERMISSIVE_STABLE_DG_KCAL:
             return Verdict.PASS, VerificationEvidence(
                 predicate=predicate_name,
                 slot_mode=slot_mode,
                 tool_available=tool_available,
                 tool_name="FoldX" if tool_available else "empirical_stability",
                 tool_result=f"ΔG={dg:.1f} kcal/mol",
-                threshold_used=-2.0,
+                threshold_used=_PERMISSIVE_STABLE_DG_KCAL,
                 verified=True,
-                details=f"PERMISSIVE mode: ΔG={dg:.1f} kcal/mol < -2.0 (stable)",
+                details=f"PERMISSIVE mode: ΔG={dg:.1f} kcal/mol < {_PERMISSIVE_STABLE_DG_KCAL} (stable)",
             )
-        elif dg < 5.0:
+        elif dg < _PERMISSIVE_BORDERLINE_DG_KCAL:
             return Verdict.LIKELY_PASS, VerificationEvidence(
                 predicate=predicate_name,
                 slot_mode=slot_mode,
                 tool_available=tool_available,
                 tool_name="FoldX" if tool_available else "empirical_stability",
                 tool_result=f"ΔG={dg:.1f} kcal/mol",
-                threshold_used=-2.0,
+                threshold_used=_PERMISSIVE_STABLE_DG_KCAL,
                 verified=True,
                 details=f"PERMISSIVE mode: ΔG={dg:.1f} kcal/mol (borderline)",
             )
@@ -855,9 +946,9 @@ def verify_stability_predicate(
             tool_available=tool_available,
             tool_name="FoldX" if tool_available else "empirical_stability",
             tool_result=f"ΔG={dg:.1f} kcal/mol",
-            threshold_used=-2.0,
+            threshold_used=_PERMISSIVE_STABLE_DG_KCAL,
             verified=True,
-            details=f"PERMISSIVE mode: ΔG={dg:.1f} kcal/mol >= 5.0 (unstable)",
+            details=f"PERMISSIVE mode: ΔG={dg:.1f} kcal/mol >= {_PERMISSIVE_BORDERLINE_DG_KCAL} (unstable)",
         )
     except Exception as e:
         return Verdict.UNCERTAIN, VerificationEvidence(
@@ -906,7 +997,7 @@ def verify_solubility_predicate(
         sol_result = compute_intrinsic_solubility(protein_sequence)
         score = sol_result.get("score", 0.0) if isinstance(sol_result, dict) else getattr(sol_result, "score", 0.0)
 
-        threshold = 0.3 if slot_mode == SLOTMode.VERIFIED else 0.1
+        threshold = _VERIFIED_SOLUBILITY_THRESHOLD if slot_mode == SLOTMode.VERIFIED else _PERMISSIVE_SOLUBILITY_THRESHOLD
         if score >= threshold:
             return Verdict.PASS, VerificationEvidence(
                 predicate=predicate_name,
@@ -918,7 +1009,7 @@ def verify_solubility_predicate(
                 verified=True,
                 details=f"{slot_mode.value} mode: solubility score {score:.3f} >= {threshold}",
             )
-        return Verdict.LIKELY_PASS if score >= threshold * 0.5 else Verdict.FAIL, VerificationEvidence(
+        return Verdict.LIKELY_PASS if score >= threshold * _BORDERLINE_SOLUBILITY_FACTOR else Verdict.FAIL, VerificationEvidence(
             predicate=predicate_name,
             slot_mode=slot_mode,
             tool_available=True,

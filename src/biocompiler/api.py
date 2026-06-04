@@ -58,7 +58,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Security, Depends
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Security, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
@@ -68,8 +68,8 @@ from .translation import translate, compute_cai, find_orfs
 from .splicing import compute_splice_isoforms
 from .type_system import evaluate_all_predicates
 from .certificate import generate_certificate, verify_certificate
-from .optimization import optimize_sequence, OptimizationResult
-from .export import export_fasta, export_genbank, export_genbank_with_certificate
+from .optimization import optimize_sequence
+from .export import export_fasta, export_genbank
 from .types import Verdict, Certificate
 from .constants import RESTRICTION_ENZYMES
 from .organisms import SUPPORTED_ORGANISMS, CODON_USAGE_TABLES
@@ -2343,7 +2343,7 @@ def create_app() -> FastAPI:
     # ─── Endpoints ──────────────────────────────────────────────
 
     @app.get("/health", response_model=HealthResponse)
-    async def health_check():
+    async def health_check() -> HealthResponse:
         """Health check endpoint (no auth required)."""
         return HealthResponse(
             status="healthy",
@@ -2354,7 +2354,7 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/organisms", response_model=OrganismResponse)
-    async def list_organisms():
+    async def list_organisms() -> OrganismResponse:
         """List all supported organisms with codon usage data."""
         organisms = []
         for name in SUPPORTED_ORGANISMS:
@@ -2367,13 +2367,13 @@ def create_app() -> FastAPI:
         return OrganismResponse(organisms=organisms)
 
     @app.get("/predicates", response_model=PredicateResponse)
-    async def list_predicates():
+    async def list_predicates() -> PredicateResponse:
         """List all registered type predicates."""
         from .type_system import registry
         return PredicateResponse(predicates=registry.names())
 
     @app.get("/enzymes")
-    async def list_enzymes():
+    async def list_enzymes() -> dict[str, dict[str, str]]:
         """List all known restriction enzymes."""
         return {
             "enzymes": {

@@ -27,7 +27,21 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+__all__ = [
+    "GTEX_TISSUE_WEIGHTS",
+    "TISSUE_ALIASES",
+    "CANONICAL_BASELINE_WEIGHT",
+    "get_tissue_weights",
+    "list_available_tissues",
+    "add_custom_tissue",
+    "export_tissue_weights_json",
+]
+
 logger = logging.getLogger(__name__)
+
+# Canonical splicing is always the baseline; other events are expressed
+# as fractions of this value.
+CANONICAL_BASELINE_WEIGHT: float = 1.0
 
 # ─── GTEx-Derived Tissue Weights ──────────────────────────────────
 #
@@ -51,21 +65,21 @@ logger = logging.getLogger(__name__)
 GTEX_TISSUE_WEIGHTS: dict[str, dict[str, float]] = {
     # ─── Cell Lines (mapped to closest GTEx tissue) ────────────────
     "HEK293T": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.28,       # Kidney-derived: moderate exon skipping
         "intron_retention": 0.12, # Kidney: low intron retention
         "alt_site": 0.38,        # Kidney: moderate alt site usage
         "cryptic": 0.08,         # Kidney: low cryptic activation
     },
     "HeLa": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.32,       # Cervix: moderate-high exon skipping
         "intron_retention": 0.18, # Cervix: moderate intron retention
         "alt_site": 0.41,        # Cervix: high alt site usage
         "cryptic": 0.10,         # Cervix: moderate cryptic activation
     },
     "HepG2": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.24,       # Liver: lower exon skipping
         "intron_retention": 0.16, # Liver: moderate intron retention
         "alt_site": 0.35,        # Liver: moderate alt site usage
@@ -73,56 +87,56 @@ GTEX_TISSUE_WEIGHTS: dict[str, dict[str, float]] = {
     },
     # ─── GTEx Primary Tissues ──────────────────────────────────────
     "Brain": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.45,       # Brain has highest exon skipping rate
         "intron_retention": 0.22, # Brain: high intron retention
         "alt_site": 0.42,        # Brain: high alt site usage
         "cryptic": 0.12,         # Brain: moderate cryptic activation
     },
     "Heart": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.22,       # Heart: lower exon skipping
         "intron_retention": 0.14, # Heart: low intron retention
         "alt_site": 0.30,        # Heart: moderate alt site usage
         "cryptic": 0.06,         # Heart: low cryptic activation
     },
     "Liver": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.24,       # Liver: lower exon skipping
         "intron_retention": 0.16, # Liver: moderate intron retention
         "alt_site": 0.35,        # Liver: moderate alt site usage
         "cryptic": 0.07,         # Liver: low cryptic activation
     },
     "Kidney": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.28,       # Kidney: moderate exon skipping
         "intron_retention": 0.12, # Kidney: low intron retention
         "alt_site": 0.38,        # Kidney: moderate alt site usage
         "cryptic": 0.08,         # Kidney: low cryptic activation
     },
     "Lung": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.30,       # Lung: moderate exon skipping
         "intron_retention": 0.15, # Lung: moderate intron retention
         "alt_site": 0.37,        # Lung: moderate alt site usage
         "cryptic": 0.09,         # Lung: moderate cryptic activation
     },
     "Muscle": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.26,       # Muscle: moderate exon skipping
         "intron_retention": 0.11, # Muscle: low intron retention
         "alt_site": 0.33,        # Muscle: moderate alt site usage
         "cryptic": 0.07,         # Muscle: low cryptic activation
     },
     "Testis": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.52,       # Testis: highest exon skipping
         "intron_retention": 0.25, # Testis: high intron retention
         "alt_site": 0.48,        # Testis: very high alt site usage
         "cryptic": 0.15,         # Testis: highest cryptic activation
     },
     "Whole_Blood": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.27,       # Blood: moderate exon skipping
         "intron_retention": 0.18, # Blood: moderate intron retention
         "alt_site": 0.34,        # Blood: moderate alt site usage
@@ -130,7 +144,7 @@ GTEX_TISSUE_WEIGHTS: dict[str, dict[str, float]] = {
     },
     # ─── Default (conservative average) ────────────────────────────
     "default": {
-        "canonical": 1.0,
+        "canonical": CANONICAL_BASELINE_WEIGHT,
         "exon_skip": 0.30,       # Average across all tissues
         "intron_retention": 0.15, # Average intron retention
         "alt_site": 0.38,        # Average alt site usage
@@ -207,8 +221,12 @@ def get_tissue_weights(cellular_context: str) -> dict[str, float]:
 
 
 def list_available_tissues() -> list[str]:
-    """List all available tissue types with known weights."""
-    return [k for k in GTEX_TISSUE_WEIGHTS if k != "default"]
+    """List all available tissue types with known weights.
+
+    Returns:
+        Sorted list of tissue names (excludes the "default" entry).
+    """
+    return sorted(k for k in GTEX_TISSUE_WEIGHTS if k != "default")
 
 
 def add_custom_tissue(name: str, weights: dict[str, float]) -> None:
@@ -231,7 +249,7 @@ def add_custom_tissue(name: str, weights: dict[str, float]) -> None:
     if missing:
         raise ValueError(f"Missing required weight keys: {missing}")
 
-    if weights["canonical"] != 1.0:
+    if weights["canonical"] != CANONICAL_BASELINE_WEIGHT:
         logger.warning(
             "Custom tissue '%s' has canonical weight %.2f (expected 1.0). "
             "Other weights should be relative to canonical.",

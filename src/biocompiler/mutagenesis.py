@@ -10,12 +10,16 @@ Two failure modes:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Set, Tuple
+from typing import List, Dict, Set, Tuple
 
 from .type_system import (
     CODON_TABLE, AA_TO_CODONS, BLOSUM62,
-    check_conservation_score, check_codon_optimality
 )
+
+# Named constants for magic numbers
+_BLOSUM_FALLBACK_SCORE: int = -10    # Score used when BLOSUM62 pair is absent
+_INVALID_DONOR_SENTINEL: float = -50.0  # MaxEntScan returns this for invalid positions
+_INVALID_DONOR_REPLACEMENT: float = 0.0  # Score to use when donor is invalid
 
 
 @dataclass
@@ -39,6 +43,7 @@ class MutagenesisReport:
     proposals: List[MutagenesisProposal] = field(default_factory=list)
 
     def add(self, proposal: MutagenesisProposal) -> None:
+        """Append a mutagenesis proposal to the report."""
         self.proposals.append(proposal)
 
     @property
@@ -129,7 +134,7 @@ def propose_mutagenesis(
         for new_aa in BLOSUM62:
             if new_aa == original_aa:
                 continue
-            blosum = BLOSUM62.get((original_aa, new_aa), -10)
+            blosum = BLOSUM62.get((original_aa, new_aa), _BLOSUM_FALLBACK_SCORE)
             if blosum < min_blosum:
                 continue
             for alt_codon in AA_TO_CODONS.get(new_aa, []):
@@ -149,7 +154,7 @@ def propose_mutagenesis(
                 original_aa=original_aa,
                 new_aa="",
                 new_codon="",
-                blosum_score=-10,
+                blosum_score=_BLOSUM_FALLBACK_SCORE,
                 cai_weight=0.0,
                 resolves=constraint_types.get(codon_start, []),
                 impossible=True,
@@ -191,7 +196,7 @@ def propose_mutagenesis(
                 original_aa=original_aa,
                 new_aa="",
                 new_codon="",
-                blosum_score=-10,
+                blosum_score=_BLOSUM_FALLBACK_SCORE,
                 cai_weight=0.0,
                 resolves=constraint_types.get(codon_start, []),
                 impossible=True,
@@ -264,7 +269,7 @@ GT_MANDATORY_AAS: Set[str] = {"V"}
 def find_unrepairable_cryptic_donors(
     seq: str,
     protein: str,
-    organism: str = "Homo_sapiens",
+    organism: str = "Homo_sapiens",  # reserved for future CAI filtering
     threshold: float = 3.0,
 ) -> List[Tuple[int, int, str, float, bool, bool]]:
     """Find cryptic splice donors that cannot be repaired by synonymous substitution.
@@ -291,7 +296,6 @@ def find_unrepairable_cryptic_donors(
         - gt_mandatory: True if the AA has no GT-free synonymous codons
     """
     from .maxentscan import score_donor
-    from .organisms import SPECIES
 
     seq = seq.upper()
     results = []
@@ -302,8 +306,8 @@ def find_unrepairable_cryptic_donors(
 
         # Score this GT as a donor
         donor_score = score_donor(seq, i)
-        if donor_score <= -50.0:
-            donor_score = 0.0
+        if donor_score <= _INVALID_DONOR_SENTINEL:
+            donor_score = _INVALID_DONOR_REPLACEMENT
 
         if donor_score < threshold:
             continue

@@ -87,7 +87,6 @@ References
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -179,32 +178,40 @@ TURN_PROPENSITY_BY_POSITION: dict[str, tuple[float, float, float, float]] = {
     "V": (0.680, 0.240, 0.710, 0.280),
 }
 
-POSITIVELY_CHARGED_AAS = set("KRH")
-NEGATIVELY_CHARGED_AAS = set("DE")
-HYDROPHOBIC_AAS = set("AILMFVW")
+#: Positively charged amino acids (Lys, Arg, His).
+POSITIVELY_CHARGED_AAS: set[str] = set("KRH")
+
+#: Negatively charged amino acids (Asp, Glu).
+NEGATIVELY_CHARGED_AAS: set[str] = set("DE")
+
+#: Hydrophobic amino acids (Ala, Ile, Leu, Met, Phe, Val, Trp).
+HYDROPHOBIC_AAS: set[str] = set("AILMFVW")
 
 #: Helix-breaking residues (Proline always breaks; Glycine is a weak breaker)
-HELIX_BREAKERS = set("PG")
+HELIX_BREAKERS: set[str] = set("PG")
+
+#: Amino acids that promote intrinsic disorder (Pro, Gly, Ser, Gln, Glu, Lys).
+DISORDER_PROMOTING_AAS: set[str] = set("PGSQEK")
 
 #: Threshold for Chou-Fasman helix nucleation (a window of 6 residues
 #: with 4 or more above P_helix > 1.00 initiates a helix).
-HELIX_NUCLEATION_WINDOW = 6
-HELIX_NUCLEATION_THRESHOLD = 4
+HELIX_NUCLEATION_WINDOW: int = 6
+HELIX_NUCLEATION_THRESHOLD: int = 4
 
 #: Threshold for Chou-Fasman sheet nucleation (a window of 5 residues
 #: with 3 or more above P_sheet > 1.00 initiates a sheet).
-SHEET_NUCLEATION_WINDOW = 5
-SHEET_NUCLEATION_THRESHOLD = 3
+SHEET_NUCLEATION_WINDOW: int = 5
+SHEET_NUCLEATION_THRESHOLD: int = 3
 
 #: Turn nucleation: a 4-residue window is a turn candidate if the
 #: sum of position-specific turn propensities (f(i)*f(i+1)*f(i+2)*f(i+3))
 #: exceeds TURN_PRODUCT_THRESHOLD and the average P_turn > TURN_AVG_THRESHOLD.
-TURN_WINDOW = 4
-TURN_PRODUCT_THRESHOLD = 0.000075  # Chou-Fasman turn threshold
-TURN_AVG_THRESHOLD = 1.00
+TURN_WINDOW: int = 4
+TURN_PRODUCT_THRESHOLD: float = 0.000075  # Chou-Fasman turn threshold
+TURN_AVG_THRESHOLD: float = 1.00
 
 #: Sliding window size for hydrophobicity smoothing.
-HYDROPHOBICITY_WINDOW = 9
+HYDROPHOBICITY_WINDOW: int = 9
 
 #: Contact density estimates by secondary structure type.
 #: Based on average contacts per residue from known protein structures.
@@ -223,6 +230,56 @@ PLDDT_RANGES: dict[str, tuple[float, float]] = {
     "T": (30.0, 40.0),  # Turn residues: some order but less stable
     "C": (25.0, 35.0),  # Coil residues: disordered, lowest pLDDT
 }
+
+# ---- pLDDT calibration parameters ----
+
+#: Sequence length bounds for length-factor bonus.
+#: Proteins shorter than LENGTH_SHORT_THRESHOLD get full bonus;
+#: proteins longer than LENGTH_LONG_THRESHOLD get zero bonus.
+LENGTH_SHORT_THRESHOLD: int = 100
+LENGTH_LONG_THRESHOLD: int = 400
+
+#: Epsilon for floating-point comparisons in charge balance.
+_CHARGE_BALANCE_EPSILON: float = 1e-9
+
+#: Default charge balance when no charged residues are present.
+_NO_CHARGE_BALANCE_DEFAULT: float = 0.5
+
+#: Contact density smoothing window size (residues).
+_CONTACT_DENSITY_SMOOTHING_WINDOW: int = 3
+
+#: Default contact density for unknown SS types.
+_DEFAULT_CONTACT_DENSITY: float = 0.8
+
+#: Disorder penalty thresholds and factors (consecutive disorder run length → factor).
+_DISORDER_PENALTY_THRESHOLDS: list[tuple[int, float]] = [
+    (30, 0.75),
+    (20, 0.85),
+    (15, 0.90),
+    (10, 0.95),
+]
+
+#: Charge clustering penalty thresholds and factors (patch count → factor).
+_CHARGE_PATCH_PENALTY_THRESHOLDS: list[tuple[int, float]] = [
+    (3, 0.85),
+    (2, 0.90),
+    (1, 0.95),
+]
+
+#: Low-complexity penalty thresholds and factors (max repeat → factor).
+_LOW_COMPLEXITY_PENALTY_THRESHOLDS: list[tuple[int, float]] = [
+    (10, 0.80),
+    (6, 0.90),
+]
+
+#: Base confidence for heuristic estimates.
+_HEURISTIC_BASE_CONFIDENCE: float = 0.15
+
+#: Maximum confidence for heuristic estimates.
+_HEURISTIC_MAX_CONFIDENCE: float = 0.5
+
+#: Minimum confidence for heuristic estimates.
+_HEURISTIC_MIN_CONFIDENCE_VALUE: float = 0.1
 
 
 # ==============================================================================
@@ -313,11 +370,11 @@ def compute_charge_profile(protein: str, window: int = 7, min_frac: float = 0.7)
     net_charge = pos_count - neg_count
 
     total_charged = pos_frac + neg_frac
-    if total_charged > 1e-9:
+    if total_charged > _CHARGE_BALANCE_EPSILON:
         charge_balance = 1.0 - abs(pos_frac - neg_frac) / total_charged
     else:
         # No charged residues at all — neutral, but not informative
-        charge_balance = 0.5
+        charge_balance = _NO_CHARGE_BALANCE_DEFAULT
 
     # Detect charge patches
     patch_count = 0
@@ -602,10 +659,8 @@ def estimate_secondary_structure_from_sequence(protein: str) -> SecondaryStructu
     # Apply sheet assignments (only where not already helix)
     for start, end in sheet_regions:
         for j in range(start, min(end, n)):
-            if assignments[j] == "C" or assignments[j] == "T":
-                # Only override if not already helix; prefer sheet over turn/coil
-                if assignments[j] != "H":
-                    assignments[j] = "E"
+            if assignments[j] in ("C", "T"):
+                assignments[j] = "E"
 
     # Apply turn assignments (only where still coil)
     for start, end in turn_regions:
@@ -692,13 +747,14 @@ def compute_contact_density(ss_assignments: list[str]) -> ContactDensityProfile:
         return ContactDensityProfile(per_residue=[], mean=0.0, ss_weighted=0.0)
 
     # Raw contact density per residue
-    raw = [CONTACT_DENSITY.get(ss, 0.8) for ss in ss_assignments]
+    raw = [CONTACT_DENSITY.get(ss, _DEFAULT_CONTACT_DENSITY) for ss in ss_assignments]
 
-    # Smooth with a 3-residue window to reduce boundary effects
+    # Smooth with a sliding window to reduce boundary effects
+    half_w = _CONTACT_DENSITY_SMOOTHING_WINDOW // 2
     smoothed: list[float] = []
     for i in range(n):
-        start = max(0, i - 1)
-        end = min(n, i + 2)
+        start = max(0, i - half_w)
+        end = min(n, i + half_w + 1)
         avg = sum(raw[start:end]) / (end - start)
         smoothed.append(round(avg, 3))
 
@@ -769,7 +825,7 @@ def _compute_per_residue_plddt(
 
     # Sequence length factor: shorter proteins get a slight boost
     # Proteins < 100 aa: factor = 1.0; proteins > 400 aa: factor = 0.0
-    length_factor = max(0.0, min(1.0, (400 - sequence_length) / 300.0))
+    length_factor = max(0.0, min(1.0, (LENGTH_LONG_THRESHOLD - sequence_length) / (LENGTH_LONG_THRESHOLD - LENGTH_SHORT_THRESHOLD)))
     length_bonus = length_factor * 2.0  # 0–2 point bonus for shorter proteins
 
     # Charge balance bonus: 0–2 points
@@ -921,7 +977,7 @@ def estimate_plddt_from_sequence(protein: str) -> dict[str, Any]:
     hydro_frac = hydrophobic_count / n
 
     # --- Compute disorder signals ---
-    disorder_promoting = set("PGSQEK")
+    disorder_promoting = DISORDER_PROMOTING_AAS
     consecutive_disorder = 0
     max_consecutive_disorder = 0
     for aa in protein:
@@ -952,35 +1008,26 @@ def estimate_plddt_from_sequence(protein: str) -> dict[str, Any]:
     )
 
     # Apply disorder penalty: reduce pLDDT for proteins with long disorder runs
-    if max_consecutive_disorder > 30:
-        disorder_penalty_factor = 0.75
-    elif max_consecutive_disorder > 20:
-        disorder_penalty_factor = 0.85
-    elif max_consecutive_disorder > 15:
-        disorder_penalty_factor = 0.90
-    elif max_consecutive_disorder > 10:
-        disorder_penalty_factor = 0.95
-    else:
-        disorder_penalty_factor = 1.0
+    disorder_penalty_factor = 1.0
+    for threshold, factor in _DISORDER_PENALTY_THRESHOLDS:
+        if max_consecutive_disorder > threshold:
+            disorder_penalty_factor = factor
+            break
 
     # Apply charge clustering penalty
     patch_count = charge_prof.charge_patch_count
-    if patch_count >= 3:
-        charge_penalty_factor = 0.85
-    elif patch_count >= 2:
-        charge_penalty_factor = 0.90
-    elif patch_count >= 1:
-        charge_penalty_factor = 0.95
-    else:
-        charge_penalty_factor = 1.0
+    charge_penalty_factor = 1.0
+    for threshold, factor in _CHARGE_PATCH_PENALTY_THRESHOLDS:
+        if patch_count >= threshold:
+            charge_penalty_factor = factor
+            break
 
     # Apply low-complexity penalty
-    if max_repeat > 10:
-        lc_penalty_factor = 0.80
-    elif max_repeat > 6:
-        lc_penalty_factor = 0.90
-    else:
-        lc_penalty_factor = 1.0
+    lc_penalty_factor = 1.0
+    for threshold, factor in _LOW_COMPLEXITY_PENALTY_THRESHOLDS:
+        if max_repeat > threshold:
+            lc_penalty_factor = factor
+            break
 
     # Combined penalty (multiplicative)
     combined_penalty = disorder_penalty_factor * charge_penalty_factor * lc_penalty_factor
@@ -1012,8 +1059,8 @@ def estimate_plddt_from_sequence(protein: str) -> dict[str, Any]:
     disorder_pen = min(0.10, max_consecutive_disorder * 0.003) if max_consecutive_disorder > 5 else 0.0
     cd_bonus = min(0.05, (contact_density.ss_weighted - 0.8) * 0.1) if contact_density.ss_weighted > 0.8 else 0.0
 
-    confidence = 0.15 + ss_bonus + cb_bonus + cd_bonus - disorder_pen
-    confidence = min(0.5, max(0.1, confidence))
+    confidence = _HEURISTIC_BASE_CONFIDENCE + ss_bonus + cb_bonus + cd_bonus - disorder_pen
+    confidence = min(_HEURISTIC_MAX_CONFIDENCE, max(_HEURISTIC_MIN_CONFIDENCE_VALUE, confidence))
 
     # Mean hydrophobicity
     mean_hydro = sum(hydro_profile) / len(hydro_profile) if hydro_profile else 0.0
@@ -1040,7 +1087,7 @@ def estimate_plddt_from_sequence(protein: str) -> dict[str, Any]:
         "max_consecutive_disorder": max_consecutive_disorder,
         "max_repeat": max_repeat,
         "charge_patch_count": patch_count,
-        "sequence_length_factor": round(max(0.0, min(1.0, (400 - n) / 300.0)), 4),
+        "sequence_length_factor": round(max(0.0, min(1.0, (LENGTH_LONG_THRESHOLD - n) / (LENGTH_LONG_THRESHOLD - LENGTH_SHORT_THRESHOLD))), 4),
     }
 
     return {

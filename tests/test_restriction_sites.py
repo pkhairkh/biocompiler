@@ -16,12 +16,11 @@ class TestRecognitionSiteLookup:
         assert get_recognition_site("BamHI") == "GGATCC"
 
     def test_case_insensitive_lookup(self):
-        """Lookup with exact PascalCase key works; lowercase fallback is also supported."""
-        # Exact key works
+        """Lookup is case-insensitive — lowercase and PascalCase both work."""
+        # Exact PascalCase key works
         assert get_recognition_site("EcoRI") == "GAATTC"
-        # The function tries enzyme first, then enzyme.lower()
-        # Since keys are PascalCase ("EcoRI"), lowercase "ecori" won't match
-        assert get_recognition_site("ecori") is None
+        # Lowercase also works (case-insensitive lookup)
+        assert get_recognition_site("ecori") == "GAATTC"
 
     def test_unknown_enzyme_returns_none(self):
         """Unknown enzyme should return None."""

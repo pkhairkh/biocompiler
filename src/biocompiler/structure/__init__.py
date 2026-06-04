@@ -15,6 +15,9 @@ All public names are re-exported here so that external code can do::
     from biocompiler.structure import ProteinStructure, compute_structure_quality
 """
 
+# ── Submodule references ────────────────────────────────────────
+from . import parser, quality, predicates, report
+
 # ── Parser (PDB parsing, data models, dihedrals) ────────────────
 from .parser import (
     Atom,

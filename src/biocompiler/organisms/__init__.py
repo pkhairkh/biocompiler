@@ -16,13 +16,53 @@ Migrated from species.py (v7.0.0):
 - HUMAN_CODON_USAGE_SIMPLE, HUMAN_CAI, SPECIES
 """
 
-from typing import Dict
-
 from .human import HUMAN_CODON_USAGE, HUMAN_CODON_ADAPTIVENESS, HUMAN_PREFERRED_CODONS, HUMAN_CODON_USAGE_SIMPLE
 from .e_coli import E_COLI_CODON_USAGE, E_COLI_CODON_ADAPTIVENESS, E_COLI_PREFERRED_CODONS, ECOLI_CODON_USAGE
 from .mouse import MOUSE_CODON_USAGE, MOUSE_CODON_ADAPTIVENESS, MOUSE_PREFERRED_CODONS
 from .cho import CHO_CODON_USAGE, CHO_CODON_ADAPTIVENESS, CHO_PREFERRED_CODONS
 from .yeast import YEAST_CODON_USAGE, YEAST_CODON_ADAPTIVENESS, YEAST_PREFERRED_CODONS
+from ..organism_db import OrganismDatabase, get_database
+
+__all__ = [
+    # Registry tables
+    "CODON_USAGE_TABLES",
+    "CODON_ADAPTIVENESS_TABLES",
+    "PREFERRED_CODON_TABLES",
+    "SUPPORTED_ORGANISMS",
+    "ORGANISM_GC_TARGETS",
+    # Organism name aliases
+    "HUMAN",
+    "E_COLI",
+    "MOUSE",
+    "CHO",
+    "YEAST",
+    # Legacy backward-compatible API
+    "SPECIES",
+    "ECOLI_CAI",
+    "HUMAN_CAI",
+    "compute_cai_weights",
+    # Per-organism re-exports
+    "HUMAN_CODON_USAGE",
+    "HUMAN_CODON_ADAPTIVENESS",
+    "HUMAN_PREFERRED_CODONS",
+    "HUMAN_CODON_USAGE_SIMPLE",
+    "E_COLI_CODON_USAGE",
+    "E_COLI_CODON_ADAPTIVENESS",
+    "E_COLI_PREFERRED_CODONS",
+    "ECOLI_CODON_USAGE",
+    "MOUSE_CODON_USAGE",
+    "MOUSE_CODON_ADAPTIVENESS",
+    "MOUSE_PREFERRED_CODONS",
+    "CHO_CODON_USAGE",
+    "CHO_CODON_ADAPTIVENESS",
+    "CHO_PREFERRED_CODONS",
+    "YEAST_CODON_USAGE",
+    "YEAST_CODON_ADAPTIVENESS",
+    "YEAST_PREFERRED_CODONS",
+    # External re-exports
+    "OrganismDatabase",
+    "get_database",
+]
 
 # Registry: organism name -> codon data
 CODON_USAGE_TABLES: dict[str, dict[str, tuple[str, float, float, int]]] = {
@@ -74,7 +114,14 @@ YEAST = "Saccharomyces_cerevisiae"
 # Migrated from species.py — backward-compatible API
 # ────────────────────────────────────────────────────────────
 
-def compute_cai_weights(usage: Dict[str, float]) -> Dict[str, float]:
+# Pseudocount for missing codons in CAI weight computation.
+# Prevents zero-frequency codons from getting a weight of 0.0,
+# which would make the geometric mean CAI zero for any sequence
+# containing that codon.
+_DEFAULT_MISSING_CODON_FREQ: float = 0.1
+
+
+def compute_cai_weights(usage: dict[str, float]) -> dict[str, float]:
     """Compute CAI weights from codon usage. Most frequent codon per AA = 1.0.
 
     Args:
@@ -84,25 +131,22 @@ def compute_cai_weights(usage: Dict[str, float]) -> Dict[str, float]:
         Dict mapping codon strings to CAI weight (0.0–1.0).
     """
     from ..type_system import AA_TO_CODONS
-    weights: Dict[str, float] = {}
+    weights: dict[str, float] = {}
     for aa, codons in AA_TO_CODONS.items():
         if aa == "*":
             continue
-        freqs = [usage.get(c, 0.1) for c in codons]
+        freqs = [usage.get(c, _DEFAULT_MISSING_CODON_FREQ) for c in codons]
         max_freq = max(freqs) if freqs else 1.0
         for codon, freq in zip(codons, freqs):
             weights[codon] = freq / max_freq if max_freq > 0 else 0.0
     return weights
 
 
-ECOLI_CAI: Dict[str, float] = compute_cai_weights(ECOLI_CODON_USAGE)
+ECOLI_CAI: dict[str, float] = compute_cai_weights(ECOLI_CODON_USAGE)
 
-HUMAN_CAI: Dict[str, float] = compute_cai_weights(HUMAN_CODON_USAGE_SIMPLE)
+HUMAN_CAI: dict[str, float] = compute_cai_weights(HUMAN_CODON_USAGE_SIMPLE)
 
-SPECIES: Dict[str, Dict[str, float]] = {
+SPECIES: dict[str, dict[str, float]] = {
     "ecoli": ECOLI_CAI,
     "human": HUMAN_CAI,
 }
-
-# Re-export from organism_db for unified access via biocompiler.organisms
-from ..organism_db import OrganismDatabase, get_database  # noqa: E402

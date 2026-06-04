@@ -6,6 +6,14 @@ CHO cells are the most commonly used mammalian host for
 biopharmaceutical protein production.
 """
 
+from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+
+__all__ = [
+    "CHO_CODON_USAGE",
+    "CHO_CODON_ADAPTIVENESS",
+    "CHO_PREFERRED_CODONS",
+]
+
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
 CHO_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "TTT": ("F", 0.45, 17.2, 234567),
@@ -74,24 +82,8 @@ CHO_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "GGG": ("G", 0.24, 16.0, 218456),
 }
 
-# Compute relative adaptiveness
-_AA_MAX_FREQ: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in CHO_CODON_USAGE.items():
-    if _aa != "*":
-        _current = _AA_MAX_FREQ.get(_aa, 0.0)
-        if _freq > _current:
-            _AA_MAX_FREQ[_aa] = _freq
+# Compute relative adaptiveness using shared utility
+CHO_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(CHO_CODON_USAGE)
 
-CHO_CODON_ADAPTIVENESS: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in CHO_CODON_USAGE.items():
-    if _aa != "*":
-        CHO_CODON_ADAPTIVENESS[_codon] = _freq / _AA_MAX_FREQ[_aa] if _AA_MAX_FREQ[_aa] > 0 else 0.0
-
-CHO_PREFERRED_CODONS: dict[str, str] = {}
-_AA_CODONS: dict[str, list[tuple[str, float]]] = {}
-for _codon, (_aa, _frac, _freq, _count) in CHO_CODON_USAGE.items():
-    if _aa != "*":
-        _AA_CODONS.setdefault(_aa, []).append((_codon, _freq))
-
-for _aa, _codons in _AA_CODONS.items():
-    CHO_PREFERRED_CODONS[_aa] = max(_codons, key=lambda x: x[1])[0]
+# Preferred (highest-frequency) codon for each amino acid
+CHO_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(CHO_CODON_USAGE)

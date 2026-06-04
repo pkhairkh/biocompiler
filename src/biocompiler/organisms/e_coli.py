@@ -5,6 +5,15 @@ Source: Kazusa Codon Usage Database
 K-12 MG1655, high-expression genes
 """
 
+from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+
+__all__ = [
+    "E_COLI_CODON_USAGE",
+    "E_COLI_CODON_ADAPTIVENESS",
+    "E_COLI_PREFERRED_CODONS",
+    "ECOLI_CODON_USAGE",
+]
+
 E_COLI_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "TTT": ("F", 0.35, 22.0, 142302),
     "TTC": ("F", 0.65, 17.2, 111196),
@@ -72,26 +81,11 @@ E_COLI_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "GGG": ("G", 0.15, 11.6, 75120),
 }
 
-# Compute adaptiveness
-_AA_MAX_FREQ: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in E_COLI_CODON_USAGE.items():
-    if _aa != "*":
-        _current = _AA_MAX_FREQ.get(_aa, 0.0)
-        if _freq > _current:
-            _AA_MAX_FREQ[_aa] = _freq
+# Compute adaptiveness using shared utility
+E_COLI_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(E_COLI_CODON_USAGE)
 
-E_COLI_CODON_ADAPTIVENESS: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in E_COLI_CODON_USAGE.items():
-    if _aa != "*":
-        E_COLI_CODON_ADAPTIVENESS[_codon] = _freq / _AA_MAX_FREQ[_aa] if _AA_MAX_FREQ[_aa] > 0 else 0.0
-
-E_COLI_PREFERRED_CODONS: dict[str, str] = {}
-_AA_CODONS: dict[str, list[tuple[str, float]]] = {}
-for _codon, (_aa, _frac, _freq, _count) in E_COLI_CODON_USAGE.items():
-    if _aa != "*":
-        _AA_CODONS.setdefault(_aa, []).append((_codon, _freq))
-for _aa, _codons in _AA_CODONS.items():
-    E_COLI_PREFERRED_CODONS[_aa] = max(_codons, key=lambda x: x[1])[0]
+# Preferred (highest-frequency) codon for each amino acid
+E_COLI_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(E_COLI_CODON_USAGE)
 
 # ────────────────────────────────────────────────────────────
 # Legacy per-thousand codon usage (migrated from species.py)

@@ -18,12 +18,14 @@ Round-trip capability: import_seq is the inverse of export.
 import logging
 import re
 from pathlib import Path
-from typing import Optional
-
 from .scanner import validate_dna_sequence, gc_content
-from .exceptions import FileFormatError
+from .exceptions import FileFormatError, InvalidSequenceError
 
 logger = logging.getLogger(__name__)
+
+# GenBank format column constants (RFC 8466 / GenBank flat-file spec)
+_GENBANK_FEATURE_INDENT = 5    # spaces before feature type
+_GENBANK_QUALIFIER_INDENT = 21  # spaces before qualifier /key=value
 
 
 # ─── FASTA Import ──────────────────────────────────────────────────
@@ -110,8 +112,7 @@ def _build_fasta_record(header: str, seq_parts: list[str]) -> dict:
     # Validate DNA characters
     try:
         sequence = validate_dna_sequence(sequence_raw)
-    except Exception as e:
-        # Re-raise as FileFormatError
+    except InvalidSequenceError as e:
         raise FileFormatError("<FASTA>", "FASTA", f"Invalid DNA sequence: {e}")
 
     # Parse header: first word is ID, rest is description
@@ -212,7 +213,7 @@ def import_genbank(filepath_or_text: str) -> dict:
     if sequence:
         try:
             sequence = validate_dna_sequence(sequence)
-        except Exception as e:
+        except InvalidSequenceError as e:
             raise FileFormatError("<GenBank>", "GenBank", f"Invalid DNA sequence in ORIGIN: {e}")
 
     gc = gc_content(sequence) if sequence else 0.0
@@ -303,8 +304,10 @@ def _extract_features(text: str) -> list[dict]:
     features_text = features_match.group(1)
 
     # Split into individual features
-    # A new feature starts with: 5 spaces + feature_type + spaces + location
-    feature_pattern = re.compile(r'^     (\S+)\s+(.+?)$', re.MULTILINE)
+    # A new feature starts with: FEATURE_INDENT spaces + feature_type + spaces + location
+    feature_pattern = re.compile(
+        rf'^ {{{_GENBANK_FEATURE_INDENT}}}(\S+)\s+(.+?)$', re.MULTILINE
+    )
     feature_starts = list(feature_pattern.finditer(features_text))
 
     features = []
@@ -348,21 +351,23 @@ def _parse_feature_location(feature_block: str, feat_type: str) -> str:
 
     # First line: "     TYPE   location_start"
     first_line = lines[0]
-    # Remove the feature type prefix (5 spaces + type + spaces)
-    loc_match = re.match(rf'^     {re.escape(feat_type)}\s+(.+)$', first_line)
+    # Remove the feature type prefix (FEATURE_INDENT spaces + type + spaces)
+    loc_match = re.match(
+        rf'^ {{{_GENBANK_FEATURE_INDENT}}}{re.escape(feat_type)}\s+(.+)$', first_line
+    )
     if loc_match:
         location_parts.append(loc_match.group(1).strip())
 
-    # Continuation lines for location: 21 spaces of indentation
+    # Continuation lines for location: QUALIFIER_INDENT spaces of indentation
     for line in lines[1:]:
         stripped = line.rstrip()
         if not stripped:
             continue
-        # Qualifier lines start with 21 spaces then /
-        if re.match(r'^                     /', stripped):
+        # Qualifier lines start with QUALIFIER_INDENT spaces then /
+        if re.match(rf'^ {{{_GENBANK_QUALIFIER_INDENT}}}/', stripped):
             break
-        # Location continuation: 21 spaces, no /
-        if re.match(r'^                     \S', stripped):
+        # Location continuation: QUALIFIER_INDENT spaces, no /
+        if re.match(rf'^ {{{_GENBANK_QUALIFIER_INDENT}}}\S', stripped):
             location_parts.append(stripped.strip())
 
     return " ".join(location_parts)
@@ -374,7 +379,9 @@ def _parse_feature_qualifiers(feature_block: str) -> dict:
 
     # Find all qualifier lines: /key="value" or /key=value
     # Qualifiers may span multiple lines with continuation quotes
-    qual_pattern = re.compile(r'^                     /(\S+?)=(.+)$', re.MULTILINE)
+    qual_pattern = re.compile(
+        rf'^ {{{_GENBANK_QUALIFIER_INDENT}}}/(\S+?)=(.+)$', re.MULTILINE
+    )
     matches = list(qual_pattern.finditer(feature_block))
 
     for i, match in enumerate(matches):
@@ -541,7 +548,7 @@ def import_sequence(filepath_or_text: str) -> dict:
 
         try:
             sequence = validate_dna_sequence(seq_raw)
-        except Exception as e:
+        except InvalidSequenceError as e:
             raise FileFormatError(
                 filepath_or_text if _looks_like_path(filepath_or_text) else "<text>",
                 "plain",

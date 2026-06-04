@@ -19,8 +19,8 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import math
 import time
-from typing import Optional
 
 from .types import (
     SolverBackend,
@@ -32,6 +32,16 @@ from ..constants import AA_TO_CODONS
 from ..organisms import CODON_ADAPTIVENESS_TABLES
 
 logger = logging.getLogger(__name__)
+
+# ── Module-level constants ─────────────────────────────────────────────
+_CODON_LENGTH: int = 3
+"""Number of nucleotides in a codon."""
+
+_FALLBACK_ORGANISMS: list[str] = ["Homo_sapiens", "E_coli"]
+"""Organisms tried in order when the requested one has no adaptiveness table."""
+
+_UNKNOWN_CODON_PLACEHOLDER: str = "NNN"
+"""Placeholder codon when no synonymous codons exist for an amino acid."""
 
 
 class GreedyEngine:
@@ -51,6 +61,11 @@ class GreedyEngine:
     """
 
     def __init__(self, config: SolverConfig) -> None:
+        """Initialize the greedy engine with solver configuration.
+
+        Args:
+            config: Solver configuration (used for organism info and timeouts).
+        """
         self.config = config
 
     def solve(self, model: CSPModel) -> SolverResult:
@@ -69,16 +84,15 @@ class GreedyEngine:
         """
         start_time = time.monotonic()
         protein = model.protein_sequence.upper()
-        organism = model.config.backend.value if hasattr(model.config, "organism") else "Homo_sapiens"
 
-        # Try to get the organism from the config or model
-        target_organism = getattr(model.config, "_organism", None) or "Homo_sapiens"
+        # Determine the target organism from the config or model
+        target_organism = getattr(model.config, "_organism", None) or _FALLBACK_ORGANISMS[0]
 
         adaptiveness = CODON_ADAPTIVENESS_TABLES.get(target_organism, {})
 
         if not adaptiveness:
             # Try common aliases
-            for alias in [target_organism, "Homo_sapiens", "E_coli"]:
+            for alias in [target_organism] + _FALLBACK_ORGANISMS:
                 adaptiveness = CODON_ADAPTIVENESS_TABLES.get(alias, {})
                 if adaptiveness:
                     target_organism = alias
@@ -88,8 +102,8 @@ class GreedyEngine:
         for aa in protein:
             domain = AA_TO_CODONS.get(aa, [])
             if not domain:
-                logger.warning("No codons found for amino acid '%s'; using NNN placeholder", aa)
-                codons.append("NNN")
+                logger.warning("No codons found for amino acid '%s'; using %s placeholder", aa, _UNKNOWN_CODON_PLACEHOLDER)
+                codons.append(_UNKNOWN_CODON_PLACEHOLDER)
                 continue
             # Pick highest-CAI codon for this amino acid
             best = max(domain, key=lambda c: adaptiveness.get(c, 0.0))
@@ -131,13 +145,11 @@ class GreedyEngine:
         Uses the organism's codon adaptiveness table.  Returns 0.0 if
         the organism table is unavailable.
         """
-        import math
-
         adaptiveness = CODON_ADAPTIVENESS_TABLES.get(organism, {})
         if not adaptiveness:
             return 0.0
 
-        codons = [sequence[i:i + 3] for i in range(0, len(sequence), 3)]
+        codons = [sequence[i:i + _CODON_LENGTH] for i in range(0, len(sequence), _CODON_LENGTH)]
         log_cai_sum = 0.0
         n = 0
         for codon, aa in zip(codons, protein):

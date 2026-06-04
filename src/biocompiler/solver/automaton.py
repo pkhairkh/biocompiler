@@ -46,7 +46,6 @@ negate_dfa                    — swap accepting / non-accepting states
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from typing import Sequence
 
 from ..constants import BASE_MAP, BASE_REV, reverse_complement
 
@@ -150,7 +149,7 @@ def build_forbidden_pattern_dfa(
 
     if m == 0:
         # Nothing is forbidden — accept everything with a single state.
-        return [[0, 0, 0, 0]], [0]
+        return [[0] * _ALPHABET_SIZE], [0]
 
     # KMP failure function
     fail = _compute_kmp_failure(encoded)
@@ -237,12 +236,12 @@ def build_composite_dfa(
     """
     if not patterns:
         # No patterns to forbid — accept everything.
-        return [[0, 0, 0, 0]], [0]
+        return [[0] * _ALPHABET_SIZE], [0]
 
     # Remove empty patterns (they trivially match everything if kept).
     patterns = [p for p in patterns if p]
     if not patterns:
-        return [[0, 0, 0, 0]], [0]
+        return [[0] * _ALPHABET_SIZE], [0]
 
     # Encode all patterns.
     encoded_patterns = [_encode_pattern(p) for p in patterns]

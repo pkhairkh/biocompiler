@@ -19,24 +19,25 @@ import csv
 import json
 import logging
 import math
-import os
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
+
+logger = logging.getLogger(__name__)
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.font_manager as fm
 try:
     fm.fontManager.addfont('/usr/share/fonts/truetype/chinese/NotoSansSC[wght].ttf')
-except RuntimeError:
+except Exception:
     try:
         fm.fontManager.addfont('/usr/share/fonts/truetype/chinese/SarasaMonoSC-Regular.ttf')
     except Exception:
-        pass
+        logger.debug("Font loading failed, using default font", exc_info=True)
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['Noto Sans SC', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
@@ -46,15 +47,8 @@ try:
     from .optimizer import BioOptimizer
 except ImportError:
     from .optimization import BioOptimizer
-from .optimization import optimize_sequence, OptimizationResult
-from .type_system import (
-    CODON_TABLE,
-    CertLevel,
-    PredicateResult,
-    check_no_avoidable_gt,
-    check_no_cpg_island,
-    check_no_restriction_site,
-)
+from .optimization import optimize_sequence
+
 from .certificate import compute_certificate
 from .organisms import CODON_ADAPTIVENESS_TABLES, SPECIES
 from .translation import translate, compute_cai
@@ -62,8 +56,6 @@ from .scanner import gc_content
 from .constants import AA_TO_CODONS, RESTRICTION_ENZYMES, reverse_complement
 from .restriction_sites import get_recognition_site
 from .engine_base import BatchResult, EngineTimer, BaseEngineResult
-
-logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────
 # Built-in gene sequences (standard reference sequences)
@@ -162,7 +154,7 @@ def run_benchmark(
 
     print()
     print("=" * 100)
-    print("  BioCompiler v7.0.0 — Built-in Benchmark")
+    print("  BioCompiler v9.2.0 — Built-in Benchmark")
     print("=" * 100)
     print(f"  Enzymes avoided: {', '.join(enzymes)}")
     print(f"  Splice thresholds: low={splice_low}, high={splice_high}")
@@ -301,7 +293,7 @@ def compare_tools_theoretical() -> None:
 
     print()
     print("=" * 80)
-    print("  BioCompiler v7.0.0 — Tool Comparison (Theoretical)")
+    print("  BioCompiler v9.2.0 — Tool Comparison (Theoretical)")
     print("=" * 80)
     print()
 
@@ -645,7 +637,7 @@ def format_benchmark_report_text(report: BenchmarkReport) -> str:
 # Output Directory
 # ============================================================================
 
-OUTPUT_DIR = Path("/home/z/my-project/download/benchmark_results")
+OUTPUT_DIR = Path.cwd() / "benchmark_results"
 
 # ============================================================================
 # 12-Gene Panel (amino acid sequence, organism)

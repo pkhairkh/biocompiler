@@ -55,9 +55,8 @@ References
 from __future__ import annotations
 
 import logging
-import time
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -92,20 +91,11 @@ PAIR_ENERGIES: dict[tuple[str, str], float] = {
     ("U", "G"): -1.4,
 }
 
-#: RNA complement map (DNA T is treated as U).
-_COMPLEMENT: dict[str, str] = {
-    "A": "U", "U": "A", "G": "C", "C": "G",
-    "T": "A",  # DNA input support
-}
-
 #: Default sliding window size for accessibility computation.
 DEFAULT_WINDOW_SIZE: int = 120
 
 #: Default ΔG threshold for "stable" structures (kcal/mol).
 DEFAULT_STABLE_DG_THRESHOLD: float = -4.0
-
-#: Maximum length for Nussinov O(n³) DP before switching to heuristic.
-MAX_NUSSINOV_LENGTH: int = 2000
 
 
 # ==============================================================================

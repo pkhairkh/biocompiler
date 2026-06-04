@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import math
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Any
 
 from ..constants import HYDROPATHY, HYDROPHOBIC_AAS
 
@@ -61,6 +62,46 @@ MAX_SASA: dict[str, float] = {
 }
 
 # HYDROPHOBIC_AAS now imported from ..constants (standardized in v7.5.0)
+
+# ────────────────────────────────────────────────────────────
+# pLDDT thresholds
+# ────────────────────────────────────────────────────────────
+PLDDT_VERY_HIGH_THRESHOLD: float = 90.0
+PLDDT_CONFIDENT_THRESHOLD: float = 70.0
+PLDDT_LOW_THRESHOLD: float = 50.0
+PLDDT_RUNNING_AVG_WINDOW: int = 5
+
+# ────────────────────────────────────────────────────────────
+# Clash detection thresholds
+# ────────────────────────────────────────────────────────────
+CLASH_OVERLAP_FACTOR: float = 0.4
+CLASH_BONDED_SKIP_RANGE: int = 4
+
+# ────────────────────────────────────────────────────────────
+# SASA / exposure thresholds
+# ────────────────────────────────────────────────────────────
+SASA_NEIGHBOR_CUTOFF: float = 12.0
+SASA_EXPOSURE_THRESHOLD: int = 15
+SASA_DECAY_CONSTANT: float = 0.05
+SASA_DEFAULT_MAX: float = 180.0
+
+# ────────────────────────────────────────────────────────────
+# Overall quality thresholds
+# ────────────────────────────────────────────────────────────
+EXCELLENT_PLDDT: float = 85.0
+EXCELLENT_RAMA: float = 90.0
+EXCELLENT_CLASH: float = 10.0
+GOOD_PLDDT: float = 70.0
+GOOD_RAMA: float = 80.0
+GOOD_CLASH: float = 20.0
+ACCEPTABLE_PLDDT: float = 50.0
+ACCEPTABLE_RAMA: float = 70.0
+FAIL_PLDDT_THRESHOLD: float = 30.0
+
+# ────────────────────────────────────────────────────────────
+# CA-dihedral scaling
+# ────────────────────────────────────────────────────────────
+CA_DIHEDRAL_SCALE: float = 1.6
 
 
 # ────────────────────────────────────────────────────────────
@@ -111,7 +152,7 @@ class StructureQualityReport:
 # pLDDT Assessment
 # ────────────────────────────────────────────────────────────
 
-def assess_plddt(plddt_scores: list[float]) -> dict:
+def assess_plddt(plddt_scores: list[float]) -> dict[str, Any]:
     """Assess per-residue pLDDT confidence scores.
 
     Categorizes each residue into confidence bands:
@@ -148,11 +189,11 @@ def assess_plddt(plddt_scores: list[float]) -> dict:
     counts: dict[str, int] = {"very_high": 0, "confident": 0, "low": 0, "very_low": 0}
 
     for score in plddt_scores:
-        if score > 90:
+        if score > PLDDT_VERY_HIGH_THRESHOLD:
             counts["very_high"] += 1
-        elif score >= 70:
+        elif score >= PLDDT_CONFIDENT_THRESHOLD:
             counts["confident"] += 1
-        elif score >= 50:
+        elif score >= PLDDT_LOW_THRESHOLD:
             counts["low"] += 1
         else:
             counts["very_low"] += 1
@@ -160,9 +201,8 @@ def assess_plddt(plddt_scores: list[float]) -> dict:
     percentages = {k: (v / n) * 100.0 for k, v in counts.items()}
     mean_val = sum(plddt_scores) / n
 
-    # Running average over window of 5
-    window = 5
-    half_w = window // 2
+    # Running average over configured window
+    half_w = PLDDT_RUNNING_AVG_WINDOW // 2
     running_avg: list[float] = []
     for i in range(n):
         start = max(0, i - half_w)
@@ -174,7 +214,7 @@ def assess_plddt(plddt_scores: list[float]) -> dict:
     in_region = False
     region_start = 0
     for i, score in enumerate(plddt_scores):
-        if score < 70:
+        if score < PLDDT_CONFIDENT_THRESHOLD:
             if not in_region:
                 region_start = i
                 in_region = True
@@ -198,7 +238,7 @@ def assess_plddt(plddt_scores: list[float]) -> dict:
 # Ramachandran Assessment
 # ────────────────────────────────────────────────────────────
 
-def assess_ramachandran(phi_psi: list[tuple[float, float]]) -> dict:
+def assess_ramachandran(phi_psi: list[tuple[float, float]]) -> dict[str, Any]:
     """Classify phi/psi angle pairs into Ramachandran regions.
 
     Favored regions (approximate):
@@ -290,7 +330,7 @@ def _in_allowed_region(phi: float, psi: float) -> bool:
 # Clash Score Computation
 # ────────────────────────────────────────────────────────────
 
-def compute_clash_score(atoms: list[dict]) -> float:
+def compute_clash_score(atoms: list[dict[str, Any]]) -> float:
     """Compute steric clash score (clashes per 1000 atoms).
 
     A steric clash is defined as a non-bonded atom pair whose distance
@@ -314,7 +354,6 @@ def compute_clash_score(atoms: list[dict]) -> float:
         return 0.0
 
     clash_count = 0
-    overlap_factor = 0.4
 
     for i in range(n):
         elem_i = atoms[i].get("element", "C")
@@ -327,14 +366,14 @@ def compute_clash_score(atoms: list[dict]) -> float:
         for j in range(i + 1, n):
             ri_jdx = atoms[j].get("residue_index", 0)
 
-            # Skip bonded neighbors within 4 residues
-            if abs(ri_idx - ri_jdx) <= 4:
+            # Skip bonded neighbors within configured range
+            if abs(ri_idx - ri_jdx) <= CLASH_BONDED_SKIP_RANGE:
                 continue
 
             elem_j = atoms[j].get("element", "C")
             r_j = VDW_RADII.get(elem_j, 1.70)
 
-            min_dist = overlap_factor * (r_i + r_j)
+            min_dist = CLASH_OVERLAP_FACTOR * (r_i + r_j)
 
             dx = xi - atoms[j]["x"]
             dy = yi - atoms[j]["y"]
@@ -423,8 +462,9 @@ def compute_exposed_hydrophobic(
     if n == 0:
         return 0.0
 
-    neighbor_cutoff = 12.0
-    exposure_threshold = 15
+    # Effective neighbor cutoff incorporates the probe radius
+    neighbor_cutoff = SASA_NEIGHBOR_CUTOFF - 1.4 + probe_radius
+    exposure_threshold = SASA_EXPOSURE_THRESHOLD
 
     exposed_count = 0
     exposed_hydrophobic = 0
@@ -543,8 +583,7 @@ def compute_sasa_approximation(
     if n == 0:
         return []
 
-    cutoff = 12.0
-    cutoff_sq = cutoff * cutoff
+    cutoff_sq = SASA_NEIGHBOR_CUTOFF * SASA_NEIGHBOR_CUTOFF
 
     # Count neighbors for each CA
     neighbor_counts: list[int] = []
@@ -564,13 +603,12 @@ def compute_sasa_approximation(
     # Map neighbor count to approximate absolute SASA
     # Using a simple decay model: max_sasa * exp(-k * neighbors)
     # where k is calibrated so that ~15 neighbors ~ 50% burial
-    k = 0.05
 
     relative_sasa: list[float] = []
     for i in range(n):
         aa = residue_names[i] if i < len(residue_names) else "A"
-        max_sasa = MAX_SASA.get(aa, 180.0)
-        approx_abs_sasa = max_sasa * math.exp(-k * neighbor_counts[i])
+        max_sasa = MAX_SASA.get(aa, SASA_DEFAULT_MAX)
+        approx_abs_sasa = max_sasa * math.exp(-SASA_DECAY_CONSTANT * neighbor_counts[i])
         rel = approx_abs_sasa / max_sasa
         # Clamp to [0.0, 1.0]
         relative_sasa.append(max(0.0, min(1.0, rel)))
@@ -653,7 +691,7 @@ def _approximate_molprobity_score(
 # PDB Parsing
 # ────────────────────────────────────────────────────────────
 
-def _parse_pdb_string(pdb_string: str) -> dict:
+def _parse_pdb_string(pdb_string: str) -> dict[str, Any]:
     """Parse a PDB string to extract atom information.
 
     Simple inline parser that reads ATOM and HETATM records.
@@ -888,11 +926,11 @@ def _determine_overall_quality(
     Returns:
         One of "excellent", "good", "acceptable", "poor".
     """
-    if mean_plddt > 85 and ramachandran_favored > 90 and clash_score < 10:
+    if mean_plddt > EXCELLENT_PLDDT and ramachandran_favored > EXCELLENT_RAMA and clash_score < EXCELLENT_CLASH:
         return "excellent"
-    elif mean_plddt > 70 and ramachandran_favored > 80 and clash_score < 20:
+    elif mean_plddt > GOOD_PLDDT and ramachandran_favored > GOOD_RAMA and clash_score < GOOD_CLASH:
         return "good"
-    elif mean_plddt > 50 and ramachandran_favored > 70:
+    elif mean_plddt > ACCEPTABLE_PLDDT and ramachandran_favored > ACCEPTABLE_RAMA:
         return "acceptable"
     else:
         return "poor"
@@ -915,7 +953,7 @@ def _quality_to_verdict(overall_quality: str, mean_plddt: float) -> str:
     elif overall_quality == "acceptable":
         return "UNCERTAIN"
     elif overall_quality == "poor":
-        if mean_plddt < 30:
+        if mean_plddt < FAIL_PLDDT_THRESHOLD:
             return "FAIL"
         else:
             return "LIKELY_FAIL"
@@ -1020,8 +1058,8 @@ def _approximate_phi_psi(
 
         # Scale approximation: CA-based dihedrals are roughly 60% of
         # actual backbone dihedrals in magnitude
-        phi *= 1.6
-        psi *= 1.6
+        phi *= CA_DIHEDRAL_SCALE
+        psi *= CA_DIHEDRAL_SCALE
 
         phi_psi.append((phi, psi))
 

@@ -75,15 +75,13 @@ import json
 import logging
 import math
 import os
-import re
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from dataclasses import dataclass, field
 from threading import Semaphore
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
-from .constants import CODON_TABLE, AA_TO_CODONS, DEFAULT_ENGINE_TIMEOUT
+from .constants import DEFAULT_ENGINE_TIMEOUT
 from .engine_base import (
     BaseEngineResult,
     BatchResult,
@@ -160,35 +158,23 @@ ESMFOLD_PLDDT_CORRELATION: float = 0.8
 #: pLDDT < 50: Very low
 
 # ESMFold-specific constants (timeout falls back to shared DEFAULT_ENGINE_TIMEOUT)
-DEFAULT_API_URL = "https://api.esmatlas.com/fetchPredictedStructure"
+DEFAULT_API_URL: str = "https://api.esmatlas.com/fetchPredictedStructure"
 DEFAULT_TIMEOUT: float = DEFAULT_ENGINE_TIMEOUT
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2.0  # seconds, doubled each attempt
+MAX_RETRIES: int = 3
+RETRY_BASE_DELAY: float = 2.0  # seconds, doubled each attempt
 
-MAX_BATCH_SIZE = 50
-MAX_PROTEIN_LENGTH = 1000
+MAX_BATCH_SIZE: int = 50
+MAX_PROTEIN_LENGTH: int = 1000
 
-# PDB ATOM record regex — captures key fields from fixed-width format
-# Columns:  1-6  Record name  7-11  Serial  13-16  Atom name
-#           17    Alt loc     18-20  Res name  22     Chain
-#           23-26 Res seq     27     iCode
-#           31-38 X           39-46  Y         47-54  Z
-#           55-60 Occupancy  61-66  B-factor (pLDDT)
-_PDB_ATOM_RE = re.compile(
-    r"^ATOM\s+"
-    r"(\d+)\s+"           # serial
-    r"(.{1,4})\s+"        # atom name (may have leading space)
-    r"(\w)\s+"            # alt loc
-    r"(\w{3})\s+"         # residue name
-    r"(\w)\s+"            # chain ID
-    r"(\d+)\s+"           # residue sequence number
-    r"(\w)?\s*"           # insertion code
-    r"([-]?\d+\.\d+)\s+"  # x
-    r"([-]?\d+\.\d+)\s+"  # y
-    r"([-]?\d+\.\d+)\s+"  # z
-    r"(\d+\.\d+)\s+"      # occupancy
-    r"(\d+\.\d+)"         # b-factor (pLDDT)
-)
+# Named constants for previously-magic numbers
+_AVAILABILITY_TIMEOUT: float = 10.0       # seconds — HEAD request timeout for is_esmfold_available
+_MIN_PDB_LENGTH: int = 50                  # minimum bytes for a valid PDB response
+_ERROR_TRUNCATE: int = 200                 # max chars for truncated API error messages
+_CACHE_KEY_LENGTH: int = 16                # hex chars kept from SHA-256 digest for cache keys
+
+# NOTE: PDB ATOM record parsing uses fixed-width column slicing
+# (see parse_pdb).  A regex-based parser was previously defined here
+# but was never invoked; it has been removed to avoid dead code.
 
 
 # ==============================================================================
@@ -382,7 +368,7 @@ class ESMFoldCache:
                        If None, uses in-memory only.
             max_size: Maximum number of entries in memory cache.
         """
-        self._cache: Dict[str, ESMFoldResult] = {}
+        self._cache: dict[str, ESMFoldResult] = {}
         self._cache_dir = cache_dir
         self._max_size = max_size
         self._hits = 0
@@ -391,7 +377,7 @@ class ESMFoldCache:
     @staticmethod
     def _key(protein: str) -> str:
         """Generate a cache key from a protein sequence."""
-        return hashlib.sha256(protein.encode()).hexdigest()[:16]
+        return hashlib.sha256(protein.encode()).hexdigest()[:_CACHE_KEY_LENGTH]
 
     def get(self, protein: str) -> Optional[ESMFoldResult]:
         """Retrieve a cached prediction.
@@ -559,7 +545,7 @@ def is_esmfold_available() -> bool:
         req = urllib.request.Request(
             DEFAULT_API_URL, method="HEAD"
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=_AVAILABILITY_TIMEOUT) as resp:
             if resp.status < 500:
                 logger.debug("ESM Atlas API reachable (status %d)", resp.status)
                 return True
@@ -957,7 +943,6 @@ def _predict_via_api(
     """
     import urllib.request
     import urllib.error
-    import json
 
     last_error: str | None = None
 
@@ -973,7 +958,7 @@ def _predict_via_api(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 pdb_string = resp.read().decode("utf-8")
 
-            if not pdb_string or len(pdb_string) < 50:
+            if not pdb_string or len(pdb_string) < _MIN_PDB_LENGTH:
                 last_error = "API returned empty or truncated PDB"
                 logger.warning("Attempt %d/%d: %s", attempt, MAX_RETRIES, last_error)
                 continue
@@ -997,7 +982,7 @@ def _predict_via_api(
                 continue
             elif exc.code >= 400:
                 # Client error (bad request, etc.) — do not retry
-                last_error = f"API client error ({exc.code}): {exc.read().decode('utf-8', errors='replace')[:200]}"
+                last_error = f"API client error ({exc.code}): {exc.read().decode('utf-8', errors='replace')[:_ERROR_TRUNCATE]}"
                 logger.error("API client error, not retrying: %s", last_error)
                 break
             else:
@@ -1008,7 +993,7 @@ def _predict_via_api(
         except urllib.error.URLError as exc:
             wait = RETRY_BASE_DELAY * (2 ** (attempt - 1))
             last_error = f"Network error: {exc.reason}"
-            logger.warning("Attempt %d/%d: %s (retry in {wait:.1f}s)", attempt, MAX_RETRIES, last_error)
+            logger.warning("Attempt %d/%d: %s (retry in %.1fs)", attempt, MAX_RETRIES, last_error, wait)
             time.sleep(wait)
             continue
 
@@ -1520,7 +1505,7 @@ def predict_batch(
 
             if progress_callback is not None:
                 try:
-                    progress_callback(idx + 1, len(esmfold_results), result_dict)
+                    progress_callback(idx + 1, len(names), result_dict)
                 except Exception as cb_exc:
                     logger.warning("Progress callback raised: %s", cb_exc)
 
@@ -1567,7 +1552,7 @@ def predict_batch(
 def predict_proteins(
     proteins: list[str],
     names: list[str] | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> BatchStructureResult:
     """Convenience wrapper for batch ESMFold prediction.
 

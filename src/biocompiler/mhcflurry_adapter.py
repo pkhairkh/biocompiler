@@ -50,7 +50,7 @@ import logging
 import math
 import os
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 from .immunogenicity import MHCBindingResult, classify_binding
@@ -81,7 +81,7 @@ MHCFLURRY_AUC_ROC_HIGH: float = 0.85
 # ═══════════════════════════════════════════════════════════════════════════
 
 #: Default MHCflurry models directory
-DEFAULT_MODELS_DIR: str = os.path.join(os.path.expanduser("~"), ".mhcflurry")
+_DEFAULT_MODELS_DIR: str = os.path.join(os.path.expanduser("~"), ".mhcflurry")
 
 #: Maximum IC50 value used in binding-score normalisation
 _MAX_IC50_NM: float = 50_000.0
@@ -93,7 +93,7 @@ _LOG_MAX_IC50: float = math.log(_MAX_IC50_NM)
 _STANDARD_AAS: set[str] = set("ACDEFGHIKLMNPQRSTVWY")
 
 #: Default epitope lengths for MHC-I scanning
-DEFAULT_EPITOPE_LENGTHS: list[int] = [8, 9, 10, 11]
+_DEFAULT_EPITOPE_LENGTHS: list[int] = [8, 9, 10, 11]
 
 #: Maximum cache size (LRU eviction when exceeded)
 _CACHE_MAX_SIZE: int = 5_000
@@ -224,7 +224,7 @@ def is_mhcflurry_available() -> bool:
             if predictor is not None:
                 return True
         except Exception:
-            pass
+            logger.debug("MHCflurry model availability check failed", exc_info=True)
         logger.debug("MHCflurry is installed but no models found at %s", models_dir)
         return False
     except Exception as exc:
@@ -385,18 +385,46 @@ def ic50_to_binding_score(ic50_nm: float) -> float:
     return max(0.0, min(1.0, score))
 
 
+def _validate_sequence(seq: str, allow_empty: bool = False) -> str:
+    """Upper-case and validate an amino-acid sequence.
+
+    Parameters
+    ----------
+    seq : str
+        Raw amino-acid sequence string.
+    allow_empty : bool
+        If ``False`` (default), empty sequences raise ``ValueError``.
+        Set to ``True`` for peptide inputs where an empty string is
+        acceptable (the caller handles it).
+
+    Returns
+    -------
+    str
+        Upper-cased, stripped sequence.
+
+    Raises
+    ------
+    ValueError
+        If the sequence contains non-standard amino acids, or is empty
+        when *allow_empty* is ``False``.
+    """
+    seq = seq.upper().strip()
+    if not allow_empty and not seq:
+        raise ValueError("Sequence must not be empty")
+    invalid = set(seq) - _STANDARD_AAS
+    if invalid:
+        raise ValueError(
+            f"Sequence contains non-standard amino acids: {invalid!r}"
+        )
+    return seq
+
+
 def _validate_peptide(peptide: str) -> str:
     """Upper-case and validate a peptide sequence.
 
     Raises ``ValueError`` if non-standard amino acids are found.
     """
-    peptide = peptide.upper().strip()
-    invalid = set(peptide) - _STANDARD_AAS
-    if invalid:
-        raise ValueError(
-            f"Peptide contains non-standard amino acids: {invalid!r}"
-        )
-    return peptide
+    return _validate_sequence(peptide, allow_empty=True)
 
 
 def _validate_protein(protein: str) -> str:
@@ -405,15 +433,7 @@ def _validate_protein(protein: str) -> str:
     Raises ``ValueError`` if the sequence is empty or contains
     non-standard amino acids.
     """
-    protein = protein.upper().strip()
-    if not protein:
-        raise ValueError("Protein sequence must not be empty")
-    invalid = set(protein) - _STANDARD_AAS
-    if invalid:
-        raise ValueError(
-            f"Protein contains non-standard amino acids: {invalid!r}"
-        )
-    return protein
+    return _validate_sequence(protein, allow_empty=False)
 
 
 def _extract_overlapping_peptides(
@@ -534,7 +554,7 @@ class MHCflurryClient:
     """
 
     def __init__(self, models_dir: str | None = None) -> None:
-        self._models_dir = models_dir or DEFAULT_MODELS_DIR
+        self._models_dir = models_dir or _DEFAULT_MODELS_DIR
         self._affinity_predictor = None
         self._presentation_predictor = None
         self._cache = _LRUCache()
@@ -563,7 +583,7 @@ class MHCflurryClient:
 
         try:
             # Load Class1 affinity predictor
-            if self._models_dir and self._models_dir != DEFAULT_MODELS_DIR:
+            if self._models_dir and self._models_dir != _DEFAULT_MODELS_DIR:
                 self._affinity_predictor = (
                     mhcflurry.Class1AffinityPredictor.load(
                         models_dir=self._models_dir
@@ -580,7 +600,7 @@ class MHCflurryClient:
 
         # Try to load the presentation predictor (optional)
         try:
-            if self._models_dir and self._models_dir != DEFAULT_MODELS_DIR:
+            if self._models_dir and self._models_dir != _DEFAULT_MODELS_DIR:
                 self._presentation_predictor = (
                     mhcflurry.Class1PresentationPredictor.load(
                         models_dir=self._models_dir
@@ -725,7 +745,7 @@ class MHCflurryClient:
             Unsupported alleles are silently skipped.
         """
         if epitope_lengths is None:
-            epitope_lengths = list(DEFAULT_EPITOPE_LENGTHS)
+            epitope_lengths = list(_DEFAULT_EPITOPE_LENGTHS)
 
         try:
             protein = _validate_protein(protein)
@@ -788,16 +808,10 @@ class MHCflurryClient:
                 cached = self._cache.get(pep, allele)
                 if cached is not None:
                     # Override positions with current protein-relative ones
-                    results.append(MHCBindingResult(
-                        allele=cached.allele,
-                        peptide=cached.peptide,
+                    results.append(replace(
+                        cached,
                         start_position=start,
                         end_position=end,
-                        binding_score=cached.binding_score,
-                        ic50_nm=cached.ic50_nm,
-                        binding_class=cached.binding_class,
-                        anchor_residues=cached.anchor_residues,
-                        anchor_scores=cached.anchor_scores,
                     ))
 
         # Collect batch results
@@ -879,7 +893,7 @@ class MHCflurryClient:
         downloaded).
         """
         if epitope_lengths is None:
-            epitope_lengths = list(DEFAULT_EPITOPE_LENGTHS)
+            epitope_lengths = list(_DEFAULT_EPITOPE_LENGTHS)
 
         try:
             protein = _validate_protein(protein)

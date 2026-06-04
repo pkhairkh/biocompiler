@@ -15,6 +15,8 @@ Extended with:
 - ImmunogenicityError for immunogenicity engine errors
 """
 
+from typing import Any
+
 
 class BioCompilerError(Exception):
     """Base exception for all BioCompiler errors."""
@@ -23,7 +25,7 @@ class BioCompilerError(Exception):
 
 class InvalidSequenceError(BioCompilerError):
     """Raised when a DNA/RNA sequence contains invalid characters."""
-    def __init__(self, sequence: str, invalid_chars: set):
+    def __init__(self, sequence: str, invalid_chars: set[str]):
         self.sequence = sequence
         self.invalid_chars = invalid_chars
         # Find positions of invalid characters for better diagnostics
@@ -40,7 +42,7 @@ class InvalidSequenceError(BioCompilerError):
 
 class CertificateGenerationError(BioCompilerError):
     """Raised when certificate generation is attempted with failing predicates."""
-    def __init__(self, failures: list):
+    def __init__(self, failures: list[Any]):
         self.failures = failures
         details = "; ".join(
             f"{r.predicate}={r.verdict.value}" for r in failures
@@ -90,7 +92,7 @@ class UnsupportedOrganismError(BioCompilerError):
 
 class InvalidProteinError(BioCompilerError):
     """Raised when a protein sequence contains invalid amino acid codes."""
-    def __init__(self, protein: str, invalid_chars: set):
+    def __init__(self, protein: str, invalid_chars: set[str]):
         self.protein = protein
         self.invalid_chars = invalid_chars
         super().__init__(

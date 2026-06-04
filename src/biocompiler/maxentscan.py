@@ -19,10 +19,7 @@ Deterministic: same input always produces same output.
 """
 
 import math
-import logging
 from typing import List, Tuple, Dict
-
-logger = logging.getLogger(__name__)
 
 BASE_TO_INDEX: Dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
 BG_PROB = 0.25  # Uniform background
@@ -81,6 +78,17 @@ ACCEPTOR_PWM_SCORE = [[row[1], row[2], row[3], row[4]] for row in ACCEPTOR_PWM]
 # Small epsilon for positions with zero probability to avoid -inf in log space
 _EPSILON = 0.001
 
+# Sentinel score for impossible / out-of-range events
+_IMPOSSIBLE_SCORE: float = -50.0
+
+# Donor model offsets: 9-mer spans positions -3 to +6 relative to GT
+_DONOR_UPSTREAM: int = 3
+_DONOR_DOWNSTREAM: int = 6
+
+# Acceptor model offsets: 23-mer spans positions -20 to +3 relative to AG
+_ACCEPTOR_UPSTREAM: int = 20
+_ACCEPTOR_DOWNSTREAM: int = 3
+
 
 def _safe_prob(p: float) -> float:
     """Ensure probability is never zero (Laplace-like smoothing)."""
@@ -90,7 +98,7 @@ def _safe_prob(p: float) -> float:
 def _log2(x: float) -> float:
     """Compute log2 with safe handling of near-zero values."""
     if x <= 0:
-        return -50.0  # Sentinel for impossible events
+        return _IMPOSSIBLE_SCORE
     return math.log2(x)
 
 
@@ -112,15 +120,15 @@ def score_donor(seq: str, position: int) -> float:
         - Non-donors: <0
     """
     seq = seq.upper()
-    start = position - 3
-    end = position + 6
+    start = position - _DONOR_UPSTREAM
+    end = position + _DONOR_DOWNSTREAM
     if start < 0 or end > len(seq):
-        return -50.0
+        return _IMPOSSIBLE_SCORE
     score = 0.0
-    for pwm_idx in range(9):
+    for pwm_idx in range(len(DONOR_PWM_SCORE)):
         base = seq[start + pwm_idx]
         if base not in BASE_TO_INDEX:
-            return -50.0
+            return _IMPOSSIBLE_SCORE
         prob = _safe_prob(DONOR_PWM_SCORE[pwm_idx][BASE_TO_INDEX[base]])
         score += _log2(prob / BG_PROB)
     return round(score, 4)
@@ -144,15 +152,15 @@ def score_acceptor(seq: str, position: int) -> float:
         - Non-acceptors: <0
     """
     seq = seq.upper()
-    start = position - 20
-    end = position + 3
+    start = position - _ACCEPTOR_UPSTREAM
+    end = position + _ACCEPTOR_DOWNSTREAM
     if start < 0 or end > len(seq):
-        return -50.0
+        return _IMPOSSIBLE_SCORE
     score = 0.0
-    for pwm_idx in range(23):
+    for pwm_idx in range(len(ACCEPTOR_PWM_SCORE)):
         base = seq[start + pwm_idx]
         if base not in BASE_TO_INDEX:
-            return -50.0
+            return _IMPOSSIBLE_SCORE
         prob = _safe_prob(ACCEPTOR_PWM_SCORE[pwm_idx][BASE_TO_INDEX[base]])
         score += _log2(prob / BG_PROB)
     return round(score, 4)
@@ -198,7 +206,7 @@ def scan_splice_sites(
 def max_donor_score(seq: str) -> float:
     """Return the maximum donor splice site score across the sequence."""
     seq = seq.upper()
-    best = -50.0
+    best = _IMPOSSIBLE_SCORE
     for i in range(len(seq) - 1):
         if seq[i] == "G" and seq[i + 1] == "T":
             s = score_donor(seq, i)
@@ -210,7 +218,7 @@ def max_donor_score(seq: str) -> float:
 def max_acceptor_score(seq: str) -> float:
     """Return the maximum acceptor splice site score across the sequence."""
     seq = seq.upper()
-    best = -50.0
+    best = _IMPOSSIBLE_SCORE
     for i in range(len(seq) - 1):
         if seq[i] == "A" and seq[i + 1] == "G":
             s = score_acceptor(seq, i)

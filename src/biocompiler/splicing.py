@@ -11,9 +11,8 @@ Production-grade splicing engine with:
 - Configurable parameters (not hardcoded magic numbers)
 """
 
-import math
 import logging
-from typing import Optional, List, Tuple
+from itertools import combinations
 
 # ==============================================================================
 # Cryptic Splice Site Scoring (merged from splice.py)
@@ -42,6 +41,14 @@ _MAXENT_PWM = [
 
 _BASE_INDEX = {"A": 0, "C": 1, "G": 2, "T": 3}
 
+# Named constants replacing magic numbers
+_PWM_CONTEXT_LEN = 9          # Position weight matrix context length (positions -3 to +6)
+_MIN_CONTEXT_LEN = 4          # Minimum context length for meaningful scoring
+_DINUC_LEN = 2               # Splice dinucleotide length (GT / AG)
+_EXON_SKIP_DECAY = 0.5       # Score decay factor per additional skipped exon
+_PWM_UPSTREAM = 3            # Bases upstream of GT for PWM context
+_PWM_DOWNSTREAM = 6          # Bases downstream of GT for PWM context
+
 
 def maxent_score(context: str) -> float:
     """Compute simplified MaxEntScan score for a potential splice site context.
@@ -57,15 +64,15 @@ def maxent_score(context: str) -> float:
         PWM weighted sum score. Higher = stronger splice signal.
         Thresholds: < 3.0 PASS, 3.0-6.0 UNCERTAIN, >= 6.0 FAIL.
     """
-    if len(context) < 4:
+    if len(context) < _MIN_CONTEXT_LEN:
         return 0.0
 
-    if len(context) < 9:
-        context = "A" * (9 - len(context)) + context
-        context = context[-9:]
+    if len(context) < _PWM_CONTEXT_LEN:
+        context = "A" * (_PWM_CONTEXT_LEN - len(context)) + context
+        context = context[-_PWM_CONTEXT_LEN:]
 
     score = 0.0
-    for pos in range(min(len(context), 9)):
+    for pos in range(min(len(context), _PWM_CONTEXT_LEN)):
         base = context[pos].upper() if pos < len(context) else "A"
         idx = _BASE_INDEX.get(base, 0)
         score += _MAXENT_PWM[idx][pos]
@@ -73,7 +80,7 @@ def maxent_score(context: str) -> float:
     return score
 
 
-def score_splice_sites(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0):
+def score_splice_sites(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> list[tuple[int, float, "SpliceVerdict"]]:
     """Score all potential splice sites in a sequence using simplified PWM.
 
     Scans for GT dinucleotides and classifies each site as
@@ -88,11 +95,11 @@ def score_splice_sites(seq: str, low_thresh: float = 3.0, high_thresh: float = 6
         List of (position, score, SpliceVerdict) tuples for each GT site found.
     """
     from .type_system import SpliceVerdict
-    results: List[Tuple[int, float, SpliceVerdict]] = []
+    results: list[tuple[int, float, SpliceVerdict]] = []
     for i in range(len(seq) - 1):
-        if seq[i:i+2] == "GT":
-            start = max(0, i - 3)
-            end = min(len(seq), i + 6)
+        if seq[i:i + _DINUC_LEN] == "GT":
+            start = max(0, i - _PWM_UPSTREAM)
+            end = min(len(seq), i + _PWM_DOWNSTREAM)
             context = seq[start:end]
             sc = maxent_score(context)
             if sc < low_thresh:
@@ -128,6 +135,7 @@ def _get_tissue_weights(cellular_context: str) -> dict[str, float]:
         return _get_gtex_weights(cellular_context)
     except Exception:
         # Fallback to default weights from tissue_data module
+        logger.debug("Falling back to default tissue weights for %r", cellular_context, exc_info=True)
         from .tissue_data import GTEX_TISSUE_WEIGHTS
         return GTEX_TISSUE_WEIGHTS.get(cellular_context, GTEX_TISSUE_WEIGHTS["default"])
 
@@ -264,7 +272,6 @@ def compute_splice_isoforms(
             ))
 
         # Multi-exon skip (combinations of 2+ skipped exons)
-        from itertools import combinations
         combo_count = 0
         for r in range(2, len(internal_exon_indices) + 1):
             for combo in combinations(internal_exon_indices, r):
@@ -276,7 +283,7 @@ def compute_splice_isoforms(
                     sequence=skipped_seq,
                     exon_boundaries=skipped_exons,
                     parse_path=[f"skip_exons_{'_'.join(str(c) for c in combo)}"],
-                    score=canonical_score * tissue_w["exon_skip"] * (0.5 ** (r - 1)),
+                    score=canonical_score * tissue_w["exon_skip"] * (_EXON_SKIP_DECAY ** (r - 1)),
                 ))
                 combo_count += 1
             if combo_count >= max_exon_skip_combos:
@@ -311,13 +318,13 @@ def compute_splice_isoforms(
         if len(isoforms) >= max_isoforms:
             break
         before = seq[:d_pos]
-        after = seq[a_pos + 2:]
+        after = seq[a_pos + _DINUC_LEN:]
         # Guard: both exon segments must be non-empty and boundaries valid
-        if len(before) > 0 and len(after) > 0 and d_pos > 0 and a_pos + 2 <= len(seq) and a_pos + 2 > d_pos:
+        if len(before) > 0 and len(after) > 0 and d_pos > 0 and a_pos + _DINUC_LEN <= len(seq) and a_pos + _DINUC_LEN > d_pos:
             cryptic_seq = before + after
             isoforms.append(SpliceIsoform(
                 sequence=cryptic_seq,
-                exon_boundaries=[(0, d_pos), (a_pos + 2, len(seq))],
+                exon_boundaries=[(0, d_pos), (a_pos + _DINUC_LEN, len(seq))],
                 parse_path=[label],
                 score=score * tissue_w["cryptic"],
             ))
@@ -362,7 +369,7 @@ def compute_splice_isoforms(
         for alt_a in alt_acceptors[:max_alt_sites]:
             if len(isoforms) >= max_isoforms:
                 break
-            new_start = alt_a.position + 2
+            new_start = alt_a.position + _DINUC_LEN
             # Guard: alternative acceptor must not move past the exon end
             if new_start >= known_exon_boundaries[i + 1][1]:
                 continue

@@ -23,8 +23,19 @@ except ImportError:
 # Directory where built-in grammar YAML files live
 _GRAMMARS_DIR = Path(__file__).parent / "grammars"
 
+# ── Default parameter constants (used when grammar omits values) ──────────
+_DEFAULT_GC_LO: float = 0.30
+_DEFAULT_GC_HI: float = 0.70
+_DEFAULT_CAI_THRESHOLD: float = 0.5
+_DEFAULT_CRYPTIC_SPLICE_THRESHOLD: float = 3.0
+_DEFAULT_UNCERTAIN_LO: float = 1.5
+_DEFAULT_ENZYMES: list[str] = ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
+_DEFAULT_EXON_BOUNDARIES: list[tuple[int, int]] = [(0, 0)]
+_DEFAULT_ORGANISM: str = "Homo_sapiens"
+_DEFAULT_CELLULAR_CONTEXT: str = "HEK293T"
 
-def _check_yaml_available():
+
+def _check_yaml_available() -> None:
     """Check that PyYAML is available."""
     if yaml is None:
         raise ImportError(
@@ -61,7 +72,7 @@ def load_grammar(path: str | Path) -> dict[str, Any]:
     if not grammar_path.exists():
         raise FileNotFoundError(f"Grammar file not found: {path}")
 
-    with open(grammar_path) as f:
+    with open(grammar_path, encoding="utf-8") as f:
         grammar = yaml.safe_load(f)
 
     if not isinstance(grammar, dict):
@@ -72,7 +83,7 @@ def load_grammar(path: str | Path) -> dict[str, Any]:
     return grammar
 
 
-def _validate_grammar(grammar: dict, path: str):
+def _validate_grammar(grammar: dict[str, Any], path: str | Path) -> None:
     """Validate that a grammar has required structure."""
     issues = []
 
@@ -113,7 +124,7 @@ def _validate_grammar(grammar: dict, path: str):
         raise ValueError(f"Grammar validation errors in {path}: {'; '.join(issues)}")
 
 
-def grammar_to_predicate_params(grammar: dict) -> dict[str, Any]:
+def grammar_to_predicate_params(grammar: dict[str, Any]) -> dict[str, Any]:
     """
     Extract type-checking parameters from a grammar definition.
 
@@ -136,8 +147,8 @@ def grammar_to_predicate_params(grammar: dict) -> dict[str, Any]:
     predicates = type_sys.get("predicates", [])
 
     params: dict[str, Any] = {
-        "organism": gene.get("expression_organism", gene.get("organism", "Homo_sapiens")),
-        "cellular_context": ndfst.get("cell_type", "HEK293T"),
+        "organism": gene.get("expression_organism", gene.get("organism", _DEFAULT_ORGANISM)),
+        "cellular_context": ndfst.get("cell_type", _DEFAULT_CELLULAR_CONTEXT),
     }
 
     # Build exon boundaries from grammar
@@ -152,24 +163,24 @@ def grammar_to_predicate_params(grammar: dict) -> dict[str, Any]:
     for pred in predicates:
         name = pred.get("name", "")
         if name == "GCInRange":
-            params.setdefault("gc_lo", pred.get("lo", 0.30))
-            params.setdefault("gc_hi", pred.get("hi", 0.70))
+            params.setdefault("gc_lo", pred.get("lo", _DEFAULT_GC_LO))
+            params.setdefault("gc_hi", pred.get("hi", _DEFAULT_GC_HI))
         elif name == "CodonAdapted":
-            params.setdefault("cai_threshold", pred.get("threshold", 0.5))
+            params.setdefault("cai_threshold", pred.get("threshold", _DEFAULT_CAI_THRESHOLD))
         elif name == "NoCrypticSplice":
-            params.setdefault("cryptic_splice_threshold", pred.get("cryptic_threshold", 3.0))
-            params.setdefault("uncertain_lo", pred.get("uncertain_lo", 1.5))
+            params.setdefault("cryptic_splice_threshold", pred.get("cryptic_threshold", _DEFAULT_CRYPTIC_SPLICE_THRESHOLD))
+            params.setdefault("uncertain_lo", pred.get("uncertain_lo", _DEFAULT_UNCERTAIN_LO))
         elif name == "NoRestrictionSite":
             params.setdefault("enzymes", pred.get("enzyme_sites", []))
 
     # Set defaults for any missing params
-    params.setdefault("gc_lo", 0.30)
-    params.setdefault("gc_hi", 0.70)
-    params.setdefault("cai_threshold", 0.5)
-    params.setdefault("cryptic_splice_threshold", 3.0)
-    params.setdefault("uncertain_lo", 1.5)
-    params.setdefault("enzymes", ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"])
-    params.setdefault("exon_boundaries", [(0, 0)])
+    params.setdefault("gc_lo", _DEFAULT_GC_LO)
+    params.setdefault("gc_hi", _DEFAULT_GC_HI)
+    params.setdefault("cai_threshold", _DEFAULT_CAI_THRESHOLD)
+    params.setdefault("cryptic_splice_threshold", _DEFAULT_CRYPTIC_SPLICE_THRESHOLD)
+    params.setdefault("uncertain_lo", _DEFAULT_UNCERTAIN_LO)
+    params.setdefault("enzymes", list(_DEFAULT_ENZYMES))
+    params.setdefault("exon_boundaries", list(_DEFAULT_EXON_BOUNDARIES))
 
     return params
 

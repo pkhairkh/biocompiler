@@ -474,8 +474,8 @@ def plot_codon_usage(
     import matplotlib.pyplot as plt
     import matplotlib.cm as cm
     from .scanner import validate_dna_sequence
-    from .constants import CODON_TABLE, AA_TO_CODONS
-    from .organisms import CODON_ADAPTIVENESS_TABLES, SUPPORTED_ORGANISMS
+    from .constants import AA_TO_CODONS
+    from .organisms import CODON_ADAPTIVENESS_TABLES
 
     seq = validate_dna_sequence(sequence)
 
@@ -590,7 +590,6 @@ def interactive_optimize(
     from IPython.display import display, clear_output
 
     from .optimization import optimize_sequence
-    from .type_system import evaluate_all_predicates
     from .scanner import gc_content as _gc_content
 
     # Create sliders

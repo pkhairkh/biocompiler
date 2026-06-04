@@ -9,9 +9,9 @@ logic, and result validation behind a small public surface.
 
 Public API
 ----------
-- ``solve_with_csp``   – main entry point for CSP optimisation
-- ``is_csp_available``  – runtime backend-availability probe
-- ``csp_optimize``      – convenience wrapper matching ``_greedy_optimize`` signature
+- ``solve_with_csp``        – main entry point for CSP optimisation
+- ``get_csp_availability``  – runtime backend-availability probe
+- ``csp_optimize``          – convenience wrapper matching ``_greedy_optimize`` signature
 - ``validate_csp_solution`` – post-solve constraint verification
 
 Design principles
@@ -31,7 +31,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..constants import AA_TO_CODONS
 from ..organisms import SPECIES
@@ -44,33 +44,35 @@ from .types import (
     SolverConfig,
     SolverResult,
 )
-from .constraints import build_csp_model
+from .constraints import build_csp_model, HardConstraint, SoftConstraint
 from .mus import compute_mus, quick_feasibility_check
+
+if TYPE_CHECKING:
+    from .engine_ortools import ORTOOLSEngine
+    from .engine_z3 import Z3Engine
 
 # Backend engines (optional — may not be installed)
 _ORTOOLS_AVAILABLE: bool = False
 _Z3_AVAILABLE: bool = False
-_ORTOOLSEngine: Any = None
-_Z3Engine: Any = None
+_ortools_engine: type[ORTOOLSEngine] | None = None
+_z3_engine: type[Z3Engine] | None = None
 
 try:
-    from .engine_ortools import ORTOOLSEngine as _ORTOOLSEngine_cls
+    from .engine_ortools import ORTOOLSEngine as _ortools_engine  # noqa: F811
     _ORTOOLS_AVAILABLE = True
-    _ORTOOLSEngine = _ORTOOLSEngine_cls
 except ImportError:
     pass
 
 try:
-    from .engine_z3 import Z3Engine as _Z3Engine_cls
+    from .engine_z3 import Z3Engine as _z3_engine  # noqa: F811
     _Z3_AVAILABLE = True
-    _Z3Engine = _Z3Engine_cls
 except ImportError:
     pass
 
 logger = logging.getLogger(__name__)
 
 
-def is_csp_available() -> dict[str, bool]:
+def get_csp_availability() -> dict[str, bool]:
     """Check which CSP backends are importable *without* actually importing them.
 
     Uses ``importlib.util.find_spec`` so that the heavy modules (ortools, z3)
@@ -86,6 +88,10 @@ def is_csp_available() -> dict[str, bool]:
     return {"ortools": ortools_ok, "z3": z3_ok, "any": ortools_ok or z3_ok}
 
 
+# Backward-compatible alias (name previously implied a bool return)
+is_csp_available = get_csp_availability
+
+
 def is_solver_available() -> bool:
     """Check whether any CSP solver backend is available.
 
@@ -94,7 +100,7 @@ def is_solver_available() -> bool:
     bool
         True if at least one backend (OR-Tools or Z3) is importable.
     """
-    return is_csp_available()["any"]
+    return get_csp_availability()["any"]
 
 
 def _make_fallback_result(
@@ -112,6 +118,54 @@ def _make_fallback_result(
         violations=[],
         metadata={"reason": reason},
     )
+
+
+def _try_backend(
+    engine_cls: type,
+    model: CSPModel,
+    config: SolverConfig,
+    backend_name: str,
+    backend_enum: SolverBackend,
+) -> SolverResult | None:
+    """Try solving with a single backend engine.
+
+    Encapsulates the try-except logic that was previously duplicated for
+    OR-Tools and Z3.  Returns a solved ``SolverResult`` with
+    ``backend_used`` set, or ``None`` if the backend failed or returned
+    infeasible.
+
+    Parameters
+    ----------
+    engine_cls : type
+        The engine class to instantiate (``ORTOOLSEngine`` or ``Z3Engine``).
+    model : CSPModel
+        The CSP model to solve.
+    config : SolverConfig
+        Solver configuration passed to the engine constructor.
+    backend_name : str
+        Human-readable name for log messages (e.g. ``"OR-Tools"``).
+    backend_enum : SolverBackend
+        Enum value to set on ``result.backend_used`` on success.
+
+    Returns
+    -------
+    SolverResult | None
+        A solved result with ``backend_used`` set, or ``None``.
+    """
+    logger.info("Attempting %s backend …", backend_name)
+    try:
+        engine = engine_cls(config)
+        result = engine.solve(model)
+        if result is not None and result.solved:
+            result.backend_used = backend_enum
+            logger.info("%s solved successfully.", backend_name)
+            return result
+        else:
+            logger.info("%s returned infeasible; trying next backend.", backend_name)
+            return None
+    except Exception:
+        logger.warning("%s backend raised an exception", backend_name, exc_info=True)
+        return None
 
 
 def solve_with_csp(
@@ -175,37 +229,11 @@ def solve_with_csp(
     # Try backends in priority order
     result: SolverResult | None = None
 
-    # --- OR-Tools ---
-    if _ORTOOLS_AVAILABLE and _ORTOOLSEngine is not None:
-        logger.info("Attempting OR-Tools backend …")
-        try:
-            engine = _ORTOOLSEngine(config)
-            result = engine.solve(model)
-            if result is not None and result.solved:
-                result.backend_used = SolverBackend.ORTOOLS
-                logger.info("OR-Tools solved successfully.")
-            else:
-                logger.info("OR-Tools returned infeasible; trying next backend.")
-                result = None
-        except Exception:
-            logger.warning("OR-Tools backend raised an exception", exc_info=True)
-            result = None
+    if _ortools_engine is not None:
+        result = _try_backend(_ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS)
 
-    # --- Z3 ---
-    if result is None and _Z3_AVAILABLE and _Z3Engine is not None:
-        logger.info("Attempting Z3 backend …")
-        try:
-            engine = _Z3Engine(config)
-            result = engine.solve(model)
-            if result is not None and result.solved:
-                result.backend_used = SolverBackend.Z3
-                logger.info("Z3 solved successfully.")
-            else:
-                logger.info("Z3 returned infeasible.")
-                result = None
-        except Exception:
-            logger.warning("Z3 backend raised an exception", exc_info=True)
-            result = None
+    if result is None and _z3_engine is not None:
+        result = _try_backend(_z3_engine, model, config, "Z3", SolverBackend.Z3)
 
     # Handle total failure → fallback
     if result is None:
@@ -217,7 +245,7 @@ def solve_with_csp(
 
     # Post-solve validation
     if result.sequence:
-        violations = validate_csp_solution(result.sequence, protein, config)
+        violations = validate_csp_solution(result.sequence, protein, config, organism)
         result.violations = violations
         if violations:
             logger.warning(
@@ -303,6 +331,7 @@ def validate_csp_solution(
     sequence: str,
     protein: str,
     config: SolverConfig,
+    organism: str = "Homo_sapiens",
 ) -> list[ConstraintViolation]:
     """Verify that a candidate sequence satisfies *all* constraints.
 
@@ -339,10 +368,13 @@ def validate_csp_solution(
         ))
         return violations
 
-    # Rebuild the model to iterate constraints
-    model: CSPModel = build_csp_model(protein, config.organism, config)
+    # Rebuild the model to iterate constraints.  build_csp_model() returns
+    # a constraints.CSPModel whose hard_constraints / soft_constraints are
+    # actual HardConstraint / SoftConstraint instances with .check() methods.
+    constraint_model = build_csp_model(protein, organism, config)
 
-    for constraint in model.constraints:
+    # Check hard constraints
+    for constraint in constraint_model.hard_constraints:
         try:
             satisfied = constraint.check(sequence)
         except Exception as exc:
@@ -360,6 +392,27 @@ def validate_csp_solution(
                 constraint_type=ConstraintStrictness.HARD,
                 description=f"Constraint '{constraint.name}' is not satisfied by the solution.",
                 severity=0.8,
+            ))
+
+    # Check soft constraints
+    for constraint in constraint_model.soft_constraints:
+        try:
+            satisfied = constraint.check(sequence)
+        except Exception as exc:
+            violations.append(ConstraintViolation(
+                constraint_name=constraint.name,
+                constraint_type=ConstraintStrictness.SOFT,
+                description=f"Soft constraint check raised {type(exc).__name__}: {exc}",
+                severity=0.3,
+            ))
+            continue
+
+        if not satisfied:
+            violations.append(ConstraintViolation(
+                constraint_name=constraint.name,
+                constraint_type=ConstraintStrictness.SOFT,
+                description=f"Soft constraint '{constraint.name}' is not satisfied by the solution.",
+                severity=0.5,
             ))
 
     # Extra sanity: translation fidelity

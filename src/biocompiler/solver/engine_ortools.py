@@ -36,8 +36,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .types import (
-    ConstraintType,
-    ConstraintViolation,
     CodonVariable,
     MUSReport,
     SolverBackend,
@@ -46,18 +44,13 @@ from .types import (
 )
 from .automaton import (
     build_composite_dfa,
-    build_forbidden_pattern_dfa,
-    build_reverse_complement_dfa,
     build_trun_dfa,
     dfa_to_ortools_format,
 )
 from ..constants import (
     AA_TO_CODONS,
-    BASE_MAP,
     BASE_REV,
     RESTRICTION_ENZYMES,
-    DONOR_CONSENSUS,
-    ACCEPTOR_CONSENSUS,
     INSTABILITY_MOTIF,
     reverse_complement,
 )
@@ -352,6 +345,7 @@ class ORTOOLSEngine:
                         ],
                     )
             except Exception:
+                logger.debug("Solution hinting failed", exc_info=True)
                 pass
 
             return SolverResult(

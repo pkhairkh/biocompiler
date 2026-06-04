@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 import logging
-from typing import Optional
+from typing import Any
 
 from .type_system import Verdict, TypeCheckResult
 from .constants import HYDROPHOBIC_AAS
@@ -27,16 +27,34 @@ from .constants import HYDROPHOBIC_AAS
 logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────
-# Amino-acid sets
+# Constants
 # ────────────────────────────────────────────────────────────
-CHARGED_AAS: set[str] = {"K", "R", "H", "D", "E"}
 
 # Normal hydrophobic-fraction range for well-folded globular proteins
 _HYDRO_FRAC_LO = 0.30
 _HYDRO_FRAC_HI = 0.45
 
+# Hydrophobic fraction at peak stability (used in empirical estimator)
+_HYDRO_PEAK_FRAC = 0.35
+
 # Disulfide-bond CB-CB distance threshold (Angstroms)
 _DISULFIDE_CB_DIST_THRESHOLD = 6.5
+
+# ── Empirical estimator coefficients ──
+_HYDRO_CONTRIBUTION_WEIGHT = 20.0      # kcal/mol weight for hydrophobic core
+_SALT_BRIDGE_KCAL_PER_PAIR = 1.5       # kcal/mol per balanced charge pair
+_DISULFIDE_BOND_KCAL = -3.0            # kcal/mol per disulfide bond (stabilizing)
+_PRO_GLY_PENALTY_WEIGHT = 15.0         # kcal/mol penalty weight
+_PRO_GLY_PENALTY_THRESHOLD = 0.10      # fraction above which penalty applies
+_ENTROPY_PENALTY_COEFF = 0.05          # kcal/mol per residue (conformational entropy)
+_PRO_GLY_CONFIDENCE_THRESHOLD = 0.12   # max pro+gly frac for "medium" confidence
+
+# ── Stability verdict thresholds ──
+_CLEARLY_UNSTABLE_DG = 5.0             # kcal/mol; dG >= this → FAIL
+
+# ── Mutation ddG estimation ──
+_BLOSUM62_DDG_FACTOR = 0.8             # BLOSUM62 score → ddG conversion
+_BLOSUM62_UNKNOWN_SCORE = -10          # default BLOSUM62 for unknown pairs
 
 
 # ────────────────────────────────────────────────────────────
@@ -107,7 +125,7 @@ def compute_hydrophobic_fraction(protein: str) -> float:
     return hydro_count / len(protein)
 
 
-def estimate_stability_empirical(protein: str) -> dict:
+def estimate_stability_empirical(protein: str) -> dict[str, Any]:
     """Quick empirical stability estimate without FoldX.
 
     Based on four compositional features:
@@ -157,24 +175,31 @@ def estimate_stability_empirical(protein: str) -> dict:
     }
 
     # --- dG estimate ---
-    # Hydrophobic core: peak stability near frac=0.35
-    hydro_contribution = -20.0 * (1.0 - abs(hydro_frac - 0.35) / 0.35)
+    # Hydrophobic core: peak stability near _HYDRO_PEAK_FRAC
+    hydro_contribution = (
+        -_HYDRO_CONTRIBUTION_WEIGHT
+        * (1.0 - abs(hydro_frac - _HYDRO_PEAK_FRAC) / _HYDRO_PEAK_FRAC)
+    )
 
-    # Salt bridges: each balanced pair contributes ~-1.5 kcal/mol
+    # Salt bridges: each balanced pair contributes ~_SALT_BRIDGE_KCAL_PER_PAIR
     salt_bridge_contribution = (
-        -1.5 * min(positive, negative) * (1.0 - charge_balance)
+        -_SALT_BRIDGE_KCAL_PER_PAIR
+        * min(positive, negative)
+        * (1.0 - charge_balance)
     )
 
     # Disulfide bonds
-    disulfide_contribution = -3.0 * cys_pairs
+    disulfide_contribution = _DISULFIDE_BOND_KCAL * cys_pairs
 
     # Proline / glycine penalty (destabilise regular secondary structure)
     pro_gly_frac = proline_frac + glycine_frac
-    pro_gly_penalty = 15.0 * max(0.0, pro_gly_frac - 0.10)
+    pro_gly_penalty = _PRO_GLY_PENALTY_WEIGHT * max(
+        0.0, pro_gly_frac - _PRO_GLY_PENALTY_THRESHOLD
+    )
 
     # Conformational entropy penalty (longer chains have larger unfolding
     # entropy gain, partially offset by more contacts)
-    entropy_penalty = 0.05 * n
+    entropy_penalty = _ENTROPY_PENALTY_COEFF * n
 
     dg_estimate = (
         hydro_contribution
@@ -185,7 +210,7 @@ def estimate_stability_empirical(protein: str) -> dict:
     )
 
     # Confidence: "medium" if composition is within normal ranges
-    if _HYDRO_FRAC_LO <= hydro_frac <= _HYDRO_FRAC_HI and pro_gly_frac <= 0.12:
+    if _HYDRO_FRAC_LO <= hydro_frac <= _HYDRO_FRAC_HI and pro_gly_frac <= _PRO_GLY_CONFIDENCE_THRESHOLD:
         confidence = "medium"
     else:
         confidence = "low"
@@ -248,7 +273,7 @@ def evaluate_stable_folding(
             result = foldx_empirical(protein)
             dg = result.stability_kcal
             method = "empirical_structure_aware"
-        except Exception:
+        except (ImportError, AttributeError, RuntimeError):
             est = estimate_stability_empirical(protein)
             dg = est["dg_estimate"]
             method = "empirical_fallback"
@@ -271,12 +296,12 @@ def evaluate_stable_folding(
             f"Marginal stability: dG={dg:.2f} kcal/mol "
             f"(>= {stability_threshold / 2.0:.2f})"
         )
-    elif dg < 5.0:
+    elif dg < _CLEARLY_UNSTABLE_DG:
         verdict = Verdict.LIKELY_FAIL
         violation = f"Predicted unstable: dG={dg:.2f} kcal/mol (>= 0)"
     else:
         verdict = Verdict.FAIL
-        violation = f"Strongly unstable: dG={dg:.2f} kcal/mol (>= 5.0)"
+        violation = f"Strongly unstable: dG={dg:.2f} kcal/mol (>= {_CLEARLY_UNSTABLE_DG})"
 
     # Build derivation
     derivation = [
@@ -366,11 +391,11 @@ def evaluate_no_destabilizing_mutation(
             continue
 
         # BLOSUM62 score: negative means unlikely substitution
-        blosum = BLOSUM62.get((orig_aa, new_aa), -10)
+        blosum = BLOSUM62.get((orig_aa, new_aa), _BLOSUM62_UNKNOWN_SCORE)
 
         # Rough ddG estimate: each BLOSUM62 unit ~ 0.5-1.0 kcal/mol
         # Conserved substitutions have small ddG; radical ones are large.
-        ddg_estimate = -blosum * 0.8  # negative BLOSUM -> positive ddG
+        ddg_estimate = -blosum * _BLOSUM62_DDG_FACTOR  # negative BLOSUM -> positive ddG
 
         mutation_info = {
             "position": i,

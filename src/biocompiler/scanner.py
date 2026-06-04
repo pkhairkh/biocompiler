@@ -42,6 +42,18 @@ KOZAK_POSITION_WEIGHTS: dict[int, dict[str, float]] = {
 SPLICE_DONOR_MIN_SCORE = 3.0
 SPLICE_ACCEPTOR_MIN_SCORE = 3.0
 
+# Fallback score assigned to splice donors when MaxEntScan is disabled
+DONOR_FALLBACK_SCORE: float = 5.0
+
+# Minimum C+T fraction in the upstream polypyrimidine tract for acceptor calling
+POLYPYRIMIDINE_MIN_FRACTION: float = 0.5
+
+# Multiplier that converts polypyrimidine fraction [0,1] to an acceptor score
+ACCEPTOR_SCORE_MULTIPLIER: float = 10.0
+
+# Minimum Kozak consensus score for a site to be reported as a kozak token
+KOZAK_REPORT_THRESHOLD: float = 0.7
+
 
 def _iupac_match(seq: str, pattern: str) -> bool:
     """
@@ -67,7 +79,20 @@ def _iupac_match(seq: str, pattern: str) -> bool:
 
 
 def validate_dna_sequence(seq: str) -> str:
-    """Validate and normalize a DNA sequence. Raises InvalidSequenceError for bad input."""
+    """
+    Validate and normalize a DNA sequence.
+
+    Converts to uppercase and checks that every character is in {A, C, G, T, N}.
+
+    Args:
+        seq: raw DNA sequence (case-insensitive)
+
+    Returns:
+        Uppercased, validated DNA string.
+
+    Raises:
+        InvalidSequenceError: if any character is not A/C/G/T/N.
+    """
     seq = seq.upper()
     valid = set("ACGTN")
     invalid = set(seq) - valid
@@ -77,7 +102,17 @@ def validate_dna_sequence(seq: str) -> str:
 
 
 def gc_content(seq: str) -> float:
-    """Compute GC content as a fraction [0.0, 1.0]. Deterministic."""
+    """
+    Compute GC content as a fraction in [0.0, 1.0].
+
+    Deterministic: depends only on the input sequence.
+
+    Args:
+        seq: DNA sequence (case-insensitive)
+
+    Returns:
+        GC fraction rounded to 4 decimal places.  Returns 0.0 for empty input.
+    """
     if not seq:
         return 0.0
     seq = seq.upper()
@@ -150,7 +185,7 @@ def scan_sequence(
                 if mes_score >= donor_threshold:
                     tokens.append(Token(i, "splice_donor", seq[i:i+2], mes_score))
             else:
-                tokens.append(Token(i, "splice_donor", seq[i:i+2], 5.0))
+                tokens.append(Token(i, "splice_donor", seq[i:i+2], DONOR_FALLBACK_SCORE))
 
     # --- Splice acceptor sites (AG) with MaxEntScan scoring ---
     for i in range(len(seq) - 1):
@@ -164,8 +199,8 @@ def scan_sequence(
                 upstream = seq[max(0, i - POLYPYRIMIDINE_WINDOW):i]
                 ct_count = upstream.count('C') + upstream.count('T')
                 score = ct_count / max(len(upstream), 1)
-                if score > 0.5:
-                    tokens.append(Token(i, "splice_acceptor", seq[i:i+2], score * 10.0))
+                if score > POLYPYRIMIDINE_MIN_FRACTION:
+                    tokens.append(Token(i, "splice_acceptor", seq[i:i+2], score * ACCEPTOR_SCORE_MULTIPLIER))
 
     # --- Start codons in ALL reading frames ---
     if scan_all_frames:
@@ -197,7 +232,7 @@ def scan_sequence(
     for i in range(len(seq) - 2):
         if seq[i:i+3] == "ATG":
             kozak_score = _score_kozak(seq, i)
-            if kozak_score >= 0.7:  # Only report strong Kozak contexts
+            if kozak_score >= KOZAK_REPORT_THRESHOLD:  # Only report strong Kozak contexts
                 tokens.append(Token(i, "kozak", seq[max(0,i-3):i+5], kozak_score))
 
     # --- Instability motifs (ATTTA) ---

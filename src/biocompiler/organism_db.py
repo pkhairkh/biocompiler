@@ -23,13 +23,13 @@ The database stores:
 """
 
 import hashlib
-import json
 import logging
 import re
 import sqlite3
 import time
 import urllib.request
 import urllib.error
+from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -49,9 +49,6 @@ DEFAULT_DB_PATH = Path.home() / ".biocompiler" / "organisms.db"
 # Kazusa API endpoint for codon usage tables
 KAZUSA_API_URL = "https://www.kazusa.or.jp/codon/cgi-bin/spacialize.cgi"
 
-# Alternative: NCBI taxonomy API for validation
-NCBI_TAXONOMY_API = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
-
 # Cache TTL for API-fetched data (7 days by default)
 CACHE_TTL_SECONDS = int(7 * 24 * 60 * 60)  # 1 week
 
@@ -60,10 +57,18 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2  # seconds
 REQUEST_TIMEOUT = 30  # seconds
 
+# HTTP User-Agent header for API requests
+_USER_AGENT = "BioCompiler/4.0.0"
+
 # Response validation thresholds
 MIN_CODON_COUNT = 60  # Minimum codons expected from Kazusa (out of 64)
+TOTAL_CODONS = 64  # Total number of codons in the standard genetic code
+NUM_STOP_CODONS = 3  # Number of stop codons (TAA, TAG, TGA)
 MAX_FREQUENCY_PER_CODON = 1.0  # Each codon frequency must be <= 1.0
 MIN_TOTAL_FREQUENCY = 0.9  # Total frequency per AA should be close to 1.0
+
+# Scale factor for per-thousand codon frequency representation
+PER_THOUSAND_SCALE = 1000.0
 
 # Known Kazusa database IDs for common organisms
 KAZUSA_ORGANISM_IDS: dict[str, str] = {
@@ -101,7 +106,7 @@ class OrganismDatabase:
         concurrent reads. Write operations should be serialized externally.
     """
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None) -> None:
         """
         Initialize the organism database.
 
@@ -121,7 +126,7 @@ class OrganismDatabase:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    def _connection(self):
+    def _connection(self) -> Generator[sqlite3.Connection, None, None]:
         """Context manager for database connections — auto-commits and closes."""
         conn = self._connect()
         try:
@@ -133,7 +138,7 @@ class OrganismDatabase:
         finally:
             conn.close()
 
-    def _ensure_schema(self):
+    def _ensure_schema(self) -> None:
         """Create database tables if they don't exist, with schema versioning."""
         conn = self._connect()
         try:
@@ -293,7 +298,7 @@ class OrganismDatabase:
                     ).fetchall()
                 finally:
                     conn.close()
-            except Exception as e:
+            except (ValueError, urllib.error.URLError, sqlite3.Error) as e:
                 logger.warning("Failed to fetch organism %s from Kazusa: %s", organism, e)
                 raise UnsupportedOrganismError(organism, self.list_organism_names())
 
@@ -401,7 +406,7 @@ class OrganismDatabase:
 
             # Store codon usage data
             for codon, (aa, freq, adapt, count) in codon_usage.items():
-                per_thousand = freq * 1000.0
+                per_thousand = freq * PER_THOUSAND_SCALE
                 conn.execute(
                     """INSERT INTO codon_usage (organism, codon, amino_acid, frequency, count, per_thousand)
                        VALUES (?, ?, ?, ?, ?, ?)
@@ -464,13 +469,13 @@ class OrganismDatabase:
         url = f"{KAZUSA_API_URL}?species={tax_id}&aa=1&style=N"
 
         # Retry with exponential backoff
-        html = None
-        last_error = None
+        html: Optional[str] = None
+        last_error: Optional[urllib.error.URLError] = None
         for attempt in range(MAX_RETRIES):
             try:
                 req = urllib.request.Request(
                     url,
-                    headers={"User-Agent": "BioCompiler/4.0.0"},
+                    headers={"User-Agent": _USER_AGENT},
                 )
                 with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
                     html = response.read().decode("utf-8", errors="replace")
@@ -530,10 +535,7 @@ class OrganismDatabase:
         Returns:
             Number of organisms migrated
         """
-        from .organisms import (
-            CODON_USAGE_TABLES, CODON_ADAPTIVENESS_TABLES,
-            PREFERRED_CODON_TABLES, SUPPORTED_ORGANISMS,
-        )
+        from .organisms import CODON_USAGE_TABLES, SUPPORTED_ORGANISMS
 
         migrated = 0
         for org_name in SUPPORTED_ORGANISMS:
@@ -562,6 +564,7 @@ class OrganismDatabase:
     # ─── Private Methods ──────────────────────────────────────────
 
     def _has_adaptiveness(self, organism: str) -> bool:
+        """Check whether codon adaptiveness data exists for the given organism."""
         conn = self._connect()
         try:
             row = conn.execute(
@@ -573,6 +576,7 @@ class OrganismDatabase:
             conn.close()
 
     def _has_preferred(self, organism: str) -> bool:
+        """Check whether preferred codon data exists for the given organism."""
         conn = self._connect()
         try:
             row = conn.execute(
@@ -666,10 +670,10 @@ class OrganismDatabase:
         Strategy 3: Regex-based extraction (fallback)
 
         Falls back to uniform distribution only if ALL strategies fail to
-        extract a minimum of 60/64 codons.
+        extract a minimum of MIN_CODON_COUNT/TOTAL_CODONS codons.
         """
         codon_usage: dict[str, tuple[str, float, float, int]] = {}
-        # Use all 64 codons from CODON_TABLE (includes stop codons)
+        # Use all codons from CODON_TABLE (includes stop codons)
         codons = list(CODON_TABLE.keys())
 
         # Strategy 0: BeautifulSoup (most robust, requires optional dependency)
@@ -685,8 +689,8 @@ class OrganismDatabase:
                 # Extract text content from each cell
                 cell_texts = [c.get_text(strip=True) for c in cells]
                 # Find a cell that looks like a codon (3-letter ACGT sequence)
-                codon_val = None
-                codon_idx = None
+                codon_val: Optional[str] = None
+                codon_idx: Optional[int] = None
                 for i, txt in enumerate(cell_texts):
                     if len(txt) == 3 and all(ch in 'ACGTacgt' for ch in txt):
                         codon_val = txt.upper()
@@ -730,10 +734,10 @@ class OrganismDatabase:
                             per_thousand = val
                 # Derive frequency from per_thousand if not found directly
                 if freq == 0.0 and per_thousand > 0.0:
-                    freq = per_thousand / 1000.0
+                    freq = per_thousand / PER_THOUSAND_SCALE
                 # Derive frequency from count if neither freq nor per_thousand was found
                 if freq == 0.0 and count > 0:
-                    freq = count / 1000.0
+                    freq = count / PER_THOUSAND_SCALE
                 # Validate amino acid against CODON_TABLE
                 expected_aa = CODON_TABLE.get(codon_val)
                 if expected_aa:
@@ -742,10 +746,10 @@ class OrganismDatabase:
                     aa = expected_aa
                 codon_usage[codon_val] = (aa, freq, 0.0, count)
 
-            if len(codon_usage) >= 60:
+            if len(codon_usage) >= MIN_CODON_COUNT:
                 logger.info(
-                    "Kazusa parsing Strategy 0 (BeautifulSoup) succeeded: %d/64 codons",
-                    len(codon_usage),
+                    "Kazusa parsing Strategy 0 (BeautifulSoup) succeeded: %d/%d codons",
+                    len(codon_usage), TOTAL_CODONS,
                 )
             else:
                 codon_usage.clear()
@@ -756,14 +760,14 @@ class OrganismDatabase:
             codon_usage.clear()
 
         # If Strategy 0 succeeded, skip regex strategies
-        if len(codon_usage) >= 60:
+        if len(codon_usage) >= MIN_CODON_COUNT:
             # Final fallback: uniform distribution for missing codons
-            if len(codon_usage) < 64:
-                missing = 64 - len(codon_usage)
+            if len(codon_usage) < TOTAL_CODONS:
+                missing = TOTAL_CODONS - len(codon_usage)
                 logger.warning(
-                    "Incomplete Kazusa parsing for %s (%d/64 codons, %d missing), "
+                    "Incomplete Kazusa parsing for %s (%d/%d codons, %d missing), "
                     "using uniform fallback for missing codons",
-                    organism, len(codon_usage), missing,
+                    organism, len(codon_usage), TOTAL_CODONS, missing,
                 )
                 for codon in codons:
                     if codon not in codon_usage:
@@ -771,7 +775,7 @@ class OrganismDatabase:
                         if aa == "*":
                             aa = "STOP"
                         if aa == "STOP":
-                            codon_usage[codon] = (aa, 1.0 / 3.0, 0.0, 0)
+                            codon_usage[codon] = (aa, 1.0 / NUM_STOP_CODONS, 0.0, 0)
                         else:
                             codon_usage[codon] = (aa, 1.0 / len(AA_TO_CODONS.get(aa, [codon])), 0.0, 0)
             return codon_usage
@@ -790,7 +794,7 @@ class OrganismDatabase:
         for match in row_pattern.finditer(html):
             codon = match.group(1).upper()
             aa = match.group(2)
-            freq = float(match.group(4)) / 1000.0 if int(match.group(4)) > 0 else float(match.group(3))
+            freq = float(match.group(4)) / PER_THOUSAND_SCALE if int(match.group(4)) > 0 else float(match.group(3))
             count = int(match.group(4))
             if codon in CODON_TABLE:
                 if aa == "*":
@@ -798,8 +802,8 @@ class OrganismDatabase:
                 codon_usage[codon] = (aa, freq, 0.0, count)
 
         # If Strategy 1 found most codons, use it
-        if len(codon_usage) >= 60:
-            logger.info("Kazusa parsing Strategy 1 (table rows) succeeded: %d/64 codons", len(codon_usage))
+        if len(codon_usage) >= MIN_CODON_COUNT:
+            logger.info("Kazusa parsing Strategy 1 (table rows) succeeded: %d/%d codons", len(codon_usage), TOTAL_CODONS)
         else:
             codon_usage.clear()
 
@@ -822,16 +826,16 @@ class OrganismDatabase:
                             count = 0
                             for num_str in numbers[1:]:
                                 val = float(num_str)
-                                if val > 1000 and count == 0:
+                                if val > PER_THOUSAND_SCALE and count == 0:
                                     count = int(val)
-                                elif val <= 1000 and freq == 0.0:
-                                    freq = val / 1000.0 if val > 1.0 else val
+                                elif val <= PER_THOUSAND_SCALE and freq == 0.0:
+                                    freq = val / PER_THOUSAND_SCALE if val > 1.0 else val
                             codon_usage[codon] = (aa, freq, 0.0, count)
                         except (ValueError, IndexError):
                             pass
 
-            if len(codon_usage) >= 60:
-                logger.info("Kazusa parsing Strategy 2 (fragment) succeeded: %d/64 codons", len(codon_usage))
+            if len(codon_usage) >= MIN_CODON_COUNT:
+                logger.info("Kazusa parsing Strategy 2 (fragment) succeeded: %d/%d codons", len(codon_usage), TOTAL_CODONS)
             else:
                 codon_usage.clear()
 
@@ -850,28 +854,28 @@ class OrganismDatabase:
                     if match:
                         freq = float(match.group(1))
                         count = int(match.group(2) or 0)
-                        freq = freq / 1000.0 if freq > 1.0 else freq
+                        freq = freq / PER_THOUSAND_SCALE if freq > 1.0 else freq
                         codon_usage[codon] = (aa, freq, 0.0, count)
 
-                if len(codon_usage) >= 60:
-                    logger.info("Kazusa parsing Strategy 3 (regex) succeeded: %d/64 codons", len(codon_usage))
+                if len(codon_usage) >= MIN_CODON_COUNT:
+                    logger.info("Kazusa parsing Strategy 3 (regex) succeeded: %d/%d codons", len(codon_usage), TOTAL_CODONS)
 
         # Final fallback: uniform distribution for missing codons
-        if len(codon_usage) < 64:
-            missing = 64 - len(codon_usage)
+        if len(codon_usage) < TOTAL_CODONS:
+            missing = TOTAL_CODONS - len(codon_usage)
             logger.warning(
-                "Incomplete Kazusa parsing for %s (%d/64 codons, %d missing), "
+                "Incomplete Kazusa parsing for %s (%d/%d codons, %d missing), "
                 "using uniform fallback for missing codons",
-                organism, len(codon_usage), missing,
+                organism, len(codon_usage), TOTAL_CODONS, missing,
             )
             for codon in codons:
                 if codon not in codon_usage:
                     aa = CODON_TABLE.get(codon, "X")
                     if aa == "*":
                         aa = "STOP"
-                    # For stop codons, use equal frequency among the 3 stop codons
+                    # For stop codons, use equal frequency among the stop codons
                     if aa == "STOP":
-                        codon_usage[codon] = (aa, 1.0 / 3.0, 0.0, 0)
+                        codon_usage[codon] = (aa, 1.0 / NUM_STOP_CODONS, 0.0, 0)
                     else:
                         codon_usage[codon] = (aa, 1.0 / len(AA_TO_CODONS.get(aa, [codon])), 0.0, 0)
 
@@ -976,7 +980,7 @@ class OrganismDatabase:
         - Corrects amino acid assignments that don't match CODON_TABLE
         - Normalizes frequencies that exceed 1.0
         """
-        validated = {}
+        validated: dict[str, tuple[str, float, float, int]] = {}
         corrections = 0
 
         for codon, (aa, freq, adapt, count) in codon_usage.items():
@@ -1010,8 +1014,8 @@ class OrganismDatabase:
         # Check total codon count
         if len(validated) < MIN_CODON_COUNT:
             logger.warning(
-                "Only %d/64 codons parsed for %s (minimum expected: %d)",
-                len(validated), organism, MIN_CODON_COUNT,
+                "Only %d/%d codons parsed for %s (minimum expected: %d)",
+                len(validated), TOTAL_CODONS, organism, MIN_CODON_COUNT,
             )
 
         return validated
@@ -1061,13 +1065,13 @@ class OrganismDatabase:
         try:
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "BioCompiler/4.0.0"},
+                headers={"User-Agent": _USER_AGENT},
             )
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
                 html = response.read().decode("utf-8", errors="replace")
             current_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
             return current_hash == stored_hash
-        except Exception as e:
+        except urllib.error.URLError as e:
             logger.warning("Could not verify cache integrity for %s: %s", organism, e)
             return True  # Can't verify — assume OK
 

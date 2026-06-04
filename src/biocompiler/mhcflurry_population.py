@@ -31,7 +31,6 @@ The module defines:
 from __future__ import annotations
 
 import logging
-from itertools import product as _product
 
 __all__ = [
     "EXPANDED_POPULATION_COVERAGE",
@@ -45,6 +44,9 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+# Scale factor for converting phenotype frequency (%) to a fraction.
+_FREQUENCY_PERCENT_SCALE: float = 100.0
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Population groups
@@ -462,7 +464,8 @@ def _build_allele_classification() -> dict[str, str]:
         if allele not in pssm_set:
             classification[allele] = "II:mhcflurry"
 
-    # Also classify non-human alleles
+    # Safety net: ensure non-human alleles are classified even if the
+    # MHCflurry allele lists above are modified in the future.
     for allele in ("H-2-Db", "H-2-Kb", "H-2-Ld", "H-2-Dd", "H-2-Kd", "H-2-Kk"):
         classification.setdefault(allele, "I:mhcflurry")
     for allele in ("H-2-IAb", "H-2-IAd"):
@@ -498,8 +501,14 @@ def get_allele_frequency(allele: str, population: str) -> float:
     """
     pop_data = EXPANDED_POPULATION_COVERAGE.get(allele)
     if pop_data is None:
+        logger.debug("Allele %r not found in coverage data", allele)
         return 0.0
-    return pop_data.get(population, 0.0)
+    freq = pop_data.get(population, 0.0)
+    if freq == 0.0:
+        logger.debug(
+            "Population %r not found for allele %r", population, allele
+        )
+    return freq
 
 
 def compute_population_coverage(
@@ -545,7 +554,7 @@ def compute_population_coverage(
     prob_not_covered = 1.0
     for allele in alleles:
         freq_pct = get_allele_frequency(allele, population)
-        prob_not_covered *= 1.0 - freq_pct / 100.0
+        prob_not_covered *= 1.0 - freq_pct / _FREQUENCY_PERCENT_SCALE
 
     return max(0.0, min(1.0, 1.0 - prob_not_covered))
 

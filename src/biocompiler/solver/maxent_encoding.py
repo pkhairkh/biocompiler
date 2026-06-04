@@ -55,11 +55,14 @@ from dataclasses import dataclass, field
 from itertools import product
 from typing import Optional
 
-from ..constants import AA_TO_CODONS, CODON_TABLE, BASE_MAP
+from ..constants import AA_TO_CODONS
 from ..maxentscan import score_donor, score_acceptor
 from .types import SolverConfig, SpliceConstraint, CrossCodonSpliceConstraint
 
 logger = logging.getLogger(__name__)
+
+# Sentinel value used by MaxEntScan when the scoring context is out of bounds.
+_OUT_OF_BOUNDS_SCORE: float = -50.0
 
 
 # ==============================================================================
@@ -96,36 +99,6 @@ def _build_sequence_with_codon(
         else:
             seq_parts.append(AA_TO_CODONS[protein[i]][0])
     return "".join(seq_parts)
-
-
-def _get_affected_context_range(
-    codon_position: int,
-    protein_length: int,
-    context_span: int = 3,
-) -> range:
-    """Return the range of codon positions whose splice context overlaps with codon_position.
-
-    The MaxEntScan donor score uses a 9-mer context: 3 bases before GT + GT + 6 after.
-    A codon at position i occupies bases [3i, 3i+3). A GT at base position p
-    uses bases [p-3, p+8). So if changing codon i could affect a GT whose 9-mer
-    overlaps codon i, we need to check codons within a window.
-
-    For donors (9-mer = 9 bases, up to 3 codons away):
-        context_span = 3
-    For acceptors (23-mer = 23 bases, up to 8 codons away):
-        context_span = 8
-
-    Args:
-        codon_position: The codon position being evaluated.
-        protein_length: Total number of codons.
-        context_span: How many codons away the context can reach.
-
-    Returns:
-        Range of codon positions that share splice context with codon_position.
-    """
-    start = max(0, codon_position - context_span)
-    end = min(protein_length, codon_position + context_span + 1)
-    return range(start, end)
 
 
 def precompute_splice_scores(
@@ -484,8 +457,8 @@ def encode_cross_codon_splice_context(
                 score = score_acceptor(seq, boundary_base)
                 result.append((i, cl, cr, False, score))
 
-    # Filter out entries where context was out of bounds (score = -50.0)
-    result = [t for t in result if t[4] > -50.0]
+    # Filter out entries where context was out of bounds (score = sentinel)
+    result = [t for t in result if t[4] > _OUT_OF_BOUNDS_SCORE]
 
     logger.debug(
         "Encoded %d cross-codon splice context entries across %d boundaries",
@@ -663,15 +636,16 @@ class SpliceConstraintEncoder:
             codon: 3-letter DNA codon string.
 
         Returns:
-            (max_donor_score, max_acceptor_score) tuple. Returns (-50, -50)
-            if no scores are available.
+            (max_donor_score, max_acceptor_score) tuple. Returns
+            (_OUT_OF_BOUNDS_SCORE, _OUT_OF_BOUNDS_SCORE) if no scores
+            are available.
         """
         scores = self.get_scores_for_position(position, codon)
         if scores is None:
-            return (-50.0, -50.0)
+            return (_OUT_OF_BOUNDS_SCORE, _OUT_OF_BOUNDS_SCORE)
 
-        max_donor = max((s for _, s in scores["donor_scores"]), default=-50.0)
-        max_acceptor = max((s for _, s in scores["acceptor_scores"]), default=-50.0)
+        max_donor = max((s for _, s in scores["donor_scores"]), default=_OUT_OF_BOUNDS_SCORE)
+        max_acceptor = max((s for _, s in scores["acceptor_scores"]), default=_OUT_OF_BOUNDS_SCORE)
         return (max_donor, max_acceptor)
 
     def quantize_position_scores(

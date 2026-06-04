@@ -354,7 +354,7 @@ def predict_idp(sequence: str) -> bool:
     Returns:
         True if the sequence is predicted to be intrinsically disordered.
     """
-    if len(sequence) < 10:
+    if len(sequence) < _IDP_MIN_SEQUENCE_LENGTH:
         return False
 
     n = len(sequence)
@@ -427,6 +427,55 @@ _AGGREGATION_THRESHOLD = -0.5
 
 # Minimum length for an aggregation-prone region
 _MIN_AGGREGATION_REGION_LENGTH = 3
+
+# ── Score range and clamping ──
+_SCORE_CLAMP_MIN = -3.0
+_SCORE_CLAMP_MAX = 3.0
+
+# ── Proline / glycine solubility effects ──
+_PROLINE_SOLUBILITY_EFFECT = 1.0
+_GLYCINE_SOLUBILITY_EFFECT = -0.5
+
+# ── IDP prediction ──
+_IDP_MIN_SEQUENCE_LENGTH = 10
+
+# ── Confidence level ──
+_CONFIDENCE_SCORE_THRESHOLD = 0.5
+
+# ── Structural solubility (SASA correction) ──
+_MIN_CA_ATOMS_FOR_STRUCTURE = 3
+_SASA_BURIED_THRESHOLD = 0.15
+_SASA_EXPOSED_THRESHOLD = 0.40
+_BURIED_CORRECTION_FACTOR = 0.5
+_EXPOSED_PENALTY_FACTOR = 0.3
+_DISULFIDE_CORRECTION = 0.15
+_STRUCTURAL_RESMOOTH_WINDOW = 3
+
+# ── Solubility classification thresholds ──
+_CLASS_HIGHLY_SOLUBLE = 1.5
+_CLASS_SOLUBLE = 0.0
+_CLASS_MARGINALLY_SOLUBLE = -1.0
+
+# ── Recommendation thresholds ──
+_RECOMMENDATION_HYDROPHOBIC_THRESHOLD = -0.3
+_LOW_NET_CHARGE_THRESHOLD = 2
+_NET_CHARGE_MIN_PROTEIN_LENGTH = 30
+_TETRAPEPTIDE_HYDROPHOBIC_THRESHOLD = -0.2
+_HYDROPHOBIC_STRETCH_MIN_LENGTH = 7
+_HYDROPHOBIC_RESIDUE_THRESHOLD = -0.2
+
+# ── Mutation delta computation ──
+_MUTATION_DELTA_WINDOW = 7
+_MUTATION_DIRECT_WEIGHT = 0.6
+_MUTATION_LOCAL_WEIGHT = 0.4
+_BLOSUM_DEFAULT_SCORE = -10
+
+# ── PDB parsing ──
+_PDB_MIN_LINE_LENGTH = 54
+
+# ── SASA sigmoid transformation ──
+_SASA_SIGMOID_K = 0.4
+_SASA_SIGMOID_MIDPOINT = 12.0
 
 
 # ────────────────────────────────────────────────────────────
@@ -530,7 +579,7 @@ class CamSolResult(BaseEngineResult):
             return "high"
         # Intrinsic mode — confidence based on score magnitude
         score = self.primary_score
-        if abs(score) > 0.5:
+        if abs(score) > _CONFIDENCE_SCORE_THRESHOLD:
             return "high"
         else:
             return "medium"
@@ -618,9 +667,9 @@ def compute_intrinsic_solubility(
             # G decreases solubility (flexible, can adopt aggregation-prone
             # conformations)
             if aa == "P":
-                progly = 1.0
+                progly = _PROLINE_SOLUBILITY_EFFECT
             elif aa == "G":
-                progly = -0.5
+                progly = _GLYCINE_SOLUBILITY_EFFECT
             else:
                 progly = 0.0
 
@@ -644,8 +693,8 @@ def compute_intrinsic_solubility(
             sum(double_smoothed) / len(double_smoothed) if double_smoothed else 0.0
         )
 
-        # Clamp to [-3, +3]
-        intrinsic_score = max(-3.0, min(3.0, intrinsic_score))
+        # Clamp to score range
+        intrinsic_score = max(_SCORE_CLAMP_MIN, min(_SCORE_CLAMP_MAX, intrinsic_score))
 
         # Step 6: Identify aggregation-prone regions
         agg_regions = _find_aggregation_prone_regions(
@@ -715,9 +764,12 @@ def compute_structural_solubility(
         pdb_string: PDB file content as a string.
         organism: Target organism for codon/context awareness
             (default "Homo_sapiens").
+        hydrophobicity_scale: Hydropathy scale to use — one of ``"auto"``,
+            ``"wimley_white"``, or ``"urry"``.  Passed through to the
+            intrinsic computation.
 
     Returns:
-        SolubilityResult with structure-corrected solubility prediction.
+        CamSolResult with structure-corrected solubility prediction.
 
     Raises:
         CamSolError: If protein is empty or contains invalid residues.
@@ -740,7 +792,7 @@ def compute_structural_solubility(
         # Parse PDB coordinates (CA atoms only)
         ca_coords = _parse_pdb_ca_coords(pdb_string)
 
-        if len(ca_coords) < 3:
+        if len(ca_coords) < _MIN_CA_ATOMS_FOR_STRUCTURE:
             logger.warning(
                 "Too few CA atoms in PDB (%d). Falling back to intrinsic score.",
                 len(ca_coords),
@@ -762,28 +814,29 @@ def compute_structural_solubility(
         for i in range(min(len(corrected_scores), len(sasa))):
             residue_sasa = sasa[i]
 
-            if residue_sasa < 0.15:
+            if residue_sasa < _SASA_BURIED_THRESHOLD:
                 # Buried residue: reduce aggregation penalty
                 # If score is negative (aggregation-prone), reduce the magnitude
                 if corrected_scores[i] < 0:
-                    correction = abs(corrected_scores[i]) * 0.5 * (
-                        1.0 - residue_sasa / 0.15
+                    correction = abs(corrected_scores[i]) * _BURIED_CORRECTION_FACTOR * (
+                        1.0 - residue_sasa / _SASA_BURIED_THRESHOLD
                     )
                     corrected_scores[i] += correction
-            elif residue_sasa > 0.40:
+            elif residue_sasa > _SASA_EXPOSED_THRESHOLD:
                 # Exposed residue
                 hydro = hydropathy.get(protein[i], 0.0)
                 if hydro < 0:
                     # Exposed hydrophobic: increase aggregation penalty
-                    penalty = abs(hydro) * 0.3 * (residue_sasa - 0.40) / 0.60
+                    exposed_range = _SCORE_CLAMP_MAX - _SASA_EXPOSED_THRESHOLD
+                    penalty = abs(hydro) * _EXPOSED_PENALTY_FACTOR * (residue_sasa - _SASA_EXPOSED_THRESHOLD) / exposed_range
                     corrected_scores[i] -= penalty
 
             # Disulfide bond correction
             if i in disulfide_residues:
-                corrected_scores[i] += 0.15  # moderate stabilizing effect
+                corrected_scores[i] += _DISULFIDE_CORRECTION  # moderate stabilizing effect
 
         # Re-smooth after corrections
-        corrected_smooth = _sliding_window_smooth(corrected_scores, 3)
+        corrected_smooth = _sliding_window_smooth(corrected_scores, _STRUCTURAL_RESMOOTH_WINDOW)
 
         # Recompute global score
         structural_score = (
@@ -791,7 +844,7 @@ def compute_structural_solubility(
             if corrected_smooth
             else 0.0
         )
-        structural_score = max(-3.0, min(3.0, structural_score))
+        structural_score = max(_SCORE_CLAMP_MIN, min(_SCORE_CLAMP_MAX, structural_score))
 
         # Recompute aggregation-prone regions
         agg_regions = _find_aggregation_prone_regions(
@@ -1041,7 +1094,7 @@ def find_solubility_mutations(
                 continue
 
             # Check BLOSUM62 conservation
-            blosum = BLOSUM62.get(wildtype, {}).get(mutant, -10)
+            blosum = BLOSUM62.get(wildtype, {}).get(mutant, _BLOSUM_DEFAULT_SCORE)
             if blosum < 0:
                 continue
 
@@ -1086,11 +1139,11 @@ def classify_solubility(score: float) -> str:
     Returns:
         One of: "highly_soluble", "soluble", "marginally_soluble", "insoluble".
     """
-    if score > 1.5:
+    if score > _CLASS_HIGHLY_SOLUBLE:
         return "highly_soluble"
-    elif score > 0.0:
+    elif score > _CLASS_SOLUBLE:
         return "soluble"
-    elif score > -1.0:
+    elif score > _CLASS_MARGINALLY_SOLUBLE:
         return "marginally_soluble"
     else:
         return "insoluble"
@@ -1119,7 +1172,7 @@ def generate_solubility_recommendations(result: CamSolResult) -> list[str]:
     hydropathy = URRY_HYDROPATHY if result.hydrophobicity_scale_used == "urry" else CAMSOL_HYDROPATHY
 
     # Overall assessment
-    if result.overall_score > 1.5:
+    if result.overall_score > _CLASS_HIGHLY_SOLUBLE:
         recommendations.append(
             "Protein is highly soluble. No modifications necessary."
         )
@@ -1150,7 +1203,7 @@ def generate_solubility_recommendations(result: CamSolResult) -> list[str]:
         # Suggest charged residue substitutions for hydrophobic residues
         for i in range(start, min(end, len(protein))):
             aa = protein[i]
-            if hydropathy.get(aa, 0.0) < -0.3:
+            if hydropathy.get(aa, 0.0) < _RECOMMENDATION_HYDROPHOBIC_THRESHOLD:
                 best_charge = _best_charged_substitution(aa)
                 if best_charge:
                     recommendations.append(
@@ -1180,7 +1233,7 @@ def generate_solubility_recommendations(result: CamSolResult) -> list[str]:
 
     # Check net charge
     net_charge = sum(CAMSOL_CHARGE.get(aa, 0.0) for aa in protein)
-    if abs(net_charge) < 2 and len(protein) > 30:
+    if abs(net_charge) < _LOW_NET_CHARGE_THRESHOLD and len(protein) > _NET_CHARGE_MIN_PROTEIN_LENGTH:
         recommendations.append(
             f"Low net charge ({net_charge:+.1f}). Increasing charged residue "
             f"content (K, R, D, E) can improve solubility through charge "
@@ -1197,7 +1250,7 @@ def generate_solubility_recommendations(result: CamSolResult) -> list[str]:
     # Avoid specific patterns: long hydrophobic tetrapeptide
     for i in range(len(protein) - 3):
         tetrapeptide = protein[i:i + 4]
-        if all(hydropathy.get(aa, 0.0) < -0.2 for aa in tetrapeptide):
+        if all(hydropathy.get(aa, 0.0) < _TETRAPEPTIDE_HYDROPHOBIC_THRESHOLD for aa in tetrapeptide):
             recommendations.append(
                 f"Long hydrophobic stretch at positions {i+1}-{i+4} "
                 f"('{tetrapeptide}'). Consider breaking this pattern with "
@@ -1346,9 +1399,9 @@ def _compute_mutation_delta(
     direct_delta = mt_score - wt_score
 
     # Also consider the effect on neighbors through smoothing
-    # Check a 7-residue window centered on the position
+    # Check a local window centered on the position
     n = len(protein)
-    window = 7
+    window = _MUTATION_DELTA_WINDOW
     half = window // 2
 
     # Build a local patch with the mutation
@@ -1368,9 +1421,9 @@ def _compute_mutation_delta(
         wt_local /= count
         mt_local /= count
 
-    # Weighted combination: 60% direct delta, 40% local smoothing delta
+    # Weighted combination of direct delta and local smoothing delta
     local_delta = mt_local - wt_local
-    delta = 0.6 * direct_delta + 0.4 * local_delta
+    delta = _MUTATION_DIRECT_WEIGHT * direct_delta + _MUTATION_LOCAL_WEIGHT * local_delta
 
     return delta
 
@@ -1394,9 +1447,9 @@ def _compute_single_residue_score(aa: str, hydropathy: dict[str, float] | None =
     beta = CAMSOL_BETA_STRAND.get(aa, 0.0)
 
     if aa == "P":
-        progly = 1.0
+        progly = _PROLINE_SOLUBILITY_EFFECT
     elif aa == "G":
-        progly = -0.5
+        progly = _GLYCINE_SOLUBILITY_EFFECT
     else:
         progly = 0.0
 
@@ -1423,10 +1476,10 @@ def _best_charged_substitution(aa: str) -> str | None:
     """
     charged = ["K", "R", "D", "E", "H"]
     best = None
-    best_blosum = -10
+    best_blosum = _BLOSUM_DEFAULT_SCORE
 
     for candidate in charged:
-        blosum = BLOSUM62.get(aa, {}).get(candidate, -10)
+        blosum = BLOSUM62.get(aa, {}).get(candidate, _BLOSUM_DEFAULT_SCORE)
         if blosum >= -1 and blosum > best_blosum:
             best_blosum = blosum
             best = candidate
@@ -1454,7 +1507,7 @@ def _check_hydrophobic_stretches(
 
     hydrophobic = set()
     for aa, val in hydropathy.items():
-        if val < -0.2:
+        if val < _HYDROPHOBIC_RESIDUE_THRESHOLD:
             hydrophobic.add(aa)
 
     stretch_start = None
@@ -1465,7 +1518,7 @@ def _check_hydrophobic_stretches(
         else:
             if stretch_start is not None:
                 length = i - stretch_start
-                if length >= 7:
+                if length >= _HYDROPHOBIC_STRETCH_MIN_LENGTH:
                     recommendations.append(
                         f"Very long hydrophobic stretch at positions "
                         f"{stretch_start+1}-{i} "
@@ -1479,7 +1532,7 @@ def _check_hydrophobic_stretches(
     # Handle stretch at end
     if stretch_start is not None:
         length = len(protein) - stretch_start
-        if length >= 7:
+        if length >= _HYDROPHOBIC_STRETCH_MIN_LENGTH:
             recommendations.append(
                 f"Very long hydrophobic stretch at positions "
                 f"{stretch_start+1}-{len(protein)} "
@@ -1508,7 +1561,7 @@ def _parse_pdb_ca_coords(
 
     for line in pdb_string.splitlines():
         if line.startswith("ATOM") or line.startswith("HETATM"):
-            if len(line) >= 54:
+            if len(line) >= _PDB_MIN_LINE_LENGTH:
                 atom_name = line[12:16].strip()
                 if atom_name == "CA":
                     try:
@@ -1565,9 +1618,7 @@ def _approximate_sasa(
         # Sigmoid: 1 / (1 + exp(k * (count - midpoint)))
         # At count=0, SASA ~ 1.0 (fully exposed)
         # At count=20, SASA ~ 0.0 (fully buried)
-        k = 0.4
-        midpoint = 12.0
-        relative_sasa = 1.0 / (1.0 + math.exp(k * (count - midpoint)))
+        relative_sasa = 1.0 / (1.0 + math.exp(_SASA_SIGMOID_K * (count - _SASA_SIGMOID_MIDPOINT)))
         sasa.append(relative_sasa)
 
     return sasa

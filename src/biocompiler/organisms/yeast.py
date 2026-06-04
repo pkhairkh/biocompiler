@@ -6,6 +6,14 @@ Yeast is a common expression host for recombinant protein production.
 High-expression genes used for CAI computation.
 """
 
+from ._utils import compute_codon_adaptiveness, compute_preferred_codons
+
+__all__ = [
+    "YEAST_CODON_USAGE",
+    "YEAST_CODON_ADAPTIVENESS",
+    "YEAST_PREFERRED_CODONS",
+]
+
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
 YEAST_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "TTT": ("F", 0.59, 18.3, 90456),
@@ -74,24 +82,8 @@ YEAST_CODON_USAGE: dict[str, tuple[str, float, float, int]] = {
     "GGG": ("G", 0.12, 4.6, 22734),
 }
 
-# Compute relative adaptiveness
-_AA_MAX_FREQ: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in YEAST_CODON_USAGE.items():
-    if _aa != "*":
-        _current = _AA_MAX_FREQ.get(_aa, 0.0)
-        if _freq > _current:
-            _AA_MAX_FREQ[_aa] = _freq
+# Compute relative adaptiveness using shared utility
+YEAST_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(YEAST_CODON_USAGE)
 
-YEAST_CODON_ADAPTIVENESS: dict[str, float] = {}
-for _codon, (_aa, _frac, _freq, _count) in YEAST_CODON_USAGE.items():
-    if _aa != "*":
-        YEAST_CODON_ADAPTIVENESS[_codon] = _freq / _AA_MAX_FREQ[_aa] if _AA_MAX_FREQ[_aa] > 0 else 0.0
-
-YEAST_PREFERRED_CODONS: dict[str, str] = {}
-_AA_CODONS: dict[str, list[tuple[str, float]]] = {}
-for _codon, (_aa, _frac, _freq, _count) in YEAST_CODON_USAGE.items():
-    if _aa != "*":
-        _AA_CODONS.setdefault(_aa, []).append((_codon, _freq))
-
-for _aa, _codons in _AA_CODONS.items():
-    YEAST_PREFERRED_CODONS[_aa] = max(_codons, key=lambda x: x[1])[0]
+# Preferred (highest-frequency) codon for each amino acid
+YEAST_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(YEAST_CODON_USAGE)

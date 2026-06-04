@@ -20,12 +20,7 @@ Helper functions:
 
 from __future__ import annotations
 
-import logging
-from typing import Optional
-
 from .type_system import Verdict, TypeCheckResult
-
-logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────
 # pKa values for ionizable groups (charge calculation)
@@ -62,6 +57,28 @@ _CAMSOL_WINDOW = 7
 
 # Default hydrophobic residue set (AILMFWV)
 _DEFAULT_HYDROPHOBIC: set[str] = set("AILMFWV")
+
+# ────────────────────────────────────────────────────────────
+# Verdict threshold constants
+# ────────────────────────────────────────────────────────────
+
+# CamSol overall score thresholds for solubility verdicts
+_CAMSOL_HIGHLY_SOLUBLE: float = 1.5   # score > this → PASS
+_CAMSOL_MARGINAL: float = -1.0       # score < this → LIKELY_FAIL
+
+# Aggregation-prone region length thresholds (residues)
+_AGG_BORDERLINE_MAX: int = 7    # max_region_length+1 … 7 → LIKELY_PASS
+_AGG_UNCERTAIN_MAX: int = 10   # 8 … 10 → UNCERTAIN
+_AGG_LIKELY_FAIL_MAX: int = 15 # 11 … 15 → LIKELY_FAIL; >15 → FAIL
+
+# Hydrophobic stretch excess thresholds (residues beyond max_stretch)
+_HYDRO_EXCESS_BORDERLINE: int = 3  # excess 1…3 → LIKELY_PASS
+_HYDRO_EXCESS_UNCERTAIN: int = 6   # excess 4…6 → UNCERTAIN; >6 → FAIL
+
+# Bisection parameters for approximate pI computation
+_PH_MIN: float = 0.0
+_PH_MAX: float = 14.0
+_BISECTION_ITERATIONS: int = 100
 
 
 # ────────────────────────────────────────────────────────────
@@ -226,8 +243,8 @@ def compute_approximate_pI(protein: str) -> float:
     if not protein:
         return 7.0
 
-    lo, hi = 0.0, 14.0
-    for _ in range(100):
+    lo, hi = _PH_MIN, _PH_MAX
+    for _ in range(_BISECTION_ITERATIONS):
         mid = (lo + hi) / 2.0
         charge = compute_net_charge(protein, mid)
         if charge > 0:
@@ -327,22 +344,22 @@ def evaluate_soluble_expression(
     agg_regions = _find_aggregation_regions(protein)
 
     # Determine verdict
-    if camsol_score > 1.5:
+    if camsol_score > _CAMSOL_HIGHLY_SOLUBLE:
         verdict = Verdict.PASS
         violation = None
     elif camsol_score >= 0.0:
         verdict = Verdict.LIKELY_PASS
         violation = None
-    elif camsol_score >= -1.0:
+    elif camsol_score >= _CAMSOL_MARGINAL:
         verdict = Verdict.UNCERTAIN
         violation = (
             f"Marginal solubility: CamSol score {camsol_score:.3f} "
-            f"is in the uncertain range [-1.0, 0.0)"
+            f"is in the uncertain range [{_CAMSOL_MARGINAL}, 0.0)"
         )
     else:
         verdict = Verdict.LIKELY_FAIL
         violation = (
-            f"Insoluble protein: CamSol score {camsol_score:.3f} < -1.0"
+            f"Insoluble protein: CamSol score {camsol_score:.3f} < {_CAMSOL_MARGINAL}"
         )
 
     # If the score is below the user-specified minimum, that's a stronger
@@ -455,19 +472,19 @@ def evaluate_no_aggregation_prone_region(
     if longest <= max_region_length:
         verdict = Verdict.PASS
         violation = None
-    elif longest <= 7:
+    elif longest <= _AGG_BORDERLINE_MAX:
         verdict = Verdict.LIKELY_PASS
         violation = (
             f"Borderline aggregation-prone region of {longest} residues "
             f"(max allowed: {max_region_length})"
         )
-    elif longest <= 10:
+    elif longest <= _AGG_UNCERTAIN_MAX:
         verdict = Verdict.UNCERTAIN
         violation = (
             f"Aggregation-prone region of {longest} residues detected "
             f"(max allowed: {max_region_length})"
         )
-    elif longest <= 15:
+    elif longest <= _AGG_LIKELY_FAIL_MAX:
         verdict = Verdict.LIKELY_FAIL
         violation = (
             f"Long aggregation-prone region of {longest} residues "
@@ -560,7 +577,6 @@ def evaluate_charge_composition(
     n = len(protein)
 
     # Count charged residues
-    charged_set = {"K", "R", "H", "D", "E"}
     pos_count = sum(1 for aa in protein if aa in {"K", "R", "H"})
     neg_count = sum(1 for aa in protein if aa in {"D", "E"})
     charged_count = pos_count + neg_count
@@ -687,13 +703,13 @@ def evaluate_no_long_hydrophobic_stretch(
     excess = longest - max_stretch
 
     # Determine verdict based on how much the longest stretch exceeds the limit
-    if excess <= 3:
+    if excess <= _HYDRO_EXCESS_BORDERLINE:
         verdict = Verdict.LIKELY_PASS
         violation = (
             f"Hydrophobic stretch of {longest} residues slightly exceeds "
             f"limit of {max_stretch} (borderline)"
         )
-    elif excess <= 6:
+    elif excess <= _HYDRO_EXCESS_UNCERTAIN:
         verdict = Verdict.UNCERTAIN
         violation = (
             f"Hydrophobic stretch of {longest} residues exceeds limit "

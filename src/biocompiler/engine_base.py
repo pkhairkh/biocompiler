@@ -22,15 +22,11 @@ Design principles:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field, InitVar
+from dataclasses import dataclass, field
 from typing import (
     Any,
-    Dict,
     Generic,
-    List,
-    Optional,
     Protocol,
-    Sequence,
     TypeVar,
     runtime_checkable,
 )
@@ -106,7 +102,7 @@ class BaseEngineResult:
     primary_score: float
     classification: str
     success: bool
-    error: Optional[str] = None
+    error: str | None = None
     execution_time_s: float = 0.0
     engine_name: str = ""
     primary_score_label: str = "score"
@@ -154,17 +150,27 @@ class MutationResult:
     recommendation: str = ""  # 'stabilizing', 'solubility_improving', 'deimmunizing'
     description: str = ""
     confidence: float = 1.0
-    details: dict = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 
-    def __init__(self, *, score: Optional[float] = None, delta_score: Optional[float] = None,
-                 position: int = 0, original: str = "", mutant: str = "",
-                 score_type: str = "", engine: str = "",
-                 recommendation: str = "", description: str = "",
-                 confidence: float = 1.0,
-                 details: Optional[dict] = None,
-                 # Old field name aliases for backward compat
-                 original_aa: Optional[str] = None, mutant_aa: Optional[str] = None,
-                 **kwargs):
+    def __init__(
+        self,
+        *,
+        score: float | None = None,
+        delta_score: float | None = None,
+        position: int = 0,
+        original: str = "",
+        mutant: str = "",
+        score_type: str = "",
+        engine: str = "",
+        recommendation: str = "",
+        description: str = "",
+        confidence: float = 1.0,
+        details: dict[str, Any] | None = None,
+        # Old field name aliases for backward compat
+        original_aa: str | None = None,
+        mutant_aa: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize MutationResult with backward-compatible score= alias."""
         # Handle score alias: score= maps to delta_score
         effective_delta = 0.0
@@ -190,22 +196,27 @@ class MutationResult:
     # Backward compatibility: 'score' property alias for delta_score
     @property
     def score(self) -> float:
+        """Alias for delta_score (backward compatibility)."""
         return self.delta_score
 
     @score.setter
-    def score(self, value: float):
+    def score(self, value: float) -> None:
+        """Set delta_score via the score alias."""
         self.delta_score = value
 
     # Old field name aliases
     @property
     def original_aa(self) -> str:
+        """Alias for original (backward compatibility)."""
         return self.original
 
     @property
     def mutant_aa(self) -> str:
+        """Alias for mutant (backward compatibility)."""
         return self.mutant
 
     def __str__(self) -> str:
+        """Return human-readable mutation string (e.g. 'A15G')."""
         return (
             f"{self.original}{self.position + 1}{self.mutant} "
             f"({self.engine}: {self.score_type}={self.delta_score:.2f})"
@@ -226,13 +237,14 @@ class BatchResult(Generic[T]):
     Generic in the element type T so callers get proper typing:
         BatchResult[ESMFoldResult], BatchResult[FoldXResult], etc.
     """
-    results: List[T] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
+    results: list[T] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
     total_time_s: float = 0.0
     successful: int = 0
     failed: int = 0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Auto-compute successful/failed counts when not explicitly provided."""
         if self.successful == 0 and self.failed == 0 and self.results:
             self.successful = sum(
                 1 for r in self.results if getattr(r, "success", True)
@@ -251,6 +263,7 @@ class BatchResult(Generic[T]):
 
     @property
     def total(self) -> int:
+        """Total number of results (successful + failed)."""
         return len(self.results)
 
 
@@ -267,15 +280,23 @@ class EngineTimer:
         result.execution_time_s = timer.elapsed
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize timer with zero start and elapsed times."""
         self.start: float = 0.0
         self.elapsed: float = 0.0
 
     def __enter__(self) -> EngineTimer:
+        """Start timing when entering context."""
         self.start = time.perf_counter()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any | None,
+    ) -> None:
+        """Stop timing when exiting context."""
         self.elapsed = time.perf_counter() - self.start
 
 
@@ -305,7 +326,7 @@ class EngineConfig:
 
 def classify_score(
     score: float,
-    thresholds: List[tuple[float, str]],
+    thresholds: list[tuple[float, str]],
     fallback: str = "unknown",
 ) -> str:
     """Classify a numeric score into a category.

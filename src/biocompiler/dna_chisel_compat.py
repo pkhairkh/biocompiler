@@ -31,7 +31,7 @@ DNA Chisel API Mapping:
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .benchmark import REFERENCE_GENES
 from .optimization import optimize_sequence, OptimizationResult
@@ -40,6 +40,17 @@ from .scanner import gc_content
 from .constants import RESTRICTION_ENZYMES, CODON_TABLE, AA_TO_CODONS
 
 logger = logging.getLogger(__name__)
+
+# ─── Named constants (avoid magic numbers) ───────────────────────────
+
+GC_ENFORCEMENT_WINDOW = 50
+"""Sliding window size (bp) for local GC content enforcement in DNA Chisel."""
+
+MAX_RESTRICTION_ENZYMES = 10
+"""Maximum number of restriction enzymes to consider for benchmarking."""
+
+CAI_COMPARISON_EPSILON = 0.001
+"""Minimum CAI difference to declare a winner (avoids noise from tiny deltas)."""
 
 # ─── DNA Chisel availability check ───────────────────────────────────
 
@@ -186,7 +197,7 @@ def _build_dna_chisel_spec(
         EnforceGCContent(
             mini=gc_lo,
             maxi=gc_hi,
-            window=50,  # Use a 50bp sliding window for local GC enforcement
+            window=GC_ENFORCEMENT_WINDOW,  # Use a 50bp sliding window for local GC enforcement
         )
     )
 
@@ -272,10 +283,10 @@ class ComparisonResult:
     """Side-by-side comparison of BioCompiler vs DNA Chisel."""
     protein: str
     organism: str
-    biocompiler: dict
-    dna_chisel: dict | None
+    biocompiler: dict[str, Any]
+    dna_chisel: dict[str, Any] | None
     dna_chisel_available: bool
-    winner: dict  # Per-metric comparison
+    winner: dict[str, Any]  # Per-metric comparison
 
 
 def optimize_with_dna_chisel(
@@ -319,7 +330,7 @@ def optimize_with_dna_chisel(
                   "Install with: pip install 'biocompiler[compare]'",
         )
 
-    enzyme_names = restriction_enzymes or list(RESTRICTION_ENZYMES.keys())[:10]  # Limit for performance
+    enzyme_names = restriction_enzymes or list(RESTRICTION_ENZYMES.keys())[:MAX_RESTRICTION_ENZYMES]  # Limit for performance
 
     t0 = time.perf_counter()
     try:
@@ -402,7 +413,7 @@ def compare_optimizers(
     Returns:
         ComparisonResult with metrics for both optimizers and per-metric winner
     """
-    enzyme_names = restriction_enzymes or list(RESTRICTION_ENZYMES.keys())[:10]
+    enzyme_names = restriction_enzymes or list(RESTRICTION_ENZYMES.keys())[:MAX_RESTRICTION_ENZYMES]
 
     # ── Run BioCompiler optimization ──
     t0_bc = time.perf_counter()
@@ -452,7 +463,7 @@ def compare_optimizers(
         restriction_enzymes=enzyme_names,
     )
 
-    dc_metrics: dict | None = None
+    dc_metrics: dict[str, Any] | None = None
     if chisel_result.success:
         dc_metrics = {
             "sequence": chisel_result.sequence,
@@ -491,8 +502,8 @@ def compare_optimizers(
 
 
 def _compute_winners(
-    bc: dict, dc: dict | None, gc_lo: float, gc_hi: float
-) -> dict:
+    bc: dict[str, Any], dc: dict[str, Any] | None, gc_lo: float, gc_hi: float
+) -> dict[str, Any]:
     """
     Compare BioCompiler and DNA Chisel metrics and determine per-metric winners.
 
@@ -509,7 +520,7 @@ def _compute_winners(
     Returns:
         Dict with per-metric winner and overall assessment
     """
-    result: dict = {
+    result: dict[str, Any] = {
         "metrics": {},
         "overall": "biocompiler",  # Default if no comparison possible
     }
@@ -543,10 +554,10 @@ def _compute_winners(
     bc_cai = bc.get("cai", 0.0)
     dc_cai = dc.get("cai", 0.0)
     cai_winner = "tie"
-    if bc_cai > dc_cai + 0.001:
+    if bc_cai > dc_cai + CAI_COMPARISON_EPSILON:
         cai_winner = "biocompiler"
         bc_wins += 1
-    elif dc_cai > bc_cai + 0.001:
+    elif dc_cai > bc_cai + CAI_COMPARISON_EPSILON:
         cai_winner = "dna_chisel"
         dc_wins += 1
     result["metrics"]["cai"] = {
@@ -560,10 +571,10 @@ def _compute_winners(
     bc_gc_diff = abs(bc.get("gc_content", 0.0) - gc_mid)
     dc_gc_diff = abs(dc.get("gc_content", 0.0) - gc_mid)
     gc_winner = "tie"
-    if bc_gc_diff < dc_gc_diff - 0.001:
+    if bc_gc_diff < dc_gc_diff - CAI_COMPARISON_EPSILON:
         gc_winner = "biocompiler"
         bc_wins += 1
-    elif dc_gc_diff < bc_gc_diff - 0.001:
+    elif dc_gc_diff < bc_gc_diff - CAI_COMPARISON_EPSILON:
         gc_winner = "dna_chisel"
         dc_wins += 1
     result["metrics"]["gc_content"] = {
@@ -623,8 +634,8 @@ class ComparativeBenchmarkReport:
     """Complete comparative benchmark report."""
     timestamp: str
     dna_chisel_available: bool
-    gene_results: list[dict] = field(default_factory=list)
-    summary: dict = field(default_factory=dict)
+    gene_results: list[dict[str, Any]] = field(default_factory=list)
+    summary: dict[str, Any] = field(default_factory=dict)
 
     @property
     def total_genes(self) -> int:
@@ -660,7 +671,7 @@ def run_comparative_benchmark(
     from datetime import datetime, timezone
 
     gene_names = genes or list(REFERENCE_GENES.keys())
-    gene_results: list[dict] = []
+    gene_results: list[dict[str, Any]] = []
 
     for gene_name in gene_names:
         gene_data = REFERENCE_GENES.get(gene_name)
@@ -719,7 +730,7 @@ def run_comparative_benchmark(
     )
 
 
-def _compute_comparative_summary(gene_results: list[dict]) -> dict:
+def _compute_comparative_summary(gene_results: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Compute aggregate summary statistics from per-gene benchmark results.
 
@@ -732,7 +743,7 @@ def _compute_comparative_summary(gene_results: list[dict]) -> dict:
     Returns:
         Summary dict with per-metric win counts and overall assessment
     """
-    summary: dict = {
+    summary: dict[str, Any] = {
         "total_genes": len(gene_results),
         "genes_with_errors": 0,
         "metric_wins": {
