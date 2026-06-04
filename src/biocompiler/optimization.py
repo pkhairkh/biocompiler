@@ -31,6 +31,7 @@ from .type_system import (
     find_cross_codon_gt, find_cross_codon_cg, find_cross_codon_restriction,
 )
 from .organisms import SPECIES, CODON_ADAPTIVENESS_TABLES
+from .constants import reverse_complement
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
 from .certificate import format_certificate
 from .exceptions import InvalidProteinError, UnsupportedOrganismError
