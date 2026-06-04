@@ -63,6 +63,14 @@ __all__: list[str] = [
     "PREFERRED_CODON_TABLES",
     "SUPPORTED_ORGANISMS",
     "ORGANISM_GC_TARGETS",
+    # Sharp-Li CAI reference set
+    "SHARP_LI_ADAPTIVENESS_TABLES",
+    "SHARP_LI_CODON_USAGE",
+    "SHARP_LI_CAI_WEIGHTS",
+    "SHARP_LI_REFERENCE_GENES",
+    "SHARP_LI_PUBLISHED_CAI",
+    "get_sharp_li_cai_weights",
+    "compute_cai_with_reference",
     # Organism name aliases
     "HUMAN",
     "E_COLI",
@@ -179,6 +187,63 @@ ORGANISM_GC_TARGETS: dict[str, tuple[float, float]] = {
     "CHO_K1": (0.40, 0.60),                      # Chinese Hamster coding GC ~44%
 }
 
+# ────────────────────────────────────────────────────────────
+# Sharp-Li (1987) CAI reference adaptiveness tables
+#
+# These tables use the codon frequency data from the original
+# Sharp & Li (1987) highly-expressed gene reference sets,
+# sourced via the cai_validated module.  They differ from the
+# Kazusa-derived CODON_ADAPTIVENESS_TABLES because the
+# underlying reference gene composition is different:
+#
+#   - Kazusa: broader collection of high-expression genes from
+#     the Kazusa Codon Usage Database
+#   - Sharp-Li: the specific 24 highly-expressed E. coli genes
+#     (or equivalent subsets for other organisms) used in the
+#     original CAI paper
+#
+# The differences are most pronounced for E. coli, where the
+# Sharp-Li reference set yields CAI values closer to those
+# reported in the 1987 paper.
+# ────────────────────────────────────────────────────────────
+
+SHARP_LI_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {}
+# Lazily populated on first access to avoid circular import at module level.
+# The actual computation is deferred until SHARP_LI_ADAPTIVENESS_TABLES
+# is accessed through get_sharp_li_adaptiveness_tables().
+
+
+def get_sharp_li_adaptiveness_tables() -> dict[str, dict[str, float]]:
+    """Return the Sharp-Li adaptiveness tables, building them lazily.
+
+    Computes the tables on first call and caches the result in the
+    module-level SHARP_LI_ADAPTIVENESS_TABLES dict.
+
+    Returns:
+        Dict mapping organism name to {codon: adaptiveness} dicts.
+    """
+    global SHARP_LI_ADAPTIVENESS_TABLES
+    if SHARP_LI_ADAPTIVENESS_TABLES:
+        return SHARP_LI_ADAPTIVENESS_TABLES
+
+    from ..benchmarking.cai_validated import _REFERENCE_SETS
+
+    tables: dict[str, dict[str, float]] = {}
+    for organism, ref in _REFERENCE_SETS.items():
+        adaptiveness: dict[str, float] = {}
+        for _aa, codon_freqs in ref.items():
+            if not codon_freqs:
+                continue
+            max_freq = max(codon_freqs.values())
+            for codon, freq in codon_freqs.items():
+                w = freq / max_freq if max_freq > 0 else 0.0
+                # Floor at 0.01 as per Sharp & Li recommendation
+                adaptiveness[codon] = max(w, 0.01)
+        tables[organism] = adaptiveness
+    SHARP_LI_ADAPTIVENESS_TABLES = tables
+    return tables
+
+
 # Aliases for backward compat
 HUMAN: str = "Homo_sapiens"
 E_COLI: str = "Escherichia_coli"
@@ -253,3 +318,22 @@ SPECIES: dict[str, SpeciesEntry] = {
     "cho": {"cai_weights": CHO_CAI, "codon_usage_validation": True},
     "yeast": {"cai_weights": YEAST_CAI, "codon_usage_validation": True},
 }
+
+# ────────────────────────────────────────────────────────────
+# Sharp & Li (1987) CAI reference set (E. coli)
+# ────────────────────────────────────────────────────────────
+# Import from the dedicated sharp_li_reference module which provides the
+# original 24-gene E. coli reference set from Sharp & Li (1987).
+# This produces CAI values directly comparable to the published paper
+# (e.g. lacZ≈0.27, trpA≈0.84, recA≈0.76).
+#
+# The import is placed after compute_cai_weights is defined above
+# to avoid circular import issues (sharp_li_reference imports
+# compute_cai_weights from this module).
+
+from .sharp_li_reference import SHARP_LI_REFERENCE_GENES as SHARP_LI_REFERENCE_GENES
+from .sharp_li_reference import SHARP_LI_CODON_USAGE as SHARP_LI_CODON_USAGE
+from .sharp_li_reference import SHARP_LI_CAI_WEIGHTS as SHARP_LI_CAI_WEIGHTS
+from .sharp_li_reference import SHARP_LI_PUBLISHED_CAI as SHARP_LI_PUBLISHED_CAI
+from .sharp_li_reference import get_sharp_li_cai_weights as get_sharp_li_cai_weights
+from .sharp_li_reference import compute_cai_with_reference as compute_cai_with_reference

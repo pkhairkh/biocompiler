@@ -18,6 +18,9 @@ Provides:
   - DNAchiselAdapter: Wraps DNAchisel's API for comparable results
   - run_comparison: Single-gene head-to-head comparison
   - compare_results: Multi-gene statistical analysis
+  - benchmark_sharp_li_cai: Sharp-Li vs Kazusa CAI reference set benchmark
+  - benchmark_organism_aware_cai: Organism-aware constraint selection benchmark
+  - BENCHMARK_SUITES: Dict mapping benchmark names to runner functions
   - HUMAN_THERAPEUTIC_GENES: 10 human therapeutic proteins for real-world benchmarking
   - VACCINE_ANTIGEN_GENES: 10 vaccine antigen proteins for real-world benchmarking
   - STRESS_TEST_GENES: 5 synthetic stress-test sequences for edge-case evaluation
@@ -35,6 +38,10 @@ Usage::
     from biocompiler.benchmarking import run_comparison, compare_results
     result = run_comparison("HBB", "MVLSPADKTNVKAAWGKVGA", "Homo_sapiens")
     summary = compare_results([result])
+
+    # Run a named benchmark suite
+    from biocompiler.benchmarking import run_benchmark_by_name
+    result = run_benchmark_by_name("sharp_li_cai")
 """
 
 from __future__ import annotations
@@ -68,6 +75,11 @@ __all__ = [
     "compute_cai_sharp_li",
     # DNAchisel adapter
     "DNAchiselAdapter",
+    # Reference-set benchmarks
+    "benchmark_sharp_li_cai",
+    "benchmark_organism_aware_cai",
+    "BENCHMARK_SUITES",
+    "run_benchmark_by_name",
     # Visualization
     "plot_cai_comparison",
     "plot_gc_comparison",
@@ -92,6 +104,70 @@ from .cai_validated import compute_cai_sharp_li
 
 from .dnachisel_adapter import DNAchiselAdapter
 
+from .sharp_li_benchmark import benchmark_sharp_li_cai
+
+from .organism_aware_benchmark import benchmark_organism_aware_cai
+
+
+# ---------------------------------------------------------------------------
+# BENCHMARK_SUITES — registry of named benchmark suites
+# ---------------------------------------------------------------------------
+
+BENCHMARK_SUITES: dict[str, callable] = {
+    "sharp_li_cai": benchmark_sharp_li_cai,
+    "organism_aware_cai": benchmark_organism_aware_cai,
+}
+"""Registry mapping benchmark names to their runner functions.
+
+Each value is a callable that runs the benchmark and returns a dict of
+results.  Use :func:`run_benchmark_by_name` for convenient dispatch.
+
+Available benchmarks:
+
+  - ``"sharp_li_cai"`` — Compares CAI computed with the Kazusa vs Sharp-Li
+    reference sets against published values from Sharp & Li (1987) and
+    Puigbo et al. (2008).  Validates both the algorithm implementation and
+    the reference-set provenance.
+  - ``"organism_aware_cai"`` — Demonstrates CAI recovery when
+    eukaryotic-specific constraints (cryptic splice-site avoidance, CpG-island
+    avoidance) are disabled for prokaryotic targets such as *E. coli*.
+"""
+
+
+def run_benchmark_by_name(name: str) -> dict:
+    """Run a benchmark suite by name.
+
+    Convenience function that looks up the benchmark in
+    :data:`BENCHMARK_SUITES` and executes it, returning the results dict.
+
+    Args:
+        name: Benchmark name. Must be a key in :data:`BENCHMARK_SUITES`.
+
+    Returns:
+        Dict of benchmark results (structure depends on the benchmark).
+
+    Raises:
+        ValueError: If ``name`` is not a recognised benchmark.
+
+    Examples::
+
+        from biocompiler.benchmarking import run_benchmark_by_name
+
+        # Run the Sharp-Li vs Kazusa CAI benchmark
+        result = run_benchmark_by_name("sharp_li_cai")
+        print(f"Sharp-Li closer: {result['sharp_li_is_closer']}")
+
+        # Run the organism-aware constraint benchmark
+        result = run_benchmark_by_name("organism_aware_cai")
+        print(f"Mean CAI recovery: {result['mean_cai_recovery']:+.4f}")
+    """
+    if name not in BENCHMARK_SUITES:
+        available = ", ".join(sorted(BENCHMARK_SUITES.keys()))
+        raise ValueError(
+            f"Unknown benchmark '{name}'. Available: {available}"
+        )
+    return BENCHMARK_SUITES[name]()
+
 # Lazy imports for gene sets — module may not exist in all installations
 try:
     from .gene_sets import (
@@ -105,6 +181,25 @@ try:
         "VACCINE_ANTIGEN_GENES",
         "STRESS_TEST_GENES",
         "get_all_gene_sets",
+    ]
+except ImportError:
+    pass
+
+# Also try importing extended gene sets
+try:
+    from .gene_sets import (
+        E_COLI_EXTENDED,
+        HUMAN_THERAPEUTIC,
+        HUMAN_SIGNALING,
+        YEAST_INDUSTRIAL,
+        MOUSE_MODEL,
+    )
+    __all__ += [
+        "E_COLI_EXTENDED",
+        "HUMAN_THERAPEUTIC",
+        "HUMAN_SIGNALING",
+        "YEAST_INDUSTRIAL",
+        "MOUSE_MODEL",
     ]
 except ImportError:
     pass

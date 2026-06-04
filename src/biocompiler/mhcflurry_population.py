@@ -26,11 +26,16 @@ The module defines:
 - :func:`find_coverage_optimizing_alleles` — greedy allele selection
 - :data:`ALLELE_CLASSIFICATION` — allele → MHC class + data source
 - :data:`SUPPORTED_MHCFLURRY_ALLELES` — ~200 common MHCflurry-supported alleles
+- :data:`MHCFLURRY_AVAILABLE` — ``True`` if MHCflurry is importable + models present
+- :class:`PopulationCoverageResult` — structured result for coverage analysis
+- :func:`get_population_coverage` — unified API with mhcflurry / precomputed fallback
 """
 
 from __future__ import annotations
 
 import logging
+import os
+from dataclasses import dataclass, field
 
 __all__ = [
     "EXPANDED_POPULATION_COVERAGE",
@@ -41,9 +46,83 @@ __all__ = [
     "find_coverage_optimizing_alleles",
     "ALLELE_CLASSIFICATION",
     "SUPPORTED_MHCFLURRY_ALLELES",
+    "MHCFLURRY_AVAILABLE",
+    "PopulationCoverageResult",
+    "get_population_coverage",
 ]
 
 logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Module-level mhcflurry availability check
+# ═══════════════════════════════════════════════════════════════════════════
+# We check mhcflurry availability in two stages:
+#   1. Can we import the ``mhcflurry`` package at all?
+#   2. (Optional) Can we import our adapter for a deeper check?
+# The adapter import is guarded because the top-level ``biocompiler.__init__``
+# may have unrelated import errors that would cascade here.
+
+
+def _check_mhcflurry_available() -> bool:
+    """Return True if mhcflurry is importable and models exist."""
+    try:
+        import mhcflurry  # noqa: F401
+    except ImportError:
+        return False
+
+    # Try the deeper adapter check — but don't crash if the package
+    # init has issues.
+    try:
+        from .mhcflurry_adapter import is_mhcflurry_available
+        return is_mhcflurry_available()
+    except Exception:
+        # mhcflurry is importable but the adapter isn't reachable;
+        # fall back to a basic check.
+        try:
+            models_dir = os.path.join(
+                os.path.expanduser("~"), ".mhcflurry", "models_class1", "models"
+            )
+            return os.path.isdir(models_dir) and bool(os.listdir(models_dir))
+        except Exception:
+            return False
+
+
+MHCFLURRY_AVAILABLE: bool = _check_mhcflurry_available()
+
+logger.debug("MHCflurry availability at import time: %s", MHCFLURRY_AVAILABLE)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PopulationCoverageResult dataclass
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class PopulationCoverageResult:
+    """Result of a population coverage analysis for a set of alleles and peptides.
+
+    Attributes
+    ----------
+    alleles_tested : list[str]
+        Allele names that were evaluated.
+    peptides_tested : int
+        Number of peptides analysed.
+    population_coverage : float
+        Estimated fraction of the global population covered (0.0–1.0).
+    method_used : str
+        Description of the method that produced the result
+        (e.g. ``"mhcflurry"``, ``"precomputed_db"``, ``"unknown_alleles"``).
+    per_allele_results : dict[str, dict]
+        Per-allele details.  Each value is a dict with at least
+        ``"frequency_global"`` (float, phenotype freq %) and optionally
+        ``"binding_peptides"`` (list of peptide strings predicted to bind).
+    """
+
+    alleles_tested: list[str] = field(default_factory=list)
+    peptides_tested: int = 0
+    population_coverage: float = 0.0
+    method_used: str = "unknown"
+    per_allele_results: dict[str, dict] = field(default_factory=dict)
+
 
 # Scale factor for converting phenotype frequency (%) to a fraction.
 _FREQUENCY_PERCENT_SCALE: float = 100.0
@@ -691,3 +770,190 @@ def _global_average_frequency(allele: str) -> float:
         weighted_freq += freq * weight
 
     return weighted_freq / total_weight
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# get_population_coverage — unified API with mhcflurry / precomputed fallback
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def get_population_coverage(
+    alleles: list[str],
+    peptides: list[str],
+) -> PopulationCoverageResult:
+    """Compute population coverage for a set of alleles and peptides.
+
+    This is the primary high-level entry point for population-coverage
+    analysis.  It follows a fallback chain so the module **never crashes**
+    when MHCflurry is not installed:
+
+    1. If *MHCflurry* is available, use it for binding prediction and
+       population-coverage computation.
+    2. Else, fall back to the **precomputed databases** for alleles
+       that have coverage data in :data:`EXPANDED_POPULATION_COVERAGE`.
+    3. Else (all alleles unknown), return an empty result with a
+       warning.
+
+    Parameters
+    ----------
+    alleles : list[str]
+        HLA allele names to evaluate (e.g.
+        ``["HLA-A*02:01", "HLA-B*07:02"]``).
+    peptides : list[str]
+        Peptide sequences to test for binding.
+
+    Returns
+    -------
+    PopulationCoverageResult
+        Structured result with coverage fraction, method used, and
+        per-allele details.
+    """
+    if not alleles:
+        return PopulationCoverageResult(
+            alleles_tested=[],
+            peptides_tested=len(peptides),
+            population_coverage=0.0,
+            method_used="no_alleles",
+            per_allele_results={},
+        )
+
+    # --- 1. Try MHCflurry path ------------------------------------------
+    if MHCFLURRY_AVAILABLE:
+        try:
+            return _coverage_via_mhcflurry(alleles, peptides)
+        except Exception as exc:
+            logger.warning(
+                "MHCflurry coverage computation failed (%s); "
+                "falling back to precomputed databases",
+                exc,
+            )
+
+    # --- 2. Fall back to precomputed / EXPANDED_POPULATION_COVERAGE ------
+    known_alleles = [a for a in alleles if a in EXPANDED_POPULATION_COVERAGE]
+    unknown_alleles = [a for a in alleles if a not in EXPANDED_POPULATION_COVERAGE]
+
+    if unknown_alleles:
+        logger.warning(
+            "Alleles not in precomputed coverage data and will be skipped: %s",
+            unknown_alleles,
+        )
+
+    if not known_alleles:
+        logger.warning(
+            "None of the requested alleles have population-coverage data; "
+            "returning empty result.  Alleles: %s",
+            alleles,
+        )
+        return PopulationCoverageResult(
+            alleles_tested=alleles,
+            peptides_tested=len(peptides),
+            population_coverage=0.0,
+            method_used="unknown_alleles",
+            per_allele_results={
+                a: {"frequency_global": 0.0, "status": "no_coverage_data"}
+                for a in alleles
+            },
+        )
+
+    # Use EXPANDED_POPULATION_COVERAGE to compute coverage
+    coverage = compute_population_coverage(known_alleles, population="global")
+
+    per_allele: dict[str, dict] = {}
+    for allele in known_alleles:
+        freq_global = _global_average_frequency(allele)
+        allele_info: dict = {"frequency_global": round(freq_global, 4)}
+
+        # Try precomputed binding database for this allele
+        binding_peps = _lookup_binding_peptides(allele, peptides)
+        if binding_peps:
+            allele_info["binding_peptides"] = binding_peps
+
+        per_allele[allele] = allele_info
+
+    for allele in unknown_alleles:
+        per_allele[allele] = {
+            "frequency_global": 0.0,
+            "status": "no_coverage_data",
+        }
+
+    return PopulationCoverageResult(
+        alleles_tested=alleles,
+        peptides_tested=len(peptides),
+        population_coverage=round(coverage, 6),
+        method_used="precomputed_db",
+        per_allele_results=per_allele,
+    )
+
+
+def _coverage_via_mhcflurry(
+    alleles: list[str],
+    peptides: list[str],
+) -> PopulationCoverageResult:
+    """Compute coverage using MHCflurry for binding prediction.
+
+    This function is only called when :data:`MHCFLURRY_AVAILABLE` is
+    ``True``.  It uses :class:`~biocompiler.mhcflurry_adapter.MHCflurryClient`
+    for peptide-binding prediction and the precomputed population-frequency
+    data for coverage computation.
+    """
+    from .mhcflurry_adapter import MHCflurryClient
+
+    client = MHCflurryClient(allow_offline_fallback=True)
+
+    # Compute population coverage from the frequency data
+    known_alleles = [a for a in alleles if a in EXPANDED_POPULATION_COVERAGE]
+    coverage = compute_population_coverage(known_alleles, population="global")
+
+    per_allele: dict[str, dict] = {}
+    for allele in alleles:
+        freq_global = _global_average_frequency(allele) if allele in EXPANDED_POPULATION_COVERAGE else 0.0
+        allele_info: dict = {"frequency_global": round(freq_global, 4)}
+
+        binding_peps: list[str] = []
+        for pep in peptides:
+            try:
+                result = client.predict_binding(pep, allele)
+                if result.binding_class in ("strong_binder", "moderate_binder"):
+                    binding_peps.append(pep)
+            except Exception:
+                pass  # skip unsupported allele/peptide combos
+
+        if binding_peps:
+            allele_info["binding_peptides"] = binding_peps
+
+        if allele not in EXPANDED_POPULATION_COVERAGE:
+            allele_info["status"] = "no_coverage_data"
+
+        per_allele[allele] = allele_info
+
+    return PopulationCoverageResult(
+        alleles_tested=alleles,
+        peptides_tested=len(peptides),
+        population_coverage=round(coverage, 6),
+        method_used="mhcflurry",
+        per_allele_results=per_allele,
+    )
+
+
+def _lookup_binding_peptides(
+    allele: str,
+    peptides: list[str],
+) -> list[str]:
+    """Check which peptides are known binders for *allele* via precomputed DB.
+
+    Returns a (possibly empty) list of peptides that are classified as
+    binders in the precomputed binding database for the allele.
+    """
+    try:
+        from .mhc_binding_db import get_database
+
+        db = get_database(allele)
+        if db is None:
+            return []
+        binders: list[str] = []
+        for pep in peptides:
+            if db.is_binder(pep):
+                binders.append(pep)
+        return binders
+    except Exception:
+        return []

@@ -125,6 +125,11 @@ class CodonDecision:
             on a 0–1 scale.  1.0 means no doubt; lower values indicate
             uncertainty due to conflicting constraints or marginal
             improvements.
+        cai_impact: CAI delta caused by this codon choice versus the
+            best-CAI codon for this amino acid.  Negative values indicate
+            CAI was sacrificed to satisfy a constraint (e.g. GC content,
+            restriction site avoidance).  Zero means no CAI cost (either
+            the best-CAI codon was chosen, or CAI was not relevant).
     """
 
     position: int
@@ -134,6 +139,10 @@ class CodonDecision:
     alternatives_considered: list[dict[str, Any]]
     constraint_reason: str
     confidence: float
+    # CAI-aware provenance: records the CAI cost when a codon is chosen
+    # due to a constraint rather than pure CAI optimization.
+    # Negative = CAI lost vs best-CAI codon; 0.0 = no CAI cost.
+    cai_impact: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize this decision to a JSON-compatible dict."""
@@ -147,6 +156,7 @@ class CodonDecision:
             ],
             "constraint_reason": self.constraint_reason,
             "confidence": self.confidence,
+            "cai_impact": self.cai_impact,
         }
 
     @classmethod
@@ -181,6 +191,7 @@ class CodonDecision:
             ],
             constraint_reason=data["constraint_reason"],
             confidence=float(data["confidence"]),
+            cai_impact=float(data.get("cai_impact", 0.0)),
         )
 
 
@@ -701,6 +712,14 @@ class DecisionProvenanceCollector:
             ]
             lines.append(f"  Average confidence:   {avg_confidence:.3f}")
             lines.append(f"  Low-confidence (<0.5): {len(low_confidence)}")
+
+            # CAI impact summary for codon decisions
+            total_cai_cost_codons = sum(d.cai_impact for d in self._codon_decisions)
+            constrained_codons = [
+                d for d in self._codon_decisions if d.cai_impact < 0
+            ]
+            lines.append(f"  Total CAI cost (codon decisions): {total_cai_cost_codons:.4f}")
+            lines.append(f"  Constrained codon positions:      {len(constrained_codons)}")
 
             # Show constraint reasons breakdown
             reason_counts: dict[str, int] = {}

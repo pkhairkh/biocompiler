@@ -30,7 +30,7 @@ from biocompiler.splicing import (
     compute_splice_isoforms,
 )
 from biocompiler.scanner import scan_sequence
-from biocompiler.maxentscan import score_donor, score_acceptor
+from biocompiler.maxentscan import score_donor, score_acceptor, scan_splice_sites as scan_splice_sites_mes
 from biocompiler.type_system import SpliceVerdict
 from biocompiler.types import Verdict, SpliceIsoform
 from biocompiler.constants import DONOR_CONSENSUS, ACCEPTOR_CONSENSUS, MIN_INTRON_LENGTH
@@ -874,17 +874,23 @@ class TestVerdictCharacterization:
         """PASS verdict means no cryptic splice sites.
 
         Mirrors pass_implies_no_cryptic_sites.
-        If NoCrypticSplice returns PASS, there should be no GT dinucleotide
-        with a score >= high_thresh (6.0).
+        If NoCrypticSplice returns PASS, there should be no splice site
+        with a score >= high_thresh (6.0) as determined by the proper
+        MaxEntScan model.
         """
         from biocompiler.type_system import check_no_cryptic_splice
 
         result = check_no_cryptic_splice(seq)
         if result.verdict == Verdict.PASS:
-            sites = score_splice_sites(seq)
-            for pos, score, verdict in sites:
-                assert verdict != SpliceVerdict.FAIL, (
-                    f"PASS verdict but found FAIL-level site at pos {pos} with score {score}"
+            # Use maxentscan.scan_splice_sites (proper model) instead of
+            # the deprecated score_splice_sites (simplified PWM).
+            sites = scan_splice_sites_mes(seq, donor_threshold=0.0, acceptor_threshold=0.0)
+            for pos, site_type, score in sites:
+                # Sites with insufficient context return -50; skip those
+                if score <= -50.0:
+                    continue
+                assert score < 6.0, (
+                    f"PASS verdict but found high-scoring {site_type} at pos {pos} with score {score}"
                 )
 
     @given(seq=dna_sequence)
@@ -898,12 +904,15 @@ class TestVerdictCharacterization:
 
         result = check_no_cryptic_splice(seq)
         if result.verdict == Verdict.FAIL:
-            gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
-            assert len(gt_positions) > 0, "FAIL verdict but no GT dinucleotides"
+            seq_upper = seq.upper()
+            gt_positions = [i for i in range(len(seq_upper) - 1) if seq_upper[i:i+2] == "GT"]
+            ag_positions = [i for i in range(len(seq_upper) - 1) if seq_upper[i:i+2] == "AG"]
+            assert len(gt_positions) + len(ag_positions) > 0, "FAIL verdict but no GT/AG dinucleotides"
 
-            sites = score_splice_sites(seq)
-            has_fail = any(v == SpliceVerdict.FAIL for _, _, v in sites)
-            assert has_fail, "FAIL verdict but no site scored at FAIL level"
+            # Verify using the proper MaxEntScan model
+            sites = scan_splice_sites_mes(seq_upper, donor_threshold=0.0, acceptor_threshold=0.0)
+            has_high = any(sc >= 6.0 for _, _, sc in sites if sc > -50.0)
+            assert has_high, "FAIL verdict but no site scored at FAIL level"
 
     @given(seq=dna_sequence)
     @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
@@ -916,10 +925,10 @@ class TestVerdictCharacterization:
 
         result = check_no_cryptic_splice(seq)
         if result.verdict == Verdict.UNCERTAIN:
-            sites = score_splice_sites(seq)
-            has_uncertain = any(v == SpliceVerdict.UNCERTAIN for _, _, v in sites)
-            has_fail = any(v == SpliceVerdict.FAIL for _, _, v in sites)
-            assert has_uncertain or len(sites) == 0, (
+            sites = scan_splice_sites_mes(seq, donor_threshold=0.0, acceptor_threshold=0.0)
+            has_borderline = any(3.0 <= sc < 6.0 for _, _, sc in sites if sc > -50.0)
+            has_fail = any(sc >= 6.0 for _, _, sc in sites if sc > -50.0)
+            assert has_borderline or len(sites) == 0, (
                 "UNCERTAIN verdict but no UNCERTAIN-level site found"
             )
             assert not has_fail, (

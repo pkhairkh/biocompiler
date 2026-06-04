@@ -8,6 +8,11 @@ non-binders with experimentally measured IC50 values drawn from IEDB.
 It evaluates any predictor function that accepts ``(peptide, allele)``
 and returns a predicted IC50 in nM.
 
+It also provides :func:`compare_with_iedb` which compares BioCompiler's
+MHC binding predictions (a list of predicted-binder peptides) against
+the IEDB known-epitope data and computes TP/FP/TN/FN metrics,
+sensitivity, specificity, and an AUC-ROC estimate.
+
 Benchmark entries span two well-characterised alleles:
 
 * **HLA-A\\*02:01** — the most-studied MHC-I allele with extensive
@@ -31,6 +36,7 @@ Usage
     from biocompiler.validation.iedb_comparison import (
         IEDB_BENCHMARK_DATA,
         benchmark_mhc_predictions,
+        compare_with_iedb,
     )
 
     # Define a predictor: takes (peptide, allele) -> predicted IC50 (nM)
@@ -40,6 +46,10 @@ Usage
 
     result = benchmark_mhc_predictions(my_predictor, IEDB_BENCHMARK_DATA)
     print(f"AUC-ROC: {result.auc_roc:.3f}, Pearson r: {result.pearson_r:.3f}")
+
+    # Compare predicted binders against IEDB
+    cmp = compare_with_iedb("HLA-A*02:01", ["GILGFVFTL", "YLDVGVLTV"])
+    print(f"TP={cmp.true_positives}, FP={cmp.false_positives}, AUC≈{cmp.auc_estimate:.3f}")
 
 Dataset sources
 ---------------
@@ -66,8 +76,13 @@ from typing import Callable
 __all__ = [
     "IEDBBenchmarkEntry",
     "IEDB_BENCHMARK_DATA",
+    "IEDBComparisonResult",
     "MHBenchmarkResult",
     "benchmark_mhc_predictions",
+    "compare_with_iedb",
+    "get_available_alleles",
+    "get_known_binders",
+    "get_known_non_binders",
 ]
 
 logger = logging.getLogger(__name__)
@@ -111,6 +126,47 @@ class IEDBBenchmarkEntry:
     def is_binder(self) -> bool:
         """Whether this entry is classified as a binder (IC50 < 500 nM)."""
         return self.measured_ic50 < BINDER_IC50_THRESHOLD
+
+
+@dataclass
+class IEDBComparisonResult:
+    """Result of comparing BioCompiler's MHC binding predictions against IEDB data.
+
+    Compares a set of predicted binder peptides against the IEDB known-epitope
+    ground truth for a single allele.
+
+    Attributes
+    ----------
+    allele : str
+        The MHC allele that was queried (e.g. ``"HLA-A*02:01"``).
+    true_positives : int
+        Peptides that are both predicted binders **and** IEDB-confirmed binders.
+    false_positives : int
+        Peptides that are predicted binders but are **not** IEDB binders.
+    true_negatives : int
+        Peptides that are neither predicted binders nor IEDB binders.
+    false_negatives : int
+        Peptides that are IEDB binders but were **not** predicted as binders.
+    sensitivity : float
+        TP / (TP + FN).  Proportion of IEDB binders correctly identified.
+        ``0.0`` when there are no IEDB binders.
+    specificity : float
+        TN / (TN + FP).  Proportion of IEDB non-binders correctly identified.
+        ``0.0`` when there are no IEDB non-binders.
+    auc_estimate : float
+        Estimated AUC-ROC computed as (sensitivity + specificity) / 2,
+        a standard single-threshold approximation.  ``0.5`` when the metric
+        is degenerate (no positives or no negatives in ground truth).
+    """
+
+    allele: str
+    true_positives: int
+    false_positives: int
+    true_negatives: int
+    false_negatives: int
+    sensitivity: float
+    specificity: float
+    auc_estimate: float
 
 
 @dataclass
@@ -416,6 +472,235 @@ def _compute_auc_roc(
         return 0.5
 
     return (concordant + 0.5 * tied) / total_pairs
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Built-in IEDB known-epitope lookup (no network access required)
+# ═══════════════════════════════════════════════════════════════════════════
+# Pre-index the benchmark data for fast allele-specific lookups without
+# requiring any network access.
+
+def _build_allele_index(
+    entries: list[IEDBBenchmarkEntry],
+) -> dict[str, dict[str, IEDBBenchmarkEntry]]:
+    """Build a nested dict mapping allele → peptide → entry.
+
+    This allows :func:`compare_with_iedb` to look up peptides by allele
+    in O(1) time without any network or file I/O.
+    """
+    index: dict[str, dict[str, IEDBBenchmarkEntry]] = {}
+    for entry in entries:
+        index.setdefault(entry.allele, {})[entry.peptide] = entry
+    return index
+
+
+#: Module-level allele index built once at import time from
+#: :data:`IEDB_BENCHMARK_DATA`.  This eliminates the need for network
+#: access during comparison.
+_ALLELE_INDEX: dict[str, dict[str, IEDBBenchmarkEntry]] = _build_allele_index(
+    IEDB_BENCHMARK_DATA
+)
+
+
+def get_known_binders(allele: str) -> set[str]:
+    """Return the set of IEDB-confirmed binder peptides for *allele*.
+
+    A binder is defined as a peptide with measured IC50 < 500 nM
+    (the standard :data:`BINDER_IC50_THRESHOLD`).
+
+    Parameters
+    ----------
+    allele : str
+        MHC-I allele name (e.g. ``"HLA-A*02:01"``).
+
+    Returns
+    -------
+    set[str]
+        Set of peptide sequences classified as binders for the allele.
+        Returns an empty set if the allele is not in the built-in dataset.
+    """
+    allele_entries = _ALLELE_INDEX.get(allele, {})
+    return {
+        pep for pep, entry in allele_entries.items()
+        if entry.is_binder
+    }
+
+
+def get_known_non_binders(allele: str) -> set[str]:
+    """Return the set of IEDB-confirmed non-binder peptides for *allele*.
+
+    A non-binder has measured IC50 ≥ 500 nM.
+
+    Parameters
+    ----------
+    allele : str
+        MHC-I allele name (e.g. ``"HLA-A*02:01"``).
+
+    Returns
+    -------
+    set[str]
+        Set of peptide sequences classified as non-binders for the allele.
+        Returns an empty set if the allele is not in the built-in dataset.
+    """
+    allele_entries = _ALLELE_INDEX.get(allele, {})
+    return {
+        pep for pep, entry in allele_entries.items()
+        if not entry.is_binder
+    }
+
+
+def get_available_alleles() -> list[str]:
+    """Return alleles with data in the built-in IEDB dataset.
+
+    Returns
+    -------
+    list[str]
+        Sorted list of allele names.
+    """
+    return sorted(_ALLELE_INDEX.keys())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Public comparison function
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compare_with_iedb(
+    allele: str,
+    peptides: list[str],
+) -> IEDBComparisonResult:
+    """Compare BioCompiler's predicted binders against IEDB known epitopes.
+
+    Treats every peptide in *peptides* as a "predicted binder" (i.e. our
+    model says it binds to *allele*) and checks each against the built-in
+    IEDB dataset of experimentally validated binders and non-binders.
+
+    The IEDB ground-truth universe for *allele* consists of all peptides
+    in :data:`IEDB_BENCHMARK_DATA` for that allele.  Peptides in *peptides*
+    that are **not** present in the IEDB dataset are counted as false
+    positives (they are assumed to be non-binders because they lack
+    experimental evidence of binding).
+
+    Parameters
+    ----------
+    allele : str
+        MHC-I allele name (e.g. ``"HLA-A*02:01"``).
+    peptides : list[str]
+        Peptide sequences that our model predicts as binders for *allele*.
+        An empty list means our model predicts no binders.
+
+    Returns
+    -------
+    IEDBComparisonResult
+        Confusion matrix metrics and derived statistics.
+
+    Raises
+    ------
+    ValueError
+        If *allele* is an empty string or *peptides* contains non-string
+        entries.
+
+    Notes
+    -----
+    * **True positives (TP)**: peptide in *peptides* ∩ IEDB binders.
+    * **False positives (FP)**: peptide in *peptides* but **not** an IEDB
+      binder (either a known non-binder or absent from the dataset).
+    * **True negatives (TN)**: IEDB non-binder **not** in *peptides*.
+    * **False negatives (FN)**: IEDB binder **not** in *peptides*.
+    * **Sensitivity** = TP / (TP + FN); **Specificity** = TN / (TN + FP).
+    * **AUC estimate** ≈ (sensitivity + specificity) / 2, a standard
+      single-threshold approximation of the AUC-ROC.
+
+    Examples
+    --------
+    >>> result = compare_with_iedb("HLA-A*02:01", ["GILGFVFTL", "UNKNOWNPEP"])
+    >>> result.true_positives  # GILGFVFTL is a known A*02:01 binder
+    1
+    >>> result.false_positives  # UNKNOWNPEP is not in IEDB
+    1
+    """
+    # ── Input validation ────────────────────────────────────────────────
+    if not isinstance(allele, str) or not allele.strip():
+        raise ValueError(
+            f"allele must be a non-empty string, got {allele!r}"
+        )
+    if peptides is None:
+        raise ValueError("peptides must be a list of strings, got None")
+    for i, pep in enumerate(peptides):
+        if not isinstance(pep, str):
+            raise ValueError(
+                f"peptides[{i}] must be a string, got {type(pep).__name__}"
+            )
+
+    # ── Resolve IEDB ground truth for this allele ──────────────────────
+    iedb_binders = get_known_binders(allele)
+    iedb_non_binders = get_known_non_binders(allele)
+
+    # If allele is not in our built-in dataset, log a warning and
+    # return a result where everything is FP (no ground-truth binders
+    # to match against).
+    if not iedb_binders and not iedb_non_binders:
+        logger.warning(
+            "No IEDB data available for allele %r; "
+            "all %d peptides counted as false positives",
+            allele, len(peptides),
+        )
+        return IEDBComparisonResult(
+            allele=allele,
+            true_positives=0,
+            false_positives=len(peptides),
+            true_negatives=0,
+            false_negatives=0,
+            sensitivity=0.0,
+            specificity=0.0,
+            auc_estimate=0.5,
+        )
+
+    # ── Compute confusion matrix ──────────────────────────────────────
+    predicted_set = set(peptides)
+
+    true_positives = len(predicted_set & iedb_binders)
+    false_positives = len(predicted_set - iedb_binders)
+    true_negatives = len(iedb_non_binders - predicted_set)
+    false_negatives = len(iedb_binders - predicted_set)
+
+    # ── Derive metrics ────────────────────────────────────────────────
+    total_positives = true_positives + false_negatives  # all IEDB binders
+    total_negatives = true_negatives + false_positives  # all IEDB non-binders
+
+    sensitivity = (
+        true_positives / total_positives if total_positives > 0 else 0.0
+    )
+    specificity = (
+        true_negatives / total_negatives if total_negatives > 0 else 0.0
+    )
+
+    # AUC-ROC estimate: single-threshold approximation
+    # When either class is absent, AUC defaults to 0.5 (random)
+    if total_positives > 0 and total_negatives > 0:
+        auc_estimate = (sensitivity + specificity) / 2.0
+    else:
+        auc_estimate = 0.5
+
+    result = IEDBComparisonResult(
+        allele=allele,
+        true_positives=true_positives,
+        false_positives=false_positives,
+        true_negatives=true_negatives,
+        false_negatives=false_negatives,
+        sensitivity=round(sensitivity, 6),
+        specificity=round(specificity, 6),
+        auc_estimate=round(auc_estimate, 6),
+    )
+
+    logger.info(
+        "IEDB comparison for %s: TP=%d, FP=%d, TN=%d, FN=%d, "
+        "sens=%.3f, spec=%.3f, AUC≈%.3f",
+        allele,
+        true_positives, false_positives, true_negatives, false_negatives,
+        sensitivity, specificity, auc_estimate,
+    )
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════

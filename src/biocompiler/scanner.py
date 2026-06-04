@@ -4,7 +4,7 @@ BioCompiler Scanner — Multi-DFA Motif Detection
 Production-grade scanner with:
 - Start/stop codons scanned in ALL 3 reading frames (not just frame 0)
 - Restriction sites checked on BOTH strands (forward + reverse complement)
-- MaxEntScan-based splice site scoring (not constant 5.0 for donors)
+- MaxEntScan-based splice site scoring via scan_splice_sites() (not constant 5.0 for donors)
 - Kozak consensus scoring with position weights (not exact string match)
 - Logging instead of print
 """
@@ -22,7 +22,7 @@ from .constants import (
 )
 from .types import Token
 from .exceptions import InvalidSequenceError
-from .maxentscan import score_donor, score_acceptor
+from .maxentscan import score_donor, score_acceptor, scan_splice_sites
 
 logger = logging.getLogger(__name__)
 
@@ -222,41 +222,53 @@ def scan_sequence(
         return []
     tokens: list[Token] = []
 
-    # --- Splice donor sites (GT) with MaxEntScan scoring ---
-    for i in range(len(seq) - len(DONOR_CONSENSUS) + 1):
-        if seq[i:i + len(DONOR_CONSENSUS)] == DONOR_CONSENSUS:
-            if use_maxentscan:
-                try:
-                    mes_score: float = score_donor(seq, i)
-                except Exception:
-                    logger.warning(
-                        "MaxEntScan donor scoring failed at position %d; skipping site",
-                        i,
-                        exc_info=True,
-                    )
-                    continue
-                if mes_score >= donor_threshold:
-                    tokens.append(Token(i, "splice_donor", seq[i:i + len(DONOR_CONSENSUS)], mes_score))
-            else:
-                tokens.append(Token(i, "splice_donor", seq[i:i + len(DONOR_CONSENSUS)], DONOR_FALLBACK_SCORE))
+    # --- Splice sites (donor GT + acceptor AG) via MaxEntScan ---
+    if use_maxentscan:
+        try:
+            splice_sites = scan_splice_sites(
+                seq,
+                donor_threshold=donor_threshold,
+                acceptor_threshold=acceptor_threshold,
+            )
+        except Exception:
+            logger.warning(
+                "MaxEntScan scan_splice_sites failed; falling back to individual scoring",
+                exc_info=True,
+            )
+            splice_sites = []
+            # Fallback: score each GT/AG individually so we don't silently lose sites
+            for i in range(len(seq) - len(DONOR_CONSENSUS) + 1):
+                if seq[i:i + len(DONOR_CONSENSUS)] == DONOR_CONSENSUS:
+                    try:
+                        mes_score = score_donor(seq, i)
+                    except Exception:
+                        logger.warning("score_donor failed at %d", i, exc_info=True)
+                        continue
+                    if mes_score >= donor_threshold:
+                        splice_sites.append((i, "donor", mes_score))
+            for i in range(len(seq) - len(ACCEPTOR_CONSENSUS) + 1):
+                if seq[i:i + len(ACCEPTOR_CONSENSUS)] == ACCEPTOR_CONSENSUS:
+                    try:
+                        mes_score = score_acceptor(seq, i)
+                    except Exception:
+                        logger.warning("score_acceptor failed at %d", i, exc_info=True)
+                        continue
+                    if mes_score >= acceptor_threshold:
+                        splice_sites.append((i, "acceptor", mes_score))
 
-    # --- Splice acceptor sites (AG) with MaxEntScan scoring ---
-    for i in range(len(seq) - len(ACCEPTOR_CONSENSUS) + 1):
-        if seq[i:i + len(ACCEPTOR_CONSENSUS)] == ACCEPTOR_CONSENSUS:
-            if use_maxentscan:
-                try:
-                    mes_score: float = score_acceptor(seq, i)
-                except Exception:
-                    logger.warning(
-                        "MaxEntScan acceptor scoring failed at position %d; skipping site",
-                        i,
-                        exc_info=True,
-                    )
-                    continue
-                if mes_score >= acceptor_threshold:
-                    tokens.append(Token(i, "splice_acceptor", seq[i:i + len(ACCEPTOR_CONSENSUS)], mes_score))
-            else:
-                # Fallback: polypyrimidine tract scoring
+        # Map maxentscan site_type to scanner Token element_type
+        _SITE_TYPE_MAP = {"donor": "splice_donor", "acceptor": "splice_acceptor"}
+        for position, site_type, mes_score in splice_sites:
+            element_type = _SITE_TYPE_MAP.get(site_type, site_type)
+            match_seq = seq[position:position + 2]  # "GT" or "AG"
+            tokens.append(Token(position, element_type, match_seq, mes_score))
+    else:
+        # Fallback without MaxEntScan: simple consensus + polypyrimidine scoring
+        for i in range(len(seq) - len(DONOR_CONSENSUS) + 1):
+            if seq[i:i + len(DONOR_CONSENSUS)] == DONOR_CONSENSUS:
+                tokens.append(Token(i, "splice_donor", seq[i:i + len(DONOR_CONSENSUS)], DONOR_FALLBACK_SCORE))
+        for i in range(len(seq) - len(ACCEPTOR_CONSENSUS) + 1):
+            if seq[i:i + len(ACCEPTOR_CONSENSUS)] == ACCEPTOR_CONSENSUS:
                 upstream: str = seq[max(0, i - POLYPYRIMIDINE_WINDOW):i]
                 ct_count: int = upstream.count('C') + upstream.count('T')
                 score: float = ct_count / max(len(upstream), 1)

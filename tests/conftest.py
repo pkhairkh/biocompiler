@@ -422,6 +422,32 @@ def pytest_configure(config):
         integration — End-to-end integration tests that exercise multiple
                       modules together.  May require external dependencies
                       (OR-Tools, Z3, MHCflurry, ViennaRNA).
+
+        benchmark   — Benchmark tests comparing against other tools.
+
+        e2e         — Full end-to-end pipeline tests.
+
+        requires_mhcflurry  — Tests requiring the mhcflurry package.
+
+        requires_netmhcpan  — Tests requiring the NetMHCpan tool.
+
+        requires_dnachisel  — Tests requiring the DNAchisel package.
+
+        requires_external   — Tests needing any external tool.
     """
     config.addinivalue_line("markers", "slow: computationally expensive or network-dependent tests")
     config.addinivalue_line("markers", "integration: end-to-end integration tests requiring multiple modules")
+    config.addinivalue_line("markers", "benchmark: benchmark tests comparing against other tools")
+    config.addinivalue_line("markers", "e2e: full end-to-end pipeline tests")
+    config.addinivalue_line("markers", "requires_mhcflurry: tests requiring mhcflurry")
+    config.addinivalue_line("markers", "requires_netmhcpan: tests requiring netmhcpan")
+    config.addinivalue_line("markers", "requires_dnachisel: tests requiring DNAchisel")
+    config.addinivalue_line("markers", "requires_external: tests needing any external tool")
+    config.addinivalue_line("markers", "deprecation: tests verifying deprecated API warning behavior")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Add the 'deprecation' marker to the deprecation test suite automatically."""
+    for item in items:
+        if "test_deprecation_suite" in str(item.fspath):
+            item.add_marker(pytest.mark.deprecation)

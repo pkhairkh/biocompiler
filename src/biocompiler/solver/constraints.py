@@ -45,8 +45,10 @@ from ..constants import AA_TO_CODONS, CODON_TABLE, RESTRICTION_ENZYMES, INSTABIL
 from ..organisms import (
     CODON_ADAPTIVENESS_TABLES,
     ORGANISM_GC_TARGETS,
+    get_sharp_li_adaptiveness_tables,
     SUPPORTED_ORGANISMS,
 )
+from ..organism_config import is_eukaryotic_organism
 from ..maxentscan import score_donor, score_acceptor
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ __all__ = [
     # Soft constraints
     "MaximizeCAI",
     "MinimizeCpG",
+    "MinimizeCodonPairBias",
     "MinimizeMRNADG",
     # Model
     "CSPModel",
@@ -623,18 +626,27 @@ class NoCpGIslandConstraint(HardConstraint):
     dinucleotides in any sliding window exceeds the threshold.  The
     expected CG count is ``C_count * G_count / window_length``.
 
+    CpG island avoidance is primarily relevant for mammalian expression
+    systems where CpG methylation can lead to gene silencing.  For
+    prokaryotic organisms, this constraint is automatically satisfied
+    (check returns True, violated_positions returns []) since CpG
+    islands have no known regulatory significance in prokaryotes.
+
     Attributes:
         window: Window size in nucleotides (default 200).
         threshold: Maximum allowed Obs/Exp CG ratio (default 0.6).
+        organism: Target organism name.  If prokaryotic, the constraint
+            is automatically satisfied.
     """
 
-    def __init__(self, window: int = DEFAULT_CPG_WINDOW, threshold: float = DEFAULT_CPG_THRESHOLD) -> None:
+    def __init__(self, window: int = DEFAULT_CPG_WINDOW, threshold: float = DEFAULT_CPG_THRESHOLD, organism: str = "") -> None:
         if window <= 0:
             raise ValueError(f"Window must be positive, got {window}")
         if threshold <= 0:
             raise ValueError(f"Threshold must be positive, got {threshold}")
         self._window = window
         self._threshold = threshold
+        self._organism = organism
 
     @property
     def name(self) -> str:
@@ -651,6 +663,16 @@ class NoCpGIslandConstraint(HardConstraint):
     @property
     def threshold(self) -> float:
         return self._threshold
+
+    @property
+    def organism(self) -> str:
+        return self._organism
+
+    def _is_prokaryotic(self) -> bool:
+        """Return True if the configured organism is prokaryotic."""
+        if not self._organism:
+            return False
+        return not is_eukaryotic_organism(self._organism)
 
     def _scan_cpg(self, sequence: str, window: int, threshold: float) -> list[int]:
         """Scan for CpG islands in sliding windows.
@@ -685,11 +707,25 @@ class NoCpGIslandConstraint(HardConstraint):
         return violating_starts
 
     def check(self, sequence: str) -> bool:
-        """Return True if no sliding window has CpG Obs/Exp above threshold."""
+        """Return True if no sliding window has CpG Obs/Exp above threshold.
+
+        Automatically returns True for prokaryotic organisms.
+        """
+        if self._is_prokaryotic():
+            logger.info(
+                "NoCpGIslandConstraint.check() skipped for prokaryotic organism '%s'",
+                self._organism,
+            )
+            return True
         return not self._scan_cpg(sequence, self._window, self._threshold)
 
     def violated_positions(self, sequence: str) -> list[int]:
-        """Return start positions of windows with CpG island violations."""
+        """Return start positions of windows with CpG island violations.
+
+        Automatically returns [] for prokaryotic organisms.
+        """
+        if self._is_prokaryotic():
+            return []
         return self._scan_cpg(sequence, self._window, self._threshold)
 
 
@@ -885,8 +921,20 @@ class MinimizeCpG(SoftConstraint):
     (some amino acids like Arginine require CG-containing codons), we
     minimize the total count.
 
-    Both within-codon and cross-codon CG dinucleotides are counted.
+    For prokaryotic organisms, CpG minimization is irrelevant (no DNA
+    methylation silencing mechanism), so the score always returns 0.0
+    and violated_positions returns [].
+
+    Both within-codon and cross-codon CG dinucleotides are counted
+    (for eukaryotic organisms).
+
+    Attributes:
+        organism: Target organism name.  If prokaryotic, the soft
+            constraint becomes a no-op (score always 0.0).
     """
+
+    def __init__(self, organism: str = "") -> None:
+        self._organism = organism
 
     @property
     def name(self) -> str:
@@ -896,12 +944,27 @@ class MinimizeCpG(SoftConstraint):
     def constraint_type(self) -> ConstraintType:
         return ConstraintType.NO_CPG
 
+    @property
+    def organism(self) -> str:
+        return self._organism
+
+    def _is_prokaryotic(self) -> bool:
+        """Return True if the configured organism is prokaryotic."""
+        if not self._organism:
+            return False
+        return not is_eukaryotic_organism(self._organism)
+
     def check(self, sequence: str) -> bool:
         """Always True — CpG count is an optimization objective."""
         return True
 
     def violated_positions(self, sequence: str) -> list[int]:
-        """Return positions of all CG dinucleotides (candidates for removal)."""
+        """Return positions of all CG dinucleotides (candidates for removal).
+
+        Returns [] for prokaryotic organisms since CpG is irrelevant.
+        """
+        if self._is_prokaryotic():
+            return []
         sequence = sequence.upper()
         return [i for i in range(len(sequence) - 1) if sequence[i : i + 2] == "CG"]
 
@@ -909,7 +972,10 @@ class MinimizeCpG(SoftConstraint):
         """Return negated CG count (higher = fewer CG = better).
 
         The solver maximizes the objective, so we negate the count.
+        For prokaryotic organisms, returns 0.0 (neutral objective).
         """
+        if self._is_prokaryotic():
+            return 0.0
         sequence = sequence.upper()
         cpg_count = sum(
             1 for i in range(len(sequence) - 1) if sequence[i : i + 2] == "CG"
@@ -917,11 +983,127 @@ class MinimizeCpG(SoftConstraint):
         return -float(cpg_count)
 
     def cpg_count(self, sequence: str) -> int:
-        """Return the raw number of CG dinucleotides."""
+        """Return the raw number of CG dinucleotides.
+
+        Returns 0 for prokaryotic organisms since CpG is irrelevant.
+        """
+        if self._is_prokaryotic():
+            return 0
         sequence = sequence.upper()
         return sum(
             1 for i in range(len(sequence) - 1) if sequence[i : i + 2] == "CG"
         )
+
+
+class MinimizeCodonPairBias(SoftConstraint):
+    """Maximize codon pair bias (CPB) across consecutive codon pairs.
+
+    Codon pair bias measures the over/under-representation of consecutive
+    codon pairs relative to expected frequency.  Over-represented pairs
+    (positive CPB) are favoured for expression; under-represented pairs
+    (negative CPB) are disfavoured.
+
+    The score is the arithmetic mean of per-pair CPB scores across the
+    sequence.  Higher values indicate the sequence uses over-represented
+    (favoured) codon pairs.
+
+    For the CSP solver, we return the mean CPB directly (higher = better).
+
+    Attributes:
+        organism: Target organism identifier (e.g. ``"Escherichia_coli"``).
+        cpb_data: Dict mapping ``"{codon1}-{codon2}"`` to CPB score.
+    """
+
+    def __init__(self, organism: str) -> None:
+        from ..codon_pair_scoring import get_codon_pair_data
+        self._organism = organism
+        self._cpb_data = get_codon_pair_data(organism)
+
+    @property
+    def name(self) -> str:
+        return "MinimizeCodonPairBias"
+
+    @property
+    def constraint_type(self) -> ConstraintType:
+        return ConstraintType.CODON_PAIR_BIAS
+
+    @property
+    def organism(self) -> str:
+        return self._organism
+
+    @property
+    def cpb_data(self) -> dict[str, float]:
+        return dict(self._cpb_data)
+
+    def check(self, sequence: str) -> bool:
+        """Always True -- CPB is an optimization objective, not a threshold."""
+        return True
+
+    def violated_positions(self, sequence: str) -> list[int]:
+        """Return start positions of codon pairs with negative CPB.
+
+        Codon pairs with negative CPB are candidates for improvement
+        (substitution with synonymous codons that form a better pair).
+        """
+        sequence = sequence.upper()
+        if len(sequence) < 6:
+            return []
+        positions: list[int] = []
+        for i in range(0, len(sequence) - 3, 3):
+            codon1 = sequence[i:i + 3]
+            codon2 = sequence[i + 3:i + 6]
+            pair_key = f"{codon1}-{codon2}"
+            if self._cpb_data.get(pair_key, 0.0) < 0.0:
+                positions.append(i)
+        return positions
+
+    def score(self, sequence: str) -> float:
+        """Compute mean codon pair bias score (higher = better).
+
+        Returns:
+            The arithmetic mean of CPB scores for all consecutive
+            codon pairs.  Pairs not in the CPB table default to 0.0.
+            Returns 0.0 for sequences shorter than two codons.
+        """
+        sequence = sequence.upper()
+        if len(sequence) < 6 or not self._cpb_data:
+            return 0.0
+
+        codons = [sequence[i:i + 3] for i in range(0, len(sequence), 3)]
+        scores: list[float] = []
+        for i in range(len(codons) - 1):
+            pair_key = f"{codons[i]}-{codons[i + 1]}"
+            scores.append(self._cpb_data.get(pair_key, 0.0))
+
+        return sum(scores) / len(scores) if scores else 0.0
+
+    def geometric_mean_score(self, sequence: str) -> float:
+        """Compute geometric mean of 2^CPB across all codon pairs.
+
+        For each codon pair, the contribution is 2^CPB (which equals
+        observed/expected).  The geometric mean of these ratios indicates
+        the overall fold-enrichment of codon pairs in the sequence.
+
+        Returns:
+            Geometric mean of 2^CPB values.  Returns 1.0 for sequences
+            shorter than two codons or if no CPB data is available.
+        """
+        sequence = sequence.upper()
+        if len(sequence) < 6 or not self._cpb_data:
+            return 1.0
+
+        codons = [sequence[i:i + 3] for i in range(0, len(sequence), 3)]
+        log_values: list[float] = []
+        for i in range(len(codons) - 1):
+            pair_key = f"{codons[i]}-{codons[i + 1]}"
+            cpb = self._cpb_data.get(pair_key, 0.0)
+            # 2^CPB = observed/expected; log2(obs/exp) = CPB
+            log_values.append(cpb * math.log(2))  # ln(2^CPB) = CPB * ln(2)
+
+        if not log_values:
+            return 1.0
+        mean_log = sum(log_values) / len(log_values)
+        return math.exp(mean_log)
 
 
 class MinimizeMRNADG(SoftConstraint):
@@ -1123,6 +1305,7 @@ _CONSTRAINT_PRIORITY_MAP: dict[str, ConstraintPriority] = {
     "NoTRunConstraint": ConstraintPriority.LOW,
     "MaximizeCAI": ConstraintPriority.LOW,
     "MinimizeCpG": ConstraintPriority.LOW,
+    "MinimizeCodonPairBias": ConstraintPriority.LOW,
     "MinimizeMRNADG": ConstraintPriority.LOW,
 }
 
@@ -1157,6 +1340,7 @@ def _default_weight_for(name: str, config: SolverConfig) -> float:
         "MaximizeCAI": config.cai_weight,
         "MinimizeCpG": config.cpg_weight,
         "MinimizeMRNADG": config.mrna_dg_weight,
+        "MinimizeCodonPairBias": config.codon_pair_bias_weight,
     }
     return weight_map.get(name, 1.0)
 
@@ -1320,6 +1504,7 @@ class CSPModel:
             "MaximizeCAI": self.config.cai_weight,
             "MinimizeCpG": self.config.cpg_weight,
             "MinimizeMRNADG": self.config.mrna_dg_weight,
+            "MinimizeCodonPairBias": self.config.codon_pair_bias_weight,
         }
         for sc in self.soft_constraints:
             w = weight_map.get(sc.name, 0.0)
@@ -1350,7 +1535,7 @@ class CSPModel:
 
 def build_csp_model(
     protein: str,
-    organism: str,
+    organism: str | None = None,
     config: SolverConfig | None = None,
 ) -> CSPModel:
     """Build a complete CSP model for gene optimization.
@@ -1365,7 +1550,9 @@ def build_csp_model(
 
     Args:
         protein: Target amino acid sequence (e.g. ``"MVSKGE"``).
-        organism: Target organism name (must be in SUPPORTED_ORGANISMS).
+        organism: Target organism name.  If ``None``, falls back to
+            ``config.organism``.  When both are provided, the explicit
+            *organism* parameter takes precedence.
         config: Solver configuration. Uses defaults if not provided.
 
     Returns:
@@ -1378,12 +1565,22 @@ def build_csp_model(
     if config is None:
         config = SolverConfig()
 
+    # Resolve organism: explicit parameter > config.organism > default
+    if organism is None:
+        organism = config.organism
+
     protein = protein.upper().strip()
     _validate_protein(protein)
     _validate_organism(organism)
 
-    # Get organism-specific codon adaptiveness
-    adaptiveness = CODON_ADAPTIVENESS_TABLES.get(organism, {})
+    # Get organism-specific codon adaptiveness based on reference set
+    if config.cai_reference_set == "sharp_li":
+        sharp_li_tables = get_sharp_li_adaptiveness_tables()
+        adaptiveness = sharp_li_tables.get(organism, {})
+        logger.info("Using Sharp-Li (1987) CAI reference set for %s", organism)
+    else:
+        adaptiveness = CODON_ADAPTIVENESS_TABLES.get(organism, {})
+        logger.info("Using Kazusa CAI reference set for %s", organism)
     if not adaptiveness:
         logger.warning("No codon adaptiveness table for %s; using uniform weights", organism)
         adaptiveness = {codon: 1.0 for codon in CODON_TABLE}
@@ -1406,6 +1603,21 @@ def build_csp_model(
             domain=sorted_codons,
         ))
 
+    # --- Determine whether to apply eukaryote-specific constraints ---
+    # When auto_detect_organism_domain is True (default), the solver
+    # automatically skips constraints that are only relevant for eukaryotes
+    # (splice sites, CpG islands) when the target organism is prokaryotic.
+    # This recovers ~0.27 CAI on prokaryotic targets by removing constraints
+    # that unnecessarily restrict the codon search space.
+    is_eukaryote: bool = True  # safe default
+    if config.auto_detect_organism_domain:
+        is_eukaryote = is_eukaryotic_organism(organism)
+        if not is_eukaryote:
+            logger.info(
+                "Organism %s is prokaryotic; will skip eukaryote-only constraints",
+                organism,
+            )
+
     # --- Step 2: Register hard constraints ---
     hard_constraints: list[HardConstraint] = []
 
@@ -1425,20 +1637,35 @@ def build_csp_model(
     # 2c. GC range
     hard_constraints.append(GCRangeConstraint(gc_lo=config.gc_lo, gc_hi=config.gc_hi))
 
-    # 2d. Cryptic splice sites
-    hard_constraints.append(
-        NoCrypticSpliceConstraint(threshold=config.cryptic_splice_threshold)
-    )
+    # 2d. Cryptic splice sites (eukaryote-only)
+    if is_eukaryote:
+        hard_constraints.append(
+            NoCrypticSpliceConstraint(threshold=config.cryptic_splice_threshold)
+        )
+    else:
+        logger.info(
+            "Skipping eukaryote-only constraint NoCrypticSpliceConstraint "
+            "for prokaryotic organism %s",
+            organism,
+        )
 
-    # 2e. CpG islands
-    if config.avoid_cpg:
-        hard_constraints.append(NoCpGIslandConstraint())
+    # 2e. CpG islands (eukaryote-only)
+    if is_eukaryote:
+        if config.avoid_cpg:
+            hard_constraints.append(NoCpGIslandConstraint(organism=organism))
+    else:
+        if config.avoid_cpg:
+            logger.info(
+                "Skipping eukaryote-only constraint NoCpGIslandConstraint "
+                "for prokaryotic organism %s",
+                organism,
+            )
 
-    # 2f. ATTTA instability motifs
+    # 2f. ATTTA instability motifs (relevant to both domains)
     if config.avoid_attta:
         hard_constraints.append(NoATTTAMotifConstraint())
 
-    # 2g. T-runs
+    # 2g. T-runs (relevant to both domains)
     if config.avoid_t_runs:
         hard_constraints.append(NoTRunConstraint())
 
@@ -1448,12 +1675,32 @@ def build_csp_model(
     # 3a. Maximize CAI
     soft_constraints.append(MaximizeCAI(adaptiveness=adaptiveness, protein=protein))
 
-    # 3b. Minimize CpG
-    if config.avoid_cpg:
-        soft_constraints.append(MinimizeCpG())
+    # 3b. Minimize CpG (eukaryote-only objective)
+    if is_eukaryote:
+        if config.avoid_cpg:
+            soft_constraints.append(MinimizeCpG(organism=organism))
+    else:
+        if config.avoid_cpg:
+            logger.info(
+                "Skipping eukaryote-only soft constraint MinimizeCpG "
+                "for prokaryotic organism %s",
+                organism,
+            )
 
     # 3c. Minimize mRNA dG at 5' end
     soft_constraints.append(MinimizeMRNADG())
+
+    # 3d. Minimize codon pair bias (optional -- off by default)
+    if config.optimize_codon_pair_bias:
+        cpb_constraint = MinimizeCodonPairBias(organism=organism)
+        # Only add if CPB data is available for the organism
+        if cpb_constraint.cpb_data:
+            soft_constraints.append(cpb_constraint)
+        else:
+            logger.warning(
+                "Codon pair bias optimization requested but no CPB data "
+                "available for organism '%s'; skipping.", organism,
+            )
 
     # --- Step 4: Build and return the model ---
     model = CSPModel(

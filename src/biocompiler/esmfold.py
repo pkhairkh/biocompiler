@@ -1468,6 +1468,13 @@ def predict_batch(
     Returns:
         Aggregated :class:`BatchStructureResult`.
     """
+    import warnings as _warnings
+    _warnings.warn(
+        "esmfold.predict_batch() is deprecated — use "
+        "predict_structure_batch() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     with EngineTimer() as batch_timer:
         # Resolve names.
         if request.names is not None:

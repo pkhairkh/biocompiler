@@ -661,6 +661,7 @@ except ImportError:
 
 try:
     from .solver import CSPSolver, SolverConfig, SolverResult, SolverBackend
+    from .solver import CAIAwareConstraintResolver
     from .solver.dispatch import solve_with_csp, is_solver_available, csp_optimize
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
@@ -668,6 +669,7 @@ except ImportError:
     SolverConfig = None
     SolverResult = None
     SolverBackend = None
+    CAIAwareConstraintResolver = None
     solve_with_csp = None
     is_solver_available = None
     csp_optimize = None
@@ -721,12 +723,15 @@ except ImportError:
 try:
     from .organism_config import (
         OrganismConfig, ORGANISM_CONFIGS, get_organism_config,
+        is_eukaryotic_organism, auto_detect_organism_domain,
     )
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
     OrganismConfig = None
     ORGANISM_CONFIGS = None
     get_organism_config = None
+    is_eukaryotic_organism = None
+    auto_detect_organism_domain = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # UTR Models
@@ -1087,6 +1092,7 @@ __all__ = [
 
     # ── Organism configuration ───────────────────────────────
     "OrganismConfig", "ORGANISM_CONFIGS", "get_organism_config",
+    "is_eukaryotic_organism", "auto_detect_organism_domain",
 
     # ── UTR Models ──────────────────────────────────────────
     "UTRConfig", "suggest_5utr", "suggest_3utr",

@@ -48,6 +48,8 @@ __all__ = [
     "BenchmarkRunner",
     "BenchmarkReport",
     "DEFAULT_ENZYME_PANEL",
+    "AVAILABLE_BENCHMARKS",
+    "run_benchmark_by_name",
 ]
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,26 @@ DEFAULT_ENZYME_PANEL: list[str] = [
 # GC range defaults for constraint checking
 _DEFAULT_GC_LO: float = 0.30
 _DEFAULT_GC_HI: float = 0.70
+
+# ---------------------------------------------------------------------------
+# Available benchmark registry
+# ---------------------------------------------------------------------------
+
+AVAILABLE_BENCHMARKS: dict[str, str] = {
+    "sharp_li_cai": (
+        "Compare CAI computed with Kazusa vs Sharp-Li reference sets "
+        "against published values from Sharp & Li (1987) and Puigbo et al. (2008)"
+    ),
+    "organism_aware_cai": (
+        "Demonstrate CAI recovery when eukaryotic-specific constraints "
+        "(splice/CpG) are disabled for prokaryotic targets such as E. coli"
+    ),
+}
+"""Registry of available named benchmarks with descriptions.
+
+Keys are benchmark names that can be passed to :func:`run_benchmark_by_name`.
+Values are human-readable descriptions of what each benchmark does.
+"""
 
 # Epsilon for floating-point comparisons
 _EPSILON: float = 0.001
@@ -482,6 +504,57 @@ class BenchmarkRunner:
             sequence_identity=0.0,
             runtime_s=0.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# run_benchmark_by_name — dispatch to the correct benchmark
+# ---------------------------------------------------------------------------
+
+def run_benchmark_by_name(name: str) -> dict:
+    """Run a benchmark suite by name and return its results.
+
+    Dispatches to the appropriate benchmark function based on *name*.
+    This is the runner-level entry point that complements the higher-level
+    :func:`biocompiler.benchmarking.run_benchmark_by_name` (which imports
+    from this module and from ``sharp_li_benchmark`` / ``organism_aware_benchmark``).
+
+    Parameters
+    ----------
+    name : str
+        Benchmark name.  Must be a key in :data:`AVAILABLE_BENCHMARKS`.
+
+    Returns
+    -------
+    dict
+        Benchmark results (structure depends on the benchmark).
+
+    Raises
+    ------
+    ValueError
+        If *name* is not a recognised benchmark.
+
+    Examples
+    --------
+    >>> from biocompiler.benchmarking.runner import run_benchmark_by_name
+    >>> result = run_benchmark_by_name("sharp_li_cai")
+    >>> print(result["sharp_li_is_closer"])
+    True
+    """
+    if name not in AVAILABLE_BENCHMARKS:
+        available = ", ".join(sorted(AVAILABLE_BENCHMARKS.keys()))
+        raise ValueError(
+            f"Unknown benchmark '{name}'. Available: {available}"
+        )
+
+    if name == "sharp_li_cai":
+        from .sharp_li_benchmark import benchmark_sharp_li_cai
+        return benchmark_sharp_li_cai()
+    elif name == "organism_aware_cai":
+        from .organism_aware_benchmark import benchmark_organism_aware_cai
+        return benchmark_organism_aware_cai()
+    else:
+        # Should not reach here if AVAILABLE_BENCHMARKS is in sync
+        raise ValueError(f"Benchmark '{name}' is registered but has no runner.")
 
 
 # ---------------------------------------------------------------------------

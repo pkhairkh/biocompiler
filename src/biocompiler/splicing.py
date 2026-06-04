@@ -14,6 +14,7 @@ Production-grade splicing engine with:
 from __future__ import annotations
 
 import logging
+import warnings
 from itertools import combinations
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "maxent_score",
+    "maxent_score_v2",
     "score_splice_sites",
     "compute_splice_isoforms",
 ]
@@ -74,20 +76,8 @@ _DEFAULT_MAX_ALT_SITES: int = 3              # Maximum alternative sites per int
 _DEFAULT_CRYPTIC_SCORE_THRESHOLD: float = 8.0  # Minimum score for cryptic sites to be included
 
 
-def maxent_score(context: str) -> float:
-    """Compute simplified MaxEntScan score for a potential splice site context.
-
-    This is a fast approximate scoring using a hand-crafted PWM for 5' donor
-    sites. For precise log-odds scoring, use score_donor() / score_acceptor()
-    from the maxentscan module instead.
-
-    Args:
-        context: DNA sequence around a GT dinucleotide (ideally 9-mer)
-
-    Returns:
-        PWM weighted sum score. Higher = stronger splice signal.
-        Thresholds: < 3.0 PASS, 3.0-6.0 UNCERTAIN, >= 6.0 FAIL.
-    """
+def _compute_pwm_score(context: str) -> float:
+    """Internal: compute the raw PWM weighted-sum score (no deprecation warning)."""
     if len(context) < _MIN_CONTEXT_LEN:
         return 0.0
 
@@ -104,8 +94,84 @@ def maxent_score(context: str) -> float:
     return score
 
 
+def maxent_score(context: str) -> float:
+    """Compute simplified MaxEntScan score for a potential splice site context.
+
+    .. deprecated:: 0.9.0
+        This function uses a hand-crafted PWM that produces scores ANTI-CORRELATED
+        with proper MaxEntScan (Yeo & Burge 2004) log-odds scoring. Use
+        ``maxentscan.score_donor()`` or ``maxentscan.score_acceptor()`` instead.
+        For a drop-in replacement, see ``maxent_score_v2()``.
+        Will be removed in v10.0.
+
+    This is a fast approximate scoring using a hand-crafted PWM for 5' donor
+    sites. For precise log-odds scoring, use score_donor() / score_acceptor()
+    from the maxentscan module instead.
+
+    Args:
+        context: DNA sequence around a GT dinucleotide (ideally 9-mer)
+
+    Returns:
+        PWM weighted sum score. Higher = stronger splice signal.
+        Thresholds: < 3.0 PASS, 3.0-6.0 UNCERTAIN, >= 6.0 FAIL.
+    """
+    warnings.warn(
+        "splicing.maxent_score() is deprecated — its hand-crafted PWM is "
+        "anti-correlated with proper MaxEntScan scoring. Use "
+        "maxentscan.score_donor() or maxentscan.score_acceptor() instead. "
+        "Will be removed in v10.0.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _compute_pwm_score(context)
+
+
+def maxent_score_v2(context: str) -> float:
+    """Compute MaxEntScan donor score for a 9-mer context around a GT dinucleotide.
+
+    This is the corrected replacement for the deprecated ``maxent_score()``.
+    It delegates to ``maxentscan.score_donor()`` which uses the proper
+    Yeo & Burge 2004 log-odds model, producing scores that are positively
+    correlated with true splice site strength.
+
+    Unlike the deprecated ``maxent_score()``, higher scores here genuinely
+    indicate stronger splice signals (canonical donors score 8-12, weak
+    donors 0-5, non-donors < 0).
+
+    Args:
+        context: DNA sequence of at least 9 bases containing a GT
+            dinucleotide. The GT should start at position 3 (0-indexed)
+            for the standard -3 to +6 donor context.
+
+    Returns:
+        MaxEntScan log-odds donor score. Higher = stronger splice signal.
+        Returns -50.0 if the context is too short for proper scoring.
+    """
+    from .maxentscan import score_donor as _score_donor
+
+    context = context.upper()
+    gt_pos = context.find("GT")
+    if gt_pos < 0 or len(context) < _PWM_CONTEXT_LEN:
+        return -50.0
+
+    needed_upstream = 3
+    needed_downstream = 6
+    pad_left = max(0, needed_upstream - gt_pos)
+    pad_right = max(0, needed_downstream - (len(context) - gt_pos - 2))
+    padded = "A" * pad_left + context + "A" * pad_right
+    adjusted_pos = gt_pos + pad_left
+
+    return _score_donor(padded, adjusted_pos)
+
+
 def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_thresh: float = _DEFAULT_HIGH_THRESH) -> list[tuple[int, float, SpliceVerdict]]:
     """Score all potential splice sites in a sequence using simplified PWM.
+
+    .. deprecated:: 0.9.0
+        This function depends on the deprecated ``maxent_score()`` whose PWM
+        is anti-correlated with proper MaxEntScan scoring. Use
+        ``maxentscan.scan_splice_sites()`` instead.
+        Will be removed in v10.0.
 
     Scans for GT dinucleotides and classifies each site as
     PASS / UNCERTAIN / FAIL based on dual-threshold scoring.
@@ -118,6 +184,14 @@ def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_t
     Returns:
         List of (position, score, SpliceVerdict) tuples for each GT site found.
     """
+    warnings.warn(
+        "splicing.score_splice_sites() is deprecated — it depends on "
+        "maxent_score() which uses an anti-correlated PWM. Use "
+        "maxentscan.scan_splice_sites() instead. "
+        "Will be removed in v10.0.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from .type_system import SpliceVerdict  # noqa: F811 — runtime import for enum values
     results: list[tuple[int, float, SpliceVerdict]] = []
     for i in range(len(seq) - 1):
@@ -125,7 +199,8 @@ def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_t
             start = max(0, i - _PWM_UPSTREAM)
             end = min(len(seq), i + _PWM_DOWNSTREAM)
             context = seq[start:end]
-            sc = maxent_score(context)
+            # Use internal _compute_pwm_score to avoid nested deprecation warning
+            sc = _compute_pwm_score(context)
             if sc < low_thresh:
                 verdict = SpliceVerdict.PASS
             elif sc < high_thresh:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Protocol
+from typing import Any, ClassVar, Optional, Protocol
 
 
 __all__ = [
@@ -102,6 +102,7 @@ class ConstraintType(str, Enum):
     # Sequence composition constraints
     GC_CONTENT = "gc_content"
     CODON_USAGE = "codon_usage"
+    CODON_PAIR_BIAS = "codon_pair_bias"
     NO_CPG = "no_cpg"
     NO_GT_DINUCLEOTIDE = "no_gt_dinucleotide"
 
@@ -240,6 +241,26 @@ class CodonVariable:
     current_value: Optional[str] = None
 
 
+def _is_eukaryotic(organism: str) -> bool:
+    """Check whether *organism* is eukaryotic.
+
+    Wraps :func:`biocompiler.organism_config.is_eukaryotic_organism`
+    with a safe fallback (returns True for unknown organisms, matching
+    the convention in :mod:`~biocompiler.organism_config`).
+
+    This helper is used by :meth:`ConstraintSpec.check` to skip
+    eukaryote-specific constraints (cryptic splice, CpG islands) when
+    the target organism is prokaryotic.
+    """
+    try:
+        from ..organism_config import is_eukaryotic_organism
+        return is_eukaryotic_organism(organism)
+    except Exception:
+        # If organism config is unavailable, default to True (eukaryote)
+        # to avoid false negatives.
+        return True
+
+
 @dataclass(frozen=True)
 class ConstraintSpec:
     """A single constraint in the CSP model.
@@ -287,10 +308,11 @@ class ConstraintSpec:
         thresholds, forbidden sites, etc.).  Returns True for unknown
         constraint types (no violation).
 
-        This method enables :func:`validate_csp_solution` and other
-        post-solve verification code to check ``ConstraintSpec`` objects
-        directly, without requiring a full ``HardConstraint`` / ``SoftConstraint``
-        instance.
+        The checking logic is kept strictly consistent with the
+        ``HardConstraint.check()`` implementations in
+        :mod:`~biocompiler.solver.constraints` so that
+        :meth:`ConstraintSpec.check` and the corresponding
+        ``HardConstraint.check`` always agree on the same input.
 
         Parameters
         ----------
@@ -316,6 +338,10 @@ class ConstraintSpec:
 
         # ── CpG island avoidance ──────────────────────────────
         if self.ctype == ConstraintType.NO_CPG:
+            # Prokaryotes lack DNA methylation → CpG islands are irrelevant.
+            organism = self.params.get("organism", "")
+            if organism and not _is_eukaryotic(organism):
+                return True
             window = self.params.get("window", 200)
             threshold = self.params.get("threshold", 0.6)
             if len(seq) < window:
@@ -337,15 +363,20 @@ class ConstraintSpec:
             ConstraintType.NO_CRYPTIC_SPLICE,
             ConstraintType.SPLICE_DONOR_AVOIDANCE,
         ):
+            # Prokaryotes lack spliceosomes → cryptic splice sites are
+            # irrelevant.
+            organism = self.params.get("organism", "")
+            if organism and not _is_eukaryotic(organism):
+                return True
             threshold = self.params.get("threshold", 3.0)
             from ..maxentscan import score_donor, score_acceptor
 
             for i in range(len(seq) - 1):
                 if seq[i : i + 2] == "GT":
-                    if score_donor(sequence, i) >= threshold:
+                    if score_donor(seq, i) >= threshold:
                         return False
                 if seq[i : i + 2] == "AG":
-                    if score_acceptor(sequence, i) >= threshold:
+                    if score_acceptor(seq, i) >= threshold:
                         return False
             return True
 
@@ -398,6 +429,10 @@ class ConstraintSpec:
 
         # ── Codon usage (soft/optimization — always satisfied) ─
         if self.ctype == ConstraintType.CODON_USAGE:
+            return True
+
+        # ── Codon pair bias (soft/optimization — always satisfied) ─
+        if self.ctype == ConstraintType.CODON_PAIR_BIAS:
             return True
 
         # ── GT dinucleotide avoidance ─────────────────────────
@@ -505,6 +540,51 @@ class MUSReport:
             self.conflicting_constraints = [c.name for c in self.mus_constraints]
 
 
+# ---------------------------------------------------------------------------
+# Organism-specific presets for SolverConfig.for_organism()
+# ---------------------------------------------------------------------------
+
+_ORGANISM_PRESETS: dict[str, dict[str, Any]] = {
+    "E_coli_K12": {
+        "cai_weight": 1.0, "cpg_weight": 0.0, "mrna_dg_weight": 0.2,
+        "gc_lo": 0.45, "gc_hi": 0.55, "avoid_cpg": False,
+        "cryptic_splice_threshold": 0.0,
+    },
+    "E_coli_BL21": {
+        "cai_weight": 1.0, "cpg_weight": 0.0, "mrna_dg_weight": 0.2,
+        "gc_lo": 0.45, "gc_hi": 0.55, "avoid_cpg": False,
+        "cryptic_splice_threshold": 0.0,
+    },
+    "Homo_sapiens": {
+        "cai_weight": 1.0, "cpg_weight": 0.5, "mrna_dg_weight": 0.3,
+        "gc_lo": 0.40, "gc_hi": 0.60, "avoid_cpg": True,
+        "cryptic_splice_threshold": 3.0,
+    },
+    "Mus_musculus": {
+        "cai_weight": 1.0, "cpg_weight": 0.4, "mrna_dg_weight": 0.2,
+        "gc_lo": 0.40, "gc_hi": 0.55, "avoid_cpg": True,
+        "cryptic_splice_threshold": 3.0,
+    },
+    "CHO_K1": {
+        "cai_weight": 1.0, "cpg_weight": 0.5, "mrna_dg_weight": 0.3,
+        "gc_lo": 0.40, "gc_hi": 0.60, "avoid_cpg": True,
+        "cryptic_splice_threshold": 3.0,
+    },
+    "Saccharomyces_cerevisiae": {
+        "cai_weight": 1.0, "cpg_weight": 0.1, "mrna_dg_weight": 0.2,
+        "gc_lo": 0.35, "gc_hi": 0.45, "avoid_cpg": False,
+        "cryptic_splice_threshold": 3.0,
+    },
+}
+
+_ORGANISM_ALIASES: dict[str, str] = {
+    "E. coli": "E_coli_K12", "ecoli": "E_coli_K12",
+    "E_coli": "E_coli_K12", "Escherichia_coli": "E_coli_K12",
+    "human": "Homo_sapiens", "mouse": "Mus_musculus",
+    "cho": "CHO_K1", "yeast": "Saccharomyces_cerevisiae",
+}
+
+
 @dataclass
 class SolverConfig:
     """Configuration for the CSP solver.
@@ -520,6 +600,16 @@ class SolverConfig:
     gc_high) are provided as @property accessors.
 
     Attributes:
+        organism: Target organism name (e.g. ``"Homo_sapiens"``,
+            ``"E_coli_K12"``).  Stored on the config so that every stage
+            of the solver pipeline can make organism-aware decisions
+            without requiring a separate parameter.  Defaults to
+            ``"Homo_sapiens"``.
+        auto_detect_organism_domain: When ``True`` (default), the solver
+            automatically determines whether the target organism is
+            eukaryotic and skips eukaryote-only constraints (cryptic
+            splice sites, CpG islands) for prokaryotic targets.  Set to
+            ``False`` to treat the organism as eukaryotic regardless.
         backend: Which solver backend to use.
         timeout_seconds: Maximum solve time before falling back.
         max_codons: Maximum sequence length the solver handles.
@@ -549,6 +639,8 @@ class SolverConfig:
         verbose: Whether to emit detailed solver diagnostics.
     """
 
+    organism: str = "Homo_sapiens"  # Target organism for the solver pipeline
+    auto_detect_organism_domain: bool = True  # Auto-skip eukaryote-only constraints for prokaryotes
     backend: SolverBackend = SolverBackend.ORTOOLS
     timeout_seconds: float = 60.0
     max_codons: int = 5000  # Max sequence length the solver handles
@@ -565,7 +657,57 @@ class SolverConfig:
     cai_weight: float = 1.0
     cpg_weight: float = 0.5
     mrna_dg_weight: float = 0.3  # Weight for mRNA structure objective (ViennaRNA)
+    optimize_codon_pair_bias: bool = False  # Enable codon pair bias soft constraint
+    codon_pair_bias_weight: float = 0.2  # Weight for codon pair bias objective
+    cai_reference_set: str = "kazusa"  # CAI reference set: "kazusa" (default) or "sharp_li"
     verbose: bool = False
+
+
+    # Valid values for cai_reference_set
+    _VALID_CAI_REFERENCE_SETS: ClassVar[tuple[str, ...]] = ("kazusa", "sharp_li")
+
+    def __post_init__(self) -> None:
+        """Validate cai_reference_set is one of the allowed values."""
+        if self.cai_reference_set not in self._VALID_CAI_REFERENCE_SETS:
+            raise ValueError(
+                f"Invalid cai_reference_set '{self.cai_reference_set}'."
+                f" Valid values: {list(self._VALID_CAI_REFERENCE_SETS)}"
+            )
+
+    @classmethod
+    def for_organism(cls, organism: str) -> SolverConfig:
+        """Return a pre-tuned SolverConfig for the given organism.
+
+        Uses organism-specific scoring weights and constraint parameters.
+        For prokaryotes, CpG-avoidance is irrelevant (no DNA methylation),
+        so ``cpg_weight`` is set to 0.0.
+
+        The *organism* argument accepts both canonical keys (e.g.
+        ``"E_coli_K12"``) and legacy aliases (e.g. ``"ecoli"``,
+        ``"human"``).  If the organism is not found, a default config
+        is returned with a warning.
+        """
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+
+        canonical = _ORGANISM_ALIASES.get(organism, organism)
+        preset = _ORGANISM_PRESETS.get(canonical)
+        if preset is None:
+            _logger.warning(
+                "No preset config for organism %r; using default SolverConfig",
+                organism,
+            )
+            return cls()
+
+        config = cls(**preset)
+        _logger.info(
+            "Created SolverConfig for organism %r: "
+            "cai=%.2f, cpg=%.2f, mrna_dg=%.2f, gc=[%.2f,%.2f], avoid_cpg=%s",
+            organism, config.cai_weight, config.cpg_weight,
+            config.mrna_dg_weight, config.gc_lo, config.gc_hi,
+            config.avoid_cpg,
+        )
+        return config
 
     @property
     def gc_low(self) -> float:
@@ -586,6 +728,25 @@ class SolverConfig:
     def effective_acceptor_threshold(self) -> float:
         """Acceptor threshold, falling back to cryptic_splice_threshold if not set."""
         return self.acceptor_threshold if self.acceptor_threshold is not None else self.cryptic_splice_threshold
+
+    @property
+    def is_eukaryotic(self) -> bool:
+        """Whether the target organism is eukaryotic.
+
+        When ``auto_detect_organism_domain`` is ``True`` (the default),
+        this property delegates to :func:`is_eukaryotic_organism` using
+        the configured ``organism`` name to determine the domain of life.
+        When ``auto_detect_organism_domain`` is ``False``, the property
+        assumes the organism is eukaryotic (conservative default).
+
+        Returns:
+            ``True`` if the organism is eukaryotic, ``False`` otherwise.
+        """
+        if self.auto_detect_organism_domain:
+            from ..organism_config import is_eukaryotic_organism
+            return is_eukaryotic_organism(self.organism)
+        # When auto-detect is off, assume eukaryote (conservative default)
+        return True
 
 
 @dataclass

@@ -73,6 +73,12 @@ markers = [
     "benchmark: marks tests that run benchmarks (may be slow)",
     "requires_external: marks tests that need external tools (DNAchisel, MHCflurry)",
     "e2e: marks end-to-end integration tests",
+    "deprecation: tests verifying deprecated API warning behavior",
+]
+filterwarnings = [
+    # Ensure DeprecationWarnings from biocompiler modules are always visible
+    # in test runs, so pytest.warns() can catch them reliably.
+    "always::DeprecationWarning:biocompiler",
 ]
 
 [tool.mypy]

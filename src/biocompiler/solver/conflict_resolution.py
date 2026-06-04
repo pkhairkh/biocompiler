@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ConstraintConflict",
     "ConflictResolver",
+    "CAIAwareConstraintResolver",
     "prioritize_constraints",
 ]
 
@@ -145,6 +146,58 @@ def prioritize_constraints(constraints: list[ConstraintSpec]) -> list[Constraint
     return sorted(constraints, key=lambda c: c.priority)
 
 
+
+
+# =====================================================================
+# CAIAwareConstraintResolver class
+# =====================================================================
+
+class CAIAwareConstraintResolver:
+    """Rank conflict resolution options by estimated CAI impact."""
+
+    _CAI_IMPACT_TABLE: dict[ConstraintType, float] = {
+        ConstraintType.GC_CONTENT: -0.05,
+        ConstraintType.CODON_USAGE: -0.10,
+        ConstraintType.NO_CPG: 0.03,
+        ConstraintType.NO_GT_DINUCLEOTIDE: 0.04,
+        ConstraintType.NO_CRYPTIC_SPLICE: 0.03,
+        ConstraintType.SPLICE_DONOR_AVOIDANCE: 0.03,
+        ConstraintType.RESTRICTION_SITE: 0.01,
+        ConstraintType.MRNA_STABILITY: 0.002,
+        ConstraintType.NO_INSTABILITY_MOTIF: 0.005,
+        ConstraintType.AMINO_ACID_IDENTITY: -0.50,
+        ConstraintType.MHC_BINDING: 0.0,
+        ConstraintType.TCELL_EPITOPE: 0.0,
+        ConstraintType.PROTEIN_STABILITY: 0.0,
+        ConstraintType.CUSTOM: 0.0,
+    }
+
+    def estimate_cai_impact(self, spec: ConstraintSpec) -> float:
+        """Estimate the CAI impact of relaxing a constraint."""
+        return self._CAI_IMPACT_TABLE.get(spec.ctype, 0.0)
+
+    def rank_resolution(self, ca: ConstraintSpec, cb: ConstraintSpec, priority_strategy: str) -> str:
+        """Adjust the resolution strategy based on CAI impact."""
+        cai_a = self.estimate_cai_impact(ca)
+        cai_b = self.estimate_cai_impact(cb)
+        cai_diff = abs(cai_a - cai_b)
+        if cai_diff < 0.03:
+            return priority_strategy
+        if ca.priority != cb.priority:
+            return priority_strategy
+        if priority_strategy == "compromise":
+            if cai_a > cai_b:
+                return "relax_a"
+            elif cai_b > cai_a:
+                return "relax_b"
+        elif priority_strategy == "relax_a":
+            if cai_b > cai_a and ca.priority == cb.priority:
+                return "relax_b"
+        elif priority_strategy == "relax_b":
+            if cai_a > cai_b and ca.priority == cb.priority:
+                return "relax_a"
+        return priority_strategy
+
 # =====================================================================
 # ConflictResolver class
 # =====================================================================
@@ -169,9 +222,36 @@ class ConflictResolver:
     determine which constraints conflict and how to resolve them.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cai_aware: bool = True,
+        resolution_strategy: str = "cai_aware",
+    ) -> None:
         """Initialize the ConflictResolver."""
+        # resolution_strategy overrides cai_aware only when explicitly
+        # set to "priority_only". Otherwise, the cai_aware parameter
+        # takes precedence (allows cai_aware=False to work).
+        if resolution_strategy == "priority_only":
+            cai_aware = False
+        # Note: we do NOT force cai_aware=True when resolution_strategy
+        # is "cai_aware" — that would override an explicit cai_aware=False.
+
+        self._cai_aware = cai_aware
+        self._resolution_strategy = resolution_strategy
         self._conflict_cache: dict[int, list[ConstraintConflict]] = {}
+        self._cai_resolver: Optional[CAIAwareConstraintResolver] = None
+
+        if self._cai_aware:
+            self._cai_resolver = CAIAwareConstraintResolver()
+            logger.info(
+                "ConflictResolver initialized with resolution_strategy=%r (cai_aware=True)",
+                self._resolution_strategy,
+            )
+        else:
+            logger.info(
+                "ConflictResolver initialized with resolution_strategy=%r (cai_aware=False)",
+                self._resolution_strategy,
+            )
 
     # -----------------------------------------------------------------
     # Public API
@@ -236,6 +316,11 @@ class ConflictResolver:
 
                 # Determine resolution strategy
                 strategy = self._determine_strategy(ca, cb)
+
+                # If CAI-aware, adjust strategy based on CAI impact
+                if self._cai_aware and self._cai_resolver is not None:
+                    strategy = self._cai_resolver.rank_resolution(ca, cb, strategy)
+
                 conflict = ConstraintConflict(
                     constraint_a=ca.name,
                     constraint_b=cb.name,
@@ -244,8 +329,8 @@ class ConflictResolver:
                 )
                 conflicts.append(conflict)
                 logger.debug(
-                    "Detected conflict: %s vs %s at positions %s (strategy=%s)",
-                    ca.name, cb.name, overlap, strategy,
+                    "Detected conflict: %s vs %s at positions %s (strategy=%s, cai_aware=%s)",
+                    ca.name, cb.name, overlap, strategy, self._cai_aware,
                 )
 
         logger.info("Detected %d pairwise conflicts", len(conflicts))
@@ -353,8 +438,8 @@ class ConflictResolver:
             )
 
         logger.info(
-            "Auto-resolving conflicts with strategy=%s (model has %d constraints)",
-            strategy, len(model.constraints),
+            "Auto-resolving conflicts with strategy=%s, cai_aware=%s (model has %d constraints)",
+            strategy, self._cai_aware, len(model.constraints),
         )
 
         # Detect conflicts if not cached
@@ -376,13 +461,20 @@ class ConflictResolver:
         names_to_downgrade: set[str] = set()  # HARD -> SOFT
 
         if strategy == "min_relaxation":
-            names_to_remove = self._min_relaxation_select(conflicts, constraint_map)
+            if self._cai_aware and self._cai_resolver is not None:
+                names_to_remove = self._cai_aware_min_relaxation_select(conflicts, constraint_map)
+            else:
+                names_to_remove = self._min_relaxation_select(conflicts, constraint_map)
         elif strategy == "max_priority":
-            names_to_remove = self._max_priority_select(conflicts, constraint_map)
+            if self._cai_aware and self._cai_resolver is not None:
+                names_to_remove = self._cai_aware_max_priority_select(conflicts, constraint_map)
+            else:
+                names_to_remove = self._max_priority_select(conflicts, constraint_map)
         elif strategy == "compromise_first":
-            names_to_remove, names_to_downgrade = self._compromise_first_select(
-                conflicts, constraint_map,
-            )
+            if self._cai_aware and self._cai_resolver is not None:
+                names_to_remove, names_to_downgrade = self._cai_aware_compromise_first_select(conflicts, constraint_map)
+            else:
+                names_to_remove, names_to_downgrade = self._compromise_first_select(conflicts, constraint_map)
 
         # Build new constraint list
         new_constraints: list[ConstraintSpec] = []
@@ -647,4 +739,72 @@ class ConflictResolver:
                     conflict.constraint_b,
                 )
 
+        return to_remove, to_downgrade
+
+    # -----------------------------------------------------------------
+    # CAI-aware private helpers
+    # -----------------------------------------------------------------
+
+    def _cai_aware_min_relaxation_select(self, conflicts: list[ConstraintConflict], constraint_map: dict[str, ConstraintSpec]) -> set[str]:
+        """Select the minimum set of constraints to remove, CAI-aware."""
+        remaining: list[tuple[int, ConstraintConflict]] = list(enumerate(conflicts))
+        to_remove: set[str] = set()
+        while remaining:
+            involvement: dict[str, int] = {}
+            for _, conflict in remaining:
+                involvement[conflict.constraint_a] = involvement.get(conflict.constraint_a, 0) + 1
+                involvement[conflict.constraint_b] = involvement.get(conflict.constraint_b, 0) + 1
+            best_name: Optional[str] = None
+            best_score: tuple[int, int, float] = (-1, -1, -float("inf"))
+            for name, count in involvement.items():
+                spec = constraint_map.get(name)
+                priority = spec.priority if spec else ConstraintPriority.MEDIUM
+                cai_impact = self._cai_resolver.estimate_cai_impact(spec) if self._cai_resolver and spec else 0.0
+                score = (count, priority.rank, cai_impact)
+                if score > best_score:
+                    best_score = score
+                    best_name = name
+            if best_name is None:
+                break
+            to_remove.add(best_name)
+            remaining = [(idx, c) for idx, c in remaining if c.constraint_a != best_name and c.constraint_b != best_name]
+        return to_remove
+
+    def _cai_aware_max_priority_select(self, conflicts: list[ConstraintConflict], constraint_map: dict[str, ConstraintSpec]) -> set[str]:
+        """Select constraints to remove, CAI-aware max-priority."""
+        to_remove: set[str] = set()
+        for conflict in conflicts:
+            spec_a = constraint_map.get(conflict.constraint_a)
+            spec_b = constraint_map.get(conflict.constraint_b)
+            prio_a = spec_a.priority if spec_a else ConstraintPriority.MEDIUM
+            prio_b = spec_b.priority if spec_b else ConstraintPriority.MEDIUM
+            if prio_a.rank > prio_b.rank:
+                to_remove.add(conflict.constraint_a)
+            elif prio_b.rank > prio_a.rank:
+                to_remove.add(conflict.constraint_b)
+            else:
+                cai_a = self._cai_resolver.estimate_cai_impact(spec_a) if self._cai_resolver and spec_a else 0.0
+                cai_b = self._cai_resolver.estimate_cai_impact(spec_b) if self._cai_resolver and spec_b else 0.0
+                if cai_a >= cai_b:
+                    to_remove.add(conflict.constraint_a)
+                else:
+                    to_remove.add(conflict.constraint_b)
+        return to_remove
+
+    def _cai_aware_compromise_first_select(self, conflicts: list[ConstraintConflict], constraint_map: dict[str, ConstraintSpec]) -> tuple[set[str], set[str]]:
+        """Select constraints for compromise-first strategy, CAI-aware."""
+        to_remove: set[str] = set()
+        to_downgrade: set[str] = set()
+        for conflict in conflicts:
+            if conflict.resolution_strategy == "compromise":
+                to_downgrade.add(conflict.constraint_a)
+                to_downgrade.add(conflict.constraint_b)
+            elif conflict.resolution_strategy == "relax_a":
+                to_remove.add(conflict.constraint_a)
+            elif conflict.resolution_strategy == "relax_b":
+                to_remove.add(conflict.constraint_b)
+            elif conflict.resolution_strategy == "infeasible":
+                logger.warning("Skipping infeasible conflict: %s vs %s", conflict.constraint_a, conflict.constraint_b)
+            else:
+                logger.warning("Unknown strategy %r for conflict %s vs %s", conflict.resolution_strategy, conflict.constraint_a, conflict.constraint_b)
         return to_remove, to_downgrade

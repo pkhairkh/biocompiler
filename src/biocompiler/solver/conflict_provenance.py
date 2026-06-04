@@ -56,6 +56,7 @@ _VALID_RESOLUTION_METHODS = frozenset({
     "weight_based",
     "manual",
     "csp_backtrack",
+    "cai_aware",
 })
 
 
@@ -71,8 +72,8 @@ class ConflictProvenance:
     Attributes:
         conflicting_constraints: Names of the constraints that conflicted.
         resolution_method: How the conflict was resolved.  One of
-            ``"priority_based"``, ``"weight_based"``, ``"manual"``, or
-            ``"csp_backtrack"``.
+            ``"priority_based"``, ``"weight_based"``, ``"manual"``,
+            ``"csp_backtrack"``, or ``"cai_aware"``.
         winner: Name of the constraint that was satisfied (won).
         loser: Name of the constraint that was relaxed (lost).
         impact: Human-readable description of the resolution's impact.
@@ -81,6 +82,18 @@ class ConflictProvenance:
         cai_impact: Estimated CAI impact of the resolution.  Positive
             values mean the resolution *helped* CAI; negative values
             mean CAI was sacrificed.  Zero means no estimated impact.
+            This is a heuristic estimate based on constraint type.
+        cai_delta: Actual measured CAI delta of the chosen resolution.
+            Unlike ``cai_impact`` (which is heuristic), this is the
+            computed difference in CAI contribution at the affected
+            position(s).  Positive = CAI improved; negative = CAI lost.
+            Defaults to ``None`` when not computed.
+        codon_changes: List of ``(position, old_codon, new_codon, cai_delta)``
+            tuples recording the actual codon substitutions made to resolve
+            this conflict.  Each tuple captures a single position where a
+            codon was changed, the original codon, the replacement, and the
+            measured CAI delta for that specific change.  Empty list when no
+            codon changes were needed or the information was not available.
     """
 
     conflicting_constraints: list[str]
@@ -90,6 +103,8 @@ class ConflictProvenance:
     impact: str
     positions_affected: list[int]
     cai_impact: float = 0.0
+    cai_delta: Optional[float] = None
+    codon_changes: list[tuple[int, str, str, float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Validate ``resolution_method`` after initialization."""
@@ -98,14 +113,23 @@ class ConflictProvenance:
                 f"Invalid resolution_method {self.resolution_method!r}; "
                 f"must be one of {sorted(_VALID_RESOLUTION_METHODS)}"
             )
+        # Ensure codon_changes is always a list
+        if self.codon_changes is None:
+            object.__setattr__(self, 'codon_changes', [])
 
     def __repr__(self) -> str:
+        delta_str = (
+            f", cai_delta={self.cai_delta:+.6f}"
+            if self.cai_delta is not None
+            else ""
+        )
+        changes_str = f", codon_changes={len(self.codon_changes)}" if self.codon_changes else ""
         return (
             f"ConflictProvenance("
             f"{self.winner!r} > {self.loser!r}, "
             f"method={self.resolution_method!r}, "
             f"positions={self.positions_affected}, "
-            f"cai_impact={self.cai_impact:+.4f})"
+            f"cai_impact={self.cai_impact:+.4f}{delta_str}{changes_str})"
         )
 
 
@@ -146,10 +170,18 @@ class ConflictResolverWithProvenance:
         self,
         track_provenance: bool = False,
         organism: str = "Homo_sapiens",
+        cai_aware: bool = True,
     ) -> None:
         self._track_provenance = track_provenance
         self._organism = organism
-        self._base_resolver = ConflictResolver()
+        self._cai_aware = cai_aware
+        self._base_resolver = ConflictResolver(cai_aware=cai_aware)
+
+        logger.info(
+            "ConflictResolverWithProvenance initialized: "
+            "track_provenance=%s, cai_aware=%s",
+            track_provenance, cai_aware,
+        )
 
     # -----------------------------------------------------------------
     # Public API
@@ -231,6 +263,8 @@ class ConflictResolverWithProvenance:
         self,
         violations: list,
         sequence: str,
+        cai_impact_override: float | None = None,
+        codon_changes: list[tuple[int, str, str, float]] | None = None,
     ) -> list[ConflictProvenance]:
         """Record provenance for constraint violations found post-solve.
 
@@ -244,6 +278,13 @@ class ConflictResolverWithProvenance:
             List of :class:`ConstraintViolation` objects from validation.
         sequence:
             The candidate DNA sequence.
+        cai_impact_override:
+            If provided, use this CAI impact value for all violation records
+            instead of the heuristic estimate.
+        codon_changes:
+            List of ``(position, old_codon, new_codon, cai_delta)`` tuples
+            documenting the actual codon substitutions associated with the
+            violations.
 
         Returns
         -------
@@ -259,6 +300,13 @@ class ConflictResolverWithProvenance:
             # Each violation represents a constraint that was implicitly
             # relaxed because it conflicted with a higher-priority one.
             # We record this as a csp_backtrack provenance entry.
+            cai_value = (
+                cai_impact_override
+                if cai_impact_override is not None
+                else self._estimate_cai_impact(
+                    violation.constraint_name, sequence,
+                )
+            )
             record = ConflictProvenance(
                 conflicting_constraints=[violation.constraint_name, "<higher_priority_constraint>"],
                 resolution_method="csp_backtrack",
@@ -271,9 +319,9 @@ class ConflictResolverWithProvenance:
                     f"higher-priority constraint."
                 ),
                 positions_affected=list(violation.positions) if violation.positions else [],
-                cai_impact=self._estimate_cai_impact(
-                    violation.constraint_name, sequence,
-                ),
+                cai_impact=cai_value,
+                cai_delta=cai_impact_override,
+                codon_changes=codon_changes or [],
             )
             records.append(record)
 
@@ -283,6 +331,74 @@ class ConflictResolverWithProvenance:
         )
         return records
 
+    def record_cai_aware_provenance(
+        self,
+        constraint_name: str,
+        codon_position: int,
+        old_codon: str,
+        new_codon: str,
+        cai_delta: float,
+        positions_affected: list[int] | None = None,
+    ) -> ConflictProvenance:
+        """Record provenance for a CAI-aware constraint fix.
+
+        When :meth:`ConstraintEnforcer.enforce_with_cai_awareness` applies
+        a fix that minimizes CAI loss, this method creates a provenance
+        record documenting the tradeoff.
+
+        Parameters
+        ----------
+        constraint_name:
+            Name of the constraint that was fixed.
+        codon_position:
+            Codon position where the fix was applied.
+        old_codon:
+            The codon that was replaced.
+        new_codon:
+            The replacement codon.
+        cai_delta:
+            The measured CAI delta of the fix (negative = CAI lost).
+        positions_affected:
+            Nucleotide positions affected by the fix.
+
+        Returns
+        -------
+        ConflictProvenance
+            The provenance record with ``cai_aware`` resolution method
+            and the measured ``cai_delta``.
+        """
+        if positions_affected is None:
+            positions_affected = [
+                codon_position * 3,
+                codon_position * 3 + 1,
+                codon_position * 3 + 2,
+            ]
+
+        impact_desc = (
+            f"Constraint '{constraint_name}' was fixed at codon position "
+            f"{codon_position} by replacing {old_codon} with {new_codon}. "
+            f"CAI delta: {cai_delta:+.6f}. "
+        )
+        if cai_delta >= 0:
+            impact_desc += "Fix improved or maintained CAI."
+        else:
+            impact_desc += (
+                "Fix sacrificed CAI — this was the least-damaging "
+                "alternative among valid codon choices."
+            )
+
+        return ConflictProvenance(
+            conflicting_constraints=[constraint_name, "MaximizeCAI"],
+            resolution_method="cai_aware",
+            winner=constraint_name,
+            loser="MaximizeCAI",
+            impact=impact_desc,
+            positions_affected=positions_affected,
+            cai_impact=self._estimate_cai_impact(constraint_name, ""),
+            cai_delta=cai_delta,
+            codon_changes=[(codon_position, old_codon, new_codon, cai_delta)],
+        )
+
     def record_relaxation_provenance(
         self,
         relaxed_constraint_name: str,
@@ -290,6 +406,8 @@ class ConflictResolverWithProvenance:
         positions_affected: list[int],
         sequence: str,
         resolution_method: str = "priority_based",
+        cai_impact_override: float | None = None,
+        codon_changes: list[tuple[int, str, str, float]] | None = None,
     ) -> ConflictProvenance:
         """Record provenance for an explicit constraint relaxation.
 
@@ -308,12 +426,27 @@ class ConflictResolverWithProvenance:
             The candidate DNA sequence.
         resolution_method:
             How the relaxation was decided.  Defaults to ``"priority_based"``.
+        cai_impact_override:
+            If provided, use this CAI impact value instead of the heuristic
+            estimate.  This should be the measured CAI delta from the
+            constraint resolution.
+        codon_changes:
+            List of ``(position, old_codon, new_codon, cai_delta)`` tuples
+            documenting the actual codon substitutions associated with the
+            relaxation.
 
         Returns
         -------
         ConflictProvenance
             The provenance record.
         """
+        cai_value = (
+            cai_impact_override
+            if cai_impact_override is not None
+            else self._estimate_cai_impact(
+                relaxed_constraint_name, sequence,
+            )
+        )
         return ConflictProvenance(
             conflicting_constraints=[relaxed_constraint_name, kept_constraint_name],
             resolution_method=resolution_method,
@@ -325,9 +458,9 @@ class ConflictResolverWithProvenance:
                 f"{positions_affected}."
             ),
             positions_affected=positions_affected,
-            cai_impact=self._estimate_cai_impact(
-                relaxed_constraint_name, sequence,
-            ),
+            cai_impact=cai_value,
+            cai_delta=cai_impact_override,
+            codon_changes=codon_changes or [],
         )
 
     # -----------------------------------------------------------------
@@ -390,6 +523,8 @@ class ConflictResolverWithProvenance:
             winner = name_b
             loser = name_a
             method = self._determine_resolution_method(spec_a, spec_b)
+            if self._cai_aware:
+                method = "cai_aware"
             impact = (
                 f"Constraint '{name_a}' was relaxed to satisfy '{name_b}' "
                 f"at position(s) {positions}. "
@@ -401,6 +536,8 @@ class ConflictResolverWithProvenance:
             winner = name_a
             loser = name_b
             method = self._determine_resolution_method(spec_a, spec_b)
+            if self._cai_aware:
+                method = "cai_aware"
             impact = (
                 f"Constraint '{name_b}' was relaxed to satisfy '{name_a}' "
                 f"at position(s) {positions}. "
@@ -410,13 +547,14 @@ class ConflictResolverWithProvenance:
         elif strategy == "compromise":
             # Both partially relaxed — pick the one with higher priority
             # as "winner" for provenance, but mark method as weight_based
+            # (or cai_aware if CAI-aware resolution is active)
             if prio_a < prio_b:
                 winner, loser = name_a, name_b
             elif prio_b < prio_a:
                 winner, loser = name_b, name_a
             else:
                 winner, loser = name_a, name_b  # arbitrary but consistent
-            method = "weight_based"
+            method = "cai_aware" if self._cai_aware else "weight_based"
             impact = (
                 f"Both constraints '{name_a}' and '{name_b}' were partially "
                 f"relaxed (compromise) at position(s) {positions}. "
@@ -446,7 +584,8 @@ class ConflictResolverWithProvenance:
             loser=loser,
             impact=impact,
             positions_affected=positions,
-            cai_impact=self._estimate_cai_impact(loser, sequence),
+            cai_impact=self._compute_cai_impact(loser, constraint_map, sequence),
+            cai_delta=None,
         )
 
     @staticmethod
@@ -468,6 +607,29 @@ class ConflictResolverWithProvenance:
                 return "weight_based"
 
         return "priority_based"
+
+    def _compute_cai_impact(
+        self,
+        loser: str,
+        constraint_map: dict[str, ConstraintSpec],
+        sequence: str,
+    ) -> float:
+        """Compute the CAI impact for a conflict resolution.
+
+        If CAI-aware resolution is active, uses the CAIAwareConstraintResolver
+        for a more precise estimate. Otherwise falls back to the heuristic
+        name-based estimation.
+        """
+        cai_impact = self._estimate_cai_impact(loser, sequence)
+
+        if self._cai_aware:
+            from .conflict_resolution import CAIAwareConstraintResolver
+            cai_resolver = CAIAwareConstraintResolver()
+            loser_spec = constraint_map.get(loser)
+            if loser_spec is not None:
+                cai_impact = cai_resolver.estimate_cai_impact(loser_spec)
+
+        return cai_impact
 
     @staticmethod
     def _estimate_cai_impact(

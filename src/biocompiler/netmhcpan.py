@@ -29,17 +29,39 @@ References
 ----------
 - NetMHCpan 4.1: Jurtz et al., J Immunol 2017; 199:3360-3368
 - NetMHCIIpan 4.0: Reynisson et al., Nucleic Acids Res 2020; 48:W449-W456
+
+MHC Prediction Fallback Chain
+-----------------------------
+When predicting MHC binding affinity, the system follows this priority:
+
+1. **MHCflurry** (if installed) — fastest local predictor, good accuracy
+2. **NetMHCpan** (if installed locally or web API reachable) — gold-standard
+   predictor from DTU Health Tech
+3. **Precomputed database** — lookup from pre-computed binding affinity
+   databases (e.g. IEDB)
+4. **PSSM fallback** — position-specific scoring matrix heuristic,
+   always available as a last resort
+
+The adapter functions :func:`is_netmhcpan_available`,
+:func:`predict_binding_netmhcpan`, and
+:func:`batch_predict_binding_netmhcpan` provide a clean interface for
+the fallback chain.  They return ``None`` or empty results when
+NetMHCpan is not available, allowing the caller to try the next
+fallback without raising exceptions.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import re
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from typing import Optional
 from .constants import DEFAULT_ENGINE_TIMEOUT
 from .engine_base import validate_protein_sequence
 from .exceptions import ImmunogenicityError
@@ -61,7 +83,10 @@ __all__ = [
     "MHC_II_EPITOPE_LENGTH",
     "DEFAULT_MHC_I_EPITOPE_LENGTHS",
     "clear_cache",
+    "is_netmhcpan_installed",
     "is_netmhcpan_available",
+    "predict_binding_netmhcpan",
+    "batch_predict_binding_netmhcpan",
     "predict_mhc_i_binding",
     "predict_mhc_ii_binding",
     "batch_predict",

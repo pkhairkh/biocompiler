@@ -46,6 +46,7 @@ __all__ = [
     "LiteratureCase",
     "ValidationResult",
     "DomainReport",
+    "CAIValidationResult",
     "SCID_CASES",
     "THALASSEMIA_CASES",
     "AGGREGATION_CASES",
@@ -54,6 +55,8 @@ __all__ = [
     "evaluate_case",
     "run_literature_validation",
     "format_literature_report",
+    "validate_cai_against_published",
+    "compare_reference_sets",
 ]
 
 
@@ -1014,3 +1017,217 @@ def format_literature_validation_report(reports: Dict[str, DomainReport]) -> str
 
     lines.append("=" * 72)
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E. CAI Validation Against Published Values
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class CAIValidationResult:
+    """Result of validating CAI computation against published values.
+
+    Attributes:
+        per_gene_results: List of dicts with per-gene comparison data
+        mean_error: Mean absolute error across all genes tested
+        max_error: Maximum absolute error across all genes tested
+        genes_within_tolerance: Number of genes within ±0.05 of published
+        genes_outside_tolerance: Number of genes outside ±0.05
+        reference_set_used: Which reference set was used ("kazusa" or "sharp_li")
+    """
+    per_gene_results: List[Dict] = field(default_factory=list)
+    mean_error: float = 0.0
+    max_error: float = 0.0
+    genes_within_tolerance: int = 0
+    genes_outside_tolerance: int = 0
+    reference_set_used: str = "kazusa"
+
+
+def validate_cai_against_published(reference_set: str = "kazusa") -> CAIValidationResult:
+    """Validate CAI computation against published values using a specified reference set.
+
+    For each (gene, organism) in PUBLISHED_CAI_VALUES that has a DNA sequence
+    available in VALIDATION_SEQUENCES, computes the CAI using the specified
+    reference set and compares it with the published value.
+
+    Args:
+        reference_set: Which reference set to use for CAI computation.
+            - "kazusa" (default): Uses the main biocompiler CAI implementation
+              which is derived from the Kazusa codon usage database.
+            - "sharp_li": Uses the original Sharp & Li (1987) reference
+              weights from the organisms.sharp_li_reference module.
+
+    Returns:
+        CAIValidationResult with per-gene results and aggregate metrics.
+    """
+    from .benchmarking.cai_published_values import (
+        PUBLISHED_CAI_VALUES,
+        VALIDATION_SEQUENCES,
+    )
+
+    per_gene: List[Dict] = []
+    errors: List[float] = []
+
+    for (gene, organism), seq_data in VALIDATION_SEQUENCES.items():
+        dna = seq_data.get("dna_sequence_full") or seq_data.get("dna_sequence")
+        if not dna:
+            continue
+
+        pub_key = (gene, organism)
+        if pub_key not in PUBLISHED_CAI_VALUES:
+            continue
+
+        expected_cai = PUBLISHED_CAI_VALUES[pub_key]["expected_cai"]
+        citation = PUBLISHED_CAI_VALUES[pub_key].get("citation", "")
+
+        # Compute CAI using the specified reference set
+        try:
+            if reference_set == "sharp_li":
+                from .organisms.sharp_li_reference import compute_cai_with_reference
+                computed_cai = compute_cai_with_reference(
+                    dna, organism, reference="sharp_li"
+                )
+            else:
+                # Default: Kazusa reference set via the main implementation
+                from .translation import compute_cai
+                computed_cai = compute_cai(dna, organism=organism)
+        except (ValueError, KeyError) as exc:
+            logger.warning(
+                "CAI computation failed for %s/%s with %s: %s",
+                gene, organism, reference_set, exc,
+            )
+            computed_cai = None
+
+        if computed_cai is None:
+            continue
+
+        abs_error = abs(computed_cai - expected_cai)
+        rel_error = abs_error / expected_cai if expected_cai != 0 else float("inf")
+
+        per_gene.append({
+            "gene": gene,
+            "organism": organism,
+            "expected_cai": expected_cai,
+            "computed_cai": computed_cai,
+            "absolute_error": abs_error,
+            "relative_error": rel_error,
+            "within_tolerance": abs_error <= 0.05,
+            "citation": citation,
+        })
+        errors.append(abs_error)
+
+    if not errors:
+        return CAIValidationResult(reference_set_used=reference_set)
+
+    within = sum(1 for e in errors if e <= 0.05)
+    outside = len(errors) - within
+
+    return CAIValidationResult(
+        per_gene_results=per_gene,
+        mean_error=sum(errors) / len(errors),
+        max_error=max(errors),
+        genes_within_tolerance=within,
+        genes_outside_tolerance=outside,
+        reference_set_used=reference_set,
+    )
+
+
+def compare_reference_sets() -> Dict:
+    """Compare Kazusa and Sharp-Li reference sets against published CAI values.
+
+    Runs validate_cai_against_published for both "kazusa" and "sharp_li"
+    reference sets and produces a comparison showing which reference set
+    produces values closer to the published results for each gene.
+
+    Returns:
+        Dict with keys:
+            - "kazusa_result": CAIValidationResult for Kazusa reference set
+            - "sharp_li_result": CAIValidationResult for Sharp-Li reference set
+            - "per_gene_comparison": List of dicts comparing both sets per gene
+            - "kazusa_better_genes": Genes where Kazusa is closer to published
+            - "sharp_li_better_genes": Genes where Sharp-Li is closer to published
+            - "summary": Human-readable summary string
+    """
+    kazusa_result = validate_cai_against_published("kazusa")
+    sharp_li_result = validate_cai_against_published("sharp_li")
+
+    # Build per-gene comparison
+    kazusa_by_key = {
+        (r["gene"], r["organism"]): r for r in kazusa_result.per_gene_results
+    }
+    sharp_li_by_key = {
+        (r["gene"], r["organism"]): r for r in sharp_li_result.per_gene_results
+    }
+
+    all_keys = sorted(set(kazusa_by_key.keys()) | set(sharp_li_by_key.keys()))
+
+    per_gene_comparison: List[Dict] = []
+    kazusa_better: List[str] = []
+    sharp_li_better: List[str] = []
+
+    for key in all_keys:
+        gene, organism = key
+        k = kazusa_by_key.get(key)
+        s = sharp_li_by_key.get(key)
+
+        entry: Dict = {
+            "gene": gene,
+            "organism": organism,
+            "expected_cai": (k or s)["expected_cai"],
+        }
+
+        if k:
+            entry["kazusa_cai"] = k["computed_cai"]
+            entry["kazusa_abs_error"] = k["absolute_error"]
+        else:
+            entry["kazusa_cai"] = None
+            entry["kazusa_abs_error"] = None
+
+        if s:
+            entry["sharp_li_cai"] = s["computed_cai"]
+            entry["sharp_li_abs_error"] = s["absolute_error"]
+        else:
+            entry["sharp_li_cai"] = None
+            entry["sharp_li_abs_error"] = None
+
+        # Determine which is closer
+        if k and s:
+            if k["absolute_error"] < s["absolute_error"]:
+                entry["closer_reference"] = "kazusa"
+                kazusa_better.append(f"{gene}/{organism}")
+            elif s["absolute_error"] < k["absolute_error"]:
+                entry["closer_reference"] = "sharp_li"
+                sharp_li_better.append(f"{gene}/{organism}")
+            else:
+                entry["closer_reference"] = "tie"
+        elif k:
+            entry["closer_reference"] = "kazusa_only"
+        elif s:
+            entry["closer_reference"] = "sharp_li_only"
+
+        per_gene_comparison.append(entry)
+
+    # Build summary
+    summary_lines = [
+        "CAI Reference Set Comparison Summary",
+        "=" * 40,
+        f"Kazusa:  mean_error={kazusa_result.mean_error:.4f}, "
+        f"max_error={kazusa_result.max_error:.4f}, "
+        f"within_tol={kazusa_result.genes_within_tolerance}/{len(kazusa_result.per_gene_results)}",
+        f"Sharp-Li: mean_error={sharp_li_result.mean_error:.4f}, "
+        f"max_error={sharp_li_result.max_error:.4f}, "
+        f"within_tol={sharp_li_result.genes_within_tolerance}/{len(sharp_li_result.per_gene_results)}",
+        "",
+        f"Genes where Kazusa is closer:  {len(kazusa_better)}",
+        f"Genes where Sharp-Li is closer: {len(sharp_li_better)}",
+    ]
+
+    return {
+        "kazusa_result": kazusa_result,
+        "sharp_li_result": sharp_li_result,
+        "per_gene_comparison": per_gene_comparison,
+        "kazusa_better_genes": kazusa_better,
+        "sharp_li_better_genes": sharp_li_better,
+        "summary": "\n".join(summary_lines),
+    }

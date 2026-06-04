@@ -39,7 +39,7 @@ from biocompiler.type_system import (
     PredicateResult,
 )
 from biocompiler.types import Verdict
-from biocompiler.splicing import maxent_score
+from biocompiler.maxentscan import score_donor as _score_donor_mes
 
 
 # ────────────────────────────────────────────────────────────
@@ -149,14 +149,15 @@ def _independent_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thres
       no site has score ≥ crypticThreshold (i.e., high_thresh in our dual-threshold).
     If the Python function returns PASS, no site should have score >= high_thresh.
     """
+    seq = seq.upper()
     gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
     if not gt_positions:
         return True
     for pos in gt_positions:
-        context_start = max(0, pos - 3)
-        context_end = min(len(seq), pos + 6)
-        context = seq[context_start:context_end]
-        score = maxent_score(context)
+        score = _score_donor_mes(seq, pos)
+        # Sites without enough context return -50; treat as 0 (not cryptic)
+        if score <= -50.0:
+            score = 0.0
         if score >= high_thresh:
             return False
     return True
@@ -473,14 +474,15 @@ class TestNoCrypticSpliceSoundness:
         assume(low_thresh < high_thresh)
         result = check_no_cryptic_splice(seq, low_thresh=low_thresh, high_thresh=high_thresh)
         if result.verdict == Verdict.FAIL:
-            gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
+            seq_upper = seq.upper()
+            gt_positions = [i for i in range(len(seq_upper) - 1) if seq_upper[i:i+2] == "GT"]
             assert len(gt_positions) > 0, "FAIL but no GT found"
             has_high = False
             for pos in gt_positions:
-                context_start = max(0, pos - 3)
-                context_end = min(len(seq), pos + 6)
-                context = seq[context_start:context_end]
-                score = maxent_score(context)
+                score = _score_donor_mes(seq_upper, pos)
+                # Sites without enough context return -50; treat as 0
+                if score <= -50.0:
+                    score = 0.0
                 if score >= high_thresh:
                     has_high = True
                     break
@@ -1033,12 +1035,14 @@ class TestEdgeCases:
         result = check_valid_coding_seq(codon)
         assert result.verdict == Verdict.PASS
 
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_maxent_score_short_context(self):
-        """maxent_score handles very short contexts."""
-        assert maxent_score("") == 0.0
-        assert maxent_score("G") == 0.0
-        assert maxent_score("GT") == 0.0
-        score = maxent_score("GTAA")
+        """score_donor handles very short contexts (returns -50 for insufficient context)."""
+        # score_donor needs 3 upstream + 6 downstream context
+        assert _score_donor_mes("", 0) == -50.0
+        assert _score_donor_mes("G", 0) == -50.0
+        assert _score_donor_mes("GT", 0) == -50.0
+        score = _score_donor_mes("AAACAGGTAAGTAAAA", 5)
         assert isinstance(score, float)
 
     def test_cryptic_splice_short_sequence(self):

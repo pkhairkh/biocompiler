@@ -41,6 +41,8 @@ __all__ = [
     "evaluate_co_translational_folding", "evaluate_all_predicates",
     # Cross-codon helpers
     "find_cross_codon_gt", "find_cross_codon_cg", "find_cross_codon_restriction",
+    # Organism-aware helpers
+    "_is_prokaryotic_organism",
     # Registry
     "PredicateRegistry", "registry",
 ]
@@ -386,33 +388,59 @@ def check_no_cryptic_promoter(seq: str, organism: str = "E_coli", threshold: flo
 
 
 def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: float = 6.0) -> PredicateResult:
-    """Predicate 2: No cryptic splice sites (dual-threshold PASS/UNCERTAIN/FAIL)."""
-    from .splicing import maxent_score
-    gt_positions = []
-    for i in range(len(seq) - 1):
-        if seq[i:i+2] == "GT":
-            gt_positions.append(i)
-    if not gt_positions:
-        return PredicateResult("NoCrypticSplice", True, verdict=Verdict.PASS,
-                               details="No GT dinucleotides found")
-    max_score = 0.0
+    """Predicate 2: No cryptic splice sites (dual-threshold PASS/UNCERTAIN/FAIL).
+
+    Uses the proper MaxEntScan log-odds scoring model (Yeo & Burge 2004) from
+    the maxentscan module to evaluate both donor (GT) and acceptor (AG) splice
+    sites.  Numeric scores are converted to SpliceVerdict thresholds:
+      - score < low_thresh  → PASS
+      - low_thresh ≤ score < high_thresh → UNCERTAIN
+      - score ≥ high_thresh → FAIL
+    """
+    from .maxentscan import score_donor, score_acceptor
+
+    seq = seq.upper()
+    max_score = _MAXENT_INSUFFICIENT_CONTEXT_SCORE
     worst_pos = -1
     worst_verdict = Verdict.PASS
-    for pos in gt_positions:
-        context_start = max(0, pos - 3)
-        context_end = min(len(seq), pos + 6)
-        context = seq[context_start:context_end]
-        score = maxent_score(context)
-        if score < low_thresh:
-            v = Verdict.PASS
-        elif score < high_thresh:
-            v = Verdict.UNCERTAIN
-        else:
-            v = Verdict.FAIL
-        if score > max_score:
-            max_score = score
-            worst_pos = pos
-            worst_verdict = v
+
+    # Scan donor sites (GT dinucleotides)
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "GT":
+            score = score_donor(seq, i)
+            if score <= _MAXENT_INSUFFICIENT_CONTEXT_SCORE:
+                score = 0.0
+            if score < low_thresh:
+                v = Verdict.PASS
+            elif score < high_thresh:
+                v = Verdict.UNCERTAIN
+            else:
+                v = Verdict.FAIL
+            if score > max_score:
+                max_score = score
+                worst_pos = i
+                worst_verdict = v
+
+    # Scan acceptor sites (AG dinucleotides)
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "AG":
+            score = score_acceptor(seq, i)
+            if score <= _MAXENT_INSUFFICIENT_CONTEXT_SCORE:
+                score = 0.0
+            if score < low_thresh:
+                v = Verdict.PASS
+            elif score < high_thresh:
+                v = Verdict.UNCERTAIN
+            else:
+                v = Verdict.FAIL
+            if score > max_score:
+                max_score = score
+                worst_pos = i
+                worst_verdict = v
+
+    if worst_pos < 0:
+        return PredicateResult("NoCrypticSplice", True, verdict=Verdict.PASS,
+                               details="No splice dinucleotides found")
 
     passed = worst_verdict != Verdict.FAIL
     return PredicateResult("NoCrypticSplice", passed, verdict=worst_verdict,
@@ -420,8 +448,66 @@ def check_no_cryptic_splice(seq: str, low_thresh: float = 3.0, high_thresh: floa
                            positions=[worst_pos] if worst_pos >= 0 else [])
 
 
-def check_no_cpg_island(seq: str, window: int = 200, threshold: float = 0.6) -> PredicateResult:
-    """Predicate 3: No CpG islands (Obs/Exp CG ratio > threshold in any window)."""
+def _is_prokaryotic_organism(organism: str) -> bool:
+    """Return True if the organism is prokaryotic.
+
+    Uses :func:`biocompiler.organism_config.is_eukaryotic_organism` when
+    available; falls back to a simple name-based heuristic for common
+    prokaryotic identifiers.
+
+    Args:
+        organism: Organism name (e.g. ``"E_coli"``, ``"Homo_sapiens"``).
+
+    Returns:
+        True if the organism is prokaryotic, False otherwise.
+    """
+    if not organism:
+        return False
+    try:
+        from .organism_config import is_eukaryotic_organism
+        return not is_eukaryotic_organism(organism)
+    except Exception:
+        # Fallback: common prokaryotic identifiers
+        prokaryotic_names = {
+            "E_coli", "E_coli_K12", "E_coli_BL21",
+            "Escherichia_coli", "ecoli",
+            "Bacillus_subtilis", "bsub",
+            "Pseudomonas_aeruginosa",
+        }
+        return organism in prokaryotic_names
+
+
+def check_no_cpg_island(seq: str, window: int = 200, threshold: float = 0.6, organism: str = "") -> PredicateResult:
+    """Predicate 3: No CpG islands (Obs/Exp CG ratio > threshold in any window).
+
+    CpG island avoidance is primarily relevant for mammalian expression
+    systems where CpG methylation can lead to gene silencing.  For
+    prokaryotic organisms (e.g. *E. coli*), CpG islands have no known
+    regulatory significance, so the check is skipped when a prokaryotic
+    organism is specified.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        window: Sliding window size in nucleotides (default 200).
+        threshold: Maximum allowed Obs/Exp CG ratio (default 0.6).
+        organism: Target organism name.  If prokaryotic, the check is
+            skipped and PASS is returned immediately.  If empty (default),
+            the check runs as before for backward compatibility.
+
+    Returns:
+        PredicateResult with PASS/FAIL verdict.
+    """
+    # Skip CpG checking for prokaryotic organisms
+    if organism and _is_prokaryotic_organism(organism):
+        logger.info(
+            "CpG island check skipped for prokaryotic organism '%s'",
+            organism,
+        )
+        return PredicateResult(
+            "NoCpGIsland", True, verdict=Verdict.PASS,
+            details=f"CpG island check skipped for prokaryotic organism '{organism}'",
+        )
+
     worst_ratio = 0.0
     worst_start = -1
     for start in range(0, len(seq) - window + 1):
@@ -1778,20 +1864,41 @@ def evaluate_no_cpg_island(
     seq: str,
     window: int = 200,
     threshold: float = 0.6,
+    organism: str = "",
 ) -> TypeCheckResult:
     """Evaluate whether the sequence contains CpG islands.
 
     A CpG island is detected when the observed/expected CG ratio exceeds
     the threshold in any sliding window of the specified size.
 
+    CpG island avoidance is primarily relevant for mammalian expression
+    systems where CpG methylation can lead to gene silencing.  For
+    prokaryotic organisms (e.g. *E. coli*), CpG islands have no known
+    regulatory significance, so the check is skipped when a prokaryotic
+    organism is specified.
+
     Args:
         seq: DNA sequence to evaluate.
         window: Window size for CpG island scanning.
         threshold: Maximum allowed Obs/Exp CG ratio.
+        organism: Target organism name.  If prokaryotic, the check is
+            skipped and PASS is returned immediately.  If empty (default),
+            the check runs as before for backward compatibility.
 
     Returns:
         TypeCheckResult with PASS/FAIL verdict.
     """
+    # Skip CpG checking for prokaryotic organisms
+    if organism and _is_prokaryotic_organism(organism):
+        logger.info(
+            "CpG island evaluation skipped for prokaryotic organism '%s'",
+            organism,
+        )
+        return TypeCheckResult(
+            predicate="NoCpGIsland",
+            verdict=Verdict.PASS,
+        )
+
     seq = seq.upper()
 
     if len(seq) < window:
@@ -2103,7 +2210,7 @@ def evaluate_all_predicates(
         evaluate_no_restriction_site(seq, enzymes),
         evaluate_in_frame(seq, boundaries),
         evaluate_no_instability_motif(seq),
-        evaluate_no_cpg_island(seq),
+        evaluate_no_cpg_island(seq, organism=organism),
     ]
 
     # SLOT predicates: behavior depends on slot_mode
@@ -2354,6 +2461,7 @@ registry.register(
     evaluate_no_cpg_island,
     verify_param_map={
         "seq": "seq",
+        "organism": "organism",
     },
 )
 

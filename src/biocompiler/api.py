@@ -74,6 +74,7 @@ from .export import export_fasta, export_genbank
 from .types import Verdict, Certificate
 from .constants import RESTRICTION_ENZYMES
 from .organisms import SUPPORTED_ORGANISMS, CODON_USAGE_TABLES
+from .organism_config import is_eukaryotic_organism
 from .exceptions import (
     BioCompilerError, InvalidSequenceError, CertificateGenerationError,
     CertificateVerificationError, UnsupportedOrganismError, InvalidProteinError,
@@ -141,6 +142,8 @@ __all__ = [
     "ValidateMaxEntScanResponse",
     "WhatIfInput",
     "WhatIfResponse",
+    # Organism domain resolution
+    "resolve_organism_domain",
     # Provenance
     "ProvenanceResponse",
     "ProvenanceExplainResponse",
@@ -273,6 +276,26 @@ class ProteinInput(BaseModel):
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to avoid")
     cryptic_splice_threshold: float = Field(3.0, description="Cryptic splice site threshold")
     track_provenance: bool = Field(True, description="Track provenance for this optimization")
+    organism_domain: str = Field(
+        "auto",
+        description=(
+            "Organism domain for constraint selection. "
+            "'auto' detects from organism name, "
+            "'eukaryote' forces eukaryotic constraints (splice sites, CpG islands), "
+            "'prokaryote' skips eukaryote-specific constraints."
+        ),
+    )
+
+    @field_validator("organism_domain")
+    @classmethod
+    def validate_organism_domain(cls, v: str) -> str:
+        v = v.lower()
+        if v not in ("auto", "eukaryote", "prokaryote"):
+            raise ValueError(
+                f"Invalid organism_domain: {v!r}. "
+                "Must be one of: auto, eukaryote, prokaryote"
+            )
+        return v
 
     @field_validator("protein")
     @classmethod
@@ -336,6 +359,13 @@ class OptimizeResponse(BaseModel):
     failed_predicates: list[str]
     fallback_used: bool
     provenance_id: Optional[str] = Field(None, description="Provenance trail ID if tracking was enabled")
+    organism_domain: str = Field(
+        "eukaryote",
+        description=(
+            "Resolved organism domain used for constraint selection. "
+            "Either 'eukaryote' or 'prokaryote'."
+        ),
+    )
 
 
 class VerifyResponse(BaseModel):
@@ -436,6 +466,26 @@ class BatchOptimizeItem(BaseModel):
     cai_threshold: float = Field(0.2, description="Minimum CAI threshold")
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to avoid")
     cryptic_splice_threshold: float = Field(3.0, description="Cryptic splice site threshold")
+    organism_domain: str = Field(
+        "auto",
+        description=(
+            "Organism domain for constraint selection. "
+            "'auto' detects from organism name, "
+            "'eukaryote' forces eukaryotic constraints, "
+            "'prokaryote' skips eukaryote-specific constraints."
+        ),
+    )
+
+    @field_validator("organism_domain")
+    @classmethod
+    def validate_organism_domain(cls, v: str) -> str:
+        v = v.lower()
+        if v not in ("auto", "eukaryote", "prokaryote"):
+            raise ValueError(
+                f"Invalid organism_domain: {v!r}. "
+                "Must be one of: auto, eukaryote, prokaryote"
+            )
+        return v
 
     @field_validator("protein")
     @classmethod
@@ -514,6 +564,42 @@ class BatchExportResultItem(BaseModel):
 class BatchExportResponse(BaseModel):
     """Response for batch export endpoint."""
     results: list[BatchExportResultItem] = Field(..., description="Per-item export results")
+
+
+# ─── Organism Domain Resolution ────────────────────────────────────
+
+
+def resolve_organism_domain(organism: str, organism_domain: str = "auto") -> str:
+    """Resolve the effective organism domain from user input.
+
+    When *organism_domain* is ``"auto"``, the domain is detected from
+    the organism name using :func:`is_eukaryotic_organism`.  When
+    explicitly set to ``"eukaryote"`` or ``"prokaryote"``, that value
+    is used regardless of the organism name — allowing users to
+    override auto-detection when needed.
+
+    Args:
+        organism: Organism name (e.g. ``"Escherichia_coli"``).
+        organism_domain: One of ``"auto"``, ``"eukaryote"``, or
+            ``"prokaryote"``.  Defaults to ``"auto"``.
+
+    Returns:
+        The resolved domain string: ``"eukaryote"`` or ``"prokaryote"``.
+
+    Raises:
+        ValueError: If *organism_domain* is not one of the valid choices.
+    """
+    if organism_domain not in ("auto", "eukaryote", "prokaryote"):
+        raise ValueError(
+            f"Invalid organism_domain: {organism_domain!r}. "
+            "Must be one of: auto, eukaryote, prokaryote"
+        )
+
+    if organism_domain == "auto":
+        return "eukaryote" if is_eukaryotic_organism(organism) else "prokaryote"
+
+    # Explicit override
+    return organism_domain
 
 
 # ─── Batch Helper Functions ────────────────────────────────────────
@@ -600,6 +686,8 @@ def _optimize_single(item: BatchOptimizeItem) -> dict[str, Any]:
     Returns a dict matching the OptimizeResponse structure.
     Raises exceptions on error (caller handles isolation).
     """
+    resolved_domain = resolve_organism_domain(item.organism, item.organism_domain)
+
     result = optimize_sequence(
         target_protein=item.protein,
         organism=item.organism,
@@ -608,6 +696,7 @@ def _optimize_single(item: BatchOptimizeItem) -> dict[str, Any]:
         cai_threshold=item.cai_threshold,
         restriction_sites=item.enzymes,
         cryptic_splice_threshold=item.cryptic_splice_threshold,
+        organism_domain=resolved_domain,
     )
 
     return {
@@ -618,6 +707,7 @@ def _optimize_single(item: BatchOptimizeItem) -> dict[str, Any]:
         "satisfied_predicates": result.satisfied_predicates,
         "failed_predicates": result.failed_predicates,
         "fallback_used": result.fallback_used,
+        "organism_domain": resolved_domain,
     }
 
 
@@ -2578,8 +2668,18 @@ def create_app() -> FastAPI:
 
         Uses z3 constraint solver with greedy fallback to find
         a sequence that satisfies all type predicates.
+
+        The ``organism_domain`` parameter controls whether eukaryotic
+        constraints (cryptic splice sites, CpG islands) are applied.
+        When set to ``"auto"`` (default), the domain is detected from
+        the organism name.  Set to ``"eukaryote"`` or ``"prokaryote"``
+        to override auto-detection.
         """
         try:
+            resolved_domain = resolve_organism_domain(
+                input_data.organism, input_data.organism_domain
+            )
+
             result = optimize_sequence(
                 target_protein=input_data.protein,
                 organism=input_data.organism,
@@ -2588,6 +2688,7 @@ def create_app() -> FastAPI:
                 cai_threshold=input_data.cai_threshold,
                 restriction_sites=input_data.enzymes,
                 cryptic_splice_threshold=input_data.cryptic_splice_threshold,
+                organism_domain=resolved_domain,
             )
 
             return OptimizeResponse(
@@ -2598,6 +2699,7 @@ def create_app() -> FastAPI:
                 satisfied_predicates=result.satisfied_predicates,
                 failed_predicates=result.failed_predicates,
                 fallback_used=result.fallback_used,
+                organism_domain=resolved_domain,
             )
         except (InvalidProteinError, UnsupportedOrganismError) as e:
             raise HTTPException(status_code=400, detail=str(e))

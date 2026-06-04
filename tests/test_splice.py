@@ -1,12 +1,19 @@
 """Test BioCompiler Splice Site Scoring — MaxEntScan scoring and dual-threshold classification."""
 
+import warnings
 import pytest
 from biocompiler.splicing import maxent_score, score_splice_sites
+from biocompiler.maxentscan import score_donor, score_acceptor, scan_splice_sites
 from biocompiler.type_system import SpliceVerdict
 
 
+# ── Tests for DEPRECATED functions (maxent_score, score_splice_sites) ────────
+# These tests verify the deprecated functions still work correctly but are
+# marked with filterwarnings to avoid spamming DeprecationWarning during runs.
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class TestMaxEntScore:
-    """Tests for MaxEntScan scoring."""
+    """Tests for the deprecated MaxEntScan PWM scoring."""
 
     def test_maxent_score_range(self):
         """MaxEntScan scores should be non-negative."""
@@ -29,16 +36,61 @@ class TestMaxEntScore:
         assert maxent_score("") == 0.0
 
 
+# ── Tests for NEW maxentscan functions (preferred API) ────────────────────────
+
+class TestMaxEntScanDonorScore:
+    """Tests for the proper MaxEntScan score_donor function."""
+
+    def test_score_donor_positive_for_consensus(self):
+        """A strong consensus donor scores positively."""
+        seq = "AAACAGGTAAGTAAAA"
+        gt_pos = seq.find("GT")
+        score = score_donor(seq, gt_pos)
+        assert score > 0.0, f"Strong donor should score > 0, got {score}"
+
+    def test_score_donor_range(self):
+        """score_donor returns reasonable values for common sequences."""
+        seq = "AAACAGGTAAGTAAAA"
+        gt_pos = seq.find("GT")
+        score = score_donor(seq, gt_pos)
+        assert -20.0 < score < 20.0, f"Donor score {score} outside expected range"
+
+
+class TestMaxEntScanScanSpliceSites:
+    """Tests for the proper MaxEntScan scan_splice_sites function."""
+
+    def test_scan_finds_donor_sites(self):
+        """scan_splice_sites finds donor sites above threshold."""
+        seq = "AAACAGGTAAGTAAAA"
+        results = scan_splice_sites(seq, donor_threshold=3.0, acceptor_threshold=3.0)
+        donors = [(pos, typ, sc) for pos, typ, sc in results if typ == "donor"]
+        assert len(donors) >= 1, "Should find at least one donor above threshold"
+
+    def test_scan_returns_position_type_score(self):
+        """Each result is a (position, site_type, score) tuple."""
+        seq = "AAACAGGTAAGTAAAA"
+        results = scan_splice_sites(seq, donor_threshold=0.0, acceptor_threshold=0.0)
+        for result in results:
+            assert len(result) == 3
+            pos, site_type, score = result
+            assert isinstance(pos, int)
+            assert site_type in ("donor", "acceptor")
+            assert isinstance(score, float)
+
+    def test_no_splice_sites_empty_sequence(self):
+        """Empty sequence has no splice sites."""
+        results = scan_splice_sites("", donor_threshold=0.0, acceptor_threshold=0.0)
+        assert results == []
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class TestDualThreshold:
-    """Tests for dual-threshold PASS/UNCERTAIN/FAIL classification."""
+    """Tests for dual-threshold PASS/UNCERTAIN/FAIL classification (deprecated API)."""
 
     def test_classify_splice_pass(self):
         """Score < 3.0 should classify as PASS."""
-        # Build a sequence with no strong GT splice signal (low CG content, mostly A/T)
-        # A sequence where any GT found has a low MaxEnt score
         seq = "ATGAAAAAAAATAAAAAAATAA"  # mostly A, no GT
         results = score_splice_sites(seq)
-        # If there are no GT dinucleotides, there are no results, which is trivially PASS
         if results:
             for pos, score, verdict in results:
                 if score < 3.0:
@@ -46,9 +98,6 @@ class TestDualThreshold:
 
     def test_classify_splice_uncertain(self):
         """3.0 <= score < 6.0 should classify as UNCERTAIN."""
-        # Verify the classification logic directly by checking score_splice_sites output
-        # for a context that might produce an intermediate score.
-        # We test the classification logic with a synthetic check:
         score = 4.5  # between 3.0 and 6.0
         if 3.0 <= score < 6.0:
             verdict = SpliceVerdict.UNCERTAIN
@@ -56,17 +105,12 @@ class TestDualThreshold:
 
     def test_classify_splice_fail(self):
         """Score >= 6.0 should classify as FAIL."""
-        # Verify the classification logic with a known high-scoring context
-        # The PWM gives high weight to G at position 3 and T at position 4,
-        # so a context like "CAGGTAAGT" should score high
         context = "CAGGTAAGT"
         score = maxent_score(context)
         if score >= 6.0:
             verdict = SpliceVerdict.FAIL
             assert verdict == SpliceVerdict.FAIL
         else:
-            # If the simplified PWM doesn't produce >= 6.0, verify the threshold logic
-            # by checking that the logic is correct for a synthetic value
             high_score = 8.0
             assert high_score >= 6.0
             verdict_for_high = SpliceVerdict.FAIL

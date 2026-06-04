@@ -373,6 +373,18 @@ class ProvenanceReport:
             f"{abs(cai_lost):.4f} ({len(constraints_reducing)} constraints)"
         )
 
+        # CAI impact from codon decisions (per-position CAI cost)
+        codon_cai_cost = sum(
+            cd.cai_impact for cd in trail.codon_decisions if cd.cai_impact < 0
+        )
+        constrained_positions = [
+            cd for cd in trail.codon_decisions if cd.cai_impact < 0
+        ]
+        lines.append(
+            f"- **Total CAI cost of constraint satisfaction:** "
+            f"{abs(codon_cai_cost):.4f} ({len(constrained_positions)} positions)"
+        )
+
         # Key tradeoffs
         if constraints_reducing:
             lines.append("")
@@ -414,6 +426,31 @@ class ProvenanceReport:
         # -- 3. Top 5 most constrained positions ----------------------------
         lines.append("## Most Constrained Positions (Top 5)")
         lines.append("")
+
+        # Top 5 most CAI-expensive constraint fixes
+        lines.append("## Top 5 Most CAI-Expensive Constraint Fixes")
+        lines.append("")
+        if constrained_positions:
+            # Sort by CAI impact (most negative = most expensive)
+            sorted_by_cost = sorted(
+                constrained_positions, key=lambda cd: cd.cai_impact
+            )
+            lines.append(
+                "| Position | Amino Acid | Chosen Codon | Constraint Reason | CAI Impact |"
+            )
+            lines.append(
+                "|----------|------------|-------------|-------------------|------------|"
+            )
+            for cd in sorted_by_cost[:5]:
+                lines.append(
+                    f"| {cd.position} | {cd.amino_acid} | {cd.chosen_codon} | "
+                    f"{_humanize_reason(cd.constraint_reason)} | "
+                    f"{cd.cai_impact:+.4f} |"
+                )
+        else:
+            lines.append("*No positions incurred CAI cost due to constraints.*")
+        lines.append("")
+
         top_positions = query.most_constrained_positions(n=5)
         if top_positions:
             lines.append("| Position | Amino Acid | Full Name | Constraint Pressure |")
@@ -615,6 +652,26 @@ class ProvenanceReport:
         )
         parts.append("</div>")
 
+        # CAI cost of constraint satisfaction
+        codon_cai_cost = sum(
+            cd.cai_impact for cd in trail.codon_decisions if cd.cai_impact < 0
+        )
+        constrained_positions = [
+            cd for cd in trail.codon_decisions if cd.cai_impact < 0
+        ]
+        parts.append("<div class='summary-grid'>")
+        parts.append(
+            f"<div class='summary-card'><div class='label'>"
+            f"Total CAI Cost of Constraint Satisfaction</div>"
+            f"<div class='value negative'>{abs(codon_cai_cost):.4f}</div></div>"
+        )
+        parts.append(
+            f"<div class='summary-card'><div class='label'>"
+            f"Positions with CAI Cost</div>"
+            f"<div class='value'>{len(constrained_positions)}</div></div>"
+        )
+        parts.append("</div>")
+
         # Key tradeoffs
         if constraints_reducing:
             parts.append("<h3>Key Tradeoffs</h3>")
@@ -663,6 +720,35 @@ class ProvenanceReport:
 
         # Most constrained positions
         parts.append("<h2>Most Constrained Positions (Top 5)</h2>")
+
+        # Top 5 most CAI-expensive constraint fixes
+        parts.append("<h2>Top 5 Most CAI-Expensive Constraint Fixes</h2>")
+        if constrained_positions:
+            sorted_by_cost = sorted(
+                constrained_positions, key=lambda cd: cd.cai_impact
+            )
+            parts.append("<table>")
+            parts.append(
+                "<tr><th>Position</th><th>Amino Acid</th>"
+                "<th>Chosen Codon</th><th>Constraint Reason</th>"
+                "<th>CAI Impact</th></tr>"
+            )
+            for cd in sorted_by_cost[:5]:
+                impact_class = "negative"
+                parts.append(
+                    f"<tr><td>{cd.position}</td>"
+                    f"<td><code>{_esc(cd.amino_acid)}</code></td>"
+                    f"<td><code>{_esc(cd.chosen_codon)}</code></td>"
+                    f"<td>{_esc(_humanize_reason(cd.constraint_reason))}</td>"
+                    f"<td class='{impact_class}'>"
+                    f"{cd.cai_impact:+.4f}</td></tr>"
+                )
+            parts.append("</table>")
+        else:
+            parts.append(
+                "<p><em>No positions incurred CAI cost due to constraints.</em></p>"
+            )
+
         if top_positions:
             parts.append("<table>")
             parts.append(
@@ -782,6 +868,29 @@ class ProvenanceReport:
                 ],
                 "codon_usage_summary": query.codon_usage_summary(),
                 "alternatives_not_chosen": query.alternatives_not_chosen(),
+                "cai_impact_summary": {
+                    "total_cai_cost_of_constraint_satisfaction": sum(
+                        cd.cai_impact for cd in trail.codon_decisions
+                        if cd.cai_impact < 0
+                    ),
+                    "positions_with_cai_cost": len([
+                        cd for cd in trail.codon_decisions
+                        if cd.cai_impact < 0
+                    ]),
+                    "top_5_most_expensive_fixes": [
+                        {
+                            "position": cd.position,
+                            "amino_acid": cd.amino_acid,
+                            "chosen_codon": cd.chosen_codon,
+                            "constraint_reason": cd.constraint_reason,
+                            "cai_impact": cd.cai_impact,
+                        }
+                        for cd in sorted(
+                            [cd for cd in trail.codon_decisions if cd.cai_impact < 0],
+                            key=lambda cd: cd.cai_impact,
+                        )[:5]
+                    ],
+                },
             },
         }
         return json.dumps(report_data, indent=2, sort_keys=True, default=str)

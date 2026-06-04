@@ -25,6 +25,8 @@ __all__: list[str] = [
     "OrganismConfig",
     "ORGANISM_CONFIGS",
     "get_organism_config",
+    "is_eukaryotic_organism",
+    "auto_detect_organism_domain",
 ]
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,14 @@ class OrganismConfig:
     avoided_motifs: list[str] = field(default_factory=list)
     max_homopolymer_run: int = 6
     mrna_degradation_model: str = "none"
+    domain: str = "eukaryote"
+
+    # ── Derived helpers ─────────────────────────────────────────────
+
+    @property
+    def is_eukaryote(self) -> bool:
+        """Return ``True`` when the organism belongs to Domain Eukarya."""
+        return self.domain == "eukaryote"
 
 
 # ─── Preferred-codon tables (AA → codon) ───────────────────────────
@@ -136,6 +146,7 @@ ORGANISM_CONFIGS: dict[str, OrganismConfig] = {
         gc_target_hi=0.55,
         codon_usage_validated=True,
         rbs_calculator_available=False,
+        domain="prokaryote",
         preferred_codons=_build_preferred_codons("e_coli"),
         avoided_motifs=_E_COLI_AVOIDED_MOTIFS,
         max_homopolymer_run=5,
@@ -149,6 +160,7 @@ ORGANISM_CONFIGS: dict[str, OrganismConfig] = {
         gc_target_hi=0.55,
         codon_usage_validated=True,
         rbs_calculator_available=True,
+        domain="prokaryote",
         preferred_codons=_build_preferred_codons("e_coli"),
         avoided_motifs=_E_COLI_AVOIDED_MOTIFS,
         max_homopolymer_run=5,
@@ -162,6 +174,7 @@ ORGANISM_CONFIGS: dict[str, OrganismConfig] = {
         gc_target_hi=0.60,
         codon_usage_validated=True,
         rbs_calculator_available=False,
+        domain="eukaryote",
         preferred_codons=_build_preferred_codons("human"),
         avoided_motifs=_HUMAN_AVOIDED_MOTIFS,
         max_homopolymer_run=5,
@@ -175,6 +188,7 @@ ORGANISM_CONFIGS: dict[str, OrganismConfig] = {
         gc_target_hi=0.45,
         codon_usage_validated=True,
         rbs_calculator_available=False,
+        domain="eukaryote",
         preferred_codons=_build_preferred_codons("yeast"),
         avoided_motifs=_YEAST_AVOIDED_MOTIFS,
         max_homopolymer_run=5,
@@ -188,6 +202,7 @@ ORGANISM_CONFIGS: dict[str, OrganismConfig] = {
         gc_target_hi=0.55,
         codon_usage_validated=False,
         rbs_calculator_available=False,
+        domain="eukaryote",
         preferred_codons=_build_preferred_codons("mouse"),
         avoided_motifs=_MAMMALIAN_AVOIDED_MOTIFS,
         max_homopolymer_run=5,
@@ -201,6 +216,7 @@ ORGANISM_CONFIGS: dict[str, OrganismConfig] = {
         gc_target_hi=0.60,
         codon_usage_validated=False,
         rbs_calculator_available=False,
+        domain="eukaryote",
         preferred_codons=_build_preferred_codons("cho"),
         avoided_motifs=_MAMMALIAN_AVOIDED_MOTIFS,
         max_homopolymer_run=5,
@@ -277,3 +293,51 @@ def get_organism_config(organism: str) -> OrganismConfig:
         available,
     )
     return _FALLBACK_CONFIG
+
+
+def is_eukaryotic_organism(name: str) -> bool:
+    """Return ``True`` if the organism identified by *name* is eukaryotic.
+
+    Uses :func:`get_organism_config` internally so that legacy aliases
+    are resolved and the safe fallback (eukaryote) is returned for
+    unknown organisms.
+
+    Args:
+        name: Organism key (e.g. ``"E_coli_K12"``, ``"human"``) or
+            any legacy alias accepted by :func:`get_organism_config`.
+
+    Returns:
+        ``True`` when the resolved config has ``domain == "eukaryote"``.
+
+    Examples::
+
+        >>> is_eukaryotic_organism("E_coli_K12")
+        False
+        >>> is_eukaryotic_organism("Homo_sapiens")
+        True
+        >>> is_eukaryotic_organism("unknown_organism")
+        True   # fallback defaults to eukaryote
+    """
+    return get_organism_config(name).is_eukaryote
+
+
+def auto_detect_organism_domain(name: str) -> str:
+    """Return the domain of life for the given organism name.
+
+    Uses :func:`get_organism_config` internally so that legacy aliases
+    are resolved.  Falls back to ``"eukaryote"`` for unknown organisms.
+
+    Args:
+        name: Organism key or legacy alias.
+
+    Returns:
+        One of ``"eukaryote"``, ``"prokaryote"``, or ``"archaea"``.
+
+    Examples::
+
+        >>> auto_detect_organism_domain("E_coli_K12")
+        'prokaryote'
+        >>> auto_detect_organism_domain("Homo_sapiens")
+        'eukaryote'
+    """
+    return get_organism_config(name).domain

@@ -1685,4 +1685,18 @@ def _parse_disulfide_bonds(pdb_string: str) -> set[int]:
 # ────────────────────────────────────────────────────────────
 
 # Deprecated: use CamSolResult instead. Kept for backward compatibility.
-SolubilityResult = CamSolResult
+# Access via camsol.SolubilityResult emits a DeprecationWarning through
+# module-level __getattr__ below.
+
+
+def __getattr__(name: str):
+    """Emit DeprecationWarning for legacy alias SolubilityResult."""
+    if name == "SolubilityResult":
+        import warnings
+        warnings.warn(
+            "camsol.SolubilityResult is deprecated — use CamSolResult instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return CamSolResult
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

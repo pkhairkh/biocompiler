@@ -92,6 +92,7 @@ __all__ = [
     "compute_cai_sharp_li_for_organism",
     "load_reference_set",
     "validate_cai_against_published",
+    "validate_cai_sharp_li",
     "SUPPORTED_REFERENCE_ORGANISMS",
 ]
 
@@ -632,5 +633,69 @@ def validate_cai_against_published(
             "CAI validation failed: computed=%.4f, expected=%.4f, "
             "diff=%.4f, tolerance=%.4f",
             computed, expected_cai, abs(computed - expected_cai), tolerance,
+        )
+    return passed
+
+
+def validate_cai_sharp_li(
+    dna: str,
+    organism: str,
+    expected_cai: float,
+    tolerance: float = 0.05,
+) -> bool:
+    """Validate CAI computation using the Sharp-Li reference set against published values.
+
+    This function computes CAI using the Sharp & Li (1987) reference set
+    (the same data used by the ``sharp_li`` cai_reference_set option in
+    SolverConfig) and compares the result to the expected value within a
+    tolerance.  This is the appropriate validation function for comparing
+    against published CAI values from Sharp & Li (1987) and other papers
+    that used the original 24 highly-expressed E. coli gene reference set.
+
+    Unlike :func:`validate_cai_against_published`, which uses the Kazusa
+    reference set directly, this function uses the pre-computed adaptiveness
+    tables from :func:`_compute_adaptiveness_table` and applies the Sharp &
+    Li minimum adaptiveness floor of 0.01.
+
+    Args:
+        dna: Coding DNA sequence.
+        organism: Full organism name (e.g. ``"Escherichia_coli"``).
+        expected_cai: Published CAI value to validate against.
+        tolerance: Maximum absolute deviation from the expected value
+            that is still considered a pass.  Defaults to 0.05 (wider
+            than validate_cai_against_published because reference-set
+            differences can cause larger discrepancies).
+
+    Returns:
+        True if |computed_cai - expected_cai| <= tolerance, False otherwise.
+
+    Raises:
+        ValueError: If the organism is not supported, or the DNA sequence
+            is invalid.
+
+    Examples:
+        >>> # Validate E. coli recA against Sharp & Li published value
+        >>> validate_cai_sharp_li(
+        ...     "ATGGCTATCGACGAAAACAAACAGAAAGCG",
+        ...     "Escherichia_coli",
+        ...     expected_cai=0.76,
+        ...     tolerance=0.10,
+        ... )
+        True
+    """
+    reference = load_reference_set(organism)
+    computed = compute_cai_sharp_li(dna, reference, skip_met=True, min_adaptiveness=0.01)
+    passed = abs(computed - expected_cai) <= tolerance
+    if not passed:
+        logger.info(
+            "Sharp-Li CAI validation failed: computed=%.4f, expected=%.4f, "
+            "diff=%.4f, tolerance=%.4f",
+            computed, expected_cai, abs(computed - expected_cai), tolerance,
+        )
+    else:
+        logger.info(
+            "Sharp-Li CAI validation passed: computed=%.4f, expected=%.4f, "
+            "diff=%.4f",
+            computed, expected_cai, abs(computed - expected_cai),
         )
     return passed

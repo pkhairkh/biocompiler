@@ -26,6 +26,7 @@ Module structure:
         scoring.py             — Constraint enforcement scoring & soft constraint scoring & Pareto analysis
         conflict_resolution.py — Hard constraint conflict detection & resolution
         conflict_provenance.py  — Constraint conflict resolution provenance tracking
+        constraint_interaction.py — Constraint interaction map (CAI cost analysis)
 
 All public symbols from sub-modules are re-exported here so that downstream
 code can import from ``biocompiler.solver`` directly::
@@ -90,6 +91,7 @@ from .constraints import (
     # Soft constraints / objectives
     MaximizeCAI,
     MinimizeCpG,
+    MinimizeCodonPairBias,
     MinimizeMRNADG,
     # CSPModel (constraints variant — re-exported for convenience;
     # the types.CSPModel is also re-exported above)
@@ -160,6 +162,24 @@ from .conflict_provenance import (
     ConflictProvenance,
     ConflictResolverWithProvenance,
 )
+
+# ═══════════════════════════════════════════════════════════════════════
+# Constraint interaction map (always available, no heavy deps)
+# ═══════════════════════════════════════════════════════════════════════
+from .constraint_interaction import (
+    ConstraintInteractionMap,
+    InteractionInfo,
+    print_interaction_report,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# CAI-Aware Constraint Resolver (added by findings)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .cai_aware_resolver import CAIAwareConstraintResolver
+except ImportError:
+    CAIAwareConstraintResolver = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +427,14 @@ __all__ = [
     # ── Conflict provenance (from .conflict_provenance) ──────
     "ConflictProvenance",
     "ConflictResolverWithProvenance",
+
+    # ── Constraint interaction map (from .constraint_interaction) ──
+    "ConstraintInteractionMap",
+    "InteractionInfo",
+    "print_interaction_report",
+
+    # ── CAI-Aware resolver (from .cai_aware_resolver) ────────
+    "CAIAwareConstraintResolver",
 
     # ── Convenience functions ───────────────────────────────
     "solve",

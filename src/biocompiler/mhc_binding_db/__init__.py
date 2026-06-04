@@ -85,6 +85,8 @@ from .schema import (
     MHCBindingDatabase,
     MHCBindingRecord,
     generate_fallback_database,
+    get_default_alleles_for_organism,
+    is_mhc_class2,
 )
 
 __all__ = [
@@ -92,6 +94,8 @@ __all__ = [
     "MHCBindingRecord",
     "MHCBindingDatabase",
     "generate_fallback_database",
+    "get_default_alleles_for_organism",
+    "is_mhc_class2",
     # Legacy precomputed types
     "PrecomputedEntry",
     "PrecomputedAlleleDatabase",

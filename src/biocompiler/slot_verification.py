@@ -281,8 +281,9 @@ def _check_mhc_available() -> bool:
 def _check_maxent_available() -> bool:
     """Check if MaxEntScan splice scoring is available."""
     try:
-        from .splicing import maxent_score
-        return callable(maxent_score)
+        # Migrated from splicing.maxent_score to maxentscan.score_donor
+        from .maxentscan import score_donor
+        return callable(score_donor)
     except Exception as exc:
         logger.debug("MaxEntScan availability check failed: %s", exc)
         return False

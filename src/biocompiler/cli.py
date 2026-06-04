@@ -279,12 +279,18 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     if args.enzymes:
         enzymes = [e.strip() for e in args.enzymes.split(",") if e.strip()]
 
+    # Resolve organism domain from --organism-domain
+    organism_domain_raw = getattr(args, "organism_domain", "auto") or "auto"
+    from .api import resolve_organism_domain
+    resolved_domain = resolve_organism_domain(args.species, organism_domain_raw)
+
     opt = BioOptimizer(
         species=args.species,
         enzymes=enzymes,
         splice_low=args.splice_low,
         splice_high=args.splice_high,
         avoid_gt=args.avoid_gt,
+        organism_domain=resolved_domain,
     )
 
     optimized, pred_results, cert_text = opt.optimize(seq)
@@ -1247,6 +1253,18 @@ def build_parser() -> argparse.ArgumentParser:
     opt_parser.add_argument(
         "--provenance", action="store_true", default=False,
         help="Track provenance and save decision trail as JSON",
+    )
+    opt_parser.add_argument(
+        "--organism-domain",
+        dest="organism_domain",
+        choices=["auto", "eukaryote", "prokaryote"],
+        default="auto",
+        help=(
+            "Organism domain for constraint selection. "
+            "'auto' detects from organism name (default), "
+            "'eukaryote' forces eukaryotic constraints (splice sites, CpG), "
+            "'prokaryote' skips eukaryote-specific constraints."
+        ),
     )
 
     # ── check ──

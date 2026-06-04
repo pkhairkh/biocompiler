@@ -119,6 +119,15 @@ class DecisionRecord:
         constraint_context: Snapshot of active constraints / scores at the time
             of the decision.  Free-form dict — typical keys include
             ``"cai"``, ``"gc"``, ``"max_donor_score"``, ``"active_predicates"``.
+        cai_impact: CAI delta caused by this decision.  Negative values
+            indicate CAI was sacrificed (e.g. to satisfy a constraint);
+            positive values indicate CAI was gained; zero means no CAI
+            impact or not applicable.
+        codon_before: The codon at this position *before* the decision was
+            applied.  Empty string if not applicable (e.g. de novo).
+        codon_after: The codon at this position *after* the decision was
+            applied (typically same as ``chosen_value`` for codon decisions).
+            Empty string if not applicable.
     """
 
     timestamp: str
@@ -128,6 +137,10 @@ class DecisionRecord:
     alternatives_considered: list[str]
     rationale: str
     constraint_context: dict[str, Any]
+    # CAI-aware provenance fields
+    cai_impact: float = 0.0
+    codon_before: str = ""
+    codon_after: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize this record to a JSON-compatible dict."""
@@ -139,6 +152,9 @@ class DecisionRecord:
             "alternatives_considered": list(self.alternatives_considered),
             "rationale": self.rationale,
             "constraint_context": dict(self.constraint_context),
+            "cai_impact": self.cai_impact,
+            "codon_before": self.codon_before,
+            "codon_after": self.codon_after,
         }
 
     @classmethod
@@ -170,6 +186,9 @@ class DecisionRecord:
             alternatives_considered=list(data["alternatives_considered"]),
             rationale=data["rationale"],
             constraint_context=dict(data["constraint_context"]),
+            cai_impact=float(data.get("cai_impact", 0.0)),
+            codon_before=str(data.get("codon_before", "")),
+            codon_after=str(data.get("codon_after", "")),
         )
 
 

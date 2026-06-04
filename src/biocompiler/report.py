@@ -26,11 +26,12 @@ from .translation import translate, compute_cai
 from .splicing import compute_splice_isoforms
 from .constants import CODON_TABLE
 from .engine_base import BaseEngineResult
+from .organism_config import get_organism_config, is_eukaryotic_organism
 from . import __version__
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["generate_report"]
+__all__ = ["generate_report", "_build_organism_aware_constraints", "_build_cai_comparison_section"]
 
 # ── Display & layout constants ──────────────────────────────────────────
 _MAX_TOKEN_DISPLAY: int = 50
@@ -74,6 +75,91 @@ _HEATMAP_CELL_H: int = 25
 _HEATMAP_MARGIN_LEFT: int = 30
 _HEATMAP_MARGIN_TOP: int = 40
 _HEATMAP_MAX_CODON_COLS: int = 64
+
+# ── Organism-aware constraint mapping ──────────────────────────────────
+# Constraints that are only relevant for eukaryotic organisms.
+_EUKARYOTE_ONLY_CONSTRAINTS: dict[str, str] = {
+    "NoCrypticSpliceConstraint": "eukaryotic organism (splice sites are eukaryote-specific)",
+    "NoCpGIslandConstraint": "eukaryotic organism (CpG islands are primarily a mammalian concern)",
+    "NoTRunConstraint": "eukaryotic organism (poly-T termination signals are eukaryote-specific)",
+}
+
+_ALL_CONSTRAINTS: dict[str, str] = {
+    "TranslationConstraint": "Ensures every codon translates to the correct amino acid",
+    "NoRestrictionSiteConstraint": "Eliminates restriction enzyme recognition sites",
+    "GCRangeConstraint": "Keeps GC content within organism-specific range",
+    "NoCrypticSpliceConstraint": "Eliminates cryptic splice donor/acceptor sites",
+    "NoCpGIslandConstraint": "Prevents CpG island formation (methylation risk)",
+    "NoATTTAMotifConstraint": "Removes ATTTA mRNA instability motifs",
+    "NoTRunConstraint": "Prevents poly-T transcription termination signals",
+    "MaximizeCAI": "Maximize Codon Adaptation Index (soft)",
+    "MinimizeCpG": "Minimize CpG dinucleotide count (soft)",
+    "MinimizeMRNADG": "Minimize mRNA 5' folding free energy (soft)",
+}
+
+
+def _build_organism_aware_constraints(
+    organism: str,
+    optimization_result: Optional[dict[str, object]] = None,
+) -> dict[str, object]:
+    """Build organism-aware constraint status information."""
+    config = get_organism_config(organism)
+    is_euk = config.is_eukaryote
+
+    applied_names: list[str] = []
+    if optimization_result and isinstance(optimization_result.get("applied_constraints"), list):
+        applied_names = [c if isinstance(c, str) else str(c) for c in optimization_result["applied_constraints"]]
+
+    skipped_names: list[str] = []
+    if optimization_result and isinstance(optimization_result.get("skipped_constraints"), list):
+        skipped_names = [c if isinstance(c, str) else str(c) for c in optimization_result["skipped_constraints"]]
+
+    if not applied_names and not skipped_names:
+        for cname in _ALL_CONSTRAINTS:
+            if cname in _EUKARYOTE_ONLY_CONSTRAINTS and not is_euk:
+                skipped_names.append(cname)
+            else:
+                applied_names.append(cname)
+
+    active_constraints = [(name, _ALL_CONSTRAINTS.get(name, "Optimization constraint")) for name in applied_names]
+    skipped_constraints = []
+    for name in skipped_names:
+        if name in _EUKARYOTE_ONLY_CONSTRAINTS:
+            reason = f"{name} \u2014 skipped for {_EUKARYOTE_ONLY_CONSTRAINTS[name]}"
+        else:
+            reason = f"{name} \u2014 skipped for {config.domain} organism"
+        skipped_constraints.append((name, reason))
+
+    return {
+        "organism": organism,
+        "domain": config.domain,
+        "is_eukaryote": is_euk,
+        "config_name": config.name,
+        "active_constraints": active_constraints,
+        "skipped_constraints": skipped_constraints,
+    }
+
+
+def _build_cai_comparison_section(
+    organism: str,
+    optimization_result: Optional[dict[str, object]] = None,
+) -> Optional[dict[str, float]]:
+    """Build CAI comparison data between all-constraints and organism-aware runs."""
+    if not optimization_result:
+        return None
+    cai_all = optimization_result.get("cai_all_constraints")
+    cai_aware = optimization_result.get("cai_organism_aware_constraints")
+    if cai_aware is None and cai_all is not None:
+        cai_aware = optimization_result.get("cai", cai_all)
+    if cai_all is not None and cai_aware is not None:
+        try:
+            cai_all_f = float(cai_all)
+            cai_aware_f = float(cai_aware)
+            recovery = cai_aware_f - cai_all_f
+            return {"cai_all_constraints": cai_all_f, "cai_organism_aware": cai_aware_f, "recovery": recovery}
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 def generate_report(
@@ -415,6 +501,80 @@ def _build_html(
                     <div class="stat-label">Failed</div>
                 </div>
             </div>
+        </section>"""
+
+    # Organism-aware constraints section
+    org_constraints = _build_organism_aware_constraints(organism, optimization_result)
+    cai_comparison = _build_cai_comparison_section(organism, optimization_result)
+
+    org_constraints_section = f"""
+        <section class="section">
+            <h2>Organism-Aware Constraints</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">{html.escape(org_constraints['config_name'])}</div>
+                    <div class="stat-label">Organism</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{html.escape(str(org_constraints['domain']))}</div>
+                    <div class="stat-label">Domain</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{len(org_constraints['active_constraints'])}</div>
+                    <div class="stat-label">Active Constraints</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{len(org_constraints['skipped_constraints'])}</div>
+                    <div class="stat-label">Skipped Constraints</div>
+                </div>
+            </div>
+            <h3>Constraints Applied</h3>
+            <table>
+                <thead>
+                    <tr><th>Status</th><th>Constraint</th><th>Description / Reason</th></tr>
+                </thead>
+                <tbody>"""
+
+    for name, desc in org_constraints["active_constraints"]:
+        org_constraints_section += f"""
+                    <tr class="pass">
+                        <td><span class="badge pass">&#10003; Active</span></td>
+                        <td><code>{html.escape(name)}</code></td>
+                        <td>{html.escape(desc)}</td>
+                    </tr>"""
+
+    for name, reason in org_constraints["skipped_constraints"]:
+        org_constraints_section += f"""
+                    <tr class="uncertain">
+                        <td><span class="badge uncertain">&#9888; Skipped</span></td>
+                        <td><code>{html.escape(name)}</code></td>
+                        <td>{html.escape(reason)}</td>
+                    </tr>"""
+
+    org_constraints_section += """
+                </tbody>
+            </table>"""
+
+    if cai_comparison:
+        recovery_sign = "+" if cai_comparison["recovery"] >= 0 else ""
+        org_constraints_section += f"""
+            <h3>CAI Comparison</h3>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">{cai_comparison['cai_all_constraints']:.4f}</div>
+                    <div class="stat-label">CAI with all constraints</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{cai_comparison['cai_organism_aware']:.4f}</div>
+                    <div class="stat-label">CAI with organism-aware constraints</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{recovery_sign}{cai_comparison['recovery']:.4f}</div>
+                    <div class="stat-label">Recovery</div>
+                </div>
+            </div>"""
+
+    org_constraints_section += """
         </section>"""
 
     # Engine analysis section (using unified BaseEngineResult fields)
@@ -864,7 +1024,7 @@ body.dark-mode .tooltip::after {{
         <h1>BioCompiler Report</h1>
         <div class="subtitle">
             {html.escape(gene_name or 'Designed Sequence')} &mdash;
-            {html.escape(organism)} &mdash;
+            {html.escape(organism)} ({html.escape(org_constraints['domain'])}) &mdash;
             {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
         </div>
     </div>
@@ -906,6 +1066,8 @@ body.dark-mode .tooltip::after {{
 </section>
 
 {opt_section}
+
+{org_constraints_section}
 
 {engine_section}
 

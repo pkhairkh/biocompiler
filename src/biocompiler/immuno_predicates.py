@@ -4,6 +4,10 @@ BioCompiler Immunogenicity Predicates
 
 Type-check predicates for immunogenicity assessment.
 Each predicate returns a TypeCheckResult with a Verdict.
+
+All predicates work fully offline - they never require MHCflurry or
+NetMHCpan.  They use the precomputed database + PSSM fallback via
+:func:`immunogenicity.predict_immunogenicity` and related offline APIs.
 """
 
 from __future__ import annotations
@@ -14,6 +18,9 @@ from .types import Verdict, TypeCheckResult
 from .immunogenicity import compute_immunogenicity
 from .immunogenicity import predict_all as predict_mhc_all
 from .immunogenicity import predict_epitopes
+from .immunogenicity import predict_immunogenicity
+from .immunogenicity import scan_peptides
+from .immunogenicity import DEFAULT_MHC_I_ALLELES, DEFAULT_MHC_II_ALLELES
 
 __all__ = [
     "evaluate_low_immunogenicity",
@@ -36,7 +43,12 @@ _POP_COVERAGE_LIKELY_PASS_THRESHOLD: float = 0.3
 _POP_COVERAGE_LIKELY_FAIL_THRESHOLD: float = 0.7
 
 
-def evaluate_low_immunogenicity(sequence: str, protein: str, organism: str, **kwargs: Any) -> TypeCheckResult:
+def evaluate_low_immunogenicity(
+    protein: str,
+    sequence: str | None = None,
+    organism: str = "Homo_sapiens",
+    **kwargs: Any,
+) -> TypeCheckResult:
     """Evaluate whether a protein has low overall immunogenicity.
 
     PASS: Score < 0.2 (very low risk)
@@ -46,8 +58,8 @@ def evaluate_low_immunogenicity(sequence: str, protein: str, organism: str, **kw
     FAIL: >= 0.7 (high risk)
 
     Args:
-        sequence: Nucleotide sequence (unused by this predicate).
-        protein: Amino acid sequence.
+        protein: Amino acid sequence (primary argument).
+        sequence: Nucleotide sequence (unused; backward compat).
         organism: Target organism (unused by this predicate).
         **kwargs: Optional keyword arguments:
             threshold: Immunogenicity score threshold (default 0.3).
@@ -97,8 +109,16 @@ def evaluate_low_immunogenicity(sequence: str, protein: str, organism: str, **kw
     )
 
 
-def evaluate_no_strong_t_cell_epitope(sequence: str, protein: str, organism: str, **kwargs: Any) -> TypeCheckResult:
+def evaluate_no_strong_t_cell_epitope(
+    protein: str,
+    sequence: str | None = None,
+    organism: str = "Homo_sapiens",
+    **kwargs: Any,
+) -> TypeCheckResult:
     """Evaluate whether the protein lacks strong T-cell epitopes.
+
+    Uses the offline scan_peptides API to scan all default MHC-I and
+    MHC-II alleles without requiring external tools.
 
     PASS: No strong T-cell epitopes
     LIKELY_PASS: 1 strong epitope
@@ -107,8 +127,8 @@ def evaluate_no_strong_t_cell_epitope(sequence: str, protein: str, organism: str
     FAIL: >3 strong T-cell epitopes
 
     Args:
-        sequence: Nucleotide sequence (unused by this predicate).
-        protein: Amino acid sequence.
+        protein: Amino acid sequence (primary argument).
+        sequence: Nucleotide sequence (unused; backward compat).
         organism: Target organism (unused by this predicate).
         **kwargs: Optional keyword arguments:
             max_strong: Maximum allowed strong T-cell epitopes (default 0).
@@ -124,9 +144,21 @@ def evaluate_no_strong_t_cell_epitope(sequence: str, protein: str, organism: str
             violation="Empty protein sequence",
         )
 
-    result = predict_epitopes(protein)
-    t_epitopes = result.linear_epitopes
-    strong_count = sum(1 for e in t_epitopes if e.score >= _T_CELL_STRONG_SCORE)
+    strong_count = 0
+    total_epitopes = 0
+    for allele in DEFAULT_MHC_I_ALLELES:
+        results = scan_peptides(protein, allele, peptide_length=9)
+        for r in results:
+            total_epitopes += 1
+            if r.binding_class in ("strong_binder", "moderate_binder"):
+                strong_count += 1
+
+    for allele in DEFAULT_MHC_II_ALLELES:
+        results = scan_peptides(protein, allele, peptide_length=15)
+        for r in results:
+            total_epitopes += 1
+            if r.binding_class in ("strong_binder", "moderate_binder"):
+                strong_count += 1
 
     if strong_count <= max_strong:
         verdict = Verdict.PASS
@@ -145,7 +177,7 @@ def evaluate_no_strong_t_cell_epitope(sequence: str, protein: str, organism: str
         violation = f"{strong_count} strong T-cell epitopes found (high immunogenicity risk)"
 
     derivation = [
-        {"step": "predict_t_cell_epitopes", "total": len(t_epitopes),
+        {"step": "scan_peptides_offline", "total": total_epitopes,
          "strong": strong_count},
     ]
 
@@ -157,7 +189,12 @@ def evaluate_no_strong_t_cell_epitope(sequence: str, protein: str, organism: str
     )
 
 
-def evaluate_no_dominant_b_cell_epitope(sequence: str, protein: str, organism: str, **kwargs: Any) -> TypeCheckResult:
+def evaluate_no_dominant_b_cell_epitope(
+    protein: str,
+    sequence: str | None = None,
+    organism: str = "Homo_sapiens",
+    **kwargs: Any,
+) -> TypeCheckResult:
     """Evaluate whether the protein lacks dominant B-cell epitopes.
 
     PASS: No B-cell epitopes with score >= threshold
@@ -166,8 +203,8 @@ def evaluate_no_dominant_b_cell_epitope(sequence: str, protein: str, organism: s
     FAIL: >2 dominant B-cell epitopes
 
     Args:
-        sequence: Nucleotide sequence (unused by this predicate).
-        protein: Amino acid sequence.
+        protein: Amino acid sequence (primary argument).
+        sequence: Nucleotide sequence (unused; backward compat).
         organism: Target organism (unused by this predicate).
         **kwargs: Optional keyword arguments:
             score_threshold: Score threshold for "dominant" epitopes (default 0.7).
@@ -214,23 +251,25 @@ def evaluate_no_dominant_b_cell_epitope(sequence: str, protein: str, organism: s
 
 
 def evaluate_population_coverage_safe(
-    sequence: str,
     protein: str,
-    organism: str,
+    sequence: str | None = None,
+    organism: str = "Homo_sapiens",
     **kwargs: Any,
 ) -> TypeCheckResult:
-    """Evaluate whether the protein's MHC binding profile is safe for
-    population coverage (i.e., doesn't bind too many common alleles).
+    """Evaluate whether the protein MHC binding profile is safe for
+    population coverage.
 
-    PASS: Binding rate < 0.2 (low population coverage of binders)
+    Uses the offline predict_all API (PSSM-based only).
+
+    PASS: Binding rate < 0.2
     LIKELY_PASS: < 0.3
     UNCERTAIN: < coverage_threshold
     LIKELY_FAIL: < 0.7
-    FAIL: >= 0.7 (high population coverage of binders = high immunogenicity risk)
+    FAIL: >= 0.7
 
     Args:
-        sequence: Nucleotide sequence (unused by this predicate).
-        protein: Amino acid sequence.
+        protein: Amino acid sequence (primary argument).
+        sequence: Nucleotide sequence (unused; backward compat).
         organism: Target organism (unused by this predicate).
         **kwargs: Optional keyword arguments:
             coverage_threshold: Maximum allowed binding rate (default 0.5).

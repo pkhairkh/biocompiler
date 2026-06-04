@@ -3,6 +3,16 @@ Escherichia coli Codon Usage Data
 
 Source: Kazusa Codon Usage Database
 K-12 MG1655, high-expression genes
+
+NOTE: The Kazusa-derived codon usage tables below reflect a broader set of
+highly expressed genes and yield CAI values that differ from those originally
+published by Sharp & Li (1987).  For direct comparison with the Sharp-Li
+published CAI values (e.g. lacZ≈0.27, trpA≈0.84, recA≈0.76), use the
+SHARP_LI_CODON_USAGE and SHARP_LI_CAI_WEIGHTS from
+``biocompiler.organisms.sharp_li_reference``.
+
+The ``compute_cai_with_reference(dna, reference_set="sharp_li")`` function
+provides a convenient way to switch between the two reference sets.
 """
 
 from __future__ import annotations
@@ -17,7 +27,12 @@ __all__ = [
     "E_COLI_EXPRESSION_OPTIMIZATION_PARAMS",
     "ECOLI_CODON_USAGE",
     "compute_codon_pair_bias",
+    "SHARP_LI_REFERENCE_AVAILABLE",
 ]
+
+# Flag indicating that the Sharp & Li (1987) reference set is available
+# for this organism via biocompiler.organisms.sharp_li_reference.
+SHARP_LI_REFERENCE_AVAILABLE: bool = True
 
 E_COLI_CODON_USAGE: CodonUsageTable = {
     "TTT": ("F", 0.35, 22.0, 142302),
@@ -160,26 +175,26 @@ E_COLI_CODON_PAIR_BIAS: dict[str, float] = {
     "AAA-CTG": 0.08,  # Lys-Leu
     "GAA-GAC": 0.07,  # Glu-Asp
     # ── Under-represented pairs (negative CPB) ──
-    "CUA-ATA": -0.50,  # Leu(rare)-Ile(rare)
-    "ATA-CUA": -0.48,  # Ile(rare)-Leu(rare)
+    "CTA-ATA": -0.50,  # Leu(rare)-Ile(rare)
+    "ATA-CTA": -0.48,  # Ile(rare)-Leu(rare)
     "AGG-AGA": -0.45,  # Arg(rare)-Arg(rare)
     "AGA-AGG": -0.43,  # Arg(rare)-Arg(rare)
-    "CUA-CUA": -0.42,  # Leu(rare)-Leu(rare)
+    "CTA-CTA": -0.42,  # Leu(rare)-Leu(rare)
     "ATA-ATA": -0.40,  # Ile(rare)-Ile(rare)
-    "AGG-CUA": -0.38,  # Arg(rare)-Leu(rare)
-    "CUA-AGG": -0.36,  # Leu(rare)-Arg(rare)
+    "AGG-CTA": -0.38,  # Arg(rare)-Leu(rare)
+    "CTA-AGG": -0.36,  # Leu(rare)-Arg(rare)
     "AGA-AGA": -0.35,  # Arg(rare)-Arg(rare)
-    "CUA-AGA": -0.33,  # Leu(rare)-Arg(rare)
-    "AGA-CUA": -0.32,  # Arg(rare)-Leu(rare)
+    "CTA-AGA": -0.33,  # Leu(rare)-Arg(rare)
+    "AGA-CTA": -0.32,  # Arg(rare)-Leu(rare)
     "ATA-AGG": -0.30,  # Ile(rare)-Arg(rare)
     "AGG-ATA": -0.28,  # Arg(rare)-Ile(rare)
-    "CUA-CCC": -0.26,  # Leu(rare)-Pro(uncommon)
-    "CCC-CUA": -0.24,  # Pro(uncommon)-Leu(rare)
+    "CTA-CCC": -0.26,  # Leu(rare)-Pro(uncommon)
+    "CCC-CTA": -0.24,  # Pro(uncommon)-Leu(rare)
     "TCG-ATA": -0.22,  # Ser(uncommon)-Ile(rare)
     "ATA-TCG": -0.20,  # Ile(rare)-Ser(uncommon)
     "AGG-TGG": -0.18,  # Arg(rare)-Trp
-    "TCG-CUA": -0.17,  # Ser(uncommon)-Leu(rare)
-    "CUA-TCG": -0.16,  # Leu(rare)-Ser(uncommon)
+    "TCG-CTA": -0.17,  # Ser(uncommon)-Leu(rare)
+    "CTA-TCG": -0.16,  # Leu(rare)-Ser(uncommon)
     "ATA-AGA": -0.15,  # Ile(rare)-Arg(rare)
     "AGA-ATA": -0.14,  # Arg(rare)-Ile(rare)
     "CCG-CCC": -0.13,  # Pro-Pro(uncommon)

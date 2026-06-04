@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Optional, Sequence
 
 from .types import (
     ConstraintPriority,
@@ -62,6 +62,7 @@ from .constraints import (
     SoftConstraint,
     CAI_LOG_EPSILON,
 )
+from ..constants import AA_TO_CODONS
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     # Data classes
     "ScoringResult",
+    "CAIImpactResult",
     # Enforcement scorer
     "ConstraintScorer",
     # Soft constraint scorer
@@ -424,6 +426,46 @@ class ScoringResult:
 
 
 # ==============================================================================
+# CAIImpactResult dataclass
+# ==============================================================================
+
+@dataclass
+class CAIImpactResult:
+    """Result of CAI impact analysis for alternative codons at a position.
+
+    Captures the CAI delta for each alternative codon, the current codon,
+    and the best (least-CAI-damaging) alternative.
+
+    Attributes:
+        position: Codon position (0-based) that was analyzed.
+        current_codon: The codon currently at this position.
+        cai_deltas: Dict mapping alternative codon -> CAI delta
+            (positive = improvement, negative = loss).
+        best_codon: The alternative codon with the highest CAI delta
+            (least damaging, or most beneficial).  None if empty.
+        best_delta: The CAI delta of *best_codon*.
+    """
+
+    position: int
+    current_codon: str
+    cai_deltas: dict[str, float]
+    best_codon: Optional[str] = None
+    best_delta: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.best_codon is None and self.cai_deltas:
+            best = max(self.cai_deltas.items(), key=lambda kv: kv[1])
+            self.best_codon = best[0]
+            self.best_delta = best[1]
+
+    def __repr__(self) -> str:
+        return (
+            f"CAIImpactResult(pos={self.position}, current={self.current_codon}, "
+            f"best={self.best_codon}, delta={self.best_delta:+.6f})"
+        )
+
+
+# ==============================================================================
 # SoftConstraintScorer
 # ==============================================================================
 
@@ -463,6 +505,88 @@ class SoftConstraintScorer:
             config.cai_weight,
             config.cpg_weight,
             config.mrna_dg_weight,
+        )
+
+    def adjust_weights_for_organism(self, organism: str) -> None:
+        """Dynamically adjust scoring weights based on the target organism.
+
+        Inspects the organism's domain (prokaryote vs eukaryote) and
+        adjusts the scorer's internal config weights accordingly.  For
+        prokaryotic organisms the CpG weight is automatically zeroed out
+        because prokaryotes lack DNA methylation and thus CpG islands
+        are not a biological concern.
+
+        This method mutates the scorer's config in-place so that
+        subsequent calls to :meth:`score_sequence` use the adjusted
+        weights.
+
+        Parameters
+        ----------
+        organism:
+            Organism identifier string (e.g. ``"E_coli_K12"``,
+            ``"human"``).  Resolved via
+            :func:`~biocompiler.organism_config.get_organism_config`.
+
+        Examples
+        --------
+        >>> scorer = SoftConstraintScorer(SolverConfig())
+        >>> scorer.adjust_weights_for_organism("E_coli_K12")
+        >>> scorer.config.cpg_weight
+        0.0
+        """
+        from ..organism_config import get_organism_config
+
+        org_config = get_organism_config(organism)
+
+        old_cai = self._config.cai_weight
+        old_cpg = self._config.cpg_weight
+        old_mrna = self._config.mrna_dg_weight
+
+        # For prokaryotes, zero out CpG weight (no DNA methylation)
+        if not org_config.is_eukaryote:
+            self._config.cpg_weight = 0.0
+            self._config.avoid_cpg = False
+            logger.info(
+                "Prokaryotic organism %r detected: zeroing cpg_weight "
+                "(was %.2f) and disabling avoid_cpg",
+                organism, old_cpg,
+            )
+
+        # Adjust mRNA dG weight based on the organism's degradation model
+        if org_config.mrna_degradation_model == "none":
+            self._config.mrna_dg_weight = 0.0
+            logger.info(
+                "Organism %r has no mRNA degradation model: zeroing "
+                "mrna_dg_weight (was %.2f)",
+                organism, old_mrna,
+            )
+        elif org_config.mrna_degradation_model == "simple":
+            # Use a moderate weight for simple models
+            if self._config.mrna_dg_weight > 0.3:
+                self._config.mrna_dg_weight = 0.2
+                logger.info(
+                    "Organism %r uses simple mRNA model: capping "
+                    "mrna_dg_weight at 0.2 (was %.2f)",
+                    organism, old_mrna,
+                )
+
+        # Update GC bounds from organism config
+        if org_config.gc_target_lo != org_config.gc_target_hi:
+            self._config.gc_lo = org_config.gc_target_lo
+            self._config.gc_hi = org_config.gc_target_hi
+            logger.debug(
+                "Organism %r: updated GC range to [%.2f, %.2f]",
+                organism, org_config.gc_target_lo, org_config.gc_target_hi,
+            )
+
+        logger.info(
+            "Weight adjustment for organism %r: "
+            "cai_weight %.2f -> %.2f, cpg_weight %.2f -> %.2f, "
+            "mrna_dg_weight %.2f -> %.2f",
+            organism,
+            old_cai, self._config.cai_weight,
+            old_cpg, self._config.cpg_weight,
+            old_mrna, self._config.mrna_dg_weight,
         )
 
     @property
@@ -559,6 +683,64 @@ class SoftConstraintScorer:
             w = weights.get(name, 0.0)
             total += w * score_val
         return total
+
+    # ── CAI-aware scoring ───────────────────────────────────────────────
+
+    def score_cai_impact(
+        self,
+        model: CSPModel,
+        sequence: str,
+        position: int,
+        alternative_codons: list[str],
+    ) -> dict[str, float]:
+        """Compute the CAI impact of each alternative codon at a position.
+
+        Positive delta = CAI improvement; negative = CAI loss.
+        This enables the constraint resolver to pick the least-CAI-damaging fix.
+
+        Args:
+            model: CSP model with soft constraints (including MaximizeCAI).
+            sequence: Current candidate DNA sequence.
+            position: 0-based codon position.
+            alternative_codons: List of candidate codons to evaluate.
+
+        Returns:
+            Dict mapping codon -> CAI delta.
+        """
+        n = len(model.protein)
+        if position < 0 or position >= n:
+            raise ValueError(
+                f"Codon position {position} out of range "
+                f"[0, {n - 1}] for protein of length {n}"
+            )
+
+        cai_constraint = None
+        for sc in model.soft_constraints:
+            if isinstance(sc, MaximizeCAI):
+                cai_constraint = sc
+                break
+
+        if cai_constraint is None:
+            return {codon: 0.0 for codon in alternative_codons}
+
+        adaptiveness = cai_constraint.adaptiveness
+        current_codon = sequence[position * 3 : position * 3 + 3]
+        current_w = adaptiveness.get(current_codon, CAI_LOG_EPSILON)
+        current_log_w = math.log(max(current_w, CAI_LOG_EPSILON))
+
+        result: dict[str, float] = {}
+        for codon in alternative_codons:
+            alt_w = adaptiveness.get(codon, CAI_LOG_EPSILON)
+            alt_log_w = math.log(max(alt_w, CAI_LOG_EPSILON))
+            delta = (alt_log_w - current_log_w) / n
+            result[codon] = delta
+
+        logger.debug(
+            "CAI impact at codon position %d (current=%s): %s",
+            position, current_codon,
+            {c: f"{d:+.6f}" for c, d in result.items()},
+        )
+        return result
 
     # ── Private helpers ───────────────────────────────────────────────
 

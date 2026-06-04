@@ -152,6 +152,7 @@ class TestDecisionRecordSerialization:
         expected_keys = {
             "timestamp", "decision_type", "position", "chosen_value",
             "alternatives_considered", "rationale", "constraint_context",
+            "cai_impact", "codon_before", "codon_after",
         }
         assert set(d.keys()) == expected_keys
 

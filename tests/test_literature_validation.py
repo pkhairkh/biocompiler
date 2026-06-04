@@ -23,6 +23,7 @@ from biocompiler.literature_validation import (
     SCID_CASES, THALASSEMIA_CASES, AGGREGATION_CASES, IMMUNOGENICITY_CASES,
     ALL_LITERATURE_CASES,
     LiteratureCase, ValidationResult, DomainReport,
+    CAIValidationResult,
     # Specific sequences
     MLV_LTR_PROMOTER, IL2RG_CDNA_FRAGMENT, RAG1_CDNA_FRAGMENT,
     HBB_EXON1_PLUS_IVS1_WT, HBB_IVS1_1_MUTANT, HBB_IVS1_5_MUTANT,
@@ -32,6 +33,7 @@ from biocompiler.literature_validation import (
     EPO_MATURE, FACTOR_VIII_A2, INTERFERON_ALPHA, HGH_MATURE,
     # Functions
     evaluate_case, run_literature_validation, format_literature_validation_report,
+    validate_cai_against_published, compare_reference_sets,
 )
 
 
@@ -581,3 +583,234 @@ class TestSensitivitySpecificity:
             assert r.true_negative or r.false_positive, (
                 f"Negative control {r.case.case_id} unexpected result"
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E. CAI Validation Against Published Values
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCAIValidationKazusa:
+    """Validate CAI computation against published values using Kazusa reference set."""
+
+    @pytest.fixture(scope="class")
+    def kazusa_result(self):
+        return validate_cai_against_published("kazusa")
+
+    def test_kazusa_returns_validation_result(self, kazusa_result):
+        """validate_cai_against_published('kazusa') should return CAIValidationResult."""
+        assert isinstance(kazusa_result, CAIValidationResult)
+
+    def test_kazusa_reference_set_recorded(self, kazusa_result):
+        """The result should record that Kazusa reference set was used."""
+        assert kazusa_result.reference_set_used == "kazusa"
+
+    def test_kazusa_has_per_gene_results(self, kazusa_result):
+        """Should have per-gene results for genes with DNA sequences."""
+        assert len(kazusa_result.per_gene_results) > 0, (
+            "Kazusa validation should produce at least one per-gene result"
+        )
+
+    def test_kazusa_per_gene_structure(self, kazusa_result):
+        """Each per-gene result should have required fields."""
+        for r in kazusa_result.per_gene_results:
+            assert "gene" in r
+            assert "organism" in r
+            assert "expected_cai" in r
+            assert "computed_cai" in r
+            assert "absolute_error" in r
+            assert "relative_error" in r
+            assert "within_tolerance" in r
+            assert 0.0 <= r["computed_cai"] <= 1.0, (
+                f"CAI for {r['gene']} out of range: {r['computed_cai']}"
+            )
+
+    def test_kazusa_mean_error_computed(self, kazusa_result):
+        """Mean error should be a non-negative float."""
+        assert kazusa_result.mean_error >= 0.0
+        assert isinstance(kazusa_result.mean_error, float)
+
+    def test_kazusa_max_error_computed(self, kazusa_result):
+        """Max error should be non-negative and >= mean error."""
+        assert kazusa_result.max_error >= 0.0
+        assert kazusa_result.max_error >= kazusa_result.mean_error
+
+    def test_kazusa_tolerance_counts(self, kazusa_result):
+        """Genes within + outside tolerance should sum to total per-gene results."""
+        total = kazusa_result.genes_within_tolerance + kazusa_result.genes_outside_tolerance
+        assert total == len(kazusa_result.per_gene_results)
+
+    def test_kazusa_ecoli_genes_present(self, kazusa_result):
+        """E. coli genes with DNA sequences should appear in results."""
+        ecoli_genes = [r for r in kazusa_result.per_gene_results
+                       if r["organism"] == "Escherichia_coli"]
+        assert len(ecoli_genes) > 0, "Should have at least one E. coli gene result"
+
+    def test_kazusa_yeast_genes_present(self, kazusa_result):
+        """S. cerevisiae genes with DNA sequences should appear in results."""
+        yeast_genes = [r for r in kazusa_result.per_gene_results
+                       if r["organism"] == "Saccharomyces_cerevisiae"]
+        assert len(yeast_genes) > 0, "Should have at least one S. cerevisiae gene result"
+
+
+class TestCAIValidationSharpLi:
+    """Validate CAI computation against published values using Sharp-Li reference set."""
+
+    @pytest.fixture(scope="class")
+    def sharp_li_result(self):
+        return validate_cai_against_published("sharp_li")
+
+    def test_sharp_li_returns_validation_result(self, sharp_li_result):
+        """validate_cai_against_published('sharp_li') should return CAIValidationResult."""
+        assert isinstance(sharp_li_result, CAIValidationResult)
+
+    def test_sharp_li_reference_set_recorded(self, sharp_li_result):
+        """The result should record that Sharp-Li reference set was used."""
+        assert sharp_li_result.reference_set_used == "sharp_li"
+
+    def test_sharp_li_has_per_gene_results(self, sharp_li_result):
+        """Should have per-gene results for supported organisms (E. coli, yeast)."""
+        assert len(sharp_li_result.per_gene_results) > 0, (
+            "Sharp-Li validation should produce at least one per-gene result"
+        )
+
+    def test_sharp_li_per_gene_structure(self, sharp_li_result):
+        """Each per-gene result should have required fields."""
+        for r in sharp_li_result.per_gene_results:
+            assert "gene" in r
+            assert "organism" in r
+            assert "expected_cai" in r
+            assert "computed_cai" in r
+            assert "absolute_error" in r
+            assert "relative_error" in r
+            assert "within_tolerance" in r
+            assert 0.0 <= r["computed_cai"] <= 1.0, (
+                f"CAI for {r['gene']} out of range: {r['computed_cai']}"
+            )
+
+    def test_sharp_li_ecoli_genes_present(self, sharp_li_result):
+        """E. coli genes should appear in Sharp-Li results (supported organism)."""
+        ecoli_genes = [r for r in sharp_li_result.per_gene_results
+                       if r["organism"] == "Escherichia_coli"]
+        assert len(ecoli_genes) > 0, (
+            "Sharp-Li should have at least one E. coli gene result"
+        )
+
+    def test_sharp_li_yeast_genes_present(self, sharp_li_result):
+        """S. cerevisiae genes should appear in Sharp-Li results (supported organism)."""
+        yeast_genes = [r for r in sharp_li_result.per_gene_results
+                       if r["organism"] == "Saccharomyces_cerevisiae"]
+        assert len(yeast_genes) > 0, (
+            "Sharp-Li should have at least one S. cerevisiae gene result"
+        )
+
+    def test_sharp_li_closer_for_ecoli_sharp_li_genes(self, sharp_li_result):
+        """E. coli genes from Sharp & Li (1987) Table 1 should be closer to
+        published values when using the Sharp-Li reference set.
+
+        The published values were computed using the original 24 highly-expressed
+        E. coli gene reference set, which is what our Sharp-Li weights encode.
+        While some discrepancy is expected (our reference weights are an approximation
+        of the original), the Sharp-Li reference should generally produce values
+        closer to the Sharp & Li (1987) published values than the Kazusa reference
+        does for the same E. coli genes.
+
+        We test that at least some E. coli genes are within a reasonable tolerance
+        when using the Sharp-Li reference set.
+        """
+        ecoli_results = [r for r in sharp_li_result.per_gene_results
+                         if r["organism"] == "Escherichia_coli"]
+        within_0_10 = sum(1 for r in ecoli_results if r["absolute_error"] <= 0.10)
+        assert within_0_10 >= 1, (
+            f"Sharp-Li reference should produce at least 1 E. coli gene "
+            f"within ±0.10 of published values. "
+            f"Got {within_0_10}/{len(ecoli_results)} within tolerance."
+        )
+
+    def test_sharp_li_tolerance_counts(self, sharp_li_result):
+        """Genes within + outside tolerance should sum to total per-gene results."""
+        total = sharp_li_result.genes_within_tolerance + sharp_li_result.genes_outside_tolerance
+        assert total == len(sharp_li_result.per_gene_results)
+
+
+class TestCompareReferenceSets:
+    """Test the compare_reference_sets function that compares both reference sets."""
+
+    @pytest.fixture(scope="class")
+    def comparison(self):
+        return compare_reference_sets()
+
+    def test_compare_returns_dict(self, comparison):
+        """compare_reference_sets() should return a dict with expected keys."""
+        assert isinstance(comparison, dict)
+        assert "kazusa_result" in comparison
+        assert "sharp_li_result" in comparison
+        assert "per_gene_comparison" in comparison
+        assert "kazusa_better_genes" in comparison
+        assert "sharp_li_better_genes" in comparison
+        assert "summary" in comparison
+
+    def test_compare_kazusa_result_type(self, comparison):
+        """Kazusa result should be CAIValidationResult."""
+        assert isinstance(comparison["kazusa_result"], CAIValidationResult)
+
+    def test_compare_sharp_li_result_type(self, comparison):
+        """Sharp-Li result should be CAIValidationResult."""
+        assert isinstance(comparison["sharp_li_result"], CAIValidationResult)
+
+    def test_compare_per_gene_comparison(self, comparison):
+        """Per-gene comparison should have entries for tested genes."""
+        assert len(comparison["per_gene_comparison"]) > 0
+        for entry in comparison["per_gene_comparison"]:
+            assert "gene" in entry
+            assert "organism" in entry
+            assert "expected_cai" in entry
+            assert "closer_reference" in entry
+
+    def test_compare_summary_string(self, comparison):
+        """Summary should be a non-empty string."""
+        summary = comparison["summary"]
+        assert isinstance(summary, str)
+        assert len(summary) > 0
+        assert "Kazusa" in summary
+        assert "Sharp-Li" in summary
+
+    def test_compare_better_genes_lists(self, comparison):
+        """Kazusa and Sharp-Li better genes should be lists of strings."""
+        assert isinstance(comparison["kazusa_better_genes"], list)
+        assert isinstance(comparison["sharp_li_better_genes"], list)
+        # At least one set should have some genes
+        total = len(comparison["kazusa_better_genes"]) + len(comparison["sharp_li_better_genes"])
+        assert total > 0, "At least some genes should favor one reference set"
+
+    def test_compare_no_overlap_in_better_genes(self, comparison):
+        """A gene should not appear in both better-genes lists."""
+        kazusa_set = set(comparison["kazusa_better_genes"])
+        sharp_li_set = set(comparison["sharp_li_better_genes"])
+        overlap = kazusa_set & sharp_li_set
+        assert len(overlap) == 0, (
+            f"Genes should not appear in both better-genes lists: {overlap}"
+        )
+
+    def test_compare_sharp_li_better_for_original_sharp_li_genes(self, comparison):
+        """For E. coli genes originally published in Sharp & Li (1987),
+        the Sharp-Li reference set should produce values closer to published
+        results than the Kazusa reference set.
+
+        The published values were computed with the original 24-gene reference set,
+        so the Sharp-Li weights (which encode those same frequencies) should be
+        a closer match. We test this for at least some E. coli genes.
+        """
+        ecoli_comparison = [
+            e for e in comparison["per_gene_comparison"]
+            if e["organism"] == "Escherichia_coli"
+            and e.get("closer_reference") in ("kazusa", "sharp_li")
+        ]
+        sharp_li_closer = sum(
+            1 for e in ecoli_comparison
+            if e["closer_reference"] == "sharp_li"
+        )
+        # At least some E. coli genes should be closer with Sharp-Li
+        assert sharp_li_closer >= 1, (
+            f"Expected at least 1 E. coli gene where Sharp-Li is closer, "
+            f"got {sharp_li_closer}/{len(ecoli_comparison)}"
+        )

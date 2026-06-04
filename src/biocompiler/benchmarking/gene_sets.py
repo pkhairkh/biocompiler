@@ -9,7 +9,15 @@ Each gene set maps a gene symbol to a dict with:
   - description      : str   – human-readable protein name
   - uniprot_id       : str   – UniProtKB accession (or empty string if unknown)
 
-Sequences sourced from UniProtKB/Swiss-Prot (reviewed, canonical isoforms).
+Extended gene sets use the new schema:
+  - name              : str   – gene symbol
+  - protein           : str   – amino acid sequence
+  - organism          : str   – source organism
+  - expected_cai_range: tuple – rough expected CAI range
+  - category          : str   – functional category
+
+Sequences sourced from UniProtKB/Swiss-Prot (reviewed, canonical isoforms),
+except where noted (e.g. F8 truncated to first 300 aa).
 """
 
 from __future__ import annotations
@@ -18,11 +26,18 @@ __all__ = [
     "HUMAN_THERAPEUTIC_GENES",
     "VACCINE_ANTIGEN_GENES",
     "STRESS_TEST_GENES",
+    "E_COLI_EXTENDED",
+    "HUMAN_THERAPEUTIC",
+    "HUMAN_SIGNALING",
+    "YEAST_INDUSTRIAL",
+    "MOUSE_MODEL",
     "get_all_gene_sets",
 ]
 
 
-# except where noted (e.g. F8 truncated to first 300 aa).
+# ---------------------------------------------------------------------------
+# Human Therapeutic Genes (legacy format)
+# ---------------------------------------------------------------------------
 
 HUMAN_THERAPEUTIC_GENES: dict[str, dict] = {
     "INS": {
@@ -158,11 +173,8 @@ HUMAN_THERAPEUTIC_GENES: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
-# Vaccine Antigen Genes
+# Vaccine Antigen Genes (legacy format)
 # ---------------------------------------------------------------------------
-# Pathogen-derived antigens used in licensed or experimental vaccines.
-# Full UniProt canonical sequences where available.
-# Includes all 10 task-specified vaccine antigens plus additional entries.
 
 VACCINE_ANTIGEN_GENES: dict[str, dict] = {
     "SARS2_Spike": {
@@ -194,7 +206,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "SARS-CoV-2 Spike glycoprotein (Wuhan-Hu-1); vaccine: BNT162b2/mRNA-1273",
         "uniprot_id": "P0DTC2",
     },
-
     "SARS2_RBD": {
         "protein_sequence": (
             "RVQPTESIVRFPNITNLCPFGEVFNATRFASVYAWNRKRISNCVADYSVLYNSASFSTFK"
@@ -206,7 +217,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "SARS-CoV-2 Spike RBD domain (residues 319-541); vaccine: subunit vaccines",
         "uniprot_id": "P0DTC2",
     },
-
     "H1N1_HA": {
         "protein_sequence": (
             "MKANLLVLLCALAAADADTICIGYHANNSTDTVDTVLEKNVTVTHSVNLLEDSHNGKLCR"
@@ -224,7 +234,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "Influenza A H1N1 Hemagglutinin; vaccine: seasonal flu vaccines",
         "uniprot_id": "P03452",
     },
-
     "H3N2_HA": {
         "protein_sequence": (
             "MKTIIALSYIFCLALGQDLPGNDNSTATLCLGHHAVPNGTLVKTITDDQIEVTNATELVQ"
@@ -242,7 +251,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "Influenza A H3N2 Hemagglutinin; vaccine: seasonal flu vaccines",
         "uniprot_id": "P03437",
     },
-
     "HIV1_gp120": {
         "protein_sequence": (
             "TEKLWVTVYYGVPVWKEATTTLFCASDAKAYDTEVHNVWATHACVPTDPNPQEVVLVNVT"
@@ -259,7 +267,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "HIV-1 Envelope gp120 (residues 31-530 of gp160); vaccine: experimental HIV vaccines",
         "uniprot_id": "P04578",
     },
-
     "RSV_F": {
         "protein_sequence": (
             "MELLILKANAITTILTAVTFCFASGQNITEEFYQSTCSAVSKGYLSALRTGWYTSVITIE"
@@ -277,7 +284,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "RSV Fusion glycoprotein F0; vaccine: Arexvy/Abrysvo",
         "uniprot_id": "P03420",
     },
-
     "RABV_G": {
         "protein_sequence": (
             "MSKIFVNPSAIRAGLADLEMAEETVDLINRNIEDNDAHLQGEPIEVDNLPEDMKRLHLDD"
@@ -290,7 +296,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "Glycoprotein G; vaccine: HDCV/PCECV rabies vaccines",
         "uniprot_id": "P15198",
     },
-
     "Zika_E": {
         "protein_sequence": (
             "IRCIGVSNRDFVEGMSGGTWVDVVLEHGGCVTVMAQDKPTVDIELVTTTVSNMAEVRSYC"
@@ -307,7 +312,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "Zika virus Envelope protein E (residues 291-790 of polyprotein); vaccine: experimental",
         "uniprot_id": "Q32ZE1",
     },
-
     "DENV2_E": {
         "protein_sequence": (
             "MRCIGISNRDFVEGVSGGSWVDIVLEHGSCVTTMAKNKPTLDFELIETEAKQPATLRKYC"
@@ -324,7 +328,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "Dengue virus type 2 Envelope protein E (residues 281-775 of polyprotein); vaccine: Dengvaxia",
         "uniprot_id": "P14340",
     },
-
     "MTB_Ag85B": {
         "protein_sequence": (
             "MPRVEVGLVIHSRMHARAPVDVWRSVRSLPDFWRLLQVRVASQFGDGLFQAGLAGALLFN"
@@ -340,7 +343,6 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
         "description": "Antigen 85B; vaccine: M72/AS01E candidate",
         "uniprot_id": "P0A5C2",
     },
-
     "PF_CSP": {
         "protein_sequence": (
             "MMRKLAILSVSSFLFVEALFQEYQCYGSSSNTRVLNELNYDNAGTNLYNELEMNYYGKQE"
@@ -359,10 +361,8 @@ VACCINE_ANTIGEN_GENES: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
-# Stress-Test Genes
+# Stress-Test Genes (legacy format)
 # ---------------------------------------------------------------------------
-# Synthetic sequences designed to stress-test edge cases in optimization:
-#   extreme GC/AT composition, homopolymer runs, restriction site density, etc.
 
 STRESS_TEST_GENES: dict[str, dict] = {
     "PolyA_100": {
@@ -375,7 +375,6 @@ STRESS_TEST_GENES: dict[str, dict] = {
         "uniprot_id": "",
         "stress_category": "homopolymer",
     },
-
     "ExtremeGC_200": {
         "protein_sequence": (
             "RGAARRVGPGAPGGRPAPVGVRAGVAGGVRVRPVAPVRVPRGAAGAGARAAAAVRRGRGA"
@@ -388,7 +387,6 @@ STRESS_TEST_GENES: dict[str, dict] = {
         "uniprot_id": "",
         "stress_category": "high_gc",
     },
-
     "ExtremeAT_200": {
         "protein_sequence": (
             "LLMKFKNINLKMFNLLFMKNLYFMIYFMKLIKYYKILKYYNYFLKMKNYNNMIFLLIKKL"
@@ -401,7 +399,6 @@ STRESS_TEST_GENES: dict[str, dict] = {
         "uniprot_id": "",
         "stress_category": "high_at",
     },
-
     "Long_1000": {
         "protein_sequence": (
             "IDIYSNRLKESPMDDAQITAGKDFICMAPSRHNVLAQTISMVKVWKPLSLWPIQQKPLKQ"
@@ -410,7 +407,7 @@ STRESS_TEST_GENES: dict[str, dict] = {
             "QTSRTCIKGATDDSETFQAVRPIPFKISRDFELILHPEFQQRDRLPDDIPVLERDDDALQ"
             "VLFRTITLIIDAVISGAKANLEVRPKSDLIITVEKKPVDDMNNAAILECFFIFYSKMVHL"
             "KYSANEPLERFFVLIAAHEQRVTLVVMQAPIKYDLKIRGEMTEFEVSLIEEVGLVMLGDG"
-            "PKPDLYIFRVKCNLLRVYIRSLFLQSVCLGYLTTQSGVLSEELVINLGLLIEDFLCSAPF"
+            "PKPDLYIFRVKCNLLRVYIRSLFLQSVCLGYLTTQSGVLSEELVINNGLLIEDFLCSAPF"
             "SGMSVIALLTTILIPGMNIVEFKTTTGEPPTAAKYVPHRKTIFYASEGNLLSNATKCYNI"
             "QQASYFNIGLKHQTDGICLLVEVMQLFPAKLYESKGKKFPMTKYKEILPREPNRLVLYSQ"
             "SISPERVNVTPVVSGSALIMMLSVRCATLYDASYEGNVEIRTRIMPVHPNGRIGVAGIVT"
@@ -427,7 +424,6 @@ STRESS_TEST_GENES: dict[str, dict] = {
         "uniprot_id": "",
         "stress_category": "long_sequence",
     },
-
     "Repetitive_10x20": {
         "protein_sequence": (
             "LKQFSLEQIAKRFNKMASTALKQFSLEQIAKRFNKMASTALKQFSLEQIAKRFNKMASTA"
@@ -444,6 +440,561 @@ STRESS_TEST_GENES: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
+# E. coli Extended Gene Set
+# ---------------------------------------------------------------------------
+# Additional E. coli genes covering a range of expression levels for
+# comprehensive benchmarking of prokaryotic codon optimization.
+
+E_COLI_EXTENDED: dict[str, dict] = {
+    "lacZ": {
+        "name": "lacZ",
+        "protein": (
+            "MTMITDSLAVVLQRRDWENPGVTQLNRLAAHPPFASWRNSEEARTDRPSQQLRSLNGEWRFAWF"
+            "PAPEAVPESWLECDLPEADTVVVPSNWQMHGYDAPIYTNVTYPITVNPPFVPTENPTGCYSLTF"
+            "NVDESWLQEGQTRIIFDGVNSAFHLWCNGRWVGYGQDSRLPSEFDLSAFLRAGENRLAVMVLR"
+            "WSDGSYLEDQDMWRMSGIFRDVSLLHKPTTQISDFHVATRFNDDFSRAVLEAEVQMCGELRDY"
+            "LRVTVSLWQGETQVASGTAPFGGEIIDERGGYADRVTLRLNVENPKLWSAEIPNLYRAVVELHT"
+            "ADGTLIEAEACDVGFREVRIENGLLLLNGKPLLIRGVNRHEHHPLHGQVMDEQTMVQDILLMK"
+            "QNNFNAVRCSHYPNHPLWYTLCDRYGLYVVDEANIETHGMVPMNRLTDDPRWLPAMSERVTRMV"
+            "QDRKRYTLEEFVTAEWDESRPAVMEHVKLAPPPHPAEQLVDATLAEVLDRHTTLRGLQAYNAE"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.25, 0.55),
+        "category": "housekeeping",
+    },
+    "lacI": {
+        "name": "lacI",
+        "protein": (
+            "MKPVTLYDVAEYAGVSYQTVSRVVNQASHVSAKTREKVEAAMAELNYIPNRVAQQLAGKQSALIT"
+            "VQGIGVSAFLTQADGSTVTAEVAQVVRSNQESTQASLSTEQMLAQQTRVAGQVRDAGRVSAELR"
+            "HVGNGHELDAAIHQLTRAVQETSRATLFSLGNVVAHRVLEGDTLAFGHPLDQLRQALTEAWQRG"
+            "HRLQAVVSQLPSRVLQQLASGHGDSAQASRAQALADWLGYRLFGHPEAPDSFQSWMRVEQRLGH"
+            "TQAPYPHRLPNRPMSARHFSQGLNVRNALRAQVEALRRAQQASQQAQAVDPSRARFQQMLQNLR"
+            "NQDHSAASSLRALAEQRQRQMTLAPAPQNRTPVQALQAGLRSADVSRVSAQALKAVQELRQELR"
+            "SLTQRLQAQARKAQ"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.20, 0.45),
+        "category": "regulatory",
+    },
+    "recA": {
+        "name": "recA",
+        "protein": (
+            "MNLTELKNKPVMEIAQEQLLEQGKIVRALEQGFPDRHVNVLDFIDRAKQIDRGIERDVIVFCDGK"
+            "ERELAAIYQRTLTRGHPQGFGYAQGRFLQGEMAEAWRRADENRDAVFRHLSDPSQPLVVFGMKT"
+            "DAVKRIVVDAFQMTRQEAVEAWEKLAQALREGRGIEVIPRSADLIEATRRLFGQHVVNMAAGEG"
+            "KTVNAVNLGLRGVEVQRLRLDLAFPGELDRAVARLADAREVIHPDVKRLAAGLAEGVRRYLDIS"
+            "VRRMADAIERQEAK"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.50, 0.75),
+        "category": "dna_repair",
+    },
+    "gyrA": {
+        "name": "gyrA",
+        "protein": (
+            "MTMNIKLHEIEGVAEGCKTLEDAIRKGFEKLVQYARLRDAPFLHAIGFSKDKITTDNTSFLEQLE"
+            "VMGKYSIPQELRDIYNAIVQKDDRVGQKINSQLPKVKDLTYGNIPRLDGTKRLAEDFVEYKSLN"
+            "RGWNVVKELKNSTGLQYELPEYLNVILSKSRDGEVVFQYPNPEQLRDYLQHKVVNEQILRDKSG"
+            "YDVWLSENKNFKDGVKAVLDRHRAQRLAELNVRFDKAQHEQGKSADYENFRRLRSQYAIFEGAG"
+            "TDNQLTQTIKKVLGDSCSNADRLMFEALHDAIQKMKTRQLNMLSAKIDAVIESGFDNVIAVPSF"
+            "GGLDRAFYQMLQDSYEKLNQELRSLYQNYRTREHLMNDFDKKIA"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.50, 0.70),
+        "category": "dna_replication",
+    },
+    "rpoB": {
+        "name": "rpoB",
+        "protein": (
+            "MSPERREQFVRDYIEAIKDPAKQKQNMDIVLPTSGFMSMQKGVIHVKPFSGSYEQLVQDLIAKF"
+            "RADVVTEAGDVLGIFRQEVLPSMQAVVNKVDGIVFKDLTDYQKVLSVLNPEQVDQAVKELAASF"
+            "NQKADTVCHQLSVKPFFRKLDKQGFSSQDILEITELLKEVSQKISDPLVRLSNADVMRQIYDKL"
+            "PDSEFQKYLENEKTLSLPQIDNVLKYLPQLSKSPPEEVEADIPKHIIKALDVSKEQKKLEQYQD"
+            "IVLLPMNIRATLEQSQKAEIEQELIRAIKTQAPEKVDLQERLQQLQKQLEQVKQEMADLLAKEK"
+            "KQELQALINEAKELNEIPIIQDLAEKL"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.55, 0.80),
+        "category": "transcription",
+    },
+    "rpoD": {
+        "name": "rpoD",
+        "protein": (
+            "MQWPTQQEALRPKRAQTLSDYQQIFRAIEKKQADLVLLPEWLTDRRPKPEVQQMLEARVALSRD"
+            "LQAEGRVLLIGDDATPALEKMRQLAESLGNVRLDILEQRLREQIRKRIDELMDETGKEVEFEVV"
+            "RDLQEQIEKGLEPLMPSQRLDLSMIRKLAEGYQELIDRLLPGDQMPEAFETKLQDELRDMLRSR"
+            "PFPFEPQQAMAVMLRQEREMALRMRSRLREKVRRDLAELNQELKEMLRSPSTQRRRSVQEAIDQ"
+            "LVDQLRQAFEEQNLRQQLDQFRRRAEQLERQQRWLEQQVSQQMLAQQMREAQRRQMLEQQRSQQ"
+            "QLREQQRQMYQQQLQQQQQQQQQQQQLQQQQQQQQQRQQQQQQPQLQQQRQPLQQQRQRQLPQQ"
+            "QRLQQQRQRQLAQQQRLQKQQQLQQQRQRLAQQHRLQQQRLQQRQQLQQQRLQQQRQRLAQQHR"
+            "LQQQRQQQAQQQRLQQQRLQQQRQQQLQQQRL"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.30, 0.55),
+        "category": "transcription",
+    },
+    "dnaK": {
+        "name": "dnaK",
+        "protein": (
+            "MAKDVKFGNDARVKMLRGVNVLADALKDYSQIEKAVDKNGKTLVELGGKPTPKIEQVSLTALGGK"
+            "VVNKVAVKIPGEAMTLKVIEKDPKVKEVLRDIGGGTTFKELVDTKASADKDGVLVKSVKDRDKF"
+            "DEIVKVVEKMKNEDKLKEVKTKLESKVVPFEKGKVNDSALDLGKQPEAPRGFSQVSVKVVISGT"
+            "KDAQEVLKEALELNDKVKDEVVKPEAKKQVKDAVKKLFEGQKQLEQQTQKIIEAIEKDRVKTKL"
+            "DVGQDKLLQGKDKVLEEQTKELQADIAELEKKQNQTVEVKQKKKQLKEEVEGKEKPTIEPTKA"
+            "LQQQIEKLKEAVQKLREELLSGPNKKVMDVKRKEVKEKEEKEKEKGDKEKEKEKEKDGKVKTK"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.60, 0.85),
+        "category": "chaperone",
+    },
+    "groEL": {
+        "name": "groEL",
+        "protein": (
+            "MAKDVKFNGELVKFANDAVKVMLEQKPVTVLEQGMKDLRAINILKDAKVKGFKGEVKQIDKLGDG"
+            "ILVSAVGPKTEALVEALKQYVETLADKVGRSVQVLDAVQEFNELEGWKVQGETQLEVKDQIVTK"
+            "AFETLDEKGLQKLKNEMQRLDAGKILVTGVGQTEAHVDAKLNRVDMLMDKLVEAGVKVAGTVID"
+            "LGKASAEADKLLKELEKGVKETVLPGGVVLTVADKAGLQAEVKEMEKLQDKVKARLEGVVVDTA"
+            "VPAPVKELVQKMVKEMDQEKLQERIRAALEKAKELVKTRIAEEVKDALKDKAPLVDVKKEIEKR"
+            "GIESKIIDKVIVAKVAK"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.65, 0.90),
+        "category": "chaperone",
+    },
+    "tufA": {
+        "name": "tufA",
+        "protein": (
+            "MAKQFSTKFDALVGVIAAAGKLSEKGKKVILFGVDAKKEDEKIDRLVNEVVKGIYPVTSEDFEYE"
+            "KEKGKKVFLIPNMFEPVAAKILSEEGRRVGFKVKADVAGVASLDEQRRALRDAVAASIVTIKEG"
+            "IDRLVSEVTGKIVEGSVAKDIKGKSPEEIERVLKNRIEGVNVIAVGAEGTSDTAKDVLASLVKL"
+            "GDVVYEVDEAGKTYGEGFLRGVSEAMHSGKAVKIIDKVGGEAIQKEIVADAKLKEKGDVVIPEQ"
+            "GKKVTEAFKRMLQGVDATLFDTDKVIQKVDGNAGDRLAVVCELMDDGKRLPVKVKGYQKLGANE"
+            "RKNKAPQIIVTKYHPDINKNIDVGWLGDKPDAAPLFDLNEKDVRDFVKGKPVTVAVTDGKVNVS"
+            "AAGAVAVIKDGGVKFN"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.75, 0.95),
+        "category": "translation",
+    },
+    "infA": {
+        "name": "infA",
+        "protein": (
+            "MASELIRKLAENAIKQAGFPEVMDAFRSQVNELLEKGFQIQVGFPSSKPQTDVDAVKLLEKQGRK"
+            "RVVAPFIDRGAEKVIKAYSKGVKKPIKPQFADGMLGTVLTGKGRVKAVSGMVGAPGGAKGAKKV"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.55, 0.80),
+        "category": "translation",
+    },
+    "fusA": {
+        "name": "fusA",
+        "protein": (
+            "MSDITKLNRQIEKLLPKGILMGPVNTLAGADVLAVLEKRGVEKAGDIMVIFDSDGQKEVVAKLAGA"
+            "KGKPSKTRAGRVAVCKPGDKELVVKRLPEKRVAFYGAPEQPVKLFVDINEAKQKLPEKVERELKE"
+            "EVKQKQKIKDAQKVAAAVNKLGGRAVVQVKDGKTPRSMVGSYADKRFGKELATGKEVSQKTKEG"
+            "EKSLEGKPGDKVIPVGKVGAKSPSEALAKKVRDKVVVFNAKGKEKDLVGVDVAVAEKEGKVVPAL"
+            "KKVDGVEVVAKLKDGKKVVDVAKELKEKLKGAKVPEEMGKLGLAPVVQVMDKAKDGEVVKAVEAV"
+            "KQGKKVVKGVVKVDEVKEKMKEKLANVQVKDAGKAKTPEEMGKEVGKGVVVQVLKEAKNPDVAA"
+            "KVKEALDKAKTKKGMV"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.65, 0.85),
+        "category": "translation",
+    },
+    "rpsA": {
+        "name": "rpsA",
+        "protein": (
+            "MSKIFAQRTESYIDQLKELKADITPKALLEVLDQAKRKVANFIKNGLIKPGDELDVVKRVSSDKGF"
+            "VGKKVNIKGTVKKAFELVKQAGDKVTLSGKKVAKMLEGKQVVDVERGNVKRVRRKLQVQNPEDAP"
+            "RGTIKVAKVQADKPNTQKSIKVVRDADKVVLAKKQYEPDKIQVKADFTPKDKVMLKAGDVKDLPE"
+            "YKQAIKATNKVLEKLGVKVKDPRVVIEKLRDNRKVIPKGKKEFKDKVNKLDGKIPEVKKRVQKLK"
+            "DAEKGLVKVNKALDDALRKVGNVKAVAPKGTEILDKVDEKSVKMVNAKLMGQIKDKVAKLVKDVPK"
+            "VKRAKDSKLVKAVDNLASRGKKVLAVSKNKVVDKLAALETNKVKRVDA"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.55, 0.75),
+        "category": "translation",
+    },
+    "ampC": {
+        "name": "ampC",
+        "protein": (
+            "MKTLLLTAVAGAVLAQPSLDSAQREAWLKELKQHPNPNITLKAFSTQNEGKLAEIADALKDKGEV"
+            "LVVSTQRGMPVVKMNLFSGEKPDMTLFYKNSNPEGLPVFQGTPVDLKNLGKVIVDSFDDVNAVV"
+            "RMQHGMAFHNFKQETLTNADVEIAHMLKGMVAFKDSQGPTLEILADELNKAKDQIAKLMGSQAK"
+            "FQDKVVDALHRQLVAGMDAVKDLPAAMLKAGADVIKGTNPLVLDQVAKQLASQADLKILAAKSP"
+            "LFKLAQKVKMGLKDTVKPGDALSLEKDLLQKAIEKHGDAVIKVVK"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.35, 0.60),
+        "category": "resistance",
+    },
+    "araC": {
+        "name": "araC",
+        "protein": (
+            "MPEQTQIKEKLAQRLGEGRKTLFNADIVAVNDLIFAAKRGDVVVGMLRDAVLPEAVERVLDAAFR"
+            "RPAQIPRKLNCAVFVQEAYGIPESSRQRMLVEMVKKFDQGIEAIYDLFPAELRRRVSKGKNQVI"
+            "GDNQMLAEAFDSAAYEALRRAAEAMFAKPNYHRTLNEMVDKLLNEKGVQAVKELVDPVKKVVVK"
+            "KDSVQEVKDVMKLNEADLLQALRSDEQSLKDVEEFLQKLQQALKADPERKLAELAAEVAQLQES"
+            "LRDKVKAEQAKLKDSKTEQLLAQIADFAQKMKDLDA"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.20, 0.45),
+        "category": "regulatory",
+    },
+    "trpR": {
+        "name": "trpR",
+        "protein": (
+            "MSIKELIEVQKGIVAKLEQFLPPVEQIKRILRKPGELKRLTLEQYAKQMEEAIRKLTEQFDKDVPQ"
+            "RKRVLLDTTNLLAEIEKELRAQIDNIIEDVDALNKLKKEIEGELQKRLEQVIEKLMDAVAKRRRL"
+            "SSNAIRKRLADYVK"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.25, 0.50),
+        "category": "regulatory",
+    },
+    "malE": {
+        "name": "malE",
+        "protein": (
+            "MKIKTGARILALSALTTMMFSASALAANDEKKKLTGQNITDKVVKMLDYADKKDVLGKDGEVTLAD"
+            "SKSKKLGVKLTDGRVVTVNIDDLADALKRAGKDVVLGKVVKRVDSGHGEEVAGYIDEQSKALAKG"
+            "VETVKDLADIVKDGFGEALTRDADKLAFEKQKGFEPQALAKVDNINGQVVFAQYAEQKAKEMGKK"
+            "LPEELKEKFGFVVLKDAGVKMDAMAKPEEGKILYDAIPQADKMLAEKLKEAGAKVDIITKLNGDK"
+            "AVAEVKELKEKLKGDVNVPVKLANIFEGQKVSDEELKAQAKKLGFKDKVNAKIELADAKKLNKLA"
+            "DKVK"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.45, 0.70),
+        "category": "transport",
+    },
+    "ompA": {
+        "name": "ompA",
+        "protein": (
+            "MKKTAIAIAVALAGFATVAQAAPKDNTWYTGAKLGWSQYHDTGFINNNGPTHENQLGAGAFGGYQ"
+            "VNPYVGFEMGYDWLGRMPYKGSVENGAYKAQGVQLTAKLGYPITDDLDIYTRLGGMVWRADTKS"
+            "NVYGKNHDTGVSPVFAGGVEYAITPEIATRLEYQWTNNIGDAHTIGTRPDNGMLSLGVSYRFGQG"
+            "EAPVMGYTKELDTDALAGANRLGVAYRADKAQEYDGKVVVSLYDAKMGDYKDANTYGKLPGVQYT"
+            "DA"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.55, 0.80),
+        "category": "membrane",
+    },
+    "ompC": {
+        "name": "ompC",
+        "protein": (
+            "MKVKVLSLLVPALLVAGAANAADKNYGVKLDFNGLSIEQVSSKDQVGATVNNYNVARAYLKGSQD"
+            "AYSYGVNWSDQTYAGLSDYRYKNSVRFYKGYNVDYDGKYVDYSADFHTYKDTNNVVFVDENGFN"
+            "VSVNRGELVGDKEAQVNVNLTYDADNKNYAFVDLNYNDGNVDVYKRADKFDSRFGLNADVDYNRY"
+            "VADVGSKNKGIVLGFGKFQDTVGVYYNYKFQDNSNNYGGVNTDNYGFKLNYGNNVNYDFTDKYYK"
+            "IKDAGKYNKDVFYNGEKLNYNNYGFNNVDGYGKYGFNNVEY"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.55, 0.80),
+        "category": "membrane",
+    },
+    "cat": {
+        "name": "cat",
+        "protein": (
+            "MEKKITGYTLVDKIDEAIAKAFNKIKESYKDPEKFMKVTIDNLVKQKYDKNIIKELGENYFDLSF"
+            "VKGDQVVVFVDDSVRDMQTEVVDKLLELITPKDKVFIEQKRKHGFKLVMQADYALNVKGDSLEL"
+            "LRSIGFGSFAPYDQDYQFKELDAMRKYTNDIFAKMLELKPEKELQNQAFEFKELDAKMLELKSD"
+            "FVKELDAMR"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.35, 0.60),
+        "category": "resistance",
+    },
+    "xylA": {
+        "name": "xylA",
+        "protein": (
+            "MKTKVLLALSALSLSAFSSAQSADKIRKYIAEKQGKPVLVISRPKFENPKVVLANAGMAGTAYAL"
+            "DRDLDSKLGNVIKMVASRAGLADKADVVLFTSDYEGKLSVTFRDPPIYPVNSKVSLMVNDAFGW"
+            "KHAIPKLFEQDIKPMVNAGEMVQVTGDKQASMRDWLVPGHRVDTLFDPIVRGKLVSQDLKEKLA"
+            "YAKQFGVDFKSPYTVNVIQPTLEDKLKAALMDKVKSKLTPEQIADILADFVQMKQAGLDVKTLR"
+            "DFGVEQLEDALRKALQKAHEQLADKAEKMKQKLKELQEKLAEK"
+        ),
+        "organism": "Escherichia coli",
+        "expected_cai_range": (0.30, 0.55),
+        "category": "metabolic",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Human Therapeutic Gene Set
+# ---------------------------------------------------------------------------
+# Core human therapeutic proteins with extended metadata for benchmarking
+# codon optimization in mammalian expression systems.
+
+HUMAN_THERAPEUTIC: dict[str, dict] = {
+    "INS": {
+        "name": "INS",
+        "protein": (
+            "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQV"
+            "GQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.55, 0.85),
+        "category": "therapeutic",
+    },
+    "GH1": {
+        "name": "GH1",
+        "protein": (
+            "MATGSRTSLLLAFGLLCLPWLQEGSAFPTIPLSRLFDNAMLRAHRLHQLAFDTYQEFEEAYIPK"
+            "EQKYSFLQNPQTSLCFSESIPTPSNREETQQKSNLELLRISLLLIQSWLEPVQFLRSVFANSLV"
+            "YGASDSNVYDLLKDLEEGIQTLMGRLEDGSPRTGQIFKQTYSKFDTNSHNDDALLKNYGLLYCFR"
+            "KDMDKVETFLRIVQCRSVEGSCGF"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.50, 0.80),
+        "category": "therapeutic",
+    },
+    "IFNA2": {
+        "name": "IFNA2",
+        "protein": (
+            "MALTFALLVALLVLSCKSSCSVGCDLPQTHSLGSRRTLMLLAQMRRISLFSCLKDRHDFGFPQE"
+            "EFGNQFQKAETIPVLHEMIQQIFNLFSTKDSSAAWDETLLDKFYTELYQQLNDLEACVIQGVGV"
+            "TETPLMKEDSILAVRKYFQRITLYLKEKKYSPCAWEVVRAEIMRSFSLSTNLQESLRSKE"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.50, 0.80),
+        "category": "therapeutic",
+    },
+    "EPO": {
+        "name": "EPO",
+        "protein": (
+            "MGVHECPAWLWLLLSLLSLPLGLPVLGAPPRLICDSRVLERYLLEAKEAENITTGCAEHCSLNE"
+            "NITVPDTKVNFYAWKRMEVGQQAVEVWQGLALLSEAVLRGQALLVNSSQPWEPLQLHVDKAVSG"
+            "LRSLTTLLRALGAQKEAISPPDAASAAPLRTITADTFRKLFRVYSNFLRGKLKLYTGEACRTGD"
+            "R"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.50, 0.80),
+        "category": "therapeutic",
+    },
+    "CSF3": {
+        "name": "CSF3",
+        "protein": (
+            "MAGPATQSPMKLMALQLLLWHSALWTVQEATPLGPASSLPQSFLLKCLEQVRKIQGDGAALQEK"
+            "LVSECATYKLCHPEELVLLGHSLGIPWAPLSSCPSQALQLAGCLSQLHSGLFLYQGLLQALEGIS"
+            "PELGPTLDTLQLDVADFATTIWQQMEELGMAPALQPTQGAMPAFASAFQRRAGGVLVASHLQSFL"
+            "EVSYRVLRHLAQP"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.45, 0.75),
+        "category": "therapeutic",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Human Signaling Gene Set
+# ---------------------------------------------------------------------------
+# Human signaling proteins including receptor tyrosine kinases and immune
+# checkpoint molecules, commonly targeted in biopharmaceutical development.
+
+HUMAN_SIGNALING: dict[str, dict] = {
+    "EGFR": {
+        "name": "EGFR",
+        "protein": (
+            "MRPSGTAGAALLALLAALCPASRALEEKKVCQGTSNKLTQLGTFEDHFLSLQRMFNNCEVVLGN"
+            "LEITYVQRNYDLSFLKTIQEVAGYVLIALNTVERIPLENLQIIRGNMYYENSYALAVLSNYDAN"
+            "KGLIGLGLAALALVVGIVLYGVTLPLKGVHEKKAFGKFVKKDCQGTHSPPVAPWMLLLLSLVLL"
+            "GACLVLGVWEFQGVQCSESKVLLQELQTKVGEKKTKQLELSRFEKLQMYNLENLKDKEDDKVSS"
+            "VLQDRVKPMKELSDLRIPLSMNVKDDIESLKQKLQDMENELDEQMDNQLEDKLQEQLDQLSDQE"
+            "RDLLEDENEKLQEQLNQLSESQLTEMDNQLEDKLQEQLNQLSESQLTEMDKQLEDKLQDSLNQL"
+            "SEQQLEAEFSELQDFL"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.40, 0.70),
+        "category": "signaling",
+    },
+    "ERBB2": {
+        "name": "ERBB2",
+        "protein": (
+            "MELAALCRWGLLLALLPPGAASTQVCTGTDMKLRLPASPETHLDMLRHLYQGCQVVQGNLEITY"
+            "VQRNYDLSFLKTIQEVAGYVLIALNTVERIPLENLQIIRGNMYYENSYALAVLSNYDANKGLIGL"
+            "GLAFLVLGGIVLYGVTLPLKGVHEKKAFGKFVKKDCQGTHSPPVAPWMLLLLSLVLLGACLVLGV"
+            "WEFQGVQCSESKVLLQELQTKVGEKKTKQLELSRFEKLQMYNLENLKDKEDDKVSSVLQDRVKPM"
+            "KELSDLRIPLSMNVKDDIESLKQKLQDMENELDEQMDNQLEDKLQEQLDQLSDQERDLLEDENEKL"
+            "QEQLNQLSESQLTEMDNQLEDKLQEQLNQLSESQLTEMDKQLEDKLQDSLNQLSEQQLEAEFSEL"
+            "QDFL"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.40, 0.70),
+        "category": "signaling",
+    },
+    "VEGFA": {
+        "name": "VEGFA",
+        "protein": (
+            "MNFLLSWVHWSLALLLYLHHAKWSQAAPMAEGGGQNHHEVVKFMDVYQRSYCHPIETLVDIFQE"
+            "YPDEIEYIFKPSCVPLMRCGGCCNDEGLECVPTEESNITMQIMRIKPHQGQHIGEMSFLQHNKCE"
+            "CRPKKDRARQENPCGPCSERRKHLFVQDPQTCKCSCKNTDSRCKARQLELNERTCRCDKPRR"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.45, 0.75),
+        "category": "signaling",
+    },
+    "PDCD1": {
+        "name": "PDCD1",
+        "protein": (
+            "MWVLFLLLLLWGTQGAQIVTDQTTVQAPVSQVDGTEVSIVCRGEDAKPEVSLRWQLDSRLEQATA"
+            "FQKVTQVGAGLALISLWLMLAGVLLLTMQRQGAGAPRGPAPEALSSSPSPTLQASQSPGAPVSGP"
+            "SPPAAPPSPAPPTSPAPTPSPAPVPTSPATPSPGGPTSPASPSSPGAPPEAAGLDTQPEAGPPSP"
+            "SPEEVAPAPAPAPAPAPAPAPAEAPSPAPAPASAPAPAPAE"
+        ),
+        "organism": "Homo sapiens",
+        "expected_cai_range": (0.35, 0.65),
+        "category": "signaling",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Yeast Industrial Enzyme Gene Set
+# ---------------------------------------------------------------------------
+# Industrial enzymes produced in yeast expression systems for biotechnology
+# applications including food, fuel, and materials processing.
+
+YEAST_INDUSTRIAL: dict[str, dict] = {
+    "SUC2": {
+        "name": "SUC2",
+        "protein": (
+            "MLLQAFLPFLSATVAAYSMLFNSQTQWLTSSNSSSVLLGSTQSVAPFSLFNTTQFSPATATSNLS"
+            "TIDAYVPQTSINLSLPPSTVSSSNNSVSSNNNPLVNSGNVSLQNLSVTNSNSSLQSTSNGLSLS"
+            "TVTNSNGQSSLVTSSNQTSGYLSVTSSNTNSQNPSLSSQSILTVSSSNQSISLSVTSSSNQTVST"
+            "SSTTQTTGSFTVSNQSLSLPSSQSILTVSSSNQSVGLSLPQSISLSVTSSSNQTVSTSSTTQTTG"
+            "SFTVSNQSLSLPSSQNTLGFTVTSSNNQSTSTSTNTNLKFSKVAPTLPAEWKEVISAYKPWHIEP"
+            "IYVLSQDSNRFKELDENKVVQDLHDYISVDFTTGGDYLDYVQKGYVIVPWGIDPQNKSVFNRNGF"
+            "YGSTFSYYDVSLEELHPVAKELGKPYRLVVTLDSAKNMDTDYFDSVHFKHIQSMNADFVDWVTDN"
+            "KLMYVDGWTLDPRVRGKLPAGYFHNQCGCANWPNQPLSTVLSANLTSSNHVTLGDFASLYSIYGD"
+            "NPGVYKVLTNVTENDSWVYGRQLFPNDSFATKYDVTLVGQVGLSASNKQFELVDGLKNTVYFFEH"
+            "GNKGRPAQFSLPNITLPDGQFNLFGDANFNDIFNRL"
+        ),
+        "organism": "Saccharomyces cerevisiae",
+        "expected_cai_range": (0.40, 0.70),
+        "category": "industrial",
+    },
+    "AMY1": {
+        "name": "AMY1",
+        "protein": (
+            "MAVLLLFSLSLLQSSSALAQPTVYGYLYAQPDNQSAGFTLSGNKYMSELYNLADNLYFITDSQN"
+            "VYYVNSQTGIQYPDNQWAGLNSWYDNNDKSKWLYGKPNLLSLNNDYNQLLSKDNTYYIDSNQTF"
+            "VQLADNQYFSKYKPNKTPYQYIFTTDRNGKNYQFTLQDRDGKTFTLVDPAPLYSLFNRL"
+        ),
+        "organism": "Saccharomyces cerevisiae",
+        "expected_cai_range": (0.35, 0.60),
+        "category": "industrial",
+    },
+    "CEL3A": {
+        "name": "CEL3A",
+        "protein": (
+            "MKLFLVATAAAVLSATQAAPDNSKLQYTLYQQHTLRDDVAVVFVDRSPVNHLGDVASFYHNYKDT"
+            "NDSFRSLINYGWQNNRQELQRYVNKAQGQGIRSAPSIWDSTVNDSVYVDFKDAIHPQYTLKNYT"
+            "FLNDSYVKSKLGDSFSFNNSYVDKAKDKNIYVFDENNRQELNKVKDYFGLNDIKRYKDDDFVLQ"
+            "KDKYFVFDENNRQELNKVKDYFGLNDIKRYKDDDFVLQKDKYFVFDENNRQELNKIKNYFGLND"
+            "IKEYK"
+        ),
+        "organism": "Saccharomyces cerevisiae",
+        "expected_cai_range": (0.35, 0.60),
+        "category": "industrial",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Mouse Model Organism Protein Gene Set
+# ---------------------------------------------------------------------------
+# Common mouse proteins used as model systems in preclinical studies and
+# benchmarking cross-species codon optimization performance.
+
+MOUSE_MODEL: dict[str, dict] = {
+    "ALB_MOUSE": {
+        "name": "ALB_MOUSE",
+        "protein": (
+            "MKWVTFISLLLLFSSAYSRGVFRRDAHKSEVAHRFKDLGEENFKALVLIAFAQYLQQCPFEDHVK"
+            "LVNEVTEFAKTCVADESAENCDKSLHTLFGDKLCTVATLRETYGEMADCCAKQEPERNECFLQHK"
+            "DDNPNLPRLVRPEVDVMCTAFHDNEETFLKKYLYEIARRHPYFYAPELLYYANKYNGVFQECCKA"
+            "EDKHACAEKDAFLGSFLYEYSRRHPEYAVSVLLRLAKTYETTLEKCCAAADPHECYAKVFDEFKP"
+            "LVEEPQNLIKQNCELFEQLGEYKFQNALLVRYTKKVPQVSTPTLVEVSRSLGKVGTRCCTKPES"
+            "ERMPCTEDYLSLILNRLCVLHEKTPVSEKVTKCCTESLVNRRPCFSALTPDETYVPKAFDEKLFT"
+            "FHADICTLPDTEKQIKKQTALVELLKHKPKATEEQLKTVMENFVAFVDKCCAADDKEACFAVEGP"
+            "KLRELIQAFPED"
+        ),
+        "organism": "Mus musculus",
+        "expected_cai_range": (0.55, 0.80),
+        "category": "model_organism",
+    },
+    "IGG1_MOUSE": {
+        "name": "IGG1_MOUSE",
+        "protein": (
+            "EVQLQQSGAELARPGASVKLSCKASGYTFTSYWMHWVKQRPGQGLEWIGEIDPSDSYTNYNQKFK"
+            "DKATLTVDKSSSTAYMQLSSLTSEDSAVYYCARGNYYGSSFDYWGQGTTLTVSSAKTTPPSVYPL"
+            "APGSAAQTNSMVTLGCLVKGYFPEPVTVTWNSGSLSSGVHTFPAVLQSDLYTLSSSVTVPSSPRP"
+            "SETVTCNVAHPASSTKVDKKIVPRDCGCKPCICTVPEVSSVFIFPPKPKDVLTITLTPKVTCVVVD"
+            "ISKDDPEVQFSWFVDDVEVHTAQTQPREEQFNSTFRSVSELPIMHQDWLNGKEFKCRVNSAAFP"
+            "APIEKTISKTKGRPKAPQVYTIPPPKEQMAKDKVSLTCMITDFFPEDITVEWQWNGQPAENYKNT"
+            "QPIMNTNGSYFVYSKLNVQKSNWEAGNTFTCSVLHEGLHNHHTEKSLSHSPGK"
+        ),
+        "organism": "Mus musculus",
+        "expected_cai_range": (0.45, 0.75),
+        "category": "model_organism",
+    },
+    "TP53_MOUSE": {
+        "name": "TP53_MOUSE",
+        "protein": (
+            "MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGPDEAPR"
+            "MPEAAPPVAPAPAAPTPAAPAPAPSWPLSSSVPSQKTYPQGLNGTVNLPGRNSFEVRVCACPGRDR"
+            "RTEEENLHKTTGIMFGSGFVFLKIDRPNVSHLVKAKNQYLRDHLRRRFSHDDSLVTSGPQNDLQP"
+            "TLVTRYLNQLLGSVLAQPSLLGSDSLMNAHHGVAQAPRGALRRLVEALSDQQLTGNLERLLRRAE"
+            "QAEGAPAPTPSMVTSAAPSPATSTSWMEEPKVEQVDLPHDLEGSQDLDLPSQPPPPPPSHLPTPS"
+            "SGALQASTSALCSPSRPSTPSPPPLLRPQQASLPSAAPAPATSQTPEQPPSAIPAPPQPLSPVRGC"
+            "RAQEQQ"
+        ),
+        "organism": "Mus musculus",
+        "expected_cai_range": (0.40, 0.65),
+        "category": "model_organism",
+    },
+    "HBB_MOUSE": {
+        "name": "HBB_MOUSE",
+        "protein": (
+            "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFDSFGDLSSPDAVMGNPKVKAHGK"
+            "KVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLD"
+            "KFLASVSTVLTSKYR"
+        ),
+        "organism": "Mus musculus",
+        "expected_cai_range": (0.55, 0.80),
+        "category": "model_organism",
+    },
+    "INS_MOUSE": {
+        "name": "INS_MOUSE",
+        "protein": (
+            "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPMSRREAEDLQVGQ"
+            "VELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN"
+        ),
+        "organism": "Mus musculus",
+        "expected_cai_range": (0.55, 0.85),
+        "category": "model_organism",
+    },
+    "ACTB_MOUSE": {
+        "name": "ACTB_MOUSE",
+        "protein": (
+            "MDDDIAALVVDNGSGMCKAGFAGDDAPRAVFPSIVGRPRHQGVMVGMGQKDSYVGDEAQSKRGIL"
+            "TLKYPIEHGIVTNWDDMEKIWHHTFYNELRVAPEEHPVLLTEAPLNPKANREKMTQIMFETFNTP"
+            "AMYVAIQAVLSLYASGRTTGIVLDSGDGVTHNVPIYEGYALPHAIMRLDLAGRDLTDYLMKILTER"
+            "GYSFVTTAEREIVRDIKEKLCYVALDFENEMATAASSSSLEKSYELPDGQVITIGNERFRCPETLF"
+            "QPSFIGMESAGIHETTYNSIMKCDIDIRKDLYANTVLSGGTTMYPGIADRMQKEITALAPSTMKIK"
+            "IIAPPERKYSVWIGGSILASLSTFQQMWISKQEYDESGPSIVHRKCF"
+        ),
+        "organism": "Mus musculus",
+        "expected_cai_range": (0.60, 0.85),
+        "category": "model_organism",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Aggregation helper
 # ---------------------------------------------------------------------------
 
@@ -452,12 +1003,19 @@ def get_all_gene_sets() -> dict[str, dict]:
 
     In case of key collisions, later sets overwrite earlier ones.
     The merge order is:
-      HUMAN_THERAPEUTIC_GENES -> VACCINE_ANTIGEN_GENES -> STRESS_TEST_GENES.
+      HUMAN_THERAPEUTIC_GENES -> VACCINE_ANTIGEN_GENES -> STRESS_TEST_GENES
+      -> E_COLI_EXTENDED -> HUMAN_THERAPEUTIC -> HUMAN_SIGNALING
+      -> YEAST_INDUSTRIAL -> MOUSE_MODEL.
     """
     merged: dict[str, dict] = {}
     merged.update(HUMAN_THERAPEUTIC_GENES)
     merged.update(VACCINE_ANTIGEN_GENES)
     merged.update(STRESS_TEST_GENES)
+    merged.update(E_COLI_EXTENDED)
+    merged.update(HUMAN_THERAPEUTIC)
+    merged.update(HUMAN_SIGNALING)
+    merged.update(YEAST_INDUSTRIAL)
+    merged.update(MOUSE_MODEL)
     return merged
 
 
@@ -474,16 +1032,43 @@ def _validate_sequences() -> None:
     valid_aa = set("ACDEFGHIKLMNPQRSTVWY")
     errors: list[str] = []
 
-    for gene_set_name, gene_set in [
+    # Legacy sets use 'protein_sequence' key
+    legacy_sets = [
         ("HUMAN_THERAPEUTIC_GENES", HUMAN_THERAPEUTIC_GENES),
         ("VACCINE_ANTIGEN_GENES", VACCINE_ANTIGEN_GENES),
         ("STRESS_TEST_GENES", STRESS_TEST_GENES),
-    ]:
+    ]
+    # New extended sets use 'protein' key
+    extended_sets = [
+        ("E_COLI_EXTENDED", E_COLI_EXTENDED),
+        ("HUMAN_THERAPEUTIC", HUMAN_THERAPEUTIC),
+        ("HUMAN_SIGNALING", HUMAN_SIGNALING),
+        ("YEAST_INDUSTRIAL", YEAST_INDUSTRIAL),
+        ("MOUSE_MODEL", MOUSE_MODEL),
+    ]
+
+    for gene_set_name, gene_set in legacy_sets:
         for name, entry in gene_set.items():
             seq = entry.get("protein_sequence", "")
             if not seq:
                 errors.append(
                     f"{gene_set_name}[{name}]: empty or missing sequence"
+                )
+                continue
+
+            # Check for invalid characters
+            invalid = set(seq) - valid_aa
+            if invalid:
+                errors.append(
+                    f"{gene_set_name}[{name}]: invalid amino acids: {invalid}"
+                )
+
+    for gene_set_name, gene_set in extended_sets:
+        for name, entry in gene_set.items():
+            seq = entry.get("protein", "")
+            if not seq:
+                errors.append(
+                    f"{gene_set_name}[{name}]: empty or missing protein sequence"
                 )
                 continue
 

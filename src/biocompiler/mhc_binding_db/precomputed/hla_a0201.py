@@ -18,7 +18,7 @@ where available.
 
 from __future__ import annotations
 
-from .. import MHCBindingDatabase, PrecomputedEntry
+from .. import PrecomputedAlleleDatabase, PrecomputedEntry
 
 ALLELE: str = "HLA-A*02:01"
 MHC_CLASS: str = "I"
@@ -3063,14 +3063,14 @@ def _build_entries() -> list[PrecomputedEntry]:
 
 
 # Lazy singleton -- built on first access
-_database: MHCBindingDatabase | None = None
+_database: PrecomputedAlleleDatabase | None = None
 
 
-def get_database() -> MHCBindingDatabase:
+def get_database() -> PrecomputedAlleleDatabase:
     """Return the precomputed binding database for HLA-A*02:01."""
     global _database
     if _database is None:
-        _database = MHCBindingDatabase(
+        _database = PrecomputedAlleleDatabase(
             allele=ALLELE,
             peptide_length=PEPTIDE_LENGTH,
             anchor_description=ANCHOR_DESCRIPTION,
@@ -3089,7 +3089,7 @@ HLA_A0201_BINDERS: dict[str, PrecomputedEntry] = {
 }
 
 
-def get_hla_a0201_database() -> MHCBindingDatabase:
+def get_hla_a0201_database() -> PrecomputedAlleleDatabase:
     """Load and return the HLA-A*02:01 precomputed binding database.
 
     This is an alias for :func:`get_database` that provides a
@@ -3097,7 +3097,7 @@ def get_hla_a0201_database() -> MHCBindingDatabase:
 
     Returns
     -------
-    MHCBindingDatabase
+    PrecomputedAlleleDatabase
         The precomputed binding database for HLA-A*02:01.
     """
     return get_database()

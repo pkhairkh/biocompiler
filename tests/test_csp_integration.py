@@ -654,12 +654,12 @@ class TestHBBGrammar:
             if pos + 1 < len(dna_seq):
                 dinuc = dna_seq[pos : pos + 2]
                 if dinuc == "GT":
-                    # If GT is present, verify splice score is below threshold
-                    from biocompiler.splicing import maxent_score
-                    context_start = max(0, pos - 3)
-                    context_end = min(len(dna_seq), pos + 6)
-                    context = dna_seq[context_start:context_end]
-                    score = maxent_score(context)
+                    # If GT is present, verify splice score using proper MaxEntScan
+                    from biocompiler.maxentscan import score_donor
+                    score = score_donor(dna_seq, pos)
+                    # Sites without enough context return -50
+                    if score <= -50.0:
+                        score = 0.0
                     print(f"  Position {pos}: GT dinucleotide found, MaxEnt score = {score:.2f}")
 
     def test_hbb_optimize_sequence(self):

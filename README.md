@@ -111,6 +111,47 @@ biocompiler/
 
 ---
 
+## CAI Reference Sets
+
+BioCompiler supports two CAI (Codon Adaptation Index) reference sets for computing codon optimality:
+
+| Reference Set | Source | Coverage | Best For |
+|---------------|--------|----------|----------|
+| **Kazusa** | Kazusa Codon Usage Database (high-expression subsets) | 5 organisms (E. coli, H. sapiens, S. cerevisiae, M. musculus, CHO-K1) | General-purpose optimization, cross-organism comparisons |
+| **Sharp-Li** | Sharp & Li (1987), 24 highly expressed E. coli genes | E. coli only | Comparing against published literature values, CAIcal validation |
+
+The Sharp-Li reference set reproduces the exact relative adaptiveness values from the original CAI paper, enabling direct comparison with published CAI values. For low-expression genes like lacZ, the two sets can differ by >0.4 CAI — see [`docs/reference_sets.md`](docs/reference_sets.md) for detailed guidance on when to use each.
+
+```python
+from biocompiler.benchmarking import run_benchmark_by_name
+
+# Validate CAI against published Sharp & Li (1987) values
+result = run_benchmark_by_name("sharp_li_cai")
+print(f"Sharp-Li closer to published: {result['sharp_li_is_closer']}")
+```
+
+### Organism-Aware Constraint Selection
+
+BioCompiler automatically disables biologically inappropriate constraints based on the target organism's domain:
+
+- **Prokaryotic targets** (E. coli): Cryptic splice-site avoidance and CpG-island avoidance are disabled — prokaryotes lack spliceosomes and CpG methylation
+- **Eukaryotic targets** (H. sapiens, CHO-K1, etc.): All constraints are enabled
+
+This recovers ~0.27 CAI on average for prokaryotic targets:
+
+```python
+from biocompiler.benchmarking import run_benchmark_by_name
+
+result = run_benchmark_by_name("organism_aware_cai")
+print(f"Mean CAI recovery: {result['mean_cai_recovery']:+.4f}")
+```
+
+### Provenance System
+
+Every optimization decision is tracked with full provenance — including which reference set was used for CAI computation, which constraints were active, and what alternatives were considered. This makes BioCompiler's gene designs reproducible and auditable, a key differentiator for safety-critical applications.
+
+---
+
 ## Documentation
 
 Full technical documentation is in [`docs/`](docs/):
@@ -123,6 +164,7 @@ Full technical documentation is in [`docs/`](docs/):
 | [DOC-10](docs/10-Deterministic-Methods.md) | Six deterministic methods for non-deterministic biology |
 | [DOC-14](docs/14-SLOT-Proof-Implementation-Gap.md) | SLOT predicate proof-implementation gap |
 | [DOC-15](docs/15-Reference.md) | Technical reference: 28-predicate tables, engine API, TCB, limitations |
+| [Reference Sets](docs/reference_sets.md) | CAI reference sets (Kazusa vs Sharp-Li): when to use each, example usage, expected differences |
 | [docs/adr/](docs/adr/) | 14 Architecture Decision Records |
 
 ---

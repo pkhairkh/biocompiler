@@ -1632,14 +1632,39 @@ def optimize_sequence(
     # Map organism name to species key
     species_key = _organism_to_species_key(organism)
 
+    # ── Organism-aware constraint selection ────────────────────────
+    # When the target organism is prokaryotic, skip eukaryote-specific
+    # constraints (cryptic splice sites, CpG islands, GT dinucleotide
+    # avoidance) that are biologically inappropriate and unnecessarily
+    # depress CAI.  This recovers ~0.27 CAI on prokaryotic targets
+    # (see Task 6+8 benchmark findings).
+    organism_domain = kwargs.get("organism_domain", "auto")
+    if organism_domain not in ("auto", "eukaryote", "prokaryote"):
+        organism_domain = "auto"
+
+    if organism_domain == "auto":
+        from .organism_config import is_eukaryotic_organism
+        is_prokaryote = not is_eukaryotic_organism(organism)
+    elif organism_domain == "prokaryote":
+        is_prokaryote = True
+    else:
+        is_prokaryote = False
+
+    # For prokaryotes: skip splice/GT/CpG constraints
+    # For eukaryotes: apply all constraints (default)
+    effective_avoid_gt = kwargs.get("avoid_gt", not is_prokaryote)
+    effective_splice_low = kwargs.get("splice_low", 3.0 if not is_prokaryote else 999.0)
+    effective_splice_high = kwargs.get("splice_high", 6.0 if not is_prokaryote else 999.0)
+
     # Configure optimizer
     opt = BioOptimizer(
         species=species_key,
         enzymes=enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"],
-        splice_low=kwargs.get("splice_low", 3.0),
-        splice_high=kwargs.get("splice_high", 6.0),
+        splice_low=effective_splice_low,
+        splice_high=effective_splice_high,
         min_cai=cai_threshold,
         strategy=strategy,
+        avoid_gt=effective_avoid_gt,
     )
 
     # Attach provenance collector to optimizer for codon-level tracking
@@ -2194,6 +2219,7 @@ class BioOptimizer:
         seq = self._step_backtranslate_cai(seq)
 
         # Step: Resolve Constraints (fix GT/CG/RS with minimal CAI loss)
+        # Skipped for prokaryotic targets when avoid_gt=False
         seq = self._step_resolve_constraints(seq)
 
         # Step: Remove Restriction Sites
@@ -2203,14 +2229,20 @@ class BioOptimizer:
         seq, mut_report = self._step_cross_codon_optimization(seq)
 
         # Step: Within-Codon GT Resolution
-        seq, mut_report_35 = self._step_within_codon_gt_resolution(seq)
-        mut_report.proposals.extend(mut_report_35.proposals)
+        # Skipped for prokaryotic targets (no spliceosome → GT avoidance unnecessary)
+        if self.avoid_gt:
+            seq, mut_report_35 = self._step_within_codon_gt_resolution(seq)
+            mut_report.proposals.extend(mut_report_35.proposals)
 
         # Step: Mutagenesis Fallback (aggressive, handles within-codon GTs too)
-        seq = self._step_mutagenesis_fallback(seq, mut_report)
+        # Only needed when GT avoidance is active
+        if self.avoid_gt:
+            seq = self._step_mutagenesis_fallback(seq, mut_report)
 
         # Step: Avoid CpG Islands
-        seq = self._step_avoid_cpg_islands(seq)
+        # Skipped for prokaryotic targets (CpG islands are a eukaryotic gene regulation concern)
+        if self.avoid_gt:
+            seq = self._step_avoid_cpg_islands(seq)
 
         # Step: Cross-Codon Coordination (handles cross-codon GT, CG, restriction sites)
         seq = self._step_cross_codon_coordination(seq)
@@ -2225,10 +2257,14 @@ class BioOptimizer:
         seq = self._step_remove_instability_motifs(seq)
 
         # Step: CpG Reconciliation (aggressive, after CAI hill climb/reoptimize)
-        seq = self._step_cpg_reconciliation(seq)
+        # Skipped for prokaryotic targets
+        if self.avoid_gt:
+            seq = self._step_cpg_reconciliation(seq)
 
         # Step: GT Reconciliation (fix avoidable GTs that may have been introduced)
-        seq = self._step_gt_reconciliation(seq)
+        # Skipped for prokaryotic targets (GT is not a constraint)
+        if self.avoid_gt:
+            seq = self._step_gt_reconciliation(seq)
 
         # Step: mRNA Stability Improvement (soft optimization — remove destabilizing motifs)
         seq = self._step_mrna_stability_improvement(seq)
@@ -3104,21 +3140,24 @@ class BioOptimizer:
             # Collect all constraint violations
             violations = []
 
-            # Within-codon GT dinucleotides (only avoidable ones)
-            for i in range(len(seq_list) - 1):
-                if seq_list[i] == "G" and seq_list[i + 1] == "T":
-                    codon_start = (i // 3) * 3
-                    next_codon_start = codon_start + 3
-                    if i + 1 < next_codon_start:
-                        # Within-codon GT - only add if avoidable
-                        if not _is_unavoidable_gt(current_seq, i):
-                            violations.append(("within_gt", i, codon_start))
+            # GT dinucleotide violations are only relevant for eukaryotic targets
+            # (prokaryotes have no spliceosome, so GT avoidance is unnecessary)
+            if self.avoid_gt:
+                # Within-codon GT dinucleotides (only avoidable ones)
+                for i in range(len(seq_list) - 1):
+                    if seq_list[i] == "G" and seq_list[i + 1] == "T":
+                        codon_start = (i // 3) * 3
+                        next_codon_start = codon_start + 3
+                        if i + 1 < next_codon_start:
+                            # Within-codon GT - only add if avoidable
+                            if not _is_unavoidable_gt(current_seq, i):
+                                violations.append(("within_gt", i, codon_start))
 
-            # Cross-codon GT dinucleotides (only avoidable ones)
-            for pos in find_cross_codon_gt(current_seq):
-                codon_start = (pos // 3) * 3
-                if not _is_unavoidable_gt(current_seq, pos):
-                    violations.append(("cross_gt", pos, codon_start))
+                # Cross-codon GT dinucleotides (only avoidable ones)
+                for pos in find_cross_codon_gt(current_seq):
+                    codon_start = (pos // 3) * 3
+                    if not _is_unavoidable_gt(current_seq, pos):
+                        violations.append(("cross_gt", pos, codon_start))
 
             if not violations and not self.enzymes:
                 break
@@ -3577,19 +3616,21 @@ class BioOptimizer:
             current_seq = "".join(seq_list)
             constraint_positions: Dict[int, List[str]] = {}
 
-            for pos in find_cross_codon_gt(current_seq):
-                codon_start = (pos // 3) * 3
-                # Skip GTs that are unavoidable (Valine, or cross-codon with no alternatives)
-                if not _is_unavoidable_gt(current_seq, pos):
-                    constraint_positions.setdefault(codon_start, [])
-                    if "GT" not in constraint_positions[codon_start]:
-                        constraint_positions[codon_start].append("GT")
+            # GT/CG constraints are only relevant for eukaryotic targets
+            if self.avoid_gt:
+                for pos in find_cross_codon_gt(current_seq):
+                    codon_start = (pos // 3) * 3
+                    # Skip GTs that are unavoidable (Valine, or cross-codon with no alternatives)
+                    if not _is_unavoidable_gt(current_seq, pos):
+                        constraint_positions.setdefault(codon_start, [])
+                        if "GT" not in constraint_positions[codon_start]:
+                            constraint_positions[codon_start].append("GT")
 
-            for pos in find_cross_codon_cg(current_seq):
-                codon_start = (pos // 3) * 3
-                constraint_positions.setdefault(codon_start, [])
-                if "CG" not in constraint_positions[codon_start]:
-                    constraint_positions[codon_start].append("CG")
+                for pos in find_cross_codon_cg(current_seq):
+                    codon_start = (pos // 3) * 3
+                    constraint_positions.setdefault(codon_start, [])
+                    if "CG" not in constraint_positions[codon_start]:
+                        constraint_positions[codon_start].append("CG")
 
             from .restriction_sites import get_recognition_site
             for enzyme in self.enzymes:
@@ -4853,14 +4894,15 @@ class BioOptimizer:
         """
         violations = []
 
-        # Cross-codon GT
-        for pos in find_cross_codon_gt(seq):
-            if not _is_unavoidable_gt(seq, pos):
-                violations.append({"boundary": pos, "type": "GT"})
+        # Cross-codon GT (only relevant for eukaryotic targets)
+        if self.avoid_gt:
+            for pos in find_cross_codon_gt(seq):
+                if not _is_unavoidable_gt(seq, pos):
+                    violations.append({"boundary": pos, "type": "GT"})
 
-        # Cross-codon CG
-        for pos in find_cross_codon_cg(seq):
-            violations.append({"boundary": pos, "type": "CG"})
+            # Cross-codon CG (CpG-related, only relevant for eukaryotic targets)
+            for pos in find_cross_codon_cg(seq):
+                violations.append({"boundary": pos, "type": "CG"})
 
         # Cross-codon restriction sites
         # find_cross_codon_restriction returns the start position of the site,

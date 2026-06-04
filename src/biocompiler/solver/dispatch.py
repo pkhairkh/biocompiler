@@ -240,7 +240,33 @@ def solve_with_csp(
 
     # Build configuration
     if config is None:
-        config = SolverConfig()
+        config = SolverConfig(organism=organism)
+    else:
+        # Ensure config.organism is set from the explicit parameter
+        config = SolverConfig(
+            organism=organism,
+            backend=config.backend,
+            timeout_seconds=config.timeout_seconds,
+            max_codons=config.max_codons,
+            gc_lo=config.gc_lo,
+            gc_hi=config.gc_hi,
+            cryptic_splice_threshold=config.cryptic_splice_threshold,
+            donor_threshold=config.donor_threshold,
+            acceptor_threshold=config.acceptor_threshold,
+            n_quantize_bins=config.n_quantize_bins,
+            restriction_sites=config.restriction_sites,
+            avoid_cpg=config.avoid_cpg,
+            avoid_attta=config.avoid_attta,
+            avoid_t_runs=config.avoid_t_runs,
+            cai_weight=config.cai_weight,
+            cpg_weight=config.cpg_weight,
+            mrna_dg_weight=config.mrna_dg_weight,
+            optimize_codon_pair_bias=config.optimize_codon_pair_bias,
+            codon_pair_bias_weight=config.codon_pair_bias_weight,
+            cai_reference_set=config.cai_reference_set,
+            verbose=config.verbose,
+            auto_detect_organism_domain=config.auto_detect_organism_domain,
+        )
 
     # Build CSP model
     logger.info("Building CSP model for protein (%d aa), organism=%s", len(protein), organism)
@@ -384,6 +410,7 @@ def csp_optimize(
     """
     try:
         config = SolverConfig(
+            organism=organism,
             gc_lo=gc_lo,
             gc_hi=gc_hi,
             cryptic_splice_threshold=cryptic_splice_threshold,
