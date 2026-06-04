@@ -1241,6 +1241,7 @@ def optimize_sequence(
     cai_threshold: float = 0.5,
     enzymes: list | None = None,
     strategy: str = "constraint_first",
+    use_csp_solver: bool = False,
     **kwargs,
 ) -> OptimizationResult:
     """Optimize a protein sequence for expression in the target organism.
@@ -1248,6 +1249,10 @@ def optimize_sequence(
     This is the high-level convenience API that wraps BioOptimizer.
     It takes a protein sequence and returns an OptimizationResult with
     the optimized DNA sequence and quality metrics.
+
+    When ``use_csp_solver=True``, the CSP/SMT constraint solver is tried
+    first (OR-Tools CP-SAT or Z3 SMT).  If no solver is available or the
+    solver times out, the greedy optimizer is used as fallback.
 
     Args:
         target_protein: Amino acid sequence (1-letter codes, no stop).
@@ -1258,6 +1263,7 @@ def optimize_sequence(
         cai_threshold: Minimum CAI score for the CodonAdapted predicate.
         enzymes: List of restriction enzyme names to avoid.
         strategy: Optimization strategy ('constraint_first' or 'cai_first').
+        use_csp_solver: If True, try CSP/SMT solver before greedy (default False).
         **kwargs: Additional arguments (e.g., splice_low, splice_high).
 
     Returns:
@@ -1281,6 +1287,64 @@ def optimize_sequence(
     invalid = set(target_protein) - valid_aas
     if invalid:
         raise InvalidProteinError(target_protein, invalid)
+
+    # ── CSP Solver path ─────────────────────────────────────────────
+    if use_csp_solver:
+        try:
+            from .solver.dispatch import csp_optimize
+            from .solver.types import SolverConfig
+            restriction_sites = []
+            if enzymes:
+                from .restriction_sites import get_recognition_site
+                for enz in enzymes:
+                    site = get_recognition_site(enz)
+                    if site:
+                        restriction_sites.append(site)
+            else:
+                for enz in ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]:
+                    from .restriction_sites import get_recognition_site as _grs
+                    site = _grs(enz)
+                    if site:
+                        restriction_sites.append(site)
+
+            config = SolverConfig(
+                gc_lo=gc_lo,
+                gc_hi=gc_hi,
+                cryptic_splice_threshold=kwargs.get("splice_low", 3.0),
+                restriction_sites=restriction_sites,
+            )
+            solver_result = csp_optimize(
+                protein=target_protein,
+                organism=organism,
+                config=config,
+            )
+            if solver_result.solved and not solver_result.fallback_used:
+                from .scanner import gc_content as _gc_content
+                from .translation import compute_cai as _compute_cai
+                seq = solver_result.sequence
+                gc = _gc_content(seq)
+                try:
+                    cai_val = _compute_cai(seq, organism)
+                except (UnsupportedOrganismError, Exception):
+                    cai_val = solver_result.cai
+                return OptimizationResult(
+                    sequence=seq,
+                    gc_content=round(gc, 4),
+                    cai=cai_val,
+                    failed_predicates=[],
+                    predicate_results=[],
+                    certificate_text="CSP-Solver:" + str(solver_result.backend_used.value),
+                    protein=target_protein,
+                    fallback_used=False,
+                    satisfied_predicates=["CSP_SOLVER"],
+                )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "CSP solver failed, falling back to greedy optimizer",
+                exc_info=True,
+            )
+    # ── End CSP Solver path ─────────────────────────────────────────
 
     # Map organism name to species key
     species_key = _organism_to_species_key(organism)

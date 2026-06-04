@@ -432,6 +432,36 @@ except ImportError:
     pass
 
 # ═══════════════════════════════════════════════════════════════════════
+# CSP/SMT Solver (constraint-based gene optimization)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .solver import CSPSolver, SolverConfig, SolverResult, SolverBackend
+    from .solver.dispatch import solve_with_csp, is_solver_available, csp_optimize
+except ImportError:
+    pass
+
+# ═══════════════════════════════════════════════════════════════════════
+# ViennaRNA (mRNA secondary structure prediction)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from . import viennarna
+    from . import viennarna_fallback
+except ImportError:
+    pass
+
+# ═══════════════════════════════════════════════════════════════════════
+# MHCflurry (offline MHC-I binding prediction)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from . import mhcflurry_adapter
+    from . import mhcflurry_population
+except ImportError:
+    pass
+
+# ═══════════════════════════════════════════════════════════════════════
 # Public API — organized by domain
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -628,4 +658,14 @@ __all__ = [
     "design_low_immunogenicity", "design_multi_objective",
     "score_mutation", "find_disulfide_opportunities",
     "find_proline_substitution_sites",
+
+    # ── CSP/SMT Solver ───────────────────────────────────────────
+    "CSPSolver", "SolverConfig", "SolverResult", "SolverBackend",
+    "solve_with_csp", "is_solver_available",
+
+    # ── ViennaRNA ────────────────────────────────────────────────
+    "viennarna", "viennarna_fallback",
+
+    # ── MHCflurry ────────────────────────────────────────────────
+    "mhcflurry_adapter", "mhcflurry_population",
 ]

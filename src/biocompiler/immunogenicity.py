@@ -841,6 +841,7 @@ def predict_mhc_i_binding(
     alleles: list[str] | None = None,
     peptide_length: int = DEFAULT_MHC_PEPTIDE_LENGTH,
     use_netmhcpan: bool = False,
+    use_mhcflurry: bool = False,
 ) -> list[MHCBindingResult]:
     """Predict MHC class I binding for overlapping peptides.
 
@@ -854,13 +855,24 @@ def predict_mhc_i_binding(
         Length of peptides to extract (default 9).
     use_netmhcpan : bool
         If True, try the NetMHCpan web API first for more accurate
-        predictions.  Falls back to PSSM if the API is unavailable or
-        fails.  Default False (use PSSM heuristic only).
+        predictions.  Falls back to MHCflurry or PSSM if unavailable.
+        Default False.
+    use_mhcflurry : bool
+        If True, try MHCflurry as an offline neural-network predictor
+        (AUC 0.80-0.85).  Used as intermediate tier between NetMHCpan
+        (0.85-0.95) and PSSM (0.60-0.75).  Falls back to PSSM if
+        MHCflurry is not installed.  Default False.
 
     Returns
     -------
     list[MHCBindingResult]
         Binding predictions for every peptide x allele combination.
+
+    Prediction hierarchy
+    --------------------
+    NetMHCpan (online, AUC 0.85-0.95)
+      → MHCflurry (offline NN, AUC 0.80-0.85)
+        → PSSM (offline heuristic, AUC 0.60-0.75)
     """
     if alleles is None:
         alleles = DEFAULT_MHC_I_ALLELES
@@ -899,7 +911,40 @@ def predict_mhc_i_binding(
             return converted
         except Exception as exc:
             logger.warning(
-                "NetMHCpan API failed, falling back to PSSM: %s", exc,
+                "NetMHCpan API failed, falling back to MHCflurry/PSSM: %s", exc,
+            )
+
+    # Try MHCflurry if requested (offline NN predictor, AUC 0.80-0.85)
+    if use_mhcflurry:
+        try:
+            from .mhcflurry_adapter import MHCflurryClient, is_mhcflurry_available
+            if is_mhcflurry_available():
+                client = MHCflurryClient()
+                results = client.batch_predict(
+                    protein, alleles, epitope_lengths=[peptide_length],
+                )
+                converted = []
+                for r in results:
+                    converted.append(MHCBindingResult(
+                        allele=r.allele,
+                        peptide=r.peptide,
+                        start_position=r.start_position,
+                        end_position=r.end_position,
+                        binding_score=r.binding_score,
+                        ic50_nm=r.ic50_nm,
+                        binding_class=r.binding_class,
+                        anchor_residues=r.anchor_residues,
+                        anchor_scores=r.anchor_scores,
+                    ))
+                logger.info(
+                    "MHC-I prediction via MHCflurry: %d results for %d alleles, "
+                    "protein length %d",
+                    len(converted), len(alleles), len(protein),
+                )
+                return converted
+        except Exception as exc:
+            logger.warning(
+                "MHCflurry prediction failed, falling back to PSSM: %s", exc,
             )
 
     # PSSM-based prediction (original implementation, also serves as fallback)

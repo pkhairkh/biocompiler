@@ -654,33 +654,80 @@ def check_mrna_secondary_structure(
     window_start: int = 0,
     window_end: int = 50,
     dg_threshold: float = -15.0,
+    use_viennarna: bool = True,
 ) -> PredicateResult:
     """Predicate 11: No strong mRNA secondary structure around RBS/start codon.
 
     Checks for stable secondary structure near the ribosome binding site
-    that could block ribosome binding. Uses a simplified nearest-neighbor
-    ΔG approximation based on counting potential base pairs in the window.
-
-    Scoring (simplified ViennaRNA-style):
-    - Count GC pairs (G-C and C-G) in the window
-    - Count AU pairs (A-U and U-A) in the window
-    - Count GU wobble pairs (G-U and U-G) in the window
-    - ΔG ≈ -1.5 * gc_pairs - 0.5 * au_pairs - 0.3 * gu_pairs
-
-    Verdict logic:
-    - If ΔG <= dg_threshold (very stable structure): FAIL
-    - If ΔG <= dg_threshold * 0.7: UNCERTAIN
-    - Otherwise: PASS
+    that could block ribosome binding. When ViennaRNA or the Nussinov
+    fallback is available, uses proper thermodynamic folding (Turner
+    nearest-neighbor parameters). Otherwise falls back to the simplified
+    hairpin model for backward compatibility.
 
     Args:
         seq: DNA sequence to evaluate.
         window_start: Start position of the analysis window (default 0).
         window_end: End position of the analysis window (default 50).
         dg_threshold: ΔG threshold for FAIL (default -15.0 kcal/mol).
+        use_viennarna: If True (default), try ViennaRNA/Nussinov for
+            accurate ΔG computation. If False, use the legacy toy model.
 
     Returns:
         PredicateResult with PASS/UNCERTAIN/FAIL verdict.
     """
+    seq = seq.upper()
+
+    # Try ViennaRNA/Nussinov for accurate ΔG
+    if use_viennarna:
+        try:
+            from .viennarna import is_viennarna_available, compute_5prime_dg
+            if is_viennarna_available():
+                dg = compute_5prime_dg(seq, window=window_end - window_start)
+                if dg <= dg_threshold:
+                    return PredicateResult(
+                        "mRNASecondaryStructure", False, verdict=Verdict.FAIL,
+                        details=(f"Strong mRNA secondary structure (ViennaRNA): "
+                                 f"ΔG={dg:.1f} kcal/mol <= {dg_threshold}"),
+                    )
+                if dg <= dg_threshold * 0.7:
+                    return PredicateResult(
+                        "mRNASecondaryStructure", True, verdict=Verdict.UNCERTAIN,
+                        details=(f"Moderate mRNA secondary structure (ViennaRNA): "
+                                 f"ΔG={dg:.1f} kcal/mol <= {dg_threshold * 0.7:.1f}"),
+                    )
+                return PredicateResult(
+                    "mRNASecondaryStructure", True, verdict=Verdict.PASS,
+                    details=(f"Weak mRNA secondary structure (ViennaRNA): "
+                             f"ΔG={dg:.1f} kcal/mol"),
+                )
+        except Exception:
+            pass  # Fall through to Nussinov fallback
+
+        try:
+            from .viennarna_fallback import compute_approx_dg
+            dg = compute_approx_dg(seq, region="5utr")
+            if dg <= dg_threshold:
+                return PredicateResult(
+                    "mRNASecondaryStructure", False, verdict=Verdict.FAIL,
+                    details=(f"Strong mRNA secondary structure (Nussinov fallback): "
+                             f"ΔG≈{dg:.1f} kcal/mol <= {dg_threshold}"),
+                )
+            if dg <= dg_threshold * 0.7:
+                return PredicateResult(
+                    "mRNASecondaryStructure", True, verdict=Verdict.UNCERTAIN,
+                    details=(f"Moderate mRNA secondary structure (Nussinov fallback): "
+                             f"ΔG≈{dg:.1f} kcal/mol <= {dg_threshold * 0.7:.1f}"),
+                )
+            return PredicateResult(
+                "mRNASecondaryStructure", True, verdict=Verdict.PASS,
+                details=(f"Weak mRNA secondary structure (Nussinov fallback): "
+                         f"ΔG≈{dg:.1f} kcal/mol"),
+            )
+        except Exception:
+            pass  # Fall through to legacy toy model
+
+    # Legacy toy model (original implementation, backward-compatible)
+    # Uses a simplified hairpin approximation for ΔG
     seq = seq.upper()
     # Extract the window around the RBS/start codon
     effective_end = min(window_end, len(seq))
