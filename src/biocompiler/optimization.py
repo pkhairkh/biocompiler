@@ -33,6 +33,7 @@ from .type_system import (
 from .organisms import SPECIES, CODON_ADAPTIVENESS_TABLES, get_species_cai_weights
 from .constants import reverse_complement
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
+from .incremental import IncrementalSequenceState, CodonCache, EnzymeSiteCache
 from .certificate import format_certificate
 from .exceptions import InvalidProteinError, UnsupportedOrganismError
 from .decision_provenance import (
@@ -3156,14 +3157,19 @@ class BioOptimizer:
         during codon selection (which permanently sacrifices CAI), we fix
         GT violations after the fact, choosing the resolution that costs
         the least CAI.
+
+        Uses IncrementalSequenceState for O(1) GT/CG tracking and
+        CodonCache for pre-sorted codon lists.
         """
         import math
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         max_rounds = 30
 
         for round_num in range(max_rounds):
-            current_seq = "".join(seq_list)
-            old_gt_count = _count_gts(current_seq)
+            current_seq = state.sequence
+            old_gt_count = state.gt_count
 
             # Collect all constraint violations
             violations = []
@@ -3171,36 +3177,29 @@ class BioOptimizer:
             # GT dinucleotide violations are only relevant for eukaryotic targets
             # (prokaryotes have no spliceosome, so GT avoidance is unnecessary)
             if self.avoid_gt:
-                # Within-codon GT dinucleotides (only avoidable ones)
-                for i in range(len(seq_list) - 1):
-                    if seq_list[i] == "G" and seq_list[i + 1] == "T":
-                        codon_start = (i // 3) * 3
-                        next_codon_start = codon_start + 3
-                        if i + 1 < next_codon_start:
-                            # Within-codon GT - only add if avoidable
-                            if not _is_unavoidable_gt(current_seq, i):
-                                violations.append(("within_gt", i, codon_start))
-
-                # Cross-codon GT dinucleotides (only avoidable ones)
-                for pos in find_cross_codon_gt(current_seq):
-                    codon_start = (pos // 3) * 3
-                    if not _is_unavoidable_gt(current_seq, pos):
-                        violations.append(("cross_gt", pos, codon_start))
+                # Use incremental GT positions for O(1) lookup instead of O(N) scan
+                for gt_pos in state.gt_positions_list():
+                    codon_idx = gt_pos // 3
+                    codon_start = codon_idx * 3
+                    if gt_pos % 3 < 2:
+                        # Within-codon GT - only add if avoidable
+                        if not _is_unavoidable_gt(current_seq, gt_pos):
+                            violations.append(("within_gt", gt_pos, codon_idx))
+                    else:
+                        # Cross-codon GT - only add if avoidable
+                        if not _is_unavoidable_gt(current_seq, gt_pos):
+                            violations.append(("cross_gt", gt_pos, codon_idx))
 
             if not violations and not self.enzymes:
                 break
 
-            # Check for restriction sites
-            from .restriction_sites import get_recognition_site
+            # Check for restriction sites using cached enzyme data
             rs_violations = []
-            for enzyme in self.enzymes:
-                site = get_recognition_site(enzyme)
-                if site is None:
-                    continue
-                p = current_seq.find(site)
-                while p != -1:
-                    rs_violations.append((p, site, enzyme))
-                    p = current_seq.find(site, p + 1)
+            if enzyme_cache is not None:
+                for enzyme, pos in enzyme_cache.find_sites(current_seq):
+                    site = enzyme_cache.get_site(enzyme)
+                    if site is not None:
+                        rs_violations.append((pos, site, enzyme))
 
             if not violations and not rs_violations:
                 break
@@ -3208,9 +3207,9 @@ class BioOptimizer:
             any_resolved = False
 
             # Fix within-codon GTs first (usually easiest)
-            for vtype, pos, codon_start in violations:
+            for vtype, pos, codon_idx in violations:
                 if vtype == "within_gt":
-                    resolved = self._fix_within_codon_gt_cai_aware(seq_list, codon_start)
+                    resolved = self._fix_within_codon_gt_cai_aware(state, codon_idx, codon_cache)
                     if resolved:
                         any_resolved = True
                         break
@@ -3219,9 +3218,9 @@ class BioOptimizer:
                 continue
 
             # Fix cross-codon GTs
-            for vtype, pos, codon_start in violations:
+            for vtype, pos, codon_idx in violations:
                 if vtype == "cross_gt":
-                    resolved = self._fix_cross_codon_gt_cai_aware(seq_list, codon_start)
+                    resolved = self._fix_cross_codon_gt_cai_aware(state, codon_idx, codon_cache)
                     if resolved:
                         any_resolved = True
                         break
@@ -3231,7 +3230,7 @@ class BioOptimizer:
 
             # Fix restriction sites
             for p, site, enzyme in rs_violations:
-                resolved = self._fix_restriction_site_cai_aware(seq_list, p, site)
+                resolved = self._fix_restriction_site_cai_aware(state, p, site, codon_cache, enzyme_cache)
                 if resolved:
                     any_resolved = True
                     break
@@ -3240,187 +3239,168 @@ class BioOptimizer:
                 break
 
         # Track unavoidable GTs for mutagenesis
-        current_seq = "".join(seq_list)
-        for i in range(len(current_seq) - 1):
-            if current_seq[i] == "G" and current_seq[i + 1] == "T":
-                codon_start = (i // 3) * 3
-                next_codon_start = codon_start + 3
-                if i + 1 < next_codon_start:
-                    codon = current_seq[codon_start:codon_start + 3]
-                    aa = CODON_TABLE.get(codon)
-                    if aa and aa != "*":
-                        all_have_gt = all("GT" in c for c in AA_TO_CODONS.get(aa, []))
-                        if all_have_gt:
-                            for j in range(2):
-                                if codon[j:j+2] == "GT":
-                                    self._unavoidable_gt_positions.add(codon_start + j)
+        for gt_pos in state.gt_positions_list():
+            if gt_pos % 3 < 2:  # within-codon only
+                codon_idx = gt_pos // 3
+                codon_start = codon_idx * 3
+                aa = state.get_aa(codon_idx)
+                if aa and aa != "*":
+                    all_have_gt = all("GT" in c for c in AA_TO_CODONS.get(aa, []))
+                    if all_have_gt:
+                        codon = state.get_codon(codon_idx)
+                        for j in range(2):
+                            if codon[j:j+2] == "GT":
+                                self._unavoidable_gt_positions.add(codon_start + j)
 
-        return "".join(seq_list)
+        return state.sequence
 
-    def _fix_within_codon_gt_cai_aware(self, seq_list: list, codon_start: int) -> bool:
-        """Fix a within-codon GT by choosing the best CAI-preserving substitution."""
-        codon = "".join(seq_list[codon_start:codon_start + 3])
-        aa = CODON_TABLE.get(codon)
+    def _fix_within_codon_gt_cai_aware(self, state: IncrementalSequenceState, codon_idx: int, codon_cache: CodonCache) -> bool:
+        """Fix a within-codon GT by choosing the best CAI-preserving substitution.
+
+        Uses IncrementalSequenceState for O(1) GT tracking and
+        CodonCache for pre-sorted codon lists.
+        """
+        codon = state.get_codon(codon_idx)
+        aa = state.get_aa(codon_idx)
         if aa is None or aa == "*":
             return False
 
-        old_gt_count = _count_gts("".join(seq_list))
-        current_cai = self.species_cai.get(codon, 0.0)
+        old_gt_count = state.gt_count
 
-        # Sort alternatives by CAI (highest first) to minimize CAI loss
-        alternatives = []
-        for alt in AA_TO_CODONS.get(aa, []):
-            if alt == codon or "GT" in alt:
+        # Use pre-sorted GT-free codons from cache
+        for alt in codon_cache.get_gt_free_codons(aa):
+            if alt == codon:
                 continue
-            prev_base = seq_list[codon_start - 1] if codon_start > 0 else ""
-            next_base = seq_list[codon_start + 3] if codon_start + 3 < len(seq_list) else ""
-            if prev_base and prev_base + alt[0] == "GT":
+            # O(1) boundary check instead of manual base lookup
+            left_gt, right_gt = state.boundary_creates_gt(codon_idx, alt)
+            if left_gt or right_gt:
                 continue
-            if next_base and alt[-1] + next_base == "GT":
-                continue
-            alt_cai = self.species_cai.get(alt, 0.0)
-            alternatives.append((alt, alt_cai))
-
-        # Sort by CAI descending (prefer highest CAI)
-        alternatives.sort(key=lambda x: x[1], reverse=True)
-
-        for alt, alt_cai in alternatives:
-            test_list = seq_list[:]
-            for k, b in enumerate(alt):
-                test_list[codon_start + k] = b
-            new_gt_count = _count_gts("".join(test_list))
-            if new_gt_count < old_gt_count:
-                seq_list[:] = test_list
+            # O(1) swap + O(1) GT count check + rollback if needed
+            old_codon = state.swap_codon(codon_idx, alt)
+            if state.gt_count < old_gt_count:
                 return True
+            else:
+                state.swap_codon(codon_idx, old_codon)  # Rollback
 
         return False
 
-    def _fix_cross_codon_gt_cai_aware(self, seq_list: list, codon_start: int) -> bool:
-        """Fix a cross-codon GT by choosing the best CAI-preserving substitution."""
-        old_seq = "".join(seq_list)
-        old_gt_count = _count_gts(old_seq)
+    def _fix_cross_codon_gt_cai_aware(self, state: IncrementalSequenceState, codon_idx: int, codon_cache: CodonCache) -> bool:
+        """Fix a cross-codon GT by choosing the best CAI-preserving substitution.
+
+        Uses IncrementalSequenceState for O(1) GT tracking and
+        CodonCache for pre-sorted codon lists.
+        """
+        old_gt_count = state.gt_count
 
         # Try resolving by modifying the codon pair
-        next_start = codon_start + 3
+        next_idx = codon_idx + 1
+        prev_idx = codon_idx - 1
 
-        # Strategy A: Modify following codon
-        if next_start + 3 <= len(seq_list):
-            aa1_codon = "".join(seq_list[codon_start:codon_start + 3])
-            aa1 = CODON_TABLE.get(aa1_codon)
-            aa2_codon = "".join(seq_list[next_start:next_start + 3])
-            aa2 = CODON_TABLE.get(aa2_codon)
+        # Strategy A: Modify following codon pair (codon_idx and next_idx)
+        if next_idx < state.num_codons:
+            aa1 = state.get_aa(codon_idx)
+            aa2 = state.get_aa(next_idx)
 
             if aa1 is not None and aa1 != "*" and aa2 is not None and aa2 != "*":
                 # Collect all valid pairs sorted by combined CAI
                 pairs = []
-                for c1 in AA_TO_CODONS.get(aa1, [aa1_codon]):
-                    for c2 in AA_TO_CODONS.get(aa2, [aa2_codon]):
+                for c1 in codon_cache.get_sorted_codons(aa1):
+                    for c2 in codon_cache.get_sorted_codons(aa2):
                         if c1[-1] + c2[0] == "GT":
                             continue
-                        # Prefer pairs that don't introduce new GTs within codons
-                        # but don't require them to be GT-free
-                        combined_cai = self.species_cai.get(c1, 0.0) + self.species_cai.get(c2, 0.0)
+                        combined_cai = codon_cache.get_cai(c1) + codon_cache.get_cai(c2)
                         pairs.append((c1, c2, combined_cai))
 
                 pairs.sort(key=lambda x: x[2], reverse=True)
 
                 for c1, c2, _ in pairs:
-                    test_list = seq_list[:]
-                    for k, b in enumerate(c1):
-                        test_list[codon_start + k] = b
-                    for k, b in enumerate(c2):
-                        test_list[next_start + k] = b
-                    test_seq = "".join(test_list)
-                    new_gt_count = _count_gts(test_seq)
-                    if new_gt_count < old_gt_count:
-                        seq_list[:] = test_list
+                    old1 = state.swap_codon(codon_idx, c1)
+                    old2 = state.swap_codon(next_idx, c2)
+                    if state.gt_count < old_gt_count:
                         return True
+                    else:
+                        state.swap_codon(next_idx, old2)  # Rollback
+                        state.swap_codon(codon_idx, old1)  # Rollback
 
-        # Strategy B: Modify preceding codon
-        if codon_start >= 3:
-            prev_start = codon_start - 3
-            aa0_codon = "".join(seq_list[prev_start:prev_start + 3])
-            aa0 = CODON_TABLE.get(aa0_codon)
-            aa1_codon = "".join(seq_list[codon_start:codon_start + 3])
-            aa1 = CODON_TABLE.get(aa1_codon)
+        # Strategy B: Modify preceding codon pair (prev_idx and codon_idx)
+        if prev_idx >= 0:
+            aa0 = state.get_aa(prev_idx)
+            aa1 = state.get_aa(codon_idx)
 
             if aa0 is not None and aa0 != "*" and aa1 is not None and aa1 != "*":
                 pairs = []
-                for c0 in AA_TO_CODONS.get(aa0, [aa0_codon]):
-                    for c1 in AA_TO_CODONS.get(aa1, [aa1_codon]):
+                for c0 in codon_cache.get_sorted_codons(aa0):
+                    for c1 in codon_cache.get_sorted_codons(aa1):
                         if c0[-1] + c1[0] == "GT":
                             continue
-                        combined_cai = self.species_cai.get(c0, 0.0) + self.species_cai.get(c1, 0.0)
+                        combined_cai = codon_cache.get_cai(c0) + codon_cache.get_cai(c1)
                         pairs.append((c0, c1, combined_cai))
 
                 pairs.sort(key=lambda x: x[2], reverse=True)
 
                 for c0, c1, _ in pairs:
-                    test_list = seq_list[:]
-                    for k, b in enumerate(c0):
-                        test_list[prev_start + k] = b
-                    for k, b in enumerate(c1):
-                        test_list[codon_start + k] = b
-                    test_seq = "".join(test_list)
-                    new_gt_count = _count_gts(test_seq)
-                    if new_gt_count < old_gt_count:
-                        seq_list[:] = test_list
+                    old0 = state.swap_codon(prev_idx, c0)
+                    old1 = state.swap_codon(codon_idx, c1)
+                    if state.gt_count < old_gt_count:
                         return True
+                    else:
+                        state.swap_codon(codon_idx, old1)  # Rollback
+                        state.swap_codon(prev_idx, old0)  # Rollback
 
         # Strategy C: Single codon substitution (change only the codon that ends with G)
-        aa1_codon = "".join(seq_list[codon_start:codon_start + 3])
-        aa1 = CODON_TABLE.get(aa1_codon)
+        aa1 = state.get_aa(codon_idx)
         if aa1 is not None and aa1 != "*":
-            alts = sorted(AA_TO_CODONS.get(aa1, [aa1_codon]),
-                          key=lambda c: self.species_cai.get(c, 0.0), reverse=True)
-            for c1 in alts:
-                test_list = seq_list[:]
-                for k, b in enumerate(c1):
-                    test_list[codon_start + k] = b
-                test_seq = "".join(test_list)
-                new_gt_count = _count_gts(test_seq)
-                if new_gt_count < old_gt_count:
-                    seq_list[:] = test_list
+            for c1 in codon_cache.get_sorted_codons(aa1):
+                old_codon = state.swap_codon(codon_idx, c1)
+                if state.gt_count < old_gt_count:
                     return True
+                else:
+                    state.swap_codon(codon_idx, old_codon)  # Rollback
 
         return False
 
-    def _fix_restriction_site_cai_aware(self, seq_list: list, pos: int, site: str) -> bool:
-        """Fix a restriction site by choosing the best CAI-preserving substitution."""
-        codon_starts = set()
+    def _fix_restriction_site_cai_aware(self, state: IncrementalSequenceState, pos: int, site: str, codon_cache: CodonCache, enzyme_cache: Optional[EnzymeSiteCache] = None) -> bool:
+        """Fix a restriction site by choosing the best CAI-preserving substitution.
+
+        Uses IncrementalSequenceState for O(1) GT tracking and
+        CodonCache for pre-sorted codon lists.
+        """
+        codon_indices = set()
         for j in range(pos, pos + len(site)):
-            cs = (j // 3) * 3
-            if cs + 3 <= len(seq_list):
-                codon_starts.add(cs)
+            ci = j // 3
+            if ci < state.num_codons:
+                codon_indices.add(ci)
 
-        old_gt_count = _count_gts("".join(seq_list))
+        old_gt_count = state.gt_count
 
-        # Try each overlapping codon, sorted by smallest CAI impact
-        for cs in sorted(codon_starts):
-            codon = "".join(seq_list[cs:cs + 3])
-            aa = CODON_TABLE.get(codon)
+        # Try each overlapping codon, sorted by position
+        for ci in sorted(codon_indices):
+            aa = state.get_aa(ci)
             if aa is None or aa == "*":
                 continue
 
-            # Sort alternatives by CAI (highest first)
-            alts = sorted(AA_TO_CODONS.get(aa, []),
-                          key=lambda c: self.species_cai.get(c, 0.0), reverse=True)
-            for alt in alts:
-                if alt == codon:
+            # Use pre-sorted codons from cache
+            for alt in codon_cache.get_sorted_codons(aa):
+                current_codon = state.get_codon(ci)
+                if alt == current_codon:
                     continue
-                test_list = seq_list[:]
-                for k, b in enumerate(alt):
-                    test_list[cs + k] = b
-                test_seq = "".join(test_list)
-                if site not in test_seq:
+                # O(1) swap + check + rollback
+                old_codon = state.swap_codon(ci, alt)
+                # Check restriction site is gone
+                if enzyme_cache is not None:
+                    rs_ok = not enzyme_cache.check_any_site_present(state.sequence)
+                else:
+                    rs_ok = site not in state.sequence
+                if rs_ok:
                     if self.avoid_gt:
-                        new_gt_count = _count_gts(test_seq)
-                        if new_gt_count <= old_gt_count:
-                            seq_list[:] = test_list
+                        if state.gt_count <= old_gt_count:
                             return True
+                        else:
+                            state.swap_codon(ci, old_codon)  # Rollback
                     else:
-                        seq_list[:] = test_list
                         return True
+                else:
+                    state.swap_codon(ci, old_codon)  # Rollback
 
         return False
 
@@ -3631,47 +3611,50 @@ class BioOptimizer:
     # Step: Cross-Codon Optimization (iterative constraint resolution)
     # ──────────────────────────────────────────────────────────
     def _step_cross_codon_optimization(self, seq: str) -> Tuple[str, MutagenesisReport]:
-        """Cross-Codon Optimization step: Resolve cross-codon GT, CG, and restriction site constraints.
+        """Cross-Codon Optimization step (optimized with incremental state).
 
-        This step iterates until no more cross-codon constraints can be
-        resolved. Each resolution is globally validated to ensure no new
-        GTs are introduced elsewhere.
+        Resolve cross-codon GT, CG, and restriction site constraints.
+        Uses IncrementalSequenceState for O(1) GT/CG tracking instead of
+        O(N) full-sequence rescans.
         """
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         total_remaining: Dict[int, List[str]] = {}
         max_rounds = 20
 
         for round_num in range(max_rounds):
-            current_seq = "".join(seq_list)
+            current_seq = state.sequence
             constraint_positions: Dict[int, List[str]] = {}
 
-            # GT/CG constraints are only relevant for eukaryotic targets
+            # GT/CG constraints — use incremental position data
             if self.avoid_gt:
-                for pos in find_cross_codon_gt(current_seq):
-                    codon_start = (pos // 3) * 3
-                    # Skip GTs that are unavoidable (Valine, or cross-codon with no alternatives)
-                    if not _is_unavoidable_gt(current_seq, pos):
+                for gt_pos in state.gt_positions_list():
+                    if gt_pos % 3 == 2:  # Cross-codon boundary
+                        if not _is_unavoidable_gt(current_seq, gt_pos):
+                            codon_start = (gt_pos // 3) * 3
+                            constraint_positions.setdefault(codon_start, [])
+                            if "GT" not in constraint_positions[codon_start]:
+                                constraint_positions[codon_start].append("GT")
+
+                for cg_pos in state.cg_positions_list():
+                    if cg_pos % 3 == 2:  # Cross-codon boundary
+                        codon_start = (cg_pos // 3) * 3
                         constraint_positions.setdefault(codon_start, [])
-                        if "GT" not in constraint_positions[codon_start]:
-                            constraint_positions[codon_start].append("GT")
+                        if "CG" not in constraint_positions[codon_start]:
+                            constraint_positions[codon_start].append("CG")
 
-                for pos in find_cross_codon_cg(current_seq):
-                    codon_start = (pos // 3) * 3
-                    constraint_positions.setdefault(codon_start, [])
-                    if "CG" not in constraint_positions[codon_start]:
-                        constraint_positions[codon_start].append("CG")
-
-            from .restriction_sites import get_recognition_site
-            for enzyme in self.enzymes:
-                site = get_recognition_site(enzyme)
-                if site is None:
-                    continue
-                for pos in find_cross_codon_restriction(current_seq, site):
-                    codon_start = (pos // 3) * 3
-                    label = f"RS:{site}"
-                    constraint_positions.setdefault(codon_start, [])
-                    if label not in constraint_positions[codon_start]:
-                        constraint_positions[codon_start].append(label)
+            # Restriction site constraints
+            if enzyme_cache is not None:
+                for enzyme, site in enzyme_cache._sites.items():
+                    if site is None:
+                        continue
+                    for pos in find_cross_codon_restriction(current_seq, site):
+                        codon_start = (pos // 3) * 3
+                        label = f"RS:{site}"
+                        constraint_positions.setdefault(codon_start, [])
+                        if label not in constraint_positions[codon_start]:
+                            constraint_positions[codon_start].append(label)
 
             if not constraint_positions:
                 break
@@ -3679,31 +3662,33 @@ class BioOptimizer:
             any_resolved = False
 
             for codon_start, ctypes in constraint_positions.items():
-                resolved = self._try_resolve_cross_codon(seq_list, codon_start, ctypes)
+                resolved = self._try_resolve_cross_codon_incremental(
+                    state, codon_start, ctypes, codon_cache, enzyme_cache
+                )
                 if resolved:
                     any_resolved = True
 
             if not any_resolved:
-                # Record remaining constraints
-                current_seq = "".join(seq_list)
+                # Record remaining constraints using incremental data
                 constraint_positions2: Dict[int, List[str]] = {}
-                for pos in find_cross_codon_gt(current_seq):
-                    cs = (pos // 3) * 3
-                    # Skip GTs that are unavoidable
-                    if not _is_unavoidable_gt(current_seq, pos):
+                for gt_pos in state.gt_positions_list():
+                    if gt_pos % 3 == 2:
+                        if not _is_unavoidable_gt(state.sequence, gt_pos):
+                            cs = (gt_pos // 3) * 3
+                            constraint_positions2.setdefault(cs, [])
+                            if "GT" not in constraint_positions2[cs]:
+                                constraint_positions2[cs].append("GT")
+                for cg_pos in state.cg_positions_list():
+                    if cg_pos % 3 == 2:
+                        cs = (cg_pos // 3) * 3
                         constraint_positions2.setdefault(cs, [])
-                        if "GT" not in constraint_positions2[cs]:
-                            constraint_positions2[cs].append("GT")
-                for pos in find_cross_codon_cg(current_seq):
-                    cs = (pos // 3) * 3
-                    constraint_positions2.setdefault(cs, [])
-                    if "CG" not in constraint_positions2[cs]:
-                        constraint_positions2[cs].append("CG")
+                        if "CG" not in constraint_positions2[cs]:
+                            constraint_positions2[cs].append("CG")
                 total_remaining = constraint_positions2
                 break
 
         mut_report = propose_mutagenesis(
-            "".join(seq_list),
+            state.sequence,
             list(total_remaining.keys()),
             total_remaining,
             self.species_cai,
@@ -3711,7 +3696,7 @@ class BioOptimizer:
             self.min_cai,
         )
 
-        return "".join(seq_list), mut_report
+        return state.sequence, mut_report
 
     def _try_resolve_cross_codon(
         self, seq_list: list, codon_start: int, ctypes: List[str]
@@ -3869,6 +3854,190 @@ class BioOptimizer:
 
         return False
 
+    def _try_resolve_cross_codon_incremental(
+        self, state: IncrementalSequenceState, codon_start: int,
+        ctypes: List[str], codon_cache: CodonCache,
+        enzyme_cache: Optional[EnzymeSiteCache] = None
+    ) -> bool:
+        """Try to resolve cross-codon constraints using incremental state.
+
+        Uses O(1) GT/CG tracking via IncrementalSequenceState instead of
+        O(N) full-sequence rescans. Uses predictive boundary checks to
+        avoid unnecessary swap+rollback cycles.
+        """
+        codon_idx = codon_start // 3
+        aa1 = state.get_aa(codon_idx)
+        if aa1 is None or aa1 == "*":
+            return False
+
+        old_gt_count = state.gt_count
+        next_codon_idx = codon_idx + 1
+
+        # Pre-check: what constraint types need resolving?
+        needs_gt = "GT" in ctypes
+        needs_cg = "CG" in ctypes
+        needs_rs = any(ct.startswith("RS:") for ct in ctypes)
+
+        # Strategy A: Following codon
+        if next_codon_idx < state.num_codons:
+            aa2 = state.get_aa(next_codon_idx)
+            if aa2 is not None and aa2 != "*":
+                for c1 in codon_cache.get_sorted_codons(aa1):
+                    if self.avoid_gt and "GT" in c1:
+                        continue
+                    # O(1) left boundary predictive check
+                    if self.avoid_gt:
+                        left_gt, _ = state.boundary_creates_gt(codon_idx, c1)
+                        if left_gt:
+                            continue
+                    for c2 in codon_cache.get_sorted_codons(aa2):
+                        if self.avoid_gt and "GT" in c2:
+                            continue
+                        if c1[-1] + c2[0] == "GT":
+                            continue
+                        # O(1) right boundary predictive check
+                        if self.avoid_gt:
+                            _, right_gt = state.boundary_creates_gt(next_codon_idx, c2)
+                            if right_gt:
+                                continue
+
+                        # Quick dinucleotide check — does this pair resolve the constraint?
+                        if needs_gt and "GT" in (c1 + c2):
+                            continue
+                        if needs_cg and c1[-1] + c2[0] == "CG":
+                            continue
+
+                        # Apply both swaps
+                        old1 = state.swap_codon(codon_idx, c1)
+                        old2 = state.swap_codon(next_codon_idx, c2)
+
+                        if state.gt_count <= old_gt_count:
+                            # Check constraint is actually resolved
+                            resolved = True
+                            for ct in ctypes:
+                                region = state.sequence[codon_start:codon_start + 6]
+                                if ct == "GT" and "GT" in region:
+                                    resolved = False
+                                elif ct == "CG" and "CG" in region:
+                                    resolved = False
+                                elif ct.startswith("RS:"):
+                                    if ct[3:] in state.sequence:
+                                        resolved = False
+                            if resolved:
+                                # Check no new restriction sites
+                                rs_ok = True
+                                if enzyme_cache is not None:
+                                    rs_ok = not enzyme_cache.check_any_site_present(state.sequence)
+                                if rs_ok:
+                                    return True
+
+                        # Rollback
+                        state.swap_codon(next_codon_idx, old2)
+                        state.swap_codon(codon_idx, old1)
+
+        # Strategy B: Preceding codon
+        if codon_idx > 0:
+            prev_codon_idx = codon_idx - 1
+            aa0 = state.get_aa(prev_codon_idx)
+            if aa0 is not None and aa0 != "*":
+                for c0 in codon_cache.get_sorted_codons(aa0):
+                    if self.avoid_gt and "GT" in c0:
+                        continue
+                    for c1 in codon_cache.get_sorted_codons(aa1):
+                        if self.avoid_gt and "GT" in c1:
+                            continue
+                        if c0[-1] + c1[0] == "GT":
+                            continue
+                        # Quick dinucleotide check
+                        if needs_gt and "GT" in (c0 + c1):
+                            continue
+                        if needs_cg and c0[-1] + c1[0] == "CG":
+                            continue
+
+                        old0 = state.swap_codon(prev_codon_idx, c0)
+                        old1 = state.swap_codon(codon_idx, c1)
+
+                        if state.gt_count <= old_gt_count:
+                            resolved = True
+                            for ct in ctypes:
+                                prev_start = codon_start - 3
+                                region = state.sequence[prev_start:codon_start + 3]
+                                if ct == "GT" and "GT" in region:
+                                    resolved = False
+                                elif ct == "CG" and "CG" in region:
+                                    resolved = False
+                                elif ct.startswith("RS:"):
+                                    if ct[3:] in state.sequence:
+                                        resolved = False
+                            if resolved:
+                                return True
+
+                        state.swap_codon(codon_idx, old1)
+                        state.swap_codon(prev_codon_idx, old0)
+
+        # Strategy C: Both preceding and following
+        if codon_idx > 0 and next_codon_idx < state.num_codons:
+            prev_codon_idx = codon_idx - 1
+            aa0 = state.get_aa(prev_codon_idx)
+            aa2 = state.get_aa(next_codon_idx)
+            if (aa0 is not None and aa0 != "*" and
+                    aa2 is not None and aa2 != "*"):
+                for c0 in codon_cache.get_sorted_codons(aa0):
+                    if self.avoid_gt and "GT" in c0:
+                        continue
+                    for c1 in codon_cache.get_sorted_codons(aa1):
+                        if self.avoid_gt and "GT" in c1:
+                            continue
+                        if c0[-1] + c1[0] == "GT":
+                            continue
+                        for c2 in codon_cache.get_sorted_codons(aa2):
+                            if self.avoid_gt and "GT" in c2:
+                                continue
+                            if c1[-1] + c2[0] == "GT":
+                                continue
+                            # Quick dinucleotide check
+                            if needs_gt and "GT" in (c0 + c1 + c2):
+                                continue
+                            if needs_cg and (c0[-1] + c1[0] == "CG" or c1[-1] + c2[0] == "CG"):
+                                continue
+
+                            old0 = state.swap_codon(prev_codon_idx, c0)
+                            old1 = state.swap_codon(codon_idx, c1)
+                            old2 = state.swap_codon(next_codon_idx, c2)
+
+                            if state.gt_count <= old_gt_count:
+                                resolved = True
+                                for ct in ctypes:
+                                    prev_start = codon_start - 3
+                                    region = state.sequence[prev_start:codon_start + 6]
+                                    if ct == "GT" and "GT" in region:
+                                        resolved = False
+                                    elif ct == "CG" and "CG" in region:
+                                        resolved = False
+                                    elif ct.startswith("RS:"):
+                                        if ct[3:] in state.sequence:
+                                            resolved = False
+                                if resolved:
+                                    return True
+
+                            state.swap_codon(next_codon_idx, old2)
+                            state.swap_codon(codon_idx, old1)
+                            state.swap_codon(prev_codon_idx, old0)
+
+        # Strategy D: Single codon substitution
+        for c1 in codon_cache.get_sorted_codons(aa1):
+            if self.avoid_gt and "GT" in c1:
+                continue
+            # Predictive check: would this reduce GT count?
+            if self.avoid_gt and state.would_gt_increase(codon_idx, c1):
+                continue
+            old1 = state.swap_codon(codon_idx, c1)
+            if state.gt_count < old_gt_count:
+                return True
+            state.swap_codon(codon_idx, old1)
+
+        return False
+
     # Deprecated alias — use _step_cross_codon_optimization instead
     _phase3_cross_codon_constraints = _step_cross_codon_optimization
 
@@ -3880,61 +4049,58 @@ class BioOptimizer:
 
         For each within-codon GT (not cross-codon), try synonymous substitution
         first. If no synonymous codon can avoid GT, flag for mutagenesis.
+
+        Uses IncrementalSequenceState for O(1) GT tracking and
+        CodonCache for pre-sorted codon lists.
         """
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
         remaining_positions: Dict[int, List[str]] = {}
 
-        for i in range(len(seq_list) - 1):
-            if seq_list[i] == "G" and seq_list[i + 1] == "T":
-                codon_start = (i // 3) * 3
-                next_codon_start = codon_start + 3
+        # Use incremental GT positions for O(1) lookup instead of O(N) scan
+        for gt_pos in state.gt_positions_list():
+            codon_idx = gt_pos // 3
+            codon_start = codon_idx * 3
+            next_codon_start = codon_start + 3
 
-                if i + 1 < next_codon_start:
-                    # Within-codon GT - skip if unavoidable
-                    current_seq_35 = "".join(seq_list)
-                    if _is_unavoidable_gt(current_seq_35, i):
+            if gt_pos % 3 < 2:  # Within-codon GT
+                # Within-codon GT - skip if unavoidable
+                if _is_unavoidable_gt(state.sequence, gt_pos):
+                    continue
+                aa = state.get_aa(codon_idx)
+                if aa is None or aa == "*":
+                    continue
+
+                old_gt_count = state.gt_count
+                resolved = False
+                # Use pre-sorted GT-free codons from cache
+                for alt in codon_cache.get_gt_free_codons(aa):
+                    current_codon = state.get_codon(codon_idx)
+                    if alt == current_codon:
                         continue
-                    codon = "".join(seq_list[codon_start:codon_start + 3])
-                    aa = CODON_TABLE.get(codon)
-                    if aa is None or aa == "*":
+                    # O(1) boundary check instead of manual base lookup
+                    left_gt, right_gt = state.boundary_creates_gt(codon_idx, alt)
+                    if left_gt or right_gt:
                         continue
+                    # O(1) swap + O(1) GT count check + rollback if needed
+                    old_codon = state.swap_codon(codon_idx, alt)
+                    if state.gt_count < old_gt_count:
+                        resolved = True
+                        break
+                    else:
+                        state.swap_codon(codon_idx, old_codon)  # Rollback
 
-                    old_gt_count = _count_gts("".join(seq_list))
-                    resolved = False
-                    alts = AA_TO_CODONS.get(aa, [])
-                    alts_sorted = sorted(alts,
-                                         key=lambda c: self.species_cai.get(c, 0.0),
-                                         reverse=True)
-                    for alt in alts_sorted:
-                        if alt == codon or "GT" in alt:
-                            continue
-                        prev_base = seq_list[codon_start - 1] if codon_start > 0 else ""
-                        next_base = seq_list[next_codon_start] if next_codon_start < len(seq_list) else ""
-                        if prev_base and prev_base + alt[0] == "GT":
-                            continue
-                        if next_base and alt[-1] + next_base == "GT":
-                            continue
-                        # Apply and validate globally
-                        test_list = seq_list[:]
-                        for k, b in enumerate(alt):
-                            test_list[codon_start + k] = b
-                        new_gt_count = _count_gts("".join(test_list))
-                        if new_gt_count < old_gt_count:
-                            seq_list = test_list
-                            resolved = True
-                            break
-
-                    if not resolved:
-                        remaining_positions[codon_start] = ["GT:within"]
+                if not resolved:
+                    remaining_positions[codon_start] = ["GT:within"]
 
         if remaining_positions:
             mut_report = self._propose_within_codon_mutagenesis(
-                "".join(seq_list), remaining_positions
+                state.sequence, remaining_positions
             )
         else:
             mut_report = MutagenesisReport()
 
-        return "".join(seq_list), mut_report
+        return state.sequence, mut_report
 
     def _propose_within_codon_mutagenesis(
         self,
@@ -4069,14 +4235,16 @@ class BioOptimizer:
     # Step: Avoid CpG Islands
     # ──────────────────────────────────────────────────────────
     def _step_avoid_cpg_islands(self, seq: str) -> str:
-        """Avoid CpG Islands step: CpG island avoidance by synonymous substitution.
+        """Avoid CpG Islands step (optimized with incremental state).
 
-        Also handles cross-codon CG dinucleotides by two-codon coordination.
-        For cross-codon CG (C at end of one codon, G at start of next),
-        single-codon swaps may fail because the alternative codon still ends
-        with C or starts with G. Coordinated 2-codon swaps resolve this.
+        CpG island avoidance by synonymous substitution. Also handles
+        cross-codon CG dinucleotides by two-codon coordination.
+
+        Uses IncrementalSequenceState for O(1) GT/CG tracking and
+        direct CG position lookup instead of window scanning.
         """
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
         changed = True
         iterations = 0
         max_iterations = 80
@@ -4085,135 +4253,127 @@ class BioOptimizer:
             changed = False
             iterations += 1
 
-            for start in range(0, len(seq_list) - self.cpg_window + 1, 3):
-                window = "".join(seq_list[start:start + self.cpg_window])
-                c_count = window.count("C")
-                g_count = window.count("G")
-                cg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
-                expected = (c_count * g_count) / len(window) if len(window) > 0 else 0
+            for start in range(0, len(state.sequence) - self.cpg_window + 1, 3):
+                window_seq = state.sequence[start:start + self.cpg_window]
+                c_count = window_seq.count("C")
+                g_count = window_seq.count("G")
+                cg_count = sum(1 for i in range(len(window_seq) - 1) if window_seq[i:i+2] == "CG")
+                expected = (c_count * g_count) / len(window_seq) if len(window_seq) > 0 else 0
                 obs_exp = cg_count / expected if expected > 0 else 0.0
 
                 if obs_exp <= self.cpg_threshold:
                     continue
 
                 # Find CG dinucleotides in this window and try to break them
-                for i in range(start, min(start + self.cpg_window - 1, len(seq_list) - 1)):
-                    if seq_list[i] == "C" and seq_list[i+1] == "G":
-                        left_ci = i // 3          # codon containing C
-                        right_ci = (i + 1) // 3   # codon containing G
-                        is_cross_codon = (left_ci != right_ci)
+                # Use incremental state's CG position data for efficiency
+                cg_in_window = [p for p in state.cg_positions_list()
+                               if start <= p < start + self.cpg_window - 1]
 
-                        # Strategy 1: Single-codon swap — try both codons for cross-codon CG
-                        codon_fixed = False
-                        for ci in ([left_ci, right_ci] if is_cross_codon else [left_ci]):
-                            codon_start = ci * 3
-                            if codon_start + 3 > len(seq_list):
+                for i in cg_in_window:
+                    left_ci = i // 3
+                    right_ci = (i + 1) // 3
+                    is_cross_codon = (left_ci != right_ci)
+
+                    # Strategy 1: Single-codon swap
+                    codon_fixed = False
+                    for ci in ([left_ci, right_ci] if is_cross_codon else [left_ci]):
+                        codon = state.get_codon(ci)
+                        aa = state.get_aa(ci)
+                        if aa is None or aa == "*":
+                            continue
+
+                        for alt in codon_cache.get_sorted_codons(aa):
+                            if alt == codon:
                                 continue
-                            codon = "".join(seq_list[codon_start:codon_start + 3])
-                            aa = CODON_TABLE.get(codon)
-                            if aa is None or aa == "*":
+                            if not is_cross_codon and "CG" in alt:
+                                continue
+                            if self.avoid_gt and "GT" in alt:
+                                continue
+                            if codon_cache.get_cai(alt) < self.min_cai:
                                 continue
 
-                            old_gt_count = _count_gts("".join(seq_list))
+                            # O(1) boundary check
+                            left_gt, right_gt = state.boundary_creates_gt(ci, alt)
+                            if left_gt or right_gt:
+                                continue
 
-                            for alt in AA_TO_CODONS.get(aa, []):
-                                if alt == codon:
-                                    continue
-                                # For within-codon CG, skip alternatives that still contain CG
-                                if not is_cross_codon and "CG" in alt:
-                                    continue
-                                if self.avoid_gt and "GT" in alt:
-                                    continue
-                                cai = self.species_cai.get(alt, 0.0)
-                                if cai < self.min_cai:
-                                    continue
-                                # Check cross-codon effects
-                                prev_base = seq_list[codon_start - 1] if codon_start > 0 else ""
-                                next_base = seq_list[codon_start + 3] if codon_start + 3 < len(seq_list) else ""
-                                if prev_base and prev_base + alt[0] == "GT":
-                                    continue
-                                if next_base and alt[-1] + next_base == "GT":
-                                    continue
-                                # Apply and validate globally
-                                test_list = seq_list[:]
-                                for k, b in enumerate(alt):
-                                    test_list[codon_start + k] = b
-                                new_gt_count = _count_gts("".join(test_list))
-                                if new_gt_count <= old_gt_count:
-                                    # Verify the specific CG at position i is gone
-                                    if test_list[i] != "C" or test_list[i+1] != "G":
-                                        seq_list = test_list
-                                        changed = True
-                                        codon_fixed = True
-                                        break
+                            # O(1) GT/CG change check
+                            if self.avoid_gt and state.would_gt_increase(ci, alt):
+                                continue
 
-                            if codon_fixed:
+                            # Apply swap and check the specific CG position is gone
+                            old_codon = state.swap_codon(ci, alt)
+                            if state.sequence[i] != "C" or state.sequence[i+1] != "G":
+                                changed = True
+                                codon_fixed = True
                                 break
+                            else:
+                                state.swap_codon(ci, old_codon)  # Rollback
 
                         if codon_fixed:
                             break
 
-                        # Strategy 2: Coordinated 2-codon swap for cross-codon CG
-                        if is_cross_codon and not codon_fixed:
-                            left_start = left_ci * 3
-                            right_start = right_ci * 3
-                            if left_start + 3 <= len(seq_list) and right_start + 3 <= len(seq_list):
-                                left_codon = "".join(seq_list[left_start:left_start + 3])
-                                right_codon = "".join(seq_list[right_start:right_start + 3])
-                                left_aa = CODON_TABLE.get(left_codon)
-                                right_aa = CODON_TABLE.get(right_codon)
-                                if left_aa and right_aa and left_aa != "*" and right_aa != "*":
-                                    old_gt_count = _count_gts("".join(seq_list))
-                                    for left_alt in AA_TO_CODONS.get(left_aa, []):
-                                        if left_alt == left_codon:
-                                            continue
-                                        if self.avoid_gt and "GT" in left_alt:
-                                            continue
-                                        left_cai = self.species_cai.get(left_alt, 0.0)
-                                        if left_cai < self.min_cai:
-                                            continue
-                                        for right_alt in AA_TO_CODONS.get(right_aa, []):
-                                            if right_alt == right_codon and left_alt == left_codon:
-                                                continue
-                                            # Skip if CG still present at boundary
-                                            if left_alt[-1] == "C" and right_alt[0] == "G":
-                                                continue
-                                            if self.avoid_gt and "GT" in right_alt:
-                                                continue
-                                            right_cai = self.species_cai.get(right_alt, 0.0)
-                                            if right_cai < self.min_cai:
-                                                continue
-                                            # Check cross-codon GT effects for both codons
-                                            prev_base = seq_list[left_start - 1] if left_start > 0 else ""
-                                            if prev_base and prev_base + left_alt[0] == "GT":
-                                                continue
-                                            mid_check = left_alt[-1] + right_alt[0]
-                                            if mid_check == "GT":
-                                                continue
-                                            next_base = seq_list[right_start + 3] if right_start + 3 < len(seq_list) else ""
-                                            if next_base and right_alt[-1] + next_base == "GT":
-                                                continue
-                                            # Apply both codons
-                                            test_list = seq_list[:]
-                                            for k, b in enumerate(left_alt):
-                                                test_list[left_start + k] = b
-                                            for k, b in enumerate(right_alt):
-                                                test_list[right_start + k] = b
-                                            new_gt_count = _count_gts("".join(test_list))
-                                            if new_gt_count <= old_gt_count:
-                                                seq_list = test_list
-                                                changed = True
-                                                codon_fixed = True
-                                                break
-                                        if codon_fixed:
+                    if codon_fixed:
+                        break
+
+                    # Strategy 2: Coordinated 2-codon swap for cross-codon CG
+                    if is_cross_codon and not codon_fixed:
+                        left_codon = state.get_codon(left_ci)
+                        right_codon = state.get_codon(right_ci)
+                        left_aa = state.get_aa(left_ci)
+                        right_aa = state.get_aa(right_ci)
+
+                        if left_aa and right_aa and left_aa != "*" and right_aa != "*":
+                            old_gt_count = state.gt_count
+                            for left_alt in codon_cache.get_sorted_codons(left_aa):
+                                if left_alt == left_codon:
+                                    continue
+                                if self.avoid_gt and "GT" in left_alt:
+                                    continue
+                                if codon_cache.get_cai(left_alt) < self.min_cai:
+                                    continue
+                                for right_alt in codon_cache.get_sorted_codons(right_aa):
+                                    if left_alt[-1] == "C" and right_alt[0] == "G":
+                                        continue
+                                    if self.avoid_gt and "GT" in right_alt:
+                                        continue
+                                    if codon_cache.get_cai(right_alt) < self.min_cai:
+                                        continue
+                                    # Check cross-codon GT effects
+                                    left_gt, _ = state.boundary_creates_gt(left_ci, left_alt)
+                                    if left_gt:
+                                        continue
+                                    if left_alt[-1] + right_alt[0] == "GT":
+                                        continue
+                                    _, right_gt = state.boundary_creates_gt(right_ci, right_alt)
+                                    if right_gt:
+                                        continue
+
+                                    # Apply both swaps and check incrementally
+                                    old_left = state.swap_codon(left_ci, left_alt)
+                                    old_right = state.swap_codon(right_ci, right_alt)
+
+                                    # O(1) GT count check (state.gt_count is updated incrementally)
+                                    if state.gt_count <= old_gt_count:
+                                        # Verify CG at position i is gone
+                                        if state.sequence[i] != "C" or state.sequence[i+1] != "G":
+                                            changed = True
+                                            codon_fixed = True
                                             break
 
-                        if changed:
-                            break
+                                    # Rollback
+                                    state.swap_codon(right_ci, old_right)
+                                    state.swap_codon(left_ci, old_left)
+
+                                if codon_fixed:
+                                    break
+
+                    if changed:
+                        break
                 if changed:
                     break
 
-        return "".join(seq_list)
+        return state.sequence
 
     # Deprecated alias — use _step_avoid_cpg_islands instead
     _phase5_avoid_cpg_islands = _step_avoid_cpg_islands
@@ -4364,12 +4524,38 @@ class BioOptimizer:
         5. Accept CAI loss as necessary — CpG island avoidance is a hard constraint
         6. After CG elimination, re-check GC content and adjust if needed
         7. Iterate until all windows pass or no more progress can be made
+
+        Uses IncrementalSequenceState for O(1) GT/CG tracking and
+        CodonCache for pre-sorted codon lists.
         """
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         max_iterations = 100
 
+        def _check_gt_safe(ci: int, old_had_gt: dict) -> bool:
+            """Check if swap at codon_idx created new avoidable GTs."""
+            cs = ci * 3
+            ce = cs + 3
+            chk_s = max(0, cs - 1)
+            chk_e = min(state._n - 1, ce + 1)
+            for p in range(chk_s, chk_e):
+                if state.has_gt_at(p) and not old_had_gt.get(p, False):
+                    if not _is_unavoidable_gt(state.sequence, p):
+                        return False
+            return True
+
+        def _save_gt_region(ci: int) -> dict:
+            """Save GT state in the region around a codon."""
+            cs = ci * 3
+            ce = cs + 3
+            chk_s = max(0, cs - 1)
+            chk_e = min(state._n - 1, ce + 1)
+            return {p: state.has_gt_at(p) for p in range(chk_s, chk_e)}
+
         for iteration in range(max_iterations):
-            current_seq = "".join(seq_list)
+            current_seq = state.sequence
+            old_cg_count = state.cg_count
 
             # Check if the CpG island predicate passes
             cpg_result = check_no_cpg_island(current_seq, self.cpg_window, self.cpg_threshold)
@@ -4393,255 +4579,214 @@ class BioOptimizer:
             if worst_start < 0 or worst_ratio <= self.cpg_threshold:
                 break
 
-            # Find CG dinucleotides in the worst window and try to eliminate them
+            # Find CG dinucleotides in the worst window using incremental state
             window_end = min(worst_start + self.cpg_window, len(current_seq) - 1)
             fixed = False
 
             # Collect all CG positions in the worst window with their codon info
             cg_targets = []
-            for i in range(worst_start, window_end):
-                if seq_list[i] == "C" and i + 1 < len(seq_list) and seq_list[i + 1] == "G":
-                    # Determine if this is within-codon or cross-codon
-                    c_codon_idx = i // 3
-                    g_codon_idx = (i + 1) // 3
-                    cg_targets.append((i, c_codon_idx, g_codon_idx))
+            for cg_pos in state.cg_positions_list():
+                if worst_start <= cg_pos < window_end:
+                    c_codon_idx = cg_pos // 3
+                    g_codon_idx = (cg_pos + 1) // 3
+                    cg_targets.append((cg_pos, c_codon_idx, g_codon_idx))
 
-            # Sort targets: prioritize within-codon CG first (easier to fix),
-            # then cross-codon CG where the C-ending codon has good alternatives
+            # Sort targets: prioritize within-codon CG first (easier to fix)
             for cg_pos, c_codon_idx, g_codon_idx in cg_targets:
                 if fixed:
                     break
 
                 if c_codon_idx == g_codon_idx:
                     # Within-codon CG — swap the codon to a CG-free alternative
-                    codon_start = c_codon_idx * 3
-                    if codon_start + 3 > len(seq_list):
-                        continue
-                    codon = "".join(seq_list[codon_start:codon_start + 3])
-                    aa = CODON_TABLE.get(codon)
+                    aa = state.get_aa(c_codon_idx)
                     if aa is None or aa == "*":
                         continue
 
-                    for alt in sorted(
-                        AA_TO_CODONS.get(aa, []),
-                        key=lambda c: self.species_cai.get(c, 0.0),
-                        reverse=True,
-                    ):
-                        if alt == codon or "CG" in alt:
+                    for alt in codon_cache.get_cg_free_codons(aa):
+                        current_codon = state.get_codon(c_codon_idx)
+                        if alt == current_codon:
                             continue
-                        # Apply and check cross-codon effects
-                        test_list = seq_list[:]
-                        for k, b in enumerate(alt):
-                            test_list[codon_start + k] = b
-                        test_seq = "".join(test_list)
+                        # Save GT state, apply swap, check constraints
+                        old_had_gt = _save_gt_region(c_codon_idx)
+                        old_codon = state.swap_codon(c_codon_idx, alt)
                         # Must not reintroduce restriction sites
-                        if not self._check_no_restriction_sites(test_seq):
+                        if enzyme_cache is not None and enzyme_cache.check_any_site_present(state.sequence):
+                            state.swap_codon(c_codon_idx, old_codon)
                             continue
                         # Must not create new avoidable GTs
-                        if not self._check_cpg_swap_gt_safe(seq_list, test_list, codon_start):
+                        if not _check_gt_safe(c_codon_idx, old_had_gt):
+                            state.swap_codon(c_codon_idx, old_codon)
                             continue
-                        # Must reduce net CG count
-                        new_cg = sum(1 for i in range(len(test_seq) - 1) if test_seq[i:i+2] == "CG")
-                        old_cg = sum(1 for i in range(len(current_seq) - 1) if current_seq[i:i+2] == "CG")
-                        if new_cg < old_cg:
-                            seq_list = test_list
+                        # Must reduce net CG count (O(1) check)
+                        if state.cg_count < old_cg_count:
                             fixed = True
                             break
+                        else:
+                            state.swap_codon(c_codon_idx, old_codon)  # Rollback
                 else:
                     # Cross-codon CG: codon c_codon_idx ends with C, codon g_codon_idx starts with G
                     # Strategy 1: Swap the C-ending codon to not end with C
-                    c_codon_start = c_codon_idx * 3
-                    if c_codon_start + 3 <= len(seq_list):
-                        c_codon = "".join(seq_list[c_codon_start:c_codon_start + 3])
-                        c_aa = CODON_TABLE.get(c_codon)
-                        if c_aa is not None and c_aa != "*":
-                            # Get non-C-ending alternatives, sorted by CAI
-                            non_c_end_alts = [
-                                alt for alt in AA_TO_CODONS.get(c_aa, [])
-                                if alt != c_codon and alt[-1] != "C"
-                            ]
-                            non_c_end_alts.sort(
-                                key=lambda c: self.species_cai.get(c, 0.0),
-                                reverse=True,
-                            )
-                            for alt in non_c_end_alts:
-                                # Skip if this alt would create a new within-codon CG
-                                if "CG" in alt:
-                                    continue
-                                test_list = seq_list[:]
-                                for k, b in enumerate(alt):
-                                    test_list[c_codon_start + k] = b
-                                test_seq = "".join(test_list)
-                                # Must not reintroduce restriction sites
-                                if not self._check_no_restriction_sites(test_seq):
-                                    continue
-                                # Must not create new avoidable GTs
-                                if not self._check_cpg_swap_gt_safe(seq_list, test_list, c_codon_start):
-                                    continue
-                                # Must reduce net CG count
-                                new_cg = sum(1 for i in range(len(test_seq) - 1) if test_seq[i:i+2] == "CG")
-                                old_cg = sum(1 for i in range(len(current_seq) - 1) if current_seq[i:i+2] == "CG")
-                                if new_cg < old_cg:
-                                    seq_list = test_list
-                                    fixed = True
-                                    break
+                    c_aa = state.get_aa(c_codon_idx)
+                    if c_aa is not None and c_aa != "*":
+                        # Get non-C-ending alternatives from cache, then filter
+                        non_c_end_alts = [
+                            alt for alt in codon_cache.get_sorted_codons(c_aa)
+                            if alt != state.get_codon(c_codon_idx) and alt[-1] != "C" and "CG" not in alt
+                        ]
+                        for alt in non_c_end_alts:
+                            old_had_gt = _save_gt_region(c_codon_idx)
+                            old_codon = state.swap_codon(c_codon_idx, alt)
+                            # Must not reintroduce restriction sites
+                            if enzyme_cache is not None and enzyme_cache.check_any_site_present(state.sequence):
+                                state.swap_codon(c_codon_idx, old_codon)
+                                continue
+                            # Must not create new avoidable GTs
+                            if not _check_gt_safe(c_codon_idx, old_had_gt):
+                                state.swap_codon(c_codon_idx, old_codon)
+                                continue
+                            # Must reduce net CG count (O(1) check)
+                            if state.cg_count < old_cg_count:
+                                fixed = True
+                                break
+                            else:
+                                state.swap_codon(c_codon_idx, old_codon)  # Rollback
 
                     if fixed:
                         break
 
                     # Strategy 2: Swap the G-starting codon to not start with G (if possible)
-                    g_codon_start = g_codon_idx * 3
-                    if g_codon_start + 3 <= len(seq_list):
-                        g_codon = "".join(seq_list[g_codon_start:g_codon_start + 3])
-                        g_aa = CODON_TABLE.get(g_codon)
-                        if g_aa is not None and g_aa != "*":
-                            # Get non-G-starting alternatives, sorted by CAI
-                            non_g_start_alts = [
-                                alt for alt in AA_TO_CODONS.get(g_aa, [])
-                                if alt != g_codon and alt[0] != "G"
-                            ]
-                            non_g_start_alts.sort(
-                                key=lambda c: self.species_cai.get(c, 0.0),
-                                reverse=True,
-                            )
-                            for alt in non_g_start_alts:
-                                if "CG" in alt:
-                                    continue
-                                test_list = seq_list[:]
-                                for k, b in enumerate(alt):
-                                    test_list[g_codon_start + k] = b
-                                test_seq = "".join(test_list)
-                                if not self._check_no_restriction_sites(test_seq):
-                                    continue
-                                if not self._check_cpg_swap_gt_safe(seq_list, test_list, g_codon_start):
-                                    continue
-                                new_cg = sum(1 for i in range(len(test_seq) - 1) if test_seq[i:i+2] == "CG")
-                                old_cg = sum(1 for i in range(len(current_seq) - 1) if current_seq[i:i+2] == "CG")
-                                if new_cg < old_cg:
-                                    seq_list = test_list
-                                    fixed = True
-                                    break
+                    g_aa = state.get_aa(g_codon_idx)
+                    if g_aa is not None and g_aa != "*":
+                        # Get non-G-starting alternatives from cache, then filter
+                        non_g_start_alts = [
+                            alt for alt in codon_cache.get_sorted_codons(g_aa)
+                            if alt != state.get_codon(g_codon_idx) and alt[0] != "G" and "CG" not in alt
+                        ]
+                        for alt in non_g_start_alts:
+                            old_had_gt = _save_gt_region(g_codon_idx)
+                            old_codon = state.swap_codon(g_codon_idx, alt)
+                            # Must not reintroduce restriction sites
+                            if enzyme_cache is not None and enzyme_cache.check_any_site_present(state.sequence):
+                                state.swap_codon(g_codon_idx, old_codon)
+                                continue
+                            # Must not create new avoidable GTs
+                            if not _check_gt_safe(g_codon_idx, old_had_gt):
+                                state.swap_codon(g_codon_idx, old_codon)
+                                continue
+                            # Must reduce net CG count (O(1) check)
+                            if state.cg_count < old_cg_count:
+                                fixed = True
+                                break
+                            else:
+                                state.swap_codon(g_codon_idx, old_codon)  # Rollback
 
                     if fixed:
                         break
 
                     # Strategy 3: Paired swap — change BOTH codons
-                    c_codon_start = c_codon_idx * 3
-                    g_codon_start = g_codon_idx * 3
-                    if (c_codon_start + 3 <= len(seq_list) and
-                            g_codon_start + 3 <= len(seq_list)):
-                        c_codon = "".join(seq_list[c_codon_start:c_codon_start + 3])
-                        g_codon = "".join(seq_list[g_codon_start:g_codon_start + 3])
-                        c_aa = CODON_TABLE.get(c_codon)
-                        g_aa = CODON_TABLE.get(g_codon)
-                        if c_aa is not None and g_aa is not None and c_aa != "*" and g_aa != "*":
-                            c_alts = [
-                                alt for alt in AA_TO_CODONS.get(c_aa, [])
-                                if alt != c_codon and alt[-1] != "C" and "CG" not in alt
-                            ]
-                            g_alts = [
-                                alt for alt in AA_TO_CODONS.get(g_aa, [])
-                                if alt != g_codon and alt[0] != "G" and "CG" not in alt
-                            ]
-                            # Try C-side change first (more likely to have alternatives)
-                            c_alts.sort(key=lambda c: self.species_cai.get(c, 0.0), reverse=True)
-                            g_alts.sort(key=lambda c: self.species_cai.get(c, 0.0), reverse=True)
-                            for c_alt in c_alts[:TOP_CAI_ALTERNATIVES]:
-                                for g_alt in g_alts[:TOP_CAI_ALTERNATIVES]:
-                                    test_list = seq_list[:]
-                                    for k, b in enumerate(c_alt):
-                                        test_list[c_codon_start + k] = b
-                                    for k, b in enumerate(g_alt):
-                                        test_list[g_codon_start + k] = b
-                                    test_seq = "".join(test_list)
-                                    if not self._check_no_restriction_sites(test_seq):
-                                        continue
-                                    if not self._check_cpg_swap_gt_safe(seq_list, test_list, c_codon_start):
-                                        continue
-                                    if not self._check_cpg_swap_gt_safe(seq_list, test_list, g_codon_start):
-                                        continue
-                                    new_cg = sum(1 for i in range(len(test_seq) - 1) if test_seq[i:i+2] == "CG")
-                                    old_cg = sum(1 for i in range(len(current_seq) - 1) if current_seq[i:i+2] == "CG")
-                                    if new_cg < old_cg:
-                                        seq_list = test_list
-                                        fixed = True
-                                        break
-                                if fixed:
+                    c_aa = state.get_aa(c_codon_idx)
+                    g_aa = state.get_aa(g_codon_idx)
+                    if c_aa is not None and g_aa is not None and c_aa != "*" and g_aa != "*":
+                        c_alts = [
+                            alt for alt in codon_cache.get_sorted_codons(c_aa)
+                            if alt != state.get_codon(c_codon_idx) and alt[-1] != "C" and "CG" not in alt
+                        ]
+                        g_alts = [
+                            alt for alt in codon_cache.get_sorted_codons(g_aa)
+                            if alt != state.get_codon(g_codon_idx) and alt[0] != "G" and "CG" not in alt
+                        ]
+                        for c_alt in c_alts[:TOP_CAI_ALTERNATIVES]:
+                            for g_alt in g_alts[:TOP_CAI_ALTERNATIVES]:
+                                # Save GT state for both regions
+                                old_had_gt_c = _save_gt_region(c_codon_idx)
+                                old_had_gt_g = _save_gt_region(g_codon_idx)
+                                # Apply both swaps
+                                old_c = state.swap_codon(c_codon_idx, c_alt)
+                                old_g = state.swap_codon(g_codon_idx, g_alt)
+                                # Must not reintroduce restriction sites
+                                if enzyme_cache is not None and enzyme_cache.check_any_site_present(state.sequence):
+                                    state.swap_codon(g_codon_idx, old_g)
+                                    state.swap_codon(c_codon_idx, old_c)
+                                    continue
+                                # Must not create new avoidable GTs in either region
+                                if not _check_gt_safe(c_codon_idx, old_had_gt_c) or not _check_gt_safe(g_codon_idx, old_had_gt_g):
+                                    state.swap_codon(g_codon_idx, old_g)
+                                    state.swap_codon(c_codon_idx, old_c)
+                                    continue
+                                # Must reduce net CG count (O(1) check)
+                                if state.cg_count < old_cg_count:
+                                    fixed = True
                                     break
+                                else:
+                                    state.swap_codon(g_codon_idx, old_g)  # Rollback
+                                    state.swap_codon(c_codon_idx, old_c)  # Rollback
+                            if fixed:
+                                break
 
             if not fixed:
                 # No progress — try a more aggressive approach:
                 # scan ALL codon positions and replace C-ending codons that
                 # create cross-codon CG, regardless of window
                 aggressive_fixed = False
-                for ci in range(len(seq_list) // 3):
-                    codon_start = ci * 3
-                    if codon_start + 3 > len(seq_list):
-                        break
-                    codon = "".join(seq_list[codon_start:codon_start + 3])
-                    aa = CODON_TABLE.get(codon)
+                for ci in range(state.num_codons):
+                    codon = state.get_codon(ci)
+                    aa = state.get_aa(ci)
                     if aa is None or aa == "*":
                         continue
                     # Check if this codon ends with C and the next starts with G
-                    next_start = codon_start + 3
-                    if next_start >= len(seq_list):
-                        continue
-                    if codon[-1] == "C" and seq_list[next_start] == "G":
-                        # This creates a cross-codon CG — try to fix
-                        non_c_end_alts = [
-                            alt for alt in AA_TO_CODONS.get(aa, [])
-                            if alt != codon and alt[-1] != "C" and "CG" not in alt
-                        ]
-                        non_c_end_alts.sort(
-                            key=lambda c: self.species_cai.get(c, 0.0),
-                            reverse=True,
-                        )
-                        for alt in non_c_end_alts:
-                            test_list = seq_list[:]
-                            for k, b in enumerate(alt):
-                                test_list[codon_start + k] = b
-                            test_seq = "".join(test_list)
-                            if not self._check_no_restriction_sites(test_seq):
-                                continue
-                            if not self._check_cpg_swap_gt_safe(seq_list, test_list, codon_start):
-                                continue
-                            new_cg = sum(1 for i in range(len(test_seq) - 1) if test_seq[i:i+2] == "CG")
-                            old_cg = sum(1 for i in range(len("".join(seq_list)) - 1) if "".join(seq_list)[i:i+2] == "CG")
-                            if new_cg < old_cg:
-                                seq_list = test_list
-                                aggressive_fixed = True
-                                break
-                    elif "CG" in codon:
+                    next_ci = ci + 1
+                    if next_ci < state.num_codons:
+                        next_codon = state.get_codon(next_ci)
+                        if codon[-1] == "C" and next_codon[0] == "G":
+                            # This creates a cross-codon CG — try to fix
+                            non_c_end_alts = [
+                                alt for alt in codon_cache.get_sorted_codons(aa)
+                                if alt != codon and alt[-1] != "C" and "CG" not in alt
+                            ]
+                            for alt in non_c_end_alts:
+                                old_had_gt = _save_gt_region(ci)
+                                old_codon = state.swap_codon(ci, alt)
+                                if enzyme_cache is not None and enzyme_cache.check_any_site_present(state.sequence):
+                                    state.swap_codon(ci, old_codon)
+                                    continue
+                                if not _check_gt_safe(ci, old_had_gt):
+                                    state.swap_codon(ci, old_codon)
+                                    continue
+                                # O(1) CG count check
+                                if state.cg_count < old_cg_count:
+                                    aggressive_fixed = True
+                                    break
+                                else:
+                                    state.swap_codon(ci, old_codon)  # Rollback
+
+                    if not aggressive_fixed and "CG" in codon:
                         # Within-codon CG — try to fix
-                        non_cg_alts = [
-                            alt for alt in AA_TO_CODONS.get(aa, [])
-                            if alt != codon and "CG" not in alt
-                        ]
-                        non_cg_alts.sort(
-                            key=lambda c: self.species_cai.get(c, 0.0),
-                            reverse=True,
-                        )
-                        for alt in non_cg_alts:
-                            test_list = seq_list[:]
-                            for k, b in enumerate(alt):
-                                test_list[codon_start + k] = b
-                            test_seq = "".join(test_list)
-                            if not self._check_no_restriction_sites(test_seq):
+                        for alt in codon_cache.get_cg_free_codons(aa):
+                            if alt == codon:
                                 continue
-                            if not self._check_cpg_swap_gt_safe(seq_list, test_list, codon_start):
+                            old_had_gt = _save_gt_region(ci)
+                            old_codon = state.swap_codon(ci, alt)
+                            if enzyme_cache is not None and enzyme_cache.check_any_site_present(state.sequence):
+                                state.swap_codon(ci, old_codon)
                                 continue
-                            new_cg = sum(1 for i in range(len(test_seq) - 1) if test_seq[i:i+2] == "CG")
-                            old_cg = sum(1 for i in range(len("".join(seq_list)) - 1) if "".join(seq_list)[i:i+2] == "CG")
-                            if new_cg < old_cg:
-                                seq_list = test_list
+                            if not _check_gt_safe(ci, old_had_gt):
+                                state.swap_codon(ci, old_codon)
+                                continue
+                            # O(1) CG count check
+                            if state.cg_count < old_cg_count:
                                 aggressive_fixed = True
                                 break
+                            else:
+                                state.swap_codon(ci, old_codon)  # Rollback
+
+                    if aggressive_fixed:
+                        break
 
                 if not aggressive_fixed:
                     break  # Truly no more progress possible
 
         # After CpG reconciliation, re-check GC content and adjust if needed
-        result_seq = "".join(seq_list)
+        result_seq = state.sequence
         gc_val = (result_seq.count("G") + result_seq.count("C")) / max(len(result_seq), 1)
         if not (0.30 <= gc_val <= 0.70):
             # GC drifted — adjust with single-codon swaps that don't reintroduce CGs
@@ -4754,8 +4899,13 @@ class BioOptimizer:
     # Step: Cross-Codon Coordination
     # ──────────────────────────────────────────────────────────
     def _step_cross_codon_coordination(self, seq: str) -> str:
-        """Cross-Codon Coordination step: resolve cross-codon GT, CG, and restriction
-        site violations by considering ALL synonymous codon pairs at each boundary.
+        """Cross-Codon Coordination step (optimized with incremental state).
+
+        Resolve cross-codon GT, CG, and restriction site violations by
+        considering ALL synonymous codon pairs at each boundary.
+
+        Uses IncrementalSequenceState for O(1) GT/CG tracking and
+        CodonCache for pre-sorted codon lists.
 
         Unlike the earlier Cross-Codon Optimization step which handles violations
         one at a time with limited search, this phase performs an exhaustive
@@ -4771,145 +4921,159 @@ class BioOptimizer:
         are the primary cause of predicate failures for sequences like HBB —
         are fully resolved before the hill climber locks in codon choices.
         """
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         max_iterations = 50
 
+        # Record the initial avoidable GT count for comparison
+        initial_gt_count = state.gt_count if self.avoid_gt else 0
+
         for iteration in range(max_iterations):
-            current_seq = seq
-            violations = self._find_cross_codon_violations(current_seq)
+            # Find cross-codon violations using incremental position data
+            violations = []
+
+            # GT violations at cross-codon boundaries
+            for gt_pos in state.gt_positions_list():
+                codon_idx = gt_pos // 3
+                next_codon_idx = codon_idx + 1
+                # Cross-codon GT: position is at the boundary between codons
+                # gt_pos is at the last base of one codon, gt_pos+1 is the first of the next
+                if gt_pos % 3 == 2 and next_codon_idx < state.num_codons:
+                    if not _is_unavoidable_gt(state.sequence, gt_pos):
+                        violations.append({"type": "GT", "boundary": gt_pos})
+
+            # CG violations at cross-codon boundaries
+            for cg_pos in state.cg_positions_list():
+                if cg_pos % 3 == 2:
+                    codon_idx = cg_pos // 3
+                    next_codon_idx = codon_idx + 1
+                    if next_codon_idx < state.num_codons:
+                        violations.append({"type": "CG", "boundary": cg_pos})
 
             if not violations:
-                break  # All cross-codon violations resolved
+                break
 
-            # Sort violations: prioritize by type (GT > CG > RS) then by
-            # leftmost position so we fix earlier boundaries first.
+            # Sort: GT first, then CG, then by position
             type_priority = {"GT": 0, "CG": 1}
             violations.sort(key=lambda v: (type_priority.get(v["type"], 2), v["boundary"]))
 
             fixed_any = False
 
             for violation in violations:
-                boundary = violation["boundary"]  # Position of the last base of codon_i
+                boundary = violation["boundary"]
                 vtype = violation["type"]
 
-                # The two adjacent codons
-                left_codon_start = boundary - 2  # boundary is at position left_codon_start + 2
+                left_codon_start = boundary - 2
                 right_codon_start = boundary + 1
 
-                if left_codon_start < 0 or right_codon_start + 3 > len(current_seq):
+                if left_codon_start < 0 or right_codon_start + 3 > len(state.sequence):
                     continue
 
-                left_codon = current_seq[left_codon_start:left_codon_start + 3]
-                right_codon = current_seq[right_codon_start:right_codon_start + 3]
+                left_ci = left_codon_start // 3
+                right_ci = right_codon_start // 3
 
-                left_aa = CODON_TABLE.get(left_codon)
-                right_aa = CODON_TABLE.get(right_codon)
+                left_aa = state.get_aa(left_ci)
+                right_aa = state.get_aa(right_ci)
 
                 if left_aa is None or left_aa == "*" or right_aa is None or right_aa == "*":
                     continue
-
-                # Check if this boundary still has a violation in current seq
-                if not self._boundary_has_violation(current_seq, boundary, vtype, violation):
-                    continue
-
-                # Enumerate ALL synonymous codon pairs for the two adjacent AAs
-                left_codons = AA_TO_CODONS.get(left_aa, [left_codon])
-                right_codons = AA_TO_CODONS.get(right_aa, [right_codon])
 
                 # Find the best pair that eliminates the violation and maximizes CAI
                 best_pair = None
                 best_cai = -1.0
 
-                for c_left in left_codons:
-                    for c_right in right_codons:
+                for c_left in codon_cache.get_sorted_codons(left_aa):
+                    for c_right in codon_cache.get_sorted_codons(right_aa):
                         # Check that this pair eliminates the specific violation
-                        if not self._pair_resolves_violation(
-                            c_left, c_right, left_codon_start, right_codon_start,
-                            seq, boundary, vtype, violation
-                        ):
+                        if vtype == "GT" and c_left[-1] + c_right[0] == "GT":
+                            continue
+                        if vtype == "CG" and c_left[-1] + c_right[0] == "CG":
+                            continue
+                        # Check within-codon violations
+                        if vtype == "GT" and ("GT" in c_left or "GT" in c_right):
+                            continue
+                        if vtype == "CG" and ("CG" in c_left or "CG" in c_right):
                             continue
 
-                        # Compute the CAI contribution of this pair
-                        pair_cai = (
-                            self.species_cai.get(c_left, 0.0)
-                            + self.species_cai.get(c_right, 0.0)
-                        )
+                        # Compute CAI contribution
+                        pair_cai = codon_cache.get_cai(c_left) + codon_cache.get_cai(c_right)
+                        if pair_cai <= best_cai:
+                            continue
 
-                        # Verify the pair doesn't introduce new cross-codon violations
-                        # at adjacent boundaries
-                        test_seq = (
-                            seq[:left_codon_start]
-                            + c_left
-                            + c_right
-                            + seq[right_codon_start + 3:]
-                        )
+                        # Record GT count before trial swap
+                        gt_before = state.gt_count
 
-                        # Check that we haven't introduced new GTs at the boundaries
-                        # of the swapped region (left boundary of c_left and right
-                        # boundary of c_right)
+                        # Try the swap and check adjacent boundaries
+                        old_left = state.swap_codon(left_ci, c_left)
+                        old_right = state.swap_codon(right_ci, c_right)
+
+                        # Check that we haven't introduced new GTs at adjacent boundaries
                         new_violations = False
 
                         # Left boundary of c_left with previous codon
-                        if left_codon_start >= 3:
-                            prev_base = test_seq[left_codon_start - 1]
-                            if prev_base + c_left[0] == "GT":
-                                if not _is_unavoidable_gt(test_seq, left_codon_start - 1):
-                                    new_violations = True
-                            if prev_base + c_left[0] == "CG":
+                        if left_ci > 0:
+                            left_gt, _ = state.boundary_creates_gt(left_ci, c_left)
+                            if left_gt and not _is_unavoidable_gt(state.sequence, left_codon_start - 1):
                                 new_violations = True
 
                         # Right boundary of c_right with next codon
-                        if right_codon_start + 3 < len(test_seq) - 1:
-                            next_base = test_seq[right_codon_start + 3]
-                            if c_right[-1] + next_base == "GT":
-                                if not _is_unavoidable_gt(test_seq, right_codon_start + 2):
-                                    new_violations = True
-                            if c_right[-1] + next_base == "CG":
+                        if not new_violations and right_ci + 1 < state.num_codons:
+                            _, right_gt = state.boundary_creates_gt(right_ci, c_right)
+                            if right_gt and not _is_unavoidable_gt(state.sequence, right_codon_start + 2):
+                                new_violations = True
+
+                        # Check for new CG violations at adjacent boundaries
+                        if not new_violations and left_ci > 0:
+                            left_cg, _ = state.boundary_creates_cg(left_ci, c_left)
+                            if left_cg:
+                                new_violations = True
+
+                        if not new_violations and right_ci + 1 < state.num_codons:
+                            _, right_cg = state.boundary_creates_cg(right_ci, c_right)
+                            if right_cg:
                                 new_violations = True
 
                         # Check that we haven't introduced new restriction sites
-                        from .restriction_sites import get_recognition_site
-                        rs_ok = True
-                        for enzyme in self.enzymes:
-                            rs_site = get_recognition_site(enzyme)
-                            if rs_site and rs_site in test_seq:
-                                rs_ok = False
-                                break
-                        if not rs_ok:
-                            new_violations = True
-
-                        # Check that GT count hasn't increased for avoidable GTs
-                        if self.avoid_gt:
-                            old_avoidable = sum(
-                                1 for i in range(len(seq) - 1)
-                                if seq[i:i+2] == "GT" and not _is_unavoidable_gt(seq, i)
-                            )
-                            new_avoidable = sum(
-                                1 for i in range(len(test_seq) - 1)
-                                if test_seq[i:i+2] == "GT" and not _is_unavoidable_gt(test_seq, i)
-                            )
-                            if new_avoidable > old_avoidable:
+                        if not new_violations and enzyme_cache is not None:
+                            if enzyme_cache.check_any_site_present(state.sequence):
                                 new_violations = True
 
-                        if not new_violations and pair_cai > best_cai:
-                            best_cai = pair_cai
+                        # Check that avoidable GT count hasn't increased
+                        if not new_violations and self.avoid_gt:
+                            if state.gt_count > gt_before:
+                                # The swap increased the total GT count; check if
+                                # any new GTs are avoidable
+                                current_seq = state.sequence
+                                new_avoidable = sum(
+                                    1 for p in state.gt_positions_list()
+                                    if not _is_unavoidable_gt(current_seq, p)
+                                )
+                                if new_avoidable > initial_gt_count:
+                                    new_violations = True
+
+                        if not new_violations:
                             best_pair = (c_left, c_right)
+                            best_cai = pair_cai
+
+                        # Rollback
+                        state.swap_codon(right_ci, old_right)
+                        state.swap_codon(left_ci, old_left)
 
                 if best_pair is not None:
-                    c_left, c_right = best_pair
-                    seq = (
-                        seq[:left_codon_start]
-                        + c_left
-                        + c_right
-                        + seq[right_codon_start + 3:]
-                    )
-                    current_seq = seq
+                    # Apply the best pair for this violation
+                    state.swap_codon(left_ci, best_pair[0])
+                    state.swap_codon(right_ci, best_pair[1])
                     fixed_any = True
                     break  # Re-scan from scratch after each fix
 
             if not fixed_any:
-                break  # No progress — stop iterating
+                break
 
-        return seq
+        return state.sequence
+
+    # Deprecated alias — use _step_cross_codon_coordination instead
+    _phase4_cross_codon_coordination = _step_cross_codon_coordination
 
     def _find_cross_codon_violations(self, seq: str) -> list:
         """Find all cross-codon violations in the sequence.
@@ -5033,32 +5197,36 @@ class BioOptimizer:
 
         Key insight: hard constraints (no cryptic splice, no restriction sites) are
         satisfied FIRST, then CAI is maximized SUBJECT to those constraints.
+
+        Uses IncrementalSequenceState for O(1) GT/CG tracking and
+        CodonCache for pre-sorted codon lists.
         """
         import math
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         max_iterations = 30
 
         for iteration in range(max_iterations):
-            current_seq = "".join(seq_list)
+            current_seq = state.sequence
             any_upgrade = False
 
             # 1. Collect positions where CAI is low, with improvement potential
             low_cai_positions = []
-            for i in range(0, len(seq_list) - 2, 3):
-                codon = "".join(seq_list[i:i+3])
-                aa = CODON_TABLE.get(codon)
+            for codon_idx in range(state.num_codons):
+                codon = state.get_codon(codon_idx)
+                aa = state.get_aa(codon_idx)
                 if aa is None or aa == "*":
                     continue
-                current_cai = self.species_cai.get(codon, 0.0)
+                current_cai = codon_cache.get_cai(codon)
                 if current_cai >= self.min_cai:
                     continue  # Already above threshold
                 # Compute best possible CAI for this AA
-                best_possible = max(
-                    self.species_cai.get(c, 0.0) for c in AA_TO_CODONS.get(aa, [codon])
-                )
+                best_possible = codon_cache.get_cai(codon_cache.get_best_codon(aa))
                 improvement = best_possible - current_cai
                 if improvement > 0:
-                    low_cai_positions.append((i, codon, aa, current_cai, best_possible, improvement))
+                    pos = codon_idx * 3
+                    low_cai_positions.append((pos, codon, aa, current_cai, best_possible, improvement))
 
             if not low_cai_positions:
                 break
@@ -5069,41 +5237,42 @@ class BioOptimizer:
 
             # 3. Try to upgrade each position
             for pos, codon, aa, current_cai, best_possible, improvement in low_cai_positions:
-                # Get synonymous codons sorted by CAI (highest first)
-                candidates = sorted(
-                    AA_TO_CODONS.get(aa, []),
-                    key=lambda c: self.species_cai.get(c, 0.0),
-                    reverse=True,
-                )
+                codon_idx = pos // 3
+                # Get synonymous codons sorted by CAI (highest first) from cache
+                candidates = codon_cache.get_sorted_codons(aa)
 
                 upgraded = False
                 for alt in candidates:
-                    alt_cai = self.species_cai.get(alt, 0.0)
+                    alt_cai = codon_cache.get_cai(alt)
                     if alt_cai <= current_cai:
-                        break  # No improvement possible
+                        break  # No improvement possible (candidates are sorted)
 
-                    # Build test sequence
-                    test_list = seq_list[:]
-                    for k, b in enumerate(alt):
-                        test_list[pos + k] = b
-                    test_seq = "".join(test_list)
+                    # O(1) swap + check + rollback pattern
+                    old_codon = state.swap_codon(codon_idx, alt)
+                    test_seq = state.sequence
 
                     # Check hard constraints
                     if not self._cai_recon_check_constraints(current_seq, test_seq, pos):
                         # Direct upgrade fails — try paired codon swap
-                        paired = self._cai_recon_try_paired(seq_list, pos, alt)
-                        if paired is not None:
-                            # Verify the paired swap satisfies constraints
-                            paired_seq = "".join(paired)
-                            if self._cai_recon_check_global_constraints(paired_seq):
-                                seq_list[:] = paired
+                        # State already has the main swap applied; try adjacent swaps
+                        paired_ok, adj_rollback = self._cai_recon_try_paired_state(
+                            state, codon_idx, alt, codon_cache, enzyme_cache
+                        )
+                        if paired_ok:
+                            # Verify the paired swap satisfies global constraints
+                            if self._cai_recon_check_global_constraints(state.sequence):
                                 any_upgrade = True
                                 upgraded = True
                                 break
+                            else:
+                                # Rollback the adjacent swap first, then main swap
+                                if adj_rollback is not None:
+                                    state.swap_codon(adj_rollback[0], adj_rollback[1])
+                        # Rollback the main swap
+                        state.swap_codon(codon_idx, old_codon)
                         continue
 
-                    # Safe upgrade
-                    seq_list[:] = test_list
+                    # Safe upgrade (already applied via swap_codon)
                     any_upgrade = True
                     upgraded = True
                     break
@@ -5114,7 +5283,7 @@ class BioOptimizer:
             if not any_upgrade:
                 break
 
-        return "".join(seq_list)
+        return state.sequence
 
     def _cai_recon_check_constraints(self, old_seq: str, test_seq: str, codon_pos: int) -> bool:
         """Check that a codon swap doesn't violate any hard constraints.
@@ -5247,6 +5416,76 @@ class BioOptimizer:
 
         return None
 
+    def _cai_recon_try_paired_state(
+        self, state: IncrementalSequenceState, codon_idx: int,
+        new_codon: str, codon_cache: CodonCache,
+        enzyme_cache: Optional[EnzymeSiteCache],
+    ) -> Tuple[bool, Optional[Tuple[int, str]]]:
+        """Try a paired codon swap to enable a CAI upgrade (incremental version).
+
+        The main codon at codon_idx is already swapped to new_codon in state.
+        Try adjusting an adjacent codon to resolve GT conflicts.
+
+        Returns (success, adj_rollback) where adj_rollback is (adj_idx, old_adj_codon)
+        if a paired swap was applied and needs to be tracked for potential rollback.
+        If success=False, the adjacent swap (if any) has already been rolled back;
+        only the main swap needs rolling back by the caller.
+        """
+        new_end = new_codon[-1]
+        next_idx = codon_idx + 1
+
+        # Check if new codon creates GT with the next codon
+        if next_idx < state.num_codons:
+            next_codon = state.get_codon(next_idx)
+            next_aa = state.get_aa(next_idx)
+            if new_end + next_codon[0] == "GT" and next_aa is not None and next_aa != "*":
+                old_gt_count = state.gt_count
+                for alt2 in codon_cache.get_sorted_codons(next_aa):
+                    if new_end + alt2[0] == "GT":
+                        continue
+                    # O(1) swap + O(1) GT count check + rollback
+                    old_adj = state.swap_codon(next_idx, alt2)
+                    if state.gt_count <= old_gt_count:
+                        # Check restriction sites
+                        rs_ok = (not enzyme_cache.check_any_site_present(state.sequence)
+                                 if enzyme_cache else True)
+                        if rs_ok:
+                            return (True, (next_idx, old_adj))
+                    state.swap_codon(next_idx, old_adj)  # Rollback adjacent
+
+        # Check if new codon creates GT with the previous codon
+        prev_idx = codon_idx - 1
+        if prev_idx >= 0:
+            prev_codon = state.get_codon(prev_idx)
+            prev_aa = state.get_aa(prev_idx)
+            if prev_codon[-1] + new_codon[0] == "GT" and prev_aa is not None and prev_aa != "*":
+                old_gt_count = state.gt_count
+                for alt0 in codon_cache.get_sorted_codons(prev_aa):
+                    if alt0[-1] + new_codon[0] == "GT":
+                        continue
+                    old_adj = state.swap_codon(prev_idx, alt0)
+                    if state.gt_count <= old_gt_count:
+                        rs_ok = (not enzyme_cache.check_any_site_present(state.sequence)
+                                 if enzyme_cache else True)
+                        if rs_ok:
+                            return (True, (prev_idx, old_adj))
+                    state.swap_codon(prev_idx, old_adj)  # Rollback adjacent
+
+        return (False, None)
+
+    def _cai_recon_rollback_paired(
+        self, state: IncrementalSequenceState, codon_idx: int, old_codon: str,
+    ) -> None:
+        """Rollback a failed paired swap in _step_cai_reconciliation.
+
+        This is called when a paired swap passes local constraints but fails
+        global constraints. It rolls back the main codon swap.
+        Note: the adjacent swap should have already been rolled back by
+        _cai_recon_try_paired_state when it returned False, or should be
+        handled separately when it returned True but global check failed.
+        """
+        state.swap_codon(codon_idx, old_codon)
+
     # ──────────────────────────────────────────────────────────
     # Step: GT Reconciliation (fix avoidable GTs introduced by ATTTA removal)
     # ──────────────────────────────────────────────────────────
@@ -5257,64 +5496,85 @@ class BioOptimizer:
         Strategy: For each avoidable GT, try synonymous codon swaps that
         eliminate the GT without reintroducing ATTTA, CpG islands, or
         restriction sites.
+
+        Uses IncrementalSequenceState for O(1) GT tracking and
+        CodonCache for pre-sorted codon lists.
         """
-        from .type_system import check_no_avoidable_gt as _check_gt
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
+        initial_cg_count = state.cg_count  # Track initial CG count for cheap CpG check
+
+        def _get_avoidable_gt_positions():
+            """Get avoidable GT positions from incremental state (O(K) where K = num GTs)."""
+            return [p for p in state.gt_positions_list()
+                    if not _is_unavoidable_gt(state.sequence, p)]
 
         for iteration in range(50):
-            gt_result = _check_gt(seq)
-            if gt_result.passed:
-                break
-
-            avoidable_positions = gt_result.positions
+            avoidable_positions = _get_avoidable_gt_positions()
             if not avoidable_positions:
                 break
 
+            n_avoidable = len(avoidable_positions)
             fixed = False
             for pos in avoidable_positions:
-                n_codons = len(seq) // 3
+                n_codons = state.num_codons
                 # Try codons overlapping the GT
                 for offset in [0, 1]:
                     ci = (pos + offset) // 3
                     if ci < 0 or ci >= n_codons:
                         continue
-                    codon = seq[ci*3:ci*3+3]
-                    aa = CODON_TABLE.get(codon, "")
+                    aa = state.get_aa(ci)
                     if not aa or aa == "*":
                         continue
-                    current = codon
+                    current = state.get_codon(ci)
                     # Try GT-free alternatives first, then all alternatives sorted by CAI
-                    gt_free = [c for c in AA_TO_CODONS.get(aa, []) if "GT" not in c and c != current]
-                    other_alts = sorted(
-                        [c for c in AA_TO_CODONS.get(aa, []) if "GT" in c and c != current],
-                        key=lambda c: self.species_cai.get(c, 0.0),
-                        reverse=True,
-                    )
+                    gt_free = [c for c in codon_cache.get_gt_free_codons(aa) if c != current]
+                    other_alts = [
+                        c for c in codon_cache.get_sorted_codons(aa)
+                        if "GT" in c and c != current
+                    ]
                     alternatives = gt_free + other_alts
 
                     for alt in alternatives:
-                        test = seq[:ci*3] + alt + seq[ci*3+3:]
-                        # Check GT improved
-                        new_gt = _check_gt(test)
-                        if new_gt.passed or len(new_gt.positions) < len(avoidable_positions):
-                            # Check no ATTTA reintroduced
-                            if "ATTTA" in test:
+                        # O(1) predictive boundary check before swap
+                        if self.avoid_gt:
+                            left_gt, right_gt = state.boundary_creates_gt(ci, alt)
+                            if left_gt or right_gt:
                                 continue
-                            # Check no new restriction sites
-                            from .restriction_sites import get_recognition_site as _get_site
-                            rs_ok = all(
-                                not (_s := _get_site(enz)) or _s not in test
-                                for enz in self.enzymes
-                            )
-                            if not rs_ok:
+                        # O(1) swap + check + rollback
+                        old_codon = state.swap_codon(ci, alt)
+                        # Quick check: did GT count actually decrease? O(1)
+                        if state.gt_count >= n_avoidable + (n_avoidable - len(avoidable_positions)):
+                            # More precise: count avoidable GTs
+                            new_avoidable = _get_avoidable_gt_positions()
+                            if len(new_avoidable) >= n_avoidable:
+                                state.swap_codon(ci, old_codon)
                                 continue
-                            # Check no CpG island created
-                            from .type_system import check_no_cpg_island as _check_cpg
-                            cpg_result = _check_cpg(test)
+                        else:
+                            new_avoidable = _get_avoidable_gt_positions()
+                            if len(new_avoidable) >= n_avoidable:
+                                state.swap_codon(ci, old_codon)
+                                continue
+                        # Check no ATTTA reintroduced
+                        if "ATTTA" in state.sequence:
+                            state.swap_codon(ci, old_codon)
+                            continue
+                        # Check no new restriction sites (O(E*L) with cache)
+                        rs_ok = (not enzyme_cache.check_any_site_present(state.sequence)
+                                 if enzyme_cache else True)
+                        if not rs_ok:
+                            state.swap_codon(ci, old_codon)
+                            continue
+                        # Quick CG check: only do expensive CpG island check if CG count increased
+                        if state.cg_count > initial_cg_count:
+                            # Full CpG island check only if CG actually increased
+                            cpg_result = check_no_cpg_island(state.sequence, self.cpg_window, self.cpg_threshold)
                             if not cpg_result.passed:
+                                state.swap_codon(ci, old_codon)
                                 continue
-                            seq = test
-                            fixed = True
-                            break
+                        fixed = True
+                        break
                     if fixed:
                         break
                 if fixed:
@@ -5327,45 +5587,48 @@ class BioOptimizer:
                     right_ci = (pos + 1) // 3
                     if left_ci == right_ci or left_ci < 0 or right_ci < 0:
                         continue
-                    n_codons = len(seq) // 3
+                    n_codons = state.num_codons
                     if left_ci >= n_codons or right_ci >= n_codons:
                         continue
 
-                    left_aa = CODON_TABLE.get(seq[left_ci*3:left_ci*3+3], "")
-                    right_aa = CODON_TABLE.get(seq[right_ci*3:right_ci*3+3], "")
+                    left_aa = state.get_aa(left_ci)
+                    right_aa = state.get_aa(right_ci)
                     if not left_aa or not right_aa or left_aa == "*" or right_aa == "*":
                         continue
 
-                    left_alts = AA_TO_CODONS.get(left_aa, [])
-                    right_alts = AA_TO_CODONS.get(right_aa, [])
-
-                    for left_alt in left_alts:
-                        for right_alt in right_alts:
+                    for left_alt in codon_cache.get_sorted_codons(left_aa):
+                        for right_alt in codon_cache.get_sorted_codons(right_aa):
                             # Skip if GT still at boundary
                             if left_alt[-1] == "G" and right_alt[0] == "T":
                                 continue
-                            test_list = list(seq)
-                            test_list[left_ci*3:left_ci*3+3] = list(left_alt)
-                            test_list[right_ci*3:right_ci*3+3] = list(right_alt)
-                            test = "".join(test_list)
+                            # O(1) paired swap + check + rollback
+                            old_left = state.swap_codon(left_ci, left_alt)
+                            old_right = state.swap_codon(right_ci, right_alt)
 
-                            if "ATTTA" in test:
+                            if "ATTTA" in state.sequence:
+                                state.swap_codon(right_ci, old_right)
+                                state.swap_codon(left_ci, old_left)
                                 continue
-                            new_gt = _check_gt(test)
-                            if not new_gt.passed and len(new_gt.positions) >= len(avoidable_positions):
+                            # Check GT improved
+                            new_avoidable = _get_avoidable_gt_positions()
+                            if len(new_avoidable) >= n_avoidable:
+                                state.swap_codon(right_ci, old_right)
+                                state.swap_codon(left_ci, old_left)
                                 continue
                             # Check RS and CpG
-                            from .restriction_sites import get_recognition_site as _get_site
-                            rs_ok = all(
-                                not (_s := _get_site(enz)) or _s not in test
-                                for enz in self.enzymes
-                            )
+                            rs_ok = (not enzyme_cache.check_any_site_present(state.sequence)
+                                     if enzyme_cache else True)
                             if not rs_ok:
+                                state.swap_codon(right_ci, old_right)
+                                state.swap_codon(left_ci, old_left)
                                 continue
-                            from .type_system import check_no_cpg_island as _check_cpg
-                            if not _check_cpg(test).passed:
-                                continue
-                            seq = test
+                            # Quick CG check: only expensive CpG island check if CG increased
+                            if state.cg_count > initial_cg_count:
+                                cpg_result = check_no_cpg_island(state.sequence, self.cpg_window, self.cpg_threshold)
+                                if not cpg_result.passed:
+                                    state.swap_codon(right_ci, old_right)
+                                    state.swap_codon(left_ci, old_left)
+                                    continue
                             fixed = True
                             break
                         if fixed:
@@ -5375,106 +5638,106 @@ class BioOptimizer:
                 if not fixed:
                     break
 
-        return seq
+        return state.sequence
 
     # ──────────────────────────────────────────────────────────
     # Step: CAI Hill Climb
     # ──────────────────────────────────────────────────────────
     def _step_cai_hill_climb(self, seq: str) -> str:
-        """CAI Hill Climb step: CAI hill climbing.
+        """CAI Hill Climb step: CAI hill climbing (optimized with incremental state).
 
         For each codon position, try upgrading to a higher-CAI synonym
         if it doesn't introduce new constraint violations (GT, RS, etc.).
         This is the key step that recovers CAI lost during constraint fixing.
 
-        Also tries paired codon swaps: when upgrading one codon would create
-        a cross-codon GT, simultaneously adjust the adjacent codon to avoid it.
+        Uses IncrementalSequenceState for O(1) GT/CG tracking instead of
+        O(N) full-sequence rescans, and CodonCache for pre-sorted codon lists.
         """
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         max_iterations = 15
 
         for iteration in range(max_iterations):
             any_upgrade = False
 
-            for i in range(0, len(seq_list) - 2, 3):
-                codon = "".join(seq_list[i:i+3])
-                aa = CODON_TABLE.get(codon)
+            for codon_idx in range(state.num_codons):
+                codon = state.get_codon(codon_idx)
+                aa = state.get_aa(codon_idx)
                 if aa is None or aa == "*":
                     continue
 
-                current_cai = self.species_cai.get(codon, 0.0)
+                current_cai = codon_cache.get_cai(codon)
 
-                # Get all synonymous codons sorted by CAI (highest first)
-                candidates = sorted(
-                    AA_TO_CODONS.get(aa, []),
-                    key=lambda c: self.species_cai.get(c, 0.0),
-                    reverse=True,
-                )
+                # Get synonymous codons sorted by CAI (highest first) — from cache
+                candidates = codon_cache.get_sorted_codons(aa)
 
                 for alt in candidates:
-                    alt_cai = self.species_cai.get(alt, 0.0)
+                    alt_cai = codon_cache.get_cai(alt)
                     if alt_cai <= current_cai:
-                        break  # No improvement possible
+                        break  # No improvement possible (candidates are sorted)
 
-                    # Check if this substitution is safe
-                    test_list = seq_list[:]
-                    for k, b in enumerate(alt):
-                        test_list[i + k] = b
-                    test_seq = "".join(test_list)
-
-                    # Check GT constraint - allow unavoidable GTs
-                    if self.avoid_gt:
-                        old_gt_count = _count_gts("".join(seq_list))
-                        new_gt_count = _count_gts(test_seq)
-                        if new_gt_count > old_gt_count:
-                            # Check if the new GTs are all unavoidable
-                            all_new_unavoidable = True
-                            old_seq_str = "".join(seq_list)
-                            for gi in range(len(test_seq) - 1):
-                                if test_seq[gi:gi+2] == "GT" and old_seq_str[gi:gi+2] != "GT":
-                                    if not _is_unavoidable_gt(test_seq, gi):
-                                        all_new_unavoidable = False
-                                        break
-                            if not all_new_unavoidable:
+                    # Quick O(1) boundary check: would this swap increase GT count?
+                    if self.avoid_gt and state.would_gt_increase(codon_idx, alt):
+                        # Check if ALL new GTs are unavoidable
+                        new_gt_positions = state.new_gt_positions_after_swap(codon_idx, alt)
+                        if new_gt_positions:
+                            # Need to check against the sequence with the swap applied
+                            # Temporarily swap to get the full sequence for _is_unavoidable_gt
+                            old_codon = state.swap_codon(codon_idx, alt)
+                            full_seq = state.sequence
+                            all_unavoidable = all(
+                                _is_unavoidable_gt(full_seq, pos) for pos in new_gt_positions
+                            )
+                            if not all_unavoidable:
                                 # Try paired codon swap to fix the new avoidable cross-codon GT
-                                if new_gt_count == old_gt_count + 1:
-                                    paired = self._try_paired_cai_upgrade(
-                                        seq_list, i, alt, old_gt_count
+                                if len(new_gt_positions) == 1:
+                                    paired = self._try_paired_cai_upgrade_incremental(
+                                        state, codon_idx, alt, codon_cache, enzyme_cache
                                     )
-                                    if paired is not None:
-                                        seq_list[:] = paired
+                                    if paired:
                                         any_upgrade = True
                                         break
+                                # Rollback
+                                state.swap_codon(codon_idx, old_codon)
                                 continue
-
-                    # Check restriction sites
-                    from .restriction_sites import get_recognition_site
-                    rs_ok = True
-                    for enzyme in self.enzymes:
-                        site = get_recognition_site(enzyme)
-                        if site is None:
-                            continue
-                        if site in test_seq:
-                            rs_ok = False
+                            # All new GTs are unavoidable — accept the upgrade
+                            any_upgrade = True
                             break
-                    if not rs_ok:
+                        # No new GTs despite would_gt_increase returning True? Shouldn't happen, but accept
+
+                    # Quick O(1) check: would this swap increase CG count?
+                    if state.would_cg_increase(codon_idx, alt):
                         continue
 
-                    # Check CpG constraint — don't increase CG dinucleotide count
-                    old_cpg_count = sum(1 for j in range(len(seq_list) - 1) if seq_list[j] == "C" and seq_list[j+1] == "G")
-                    new_cpg_count = sum(1 for j in range(len(test_list) - 1) if test_list[j] == "C" and test_list[j+1] == "G")
-                    if new_cpg_count > old_cpg_count:
-                        continue
-
-                    # Apply the upgrade
-                    seq_list[:] = test_list
-                    any_upgrade = True
-                    break  # Move to next codon position
+                    # Check restriction sites — only in the affected region
+                    if enzyme_cache is not None:
+                        # Build the candidate sequence region to check
+                        start = codon_idx * 3
+                        # Only need to check region around the swapped codon
+                        check_start = max(0, start - 12)  # Recognition sites are ≤12bp
+                        check_end = min(len(seq), start + 3 + 12)
+                        old_codon = state.swap_codon(codon_idx, alt)
+                        region = state.sequence[check_start:check_end]
+                        rs_ok = not enzyme_cache.check_any_site_present(region)
+                        if not rs_ok:
+                            # Check full sequence just to be safe (rare edge case)
+                            rs_ok = not enzyme_cache.check_any_site_present(state.sequence)
+                        if not rs_ok:
+                            state.swap_codon(codon_idx, old_codon)  # Rollback
+                            continue
+                        any_upgrade = True
+                        break
+                    else:
+                        # No enzymes to check — apply the upgrade
+                        old_codon = state.swap_codon(codon_idx, alt)
+                        any_upgrade = True
+                        break
 
             if not any_upgrade:
                 break
 
-        return "".join(seq_list)
+        return state.sequence
 
     def _try_paired_cai_upgrade(
         self, seq_list: list, codon_pos: int, new_codon: str, old_gt_count: int
@@ -5562,6 +5825,69 @@ class BioOptimizer:
 
         return None
 
+    def _try_paired_cai_upgrade_incremental(
+        self, state: IncrementalSequenceState, codon_idx: int,
+        new_codon: str, codon_cache: CodonCache,
+        enzyme_cache: Optional[EnzymeSiteCache] = None
+    ) -> bool:
+        """Try a paired codon swap using IncrementalSequenceState.
+
+        When upgrading a codon would create a cross-codon GT, this tries
+        simultaneously adjusting the adjacent codon to avoid it.
+        Returns True if a paired swap was applied.
+        """
+        start = codon_idx * 3
+        # The new GT must be at the right boundary: new_codon[-1] + next_base == GT
+        # or at the left boundary: prev_base + new_codon[0] == GT
+        # We need to find which adjacent codon to adjust
+
+        next_start = start + 3
+
+        # Try adjusting the next codon
+        if next_start + 3 <= len(state.sequence):
+            next_codon = state.get_codon(codon_idx + 1)
+            next_aa = state.get_aa(codon_idx + 1)
+            if next_aa is not None and next_aa != "*":
+                for next_alt in codon_cache.get_sorted_codons(next_aa):
+                    if next_alt == next_codon:
+                        continue
+                    # Check that new_codon[-1] + next_alt[0] != "GT"
+                    if new_codon[-1] + next_alt[0] == "GT":
+                        continue
+                    # Try the paired swap
+                    old_codon = state.swap_codon(codon_idx, new_codon)
+                    old_next = state.swap_codon(codon_idx + 1, next_alt)
+
+                    # Check that GT count didn't increase beyond what we expected
+                    if not state.would_gt_increase(codon_idx, new_codon):
+                        # Also check CG didn't increase
+                        if not state.would_cg_increase(codon_idx, new_codon):
+                            return True
+                    # Rollback
+                    state.swap_codon(codon_idx + 1, old_next)
+                    state.swap_codon(codon_idx, old_codon)
+
+        # Try adjusting the previous codon
+        if codon_idx > 0:
+            prev_codon = state.get_codon(codon_idx - 1)
+            prev_aa = state.get_aa(codon_idx - 1)
+            if prev_aa is not None and prev_aa != "*":
+                for prev_alt in codon_cache.get_sorted_codons(prev_aa):
+                    if prev_alt == prev_codon:
+                        continue
+                    if prev_alt[-1] + new_codon[0] == "GT":
+                        continue
+                    old_prev = state.swap_codon(codon_idx - 1, prev_alt)
+                    old_codon = state.swap_codon(codon_idx, new_codon)
+
+                    if not state.would_gt_increase(codon_idx, new_codon):
+                        if not state.would_cg_increase(codon_idx, new_codon):
+                            return True
+                    state.swap_codon(codon_idx, old_codon)
+                    state.swap_codon(codon_idx - 1, old_prev)
+
+        return False
+
     # Deprecated alias — use _step_cai_hill_climb instead
     _phase6_cai_hill_climb = _step_cai_hill_climb
 
@@ -5569,163 +5895,158 @@ class BioOptimizer:
     # Step: Reoptimize (iterative until convergence)
     # ──────────────────────────────────────────────────────────
     def _step_reoptimize(self, seq: str) -> str:
-        """Re-optimization step: Iterative re-optimization pass.
+        """Re-optimization step: Iterative re-optimization pass (optimized with incremental state).
 
         Repeats until no more improvements can be made:
         1. Per-codon CAI optimization with GT avoidance
         2. Cross-codon GT resolution
-        3. Within-codon GT resolution
-        4. Restriction site removal
+        3. Restriction site removal
+
+        Uses IncrementalSequenceState for O(1) GT/CG tracking instead of
+        O(N) full-sequence rescans.
         """
-        seq_list = list(seq)
+        state = IncrementalSequenceState(seq)
+        codon_cache = CodonCache(self.species_cai)
+        enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         max_iterations = 20
 
         for iteration in range(max_iterations):
-            old_gt_count = _count_gts("".join(seq_list))
+            old_gt_count = state.gt_count
             improved = False
 
             # Step 1: Per-codon optimization - try to swap to GT-free codons
-            for i in range(0, len(seq_list) - 2, 3):
-                codon = "".join(seq_list[i:i+3])
-                aa = CODON_TABLE.get(codon)
+            for codon_idx in range(state.num_codons):
+                codon = state.get_codon(codon_idx)
+                aa = state.get_aa(codon_idx)
                 if aa is None or aa == "*":
                     continue
 
-                candidates = AA_TO_CODONS.get(aa, [])
+                candidates = codon_cache.get_sorted_codons(aa)
                 if not candidates:
                     continue
 
                 # If current codon has GT, try to swap
                 if "GT" in codon:
-                    for alt in sorted(candidates,
-                                       key=lambda c: self.species_cai.get(c, 0.0),
-                                       reverse=True):
+                    for alt in candidates:
                         if "GT" in alt:
                             continue
-                        prev_base = seq_list[i - 1] if i > 0 else ""
-                        next_base = seq_list[i + 3] if i + 3 < len(seq_list) else ""
-                        if prev_base and prev_base + alt[0] == "GT":
+                        # O(1) boundary check
+                        left_gt, right_gt = state.boundary_creates_gt(codon_idx, alt)
+                        if left_gt or right_gt:
                             continue
-                        if next_base and alt[-1] + next_base == "GT":
-                            continue
-                        test_list = seq_list[:]
-                        for k, b in enumerate(alt):
-                            test_list[i + k] = b
-                        if _count_gts("".join(test_list)) < old_gt_count:
-                            seq_list = test_list
+                        # O(1) GT count change check
+                        if not state.would_gt_increase(codon_idx, alt):
+                            state.swap_codon(codon_idx, alt)
                             improved = True
                             break
 
             # Step 2: Cross-codon GT resolution
-            current_seq = "".join(seq_list)
+            current_seq = state.sequence
             for pos in find_cross_codon_gt(current_seq):
-                codon_start = (pos // 3) * 3
-                next_start = codon_start + 3
+                codon_idx = pos // 3
+                next_codon_idx = codon_idx + 1
 
-                if codon_start + 3 > len(seq_list) or next_start + 3 > len(seq_list):
+                if next_codon_idx >= state.num_codons:
                     continue
 
-                aa1_codon = "".join(seq_list[codon_start:codon_start + 3])
-                aa1 = CODON_TABLE.get(aa1_codon)
-                if aa1 is None or aa1 == "*":
+                aa1 = state.get_aa(codon_idx)
+                aa2 = state.get_aa(next_codon_idx)
+                if aa1 is None or aa1 == "*" or aa2 is None or aa2 == "*":
                     continue
 
-                aa2_codon = "".join(seq_list[next_start:next_start + 3])
-                aa2 = CODON_TABLE.get(aa2_codon)
-
-                if aa2 is not None and aa2 != "*":
-                    for c1 in AA_TO_CODONS.get(aa1, [aa1_codon]):
-                        if "GT" in c1:
+                for c1 in codon_cache.get_sorted_codons(aa1):
+                    if "GT" in c1:
+                        continue
+                    for c2 in codon_cache.get_sorted_codons(aa2):
+                        if "GT" in c2:
                             continue
-                        for c2 in AA_TO_CODONS.get(aa2, [aa2_codon]):
-                            if "GT" in c2:
+                        if c1[-1] + c2[0] == "GT":
+                            continue
+                        
+                        # Try the paired swap with O(1) tracking
+                        old1 = state.swap_codon(codon_idx, c1)
+                        old2 = state.swap_codon(next_codon_idx, c2)
+                        
+                        if state.gt_count < old_gt_count:
+                            improved = True
+                            break
+                        else:
+                            # Rollback
+                            state.swap_codon(next_codon_idx, old2)
+                            state.swap_codon(codon_idx, old1)
+                
+                if improved:
+                    break
+
+            if not improved and codon_idx > 0:
+                prev_codon_idx = codon_idx - 1
+                aa0 = state.get_aa(prev_codon_idx)
+                aa1 = state.get_aa(codon_idx)
+                if aa0 is not None and aa0 != "*" and aa1 is not None and aa1 != "*":
+                    for c0 in codon_cache.get_sorted_codons(aa0):
+                        if "GT" in c0:
+                            continue
+                        for c1 in codon_cache.get_sorted_codons(aa1):
+                            if "GT" in c1:
                                 continue
-                            if c1[-1] + c2[0] == "GT":
+                            if c0[-1] + c1[0] == "GT":
                                 continue
-                            test_list = seq_list[:]
-                            for k, b in enumerate(c1):
-                                test_list[codon_start + k] = b
-                            for k, b in enumerate(c2):
-                                test_list[next_start + k] = b
-                            test_seq = "".join(test_list)
-                            if _count_gts(test_seq) < _count_gts("".join(seq_list)):
-                                seq_list = test_list
+                            
+                            old0 = state.swap_codon(prev_codon_idx, c0)
+                            old1_codon = state.swap_codon(codon_idx, c1)
+                            
+                            if state.gt_count < old_gt_count:
                                 improved = True
                                 break
+                            else:
+                                state.swap_codon(codon_idx, old1_codon)
+                                state.swap_codon(prev_codon_idx, old0)
+                        
                         if improved:
                             break
 
-                if not improved and codon_start >= 3:
-                    prev_start = codon_start - 3
-                    aa0_codon = "".join(seq_list[prev_start:prev_start + 3])
-                    aa0 = CODON_TABLE.get(aa0_codon)
-                    if aa0 is not None and aa0 != "*":
-                        for c0 in AA_TO_CODONS.get(aa0, [aa0_codon]):
-                            if "GT" in c0:
-                                continue
-                            for c1 in AA_TO_CODONS.get(aa1, [aa1_codon]):
-                                if "GT" in c1:
-                                    continue
-                                if c0[-1] + c1[0] == "GT":
-                                    continue
-                                test_list = seq_list[:]
-                                for k, b in enumerate(c0):
-                                    test_list[prev_start + k] = b
-                                for k, b in enumerate(c1):
-                                    test_list[codon_start + k] = b
-                                test_seq = "".join(test_list)
-                                if _count_gts(test_seq) < _count_gts("".join(seq_list)):
-                                    seq_list = test_list
-                                    improved = True
-                                    break
-                            if improved:
-                                break
-
             # Step 3: Restriction site removal
-            from .restriction_sites import get_recognition_site
-            for enzyme in self.enzymes:
-                site = get_recognition_site(enzyme)
-                if site is None:
-                    continue
-                current_seq = "".join(seq_list)
-                p = current_seq.find(site)
-                while p != -1:
-                    codon_starts = set()
-                    for j in range(p, p + len(site)):
-                        cs = (j // 3) * 3
-                        if cs + 3 <= len(seq_list):
-                            codon_starts.add(cs)
-                    rs_resolved = False
-                    for cs in sorted(codon_starts):
-                        codon = "".join(seq_list[cs:cs + 3])
-                        aa = CODON_TABLE.get(codon)
-                        if aa is None or aa == "*":
-                            continue
-                        for alt in AA_TO_CODONS.get(aa, []):
-                            if alt == codon:
+            if enzyme_cache is not None:
+                current_seq = state.sequence
+                for enzyme, site in enzyme_cache._sites.items():
+                    if site is None:
+                        continue
+                    p = current_seq.find(site)
+                    while p != -1:
+                        codon_starts = set()
+                        for j in range(p, p + len(site)):
+                            cs = (j // 3) * 3
+                            if cs + 3 <= len(current_seq):
+                                codon_starts.add(cs)
+                        rs_resolved = False
+                        for cs in sorted(codon_starts):
+                            ci = cs // 3
+                            codon = state.get_codon(ci)
+                            aa = state.get_aa(ci)
+                            if aa is None or aa == "*":
                                 continue
-                            test_list = seq_list[:]
-                            for k, b in enumerate(alt):
-                                test_list[cs + k] = b
-                            test_seq = "".join(test_list)
-                            if site not in test_seq:
-                                if not self.avoid_gt or _count_gts(test_seq) <= _count_gts("".join(seq_list)):
-                                    seq_list = test_list
-                                    rs_resolved = True
-                                    improved = True
-                                    break
+                            for alt in codon_cache.get_sorted_codons(aa):
+                                if alt == codon:
+                                    continue
+                                old_codon = state.swap_codon(ci, alt)
+                                if site not in state.sequence:
+                                    if not self.avoid_gt or state.gt_count <= old_gt_count:
+                                        rs_resolved = True
+                                        improved = True
+                                        break
+                                state.swap_codon(ci, old_codon)  # Rollback
+                            if rs_resolved:
+                                break
                         if rs_resolved:
-                            break
-                    if not rs_resolved:
-                        p = current_seq.find(site, p + 1)
-                    else:
-                        current_seq = "".join(seq_list)
-                        p = current_seq.find(site)
+                            current_seq = state.sequence
+                            p = current_seq.find(site)
+                        else:
+                            p = current_seq.find(site, p + 1)
 
             if not improved:
                 break
 
-        return "".join(seq_list)
+        return state.sequence
 
     # Deprecated alias — use _step_reoptimize instead
     _phase7_reoptimize = _step_reoptimize

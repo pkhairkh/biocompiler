@@ -144,6 +144,12 @@ except ImportError:
 from .optimization import BioOptimizer, optimize_sequence, OptimizationResult, FullConstructResult
 
 # ═══════════════════════════════════════════════════════════════════════
+# Incremental sequence state (O(1) constraint tracking for optimization)
+# ═══════════════════════════════════════════════════════════════════════
+
+from .incremental import IncrementalSequenceState, CodonCache, EnzymeSiteCache
+
+# ═══════════════════════════════════════════════════════════════════════
 # Grammar, Export, Report
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -933,6 +939,9 @@ __all__ = [
 
     # ── Optimization ─────────────────────────────────────────
     "BioOptimizer", "optimize_sequence", "OptimizationResult", "FullConstructResult",
+
+    # ── Incremental sequence state ───────────────────────────
+    "IncrementalSequenceState", "CodonCache", "EnzymeSiteCache",
 
     # ── Grammar ──────────────────────────────────────────────
     "load_grammar", "grammar_to_predicate_params",

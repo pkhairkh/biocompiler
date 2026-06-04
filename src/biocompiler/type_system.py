@@ -500,6 +500,9 @@ def check_no_cpg_island(seq: str, window: int = 200, threshold: float = 0.6, org
     regulatory significance, so the check is skipped when a prokaryotic
     organism is specified.
 
+    Optimized: Uses sliding window with O(1) updates per step instead
+    of O(W) full window scan, reducing total complexity from O(N*W) to O(N).
+
     Args:
         seq: DNA sequence to evaluate.
         window: Sliding window size in nucleotides (default 200).
@@ -522,18 +525,59 @@ def check_no_cpg_island(seq: str, window: int = 200, threshold: float = 0.6, org
             details=f"CpG island check skipped for prokaryotic organism '{organism}'",
         )
 
+    n = len(seq)
+    if n < window:
+        return PredicateResult("NoCpGIsland", True, verdict=Verdict.PASS,
+                               details=f"Sequence length {n} < window size {window}")
+
+    # Pre-compute CG positions for fast lookup
+    # cg_at[i] = 1 if seq[i:i+2] == "CG", else 0
+    cg_at = [0] * (n - 1)
+    for i in range(n - 1):
+        if seq[i] == 'C' and seq[i + 1] == 'G':
+            cg_at[i] = 1
+
+    # Initialize first window
+    c_count = seq[:window].count("C")
+    g_count = seq[:window].count("G")
+    cg_count = sum(cg_at[:window - 1])
+
     worst_ratio = 0.0
     worst_start = -1
-    for start in range(0, len(seq) - window + 1):
-        window_seq = seq[start:start + window]
-        c_count = window_seq.count("C")
-        g_count = window_seq.count("G")
-        cg_count = sum(1 for i in range(len(window_seq) - 1) if window_seq[i:i+2] == "CG")
-        expected = (c_count * g_count) / len(window_seq) if len(window_seq) > 0 else 0
+
+    # Check first window
+    expected = (c_count * g_count) / window if window > 0 else 0
+    obs_exp = cg_count / expected if expected > 0 else 0.0
+    if obs_exp > worst_ratio:
+        worst_ratio = obs_exp
+        worst_start = 0
+
+    # Slide window — O(1) per step
+    for start in range(1, n - window + 1):
+        # Remove outgoing base at start-1, add incoming base at start+window-1
+        outgoing = seq[start - 1]
+        incoming = seq[start + window - 1]
+
+        if outgoing == 'C':
+            c_count -= 1
+        elif outgoing == 'G':
+            g_count -= 1
+        if incoming == 'C':
+            c_count += 1
+        elif incoming == 'G':
+            g_count += 1
+
+        # Update CG count: remove cg_at[start-1], add cg_at[start+window-2]
+        cg_count -= cg_at[start - 1]
+        if start + window - 2 < n - 1:
+            cg_count += cg_at[start + window - 2]
+
+        expected = (c_count * g_count) / window if window > 0 else 0
         obs_exp = cg_count / expected if expected > 0 else 0.0
         if obs_exp > worst_ratio:
             worst_ratio = obs_exp
             worst_start = start
+
     if worst_ratio > threshold:
         return PredicateResult("NoCpGIsland", False, verdict=Verdict.FAIL,
                                details=f"CpG island at pos {worst_start}, Obs/Exp={worst_ratio:.3f} > {threshold}",
