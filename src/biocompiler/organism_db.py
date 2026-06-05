@@ -54,7 +54,9 @@ __all__ = [
     "MIN_TOTAL_FREQUENCY",
     "PER_THOUSAND_SCALE",
     "KAZUSA_ORGANISM_IDS",
+    "ORGANISM_NAME_ALIASES",
     "OrganismDatabase",
+    "get_codon_table",
 ]
 
 # ─── Database Schema Versioning ─────────────────────────────────────
@@ -101,6 +103,48 @@ KAZUSA_ORGANISM_IDS: dict[str, str] = {
     "Danio_rerio": "7955",
     "Arabidopsis_thaliana": "3702",
     "Pichia_pastoris": "4922",
+}
+
+# ─── Organism Name Aliases ──────────────────────────────────────────
+# Maps common shorthand names / legacy identifiers to the canonical
+# database key.  Used by :func:`get_codon_table` and the
+# :class:`OrganismDatabase` lookup methods so that callers can pass
+# ``"ecoli"`` instead of ``"E_coli"``, etc.
+
+ORGANISM_NAME_ALIASES: dict[str, str] = {
+    # E. coli variants
+    "ecoli": "E_coli",
+    "e_coli": "E_coli",
+    "E_coli_K12": "E_coli",
+    "E_coli_BL21": "E_coli",
+    "Escherichia_coli": "E_coli",
+    "Escherichia_coli_K12": "E_coli",
+    "Escherichia_coli_BL21": "E_coli",
+    # Human
+    "human": "Homo_sapiens",
+    "homo_sapiens": "Homo_sapiens",
+    # Mouse
+    "mouse": "Mus_musculus",
+    "mus_musculus": "Mus_musculus",
+    # CHO
+    "cho": "CHO_K1",
+    "cho_k1": "CHO_K1",
+    "Cricetulus_griseus": "CHO_K1",
+    # Yeast
+    "yeast": "Saccharomyces_cerevisiae",
+    "s_cerevisiae": "Saccharomyces_cerevisiae",
+    # Other organisms
+    "drosophila": "Drosophila_melanogaster",
+    "d_melanogaster": "Drosophila_melanogaster",
+    "celegans": "Caenorhabditis_elegans",
+    "c_elegans": "Caenorhabditis_elegans",
+    "zebrafish": "Danio_rerio",
+    "d_rerio": "Danio_rerio",
+    "arabidopsis": "Arabidopsis_thaliana",
+    "a_thaliana": "Arabidopsis_thaliana",
+    "pichia": "Pichia_pastoris",
+    "p_pastoris": "Pichia_pastoris",
+    "komagataella": "Pichia_pastoris",
 }
 
 
@@ -1115,3 +1159,74 @@ def get_codon_usage_db(organism: str) -> dict[str, tuple[str, float, float, int]
 def get_codon_adaptiveness_db(organism: str) -> dict[str, float]:
     """Convenience function to get codon adaptiveness from database."""
     return get_database().get_codon_adaptiveness(organism)
+
+
+def resolve_organism_name(organism: str) -> str:
+    """Resolve an organism name or alias to its canonical database key.
+
+    This handles common shorthand names (e.g. ``"ecoli"`` → ``"E_coli"``),
+    legacy identifiers, and case-insensitive lookups.  If no alias is
+    found the original name is returned unchanged.
+
+    Args:
+        organism: An organism name, alias, or shorthand.
+
+    Returns:
+        The canonical database key for the organism.
+
+    Examples::
+
+        >>> resolve_organism_name("ecoli")
+        'E_coli'
+        >>> resolve_organism_name("human")
+        'Homo_sapiens'
+        >>> resolve_organism_name("Homo_sapiens")
+        'Homo_sapiens'
+    """
+    # Direct hit on alias map
+    if organism in ORGANISM_NAME_ALIASES:
+        return ORGANISM_NAME_ALIASES[organism]
+    # Already a canonical name (e.g. in KAZUSA_ORGANISM_IDS keys)
+    if organism in KAZUSA_ORGANISM_IDS:
+        return organism
+    # Case-insensitive fallback: try lowercased match against all known keys
+    org_lower = organism.lower()
+    for key in ORGANISM_NAME_ALIASES:
+        if key.lower() == org_lower:
+            return ORGANISM_NAME_ALIASES[key]
+    for key in KAZUSA_ORGANISM_IDS:
+        if key.lower() == org_lower:
+            return key
+    # No match found — return as-is (let downstream code handle the error)
+    return organism
+
+
+def get_codon_table(organism: str) -> dict[str, tuple[str, float, float, int]]:
+    """Get the codon usage table for an organism, resolving aliases.
+
+    This is the primary high-level lookup for codon usage data.  It
+    accepts any of the common organism identifiers (``"ecoli"``,
+    ``"E_coli"``, ``"Escherichia_coli"``, ``"human"``, etc.) and
+    returns the codon usage table from the local SQLite database,
+    fetching from Kazusa on-demand if necessary.
+
+    Args:
+        organism: Organism name, alias, or shorthand (e.g. ``"ecoli"``).
+
+    Returns:
+        Dict mapping codon → ``(amino_acid, frequency, adaptiveness, count)``.
+
+    Raises:
+        UnsupportedOrganismError: if the organism cannot be resolved or
+            fetched.
+
+    Examples::
+
+        >>> table = get_codon_table("ecoli")       # resolves to E_coli
+        >>> table = get_codon_table("human")        # resolves to Homo_sapiens
+        >>> table = get_codon_table("Homo_sapiens") # direct lookup
+    """
+    canonical = resolve_organism_name(organism)
+    if canonical != organism:
+        logger.info("Resolved organism name %r -> %r", organism, canonical)
+    return get_database().get_codon_usage(canonical)

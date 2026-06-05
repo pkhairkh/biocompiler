@@ -24,11 +24,10 @@ from biocompiler.engines.viennarna_fallback import (
     find_stable_structures_fallback,
     MFEResult,
     AccessibilityResult,
-    StableStructure,
-    MIN_LOOP_LENGTH,
-    PAIR_ENERGIES,
-    DEFAULT_WINDOW_SIZE,
-    DEFAULT_STABLE_DG_THRESHOLD,
+    StemLoop,
+    PAIR_ENERGY,
+    DEFAULT_MIN_LOOP,
+    MIN_LOOP_PENALTY,
 )
 
 
@@ -256,7 +255,7 @@ class TestComputeApproxDg:
         # 4 AU pairs: 0A-7U, 1A-6U, 2A-5U, 3A-4U
         structure = "(((())))"
         dg = compute_approx_dg(seq, structure)
-        expected = 4 * PAIR_ENERGIES[("A", "U")]
+        expected = 4 * PAIR_ENERGY["AU"]
         assert dg == pytest.approx(expected, abs=0.1)
 
     def test_gu_wobble_energy(self):
@@ -266,7 +265,7 @@ class TestComputeApproxDg:
         dg = compute_approx_dg(seq, structure)
         # Positions: 0G-7U, 1G-6U, 2G-5U, 3G-4U
         # First 3 are GU, last is GU
-        expected = 4 * PAIR_ENERGIES[("G", "U")]
+        expected = 4 * PAIR_ENERGY["GU"]
         assert dg == pytest.approx(expected, abs=0.1)
 
     def test_mismatched_lengths_raise_error(self):
@@ -455,10 +454,10 @@ class TestFindStableStructuresFallback:
         assert isinstance(result, list)
 
     def test_items_are_stable_structure(self):
-        """Each item in the list is a StableStructure instance."""
+        """Each item in the list is a StemLoop instance."""
         result = find_stable_structures_fallback(GC_RICH)
         for item in result:
-            assert isinstance(item, StableStructure)
+            assert isinstance(item, StemLoop)
 
     def test_gc_rich_finds_stem_loops(self):
         """GC-rich sequence should find stable stem-loop structures."""
@@ -511,7 +510,7 @@ class TestFindStableStructuresFallback:
         assert starts == sorted(starts)
 
     def test_stable_structure_fields(self):
-        """StableStructure has all expected fields."""
+        """StemLoop has all expected fields."""
         result = find_stable_structures_fallback(GC_RICH)
         if result:
             s = result[0]
@@ -742,35 +741,32 @@ class TestConstants:
 
     def test_pair_energies_gc_most_stable(self):
         """GC pairs should be the most stable (most negative)."""
-        gc_energy = PAIR_ENERGIES[("G", "C")]
-        for pair, energy in PAIR_ENERGIES.items():
+        gc_energy = PAIR_ENERGY["GC"]
+        for pair, energy in PAIR_ENERGY.items():
             assert gc_energy <= energy, \
                 f"GC ({gc_energy}) should be ≤ {pair} ({energy})"
 
     def test_pair_energies_all_negative(self):
         """All pair energies should be negative (stabilizing)."""
-        for pair, energy in PAIR_ENERGIES.items():
+        for pair, energy in PAIR_ENERGY.items():
             assert energy < 0, f"Pair {pair} has non-negative energy {energy}"
 
     def test_pair_energies_symmetric(self):
-        """Pair energies should be symmetric: E(A,B) == E(complement(B), complement(A))."""
-        for (a, b), energy in PAIR_ENERGIES.items():
+        """Pair energies should be symmetric: E(XY) == E(YX) for complementary pairs."""
+        for pair, energy in PAIR_ENERGY.items():
             # The reverse pair should have the same energy
-            if (b, a) in PAIR_ENERGIES:
-                assert PAIR_ENERGIES[(a, b)] == PAIR_ENERGIES[(b, a)], \
-                    f"Asymmetric energies: ({a},{b})={energy} vs ({b},{a})={PAIR_ENERGIES[(b, a)]}"
+            rev = pair[::-1]
+            if rev in PAIR_ENERGY:
+                assert PAIR_ENERGY[pair] == PAIR_ENERGY[rev], \
+                    f"Asymmetric energies: {pair}={energy} vs {rev}={PAIR_ENERGY[rev]}"
 
-    def test_min_loop_length_positive(self):
-        """MIN_LOOP_LENGTH should be positive."""
-        assert MIN_LOOP_LENGTH > 0
+    def test_default_min_loop_positive(self):
+        """DEFAULT_MIN_LOOP should be positive."""
+        assert DEFAULT_MIN_LOOP > 0
 
-    def test_default_window_size_positive(self):
-        """DEFAULT_WINDOW_SIZE should be positive."""
-        assert DEFAULT_WINDOW_SIZE > 0
-
-    def test_default_stable_dg_threshold_negative(self):
-        """DEFAULT_STABLE_DG_THRESHOLD should be negative."""
-        assert DEFAULT_STABLE_DG_THRESHOLD < 0
+    def test_min_loop_penalty_positive(self):
+        """MIN_LOOP_PENALTY should be positive."""
+        assert MIN_LOOP_PENALTY > 0
 
     def test_all_rna_complements_present(self):
         """All standard RNA bases have complements defined."""

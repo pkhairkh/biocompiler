@@ -312,6 +312,12 @@ class IncrementalSequenceState:
             if b0 == 'A' and b1 == 'G':
                 self._ag_positions.add(pos)
         
+        # Explicitly verify cross-codon CpG and GT boundaries.
+        # This is a safety net on top of the 4-position update above,
+        # ensuring that cross-codon CG/GT dinucleotides at the
+        # boundaries with codons i-1 and i+1 are never missed.
+        self._update_cross_codon_boundaries(codon_idx)
+        
         # Update cached counts
         self.gt_count = len(self._gt_positions)
         self.cg_count = len(self._cg_positions)
@@ -327,6 +333,10 @@ class IncrementalSequenceState:
         # v3: Update restriction site positions incrementally
         if self._rs_site_pairs:
             self._update_rs_positions_around(start, start + 3)
+        
+        # Debug: verify incremental state matches full recomputation
+        if __debug__:
+            self._assert_consistency()
         
         return old_codon
     
@@ -396,6 +406,127 @@ class IncrementalSequenceState:
         return len(self._changed_codons) > 0
     
     # ────────────────────────────────────────────────────────────
+    # Debug consistency verification
+    # ────────────────────────────────────────────────────────────
+    
+    def _assert_consistency(self) -> None:
+        """Verify incremental state matches full recomputation (debug only).
+        
+        Recomputes GT, CG, AG positions and GC count from scratch and
+        compares to the incremental values.  Raises AssertionError on
+        mismatch.  Only runs when __debug__ is True.
+        
+        This catches bugs where the incremental update drifts from the
+        true state — e.g. a missed cross-codon dinucleotide or an
+        off-by-one in the affected-position window.
+        """
+        if not __debug__:
+            return
+        
+        seq = "".join(self._seq_list)
+        n = len(seq)
+        
+        # Recompute dinucleotide positions from scratch
+        expected_gt: Set[int] = set()
+        expected_cg: Set[int] = set()
+        expected_ag: Set[int] = set()
+        for i in range(n - 1):
+            if seq[i] == 'G' and seq[i + 1] == 'T':
+                expected_gt.add(i)
+            if seq[i] == 'C' and seq[i + 1] == 'G':
+                expected_cg.add(i)
+            if seq[i] == 'A' and seq[i + 1] == 'G':
+                expected_ag.add(i)
+        
+        assert self._gt_positions == expected_gt, \
+            f"GT positions mismatch: incremental={sorted(self._gt_positions)}, " \
+            f"expected={sorted(expected_gt)}"
+        assert self._cg_positions == expected_cg, \
+            f"CG (CpG) positions mismatch: incremental={sorted(self._cg_positions)}, " \
+            f"expected={sorted(expected_cg)}"
+        assert self._ag_positions == expected_ag, \
+            f"AG positions mismatch: incremental={sorted(self._ag_positions)}, " \
+            f"expected={sorted(expected_ag)}"
+        
+        # Recompute GC count from scratch
+        expected_gc = sum(1 for b in seq if b in 'GC')
+        assert self.gc_count == expected_gc, \
+            f"GC count mismatch: incremental={self.gc_count}, expected={expected_gc}"
+        
+        # Verify cached counts match position-set sizes
+        assert self.gt_count == len(expected_gt), \
+            f"GT count mismatch: cached={self.gt_count}, expected={len(expected_gt)}"
+        assert self.cg_count == len(expected_cg), \
+            f"CG count mismatch: cached={self.cg_count}, expected={len(expected_cg)}"
+        assert self.ag_count == len(expected_ag), \
+            f"AG count mismatch: cached={self.ag_count}, expected={len(expected_ag)}"
+    
+    # ────────────────────────────────────────────────────────────
+    # Cross-codon boundary verification for CpG and GT
+    # ────────────────────────────────────────────────────────────
+    
+    def _update_cross_codon_boundaries(self, codon_idx: int) -> None:
+        """Explicitly update cross-codon CG (CpG) and GT dinucleotides.
+        
+        When codon at index *codon_idx* changes, the dinucleotides at
+        the boundaries with the neighbouring codons (i-1 and i+1) must
+        be rechecked:
+        
+        * Left boundary  (pos start-1): spans end of codon i-1 and
+          start of codon i.
+        * Right boundary (pos start+2): spans end of codon i and
+          start of codon i+1.
+        
+        This is called after the main 4-position dinucleotide update
+        inside swap_codon() as an explicit safety net.  It ensures
+        cross-codon CpG and GT sites are never missed even if the
+        generic position loop has a subtle bug.
+        """
+        start = codon_idx * 3
+        
+        # ── Left boundary with codon i-1 ────────────────────────
+        if start > 0:
+            pos = start - 1
+            b0 = self._seq_list[pos]
+            b1 = self._seq_list[pos + 1]
+            # CpG (CG) at left boundary
+            if b0 == 'C' and b1 == 'G':
+                self._cg_positions.add(pos)
+            else:
+                self._cg_positions.discard(pos)
+            # GT at left boundary
+            if b0 == 'G' and b1 == 'T':
+                self._gt_positions.add(pos)
+            else:
+                self._gt_positions.discard(pos)
+            # AG at left boundary
+            if b0 == 'A' and b1 == 'G':
+                self._ag_positions.add(pos)
+            else:
+                self._ag_positions.discard(pos)
+        
+        # ── Right boundary with codon i+1 ───────────────────────
+        if start + 2 < self._n - 1:
+            pos = start + 2
+            b0 = self._seq_list[pos]
+            b1 = self._seq_list[pos + 1]
+            # CpG (CG) at right boundary
+            if b0 == 'C' and b1 == 'G':
+                self._cg_positions.add(pos)
+            else:
+                self._cg_positions.discard(pos)
+            # GT at right boundary
+            if b0 == 'G' and b1 == 'T':
+                self._gt_positions.add(pos)
+            else:
+                self._gt_positions.discard(pos)
+            # AG at right boundary
+            if b0 == 'A' and b1 == 'G':
+                self._ag_positions.add(pos)
+            else:
+                self._ag_positions.discard(pos)
+    
+    # ────────────────────────────────────────────────────────────
     # Incremental restriction site tracking
     # ────────────────────────────────────────────────────────────
     
@@ -403,52 +534,69 @@ class IncrementalSequenceState:
         """Incrementally update RS positions around a changed region.
         
         When a codon changes at [region_start, region_end), restriction sites
-        can only appear or disappear in a window of:
-            [region_start - max_site_len + 1, region_end + max_site_len - 1)
+        can only appear or disappear at positions that *overlap* the changed
+        bases.  For a site of length L, the affected start-positions are:
+            [region_start - L + 1,  region_end)
+        (i.e. the site's span touches at least one changed base).
         
-        This removes old RS positions in that window and rescans only the
-        local region, which is O(max_site_len) per site pair instead of O(N).
+        This removes old RS positions in that per-site window and rescans
+        only the local region.  The removal window matches the rescan window
+        exactly, so no valid entries are silently dropped.  Overall cost is
+        O(max_site_len) per site pair instead of O(N).
+        
+        Performance note: a local substring is built from _seq_list rather
+        than calling self.sequence, avoiding an O(N) full-sequence rebuild
+        after the cache was invalidated.
         """
         if not self._rs_site_pairs:
             return
         
         max_len = self._rs_max_site_len
-        # The window to check: any site overlapping the changed region
-        check_start = max(0, region_start - max_len + 1)
-        check_end = min(self._n, region_end + max_len - 1)
         
-        # Get the current sequence for the local region
-        local_seq = self.sequence  # Use cached sequence
+        # Build local substring from _seq_list — O(max_site_len), NOT O(N).
+        # self.sequence is not used because the cache has just been
+        # invalidated, which would trigger an O(N) rebuild.
+        pad = max_len - 1
+        local_start = max(0, region_start - pad)
+        local_end = min(self._n, region_end + pad)
+        local_seq = "".join(self._seq_list[local_start:local_end])
         
         for key in self._rs_site_positions:
             site, site_rc = key
             site_len = len(site)
             
-            # Remove positions in the affected window
+            # Per-site window: positions where a site of this length
+            # overlaps with the changed region [region_start, region_end).
+            # A site at position p overlaps iff p + site_len > region_start
+            # and p < region_end.
+            remove_lo = max(0, region_start - site_len + 1)
+            remove_hi = region_end  # exclusive upper bound; site must start before region_end
+            
+            # Invalidate (remove) RS entries that overlap the changed codon,
+            # including cross-codon sites that span the boundary.
             positions = self._rs_site_positions[key]
-            to_remove = [p for p in positions 
-                         if check_start <= p < check_end + site_len - 1]
+            to_remove = [p for p in positions if remove_lo <= p < remove_hi]
             for p in to_remove:
                 positions.discard(p)
             
-            # Rescan only the local window for forward strand
-            scan_start = max(0, check_start)
-            scan_end = min(len(local_seq) - site_len + 1, check_end)
-            pos = scan_start
-            while pos <= scan_end:
-                if local_seq[pos:pos + site_len] == site:
-                    positions.add(pos)
-                pos += 1
+            # Rescan the same window for forward strand
+            scan_lo = remove_lo
+            scan_hi = min(self._n - site_len, region_end - 1)
+            for pos in range(scan_lo, scan_hi + 1):
+                local_pos = pos - local_start
+                if 0 <= local_pos and local_pos + site_len <= len(local_seq):
+                    if local_seq[local_pos:local_pos + site_len] == site:
+                        positions.add(pos)
             
             # Rescan for reverse complement (avoid double-counting palindromes)
             if site_rc and site_rc != site:
                 rc_len = len(site_rc)
-                scan_end_rc = min(len(local_seq) - rc_len + 1, check_end)
-                pos = scan_start
-                while pos <= scan_end_rc:
-                    if local_seq[pos:pos + rc_len] == site_rc:
-                        positions.add(pos)
-                    pos += 1
+                scan_hi_rc = min(self._n - rc_len, region_end - 1)
+                for pos in range(scan_lo, scan_hi_rc + 1):
+                    local_pos = pos - local_start
+                    if 0 <= local_pos and local_pos + rc_len <= len(local_seq):
+                        if local_seq[local_pos:local_pos + rc_len] == site_rc:
+                            positions.add(pos)
     
     def check_restriction_sites(self, changed_only: bool = False) -> List[Tuple[str, int]]:
         """Check for restriction sites in the sequence.

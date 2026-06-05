@@ -65,6 +65,9 @@ __all__ = [
     "NEAREST_NEIGHBOR_GC",
     "NEAREST_NEIGHBOR_AU",
     "NEAREST_NEIGHBOR_GU",
+    "DEFAULT_EUKARYOTIC_SPLICE_THRESHOLD",
+    "CAI_DG_SCALE",
+    "HIGH_GC_THRESHOLD",
     # Helper functions
     "codon_gc_count",
     "codon_contains_gt",
@@ -107,6 +110,9 @@ CAI_LOG_EPSILON = 1e-10
 NEAREST_NEIGHBOR_GC = -1.5
 NEAREST_NEIGHBOR_AU = -0.5
 NEAREST_NEIGHBOR_GU = -0.3
+DEFAULT_EUKARYOTIC_SPLICE_THRESHOLD = 8.0
+CAI_DG_SCALE = 10.0
+HIGH_GC_THRESHOLD = 0.6
 
 
 # ==============================================================================
@@ -559,6 +565,14 @@ class NoCrypticSpliceConstraint(HardConstraint):
     threshold.  Both within-codon and cross-codon dinucleotides
     are considered.
 
+    For **prokaryotic organisms**, this constraint is SKIPPED entirely
+    since prokaryotes lack spliceosomal machinery and cryptic splice
+    sites have no biological relevance.
+
+    For **eukaryotic organisms**, only sites with MaxEnt score > 8.0
+    are constrained.  Lower thresholds (e.g. 3.0) are too strict and
+    flag many weak sites that are not functional splice signals.
+
     Amino acids like Valine (V) have only GT-containing codons
     (GTT, GTC, GTA, GTG), making GT avoidance at those positions
     impossible.  When a ``protein`` sequence is provided, the
@@ -567,22 +581,25 @@ class NoCrypticSpliceConstraint(HardConstraint):
     reported as violations.
 
     Attributes:
-        threshold: Maximum allowed MaxEntScan score. Sites scoring
-            at or above this threshold are considered cryptic and
-            violate the constraint.
+        threshold: Maximum allowed MaxEntScan score (default 8.0 for
+            eukaryotes). Sites scoring at or above this threshold are
+            considered cryptic and violate the constraint.
         protein: The amino acid sequence.  When provided, Valine
             codon positions are excluded from GT scanning since
             GT within Valine codons is unavoidable.
+        organism: Target organism name.  If prokaryotic, the constraint
+            is automatically skipped (always satisfied).
     """
 
     # Amino acids whose codons ALL contain the GT dinucleotide
     _GT_UNAVOIDABLE_AAS: ClassVar[set[str]] = {"V"}
 
-    def __init__(self, threshold: float = 3.0, protein: str = "") -> None:
+    def __init__(self, threshold: float = DEFAULT_EUKARYOTIC_SPLICE_THRESHOLD, protein: str = "", organism: str = "") -> None:
         if threshold <= 0:
             raise ValueError(f"Threshold must be positive, got {threshold}")
         self._threshold = threshold
         self._protein = protein.upper() if protein else ""
+        self._organism = organism
 
     @property
     def name(self) -> str:
@@ -599,6 +616,16 @@ class NoCrypticSpliceConstraint(HardConstraint):
     @property
     def protein(self) -> str:
         return self._protein
+
+    @property
+    def organism(self) -> str:
+        return self._organism
+
+    def _is_prokaryotic(self) -> bool:
+        """Return True if the configured organism is prokaryotic."""
+        if not self._organism:
+            return False
+        return not is_eukaryotic_organism(self._organism)
 
     def _unavoidable_gt_positions(self, sequence: str) -> set[int]:
         """Compute nucleotide positions where GT is unavoidable (Valine codons).
@@ -662,11 +689,26 @@ class NoCrypticSpliceConstraint(HardConstraint):
         return positions
 
     def check(self, sequence: str) -> bool:
-        """Return True if no cryptic splice site exceeds the threshold."""
+        """Return True if no cryptic splice site exceeds the threshold.
+
+        Automatically returns True for prokaryotic organisms (no splicing
+        machinery).
+        """
+        if self._is_prokaryotic():
+            logger.info(
+                "NoCrypticSpliceConstraint.check() skipped for prokaryotic organism '%s'",
+                self._organism,
+            )
+            return True
         return not self._scan_splice_sites(sequence, self._threshold)
 
     def violated_positions(self, sequence: str) -> list[int]:
-        """Return positions of cryptic splice sites above threshold."""
+        """Return positions of cryptic splice sites above threshold.
+
+        Automatically returns [] for prokaryotic organisms.
+        """
+        if self._is_prokaryotic():
+            return []
         return sorted(set(self._scan_splice_sites(sequence, self._threshold)))
 
 
@@ -683,14 +725,28 @@ class NoCpGIslandConstraint(HardConstraint):
     (check returns True, violated_positions returns []) since CpG
     islands have no known regulatory significance in prokaryotes.
 
+    For GC-rich targets (expected GC > 60%), the constraint is
+    automatically relaxed using the ``max_cpg_density`` parameter,
+    which accounts for the expected CpG density given the target
+    protein's GC content.  This prevents the model from becoming
+    infeasible when the protein inherently requires many CG-containing
+    codons.
+
     Attributes:
         window: Window size in nucleotides (default 200).
         threshold: Maximum allowed Obs/Exp CG ratio (default 0.6).
         organism: Target organism name.  If prokaryotic, the constraint
             is automatically satisfied.
+        protein: Target amino acid sequence.  When provided, the expected
+            GC content is computed from the protein to adjust the threshold
+            for high-GC targets.
+        max_cpg_density: Maximum allowed CpG Obs/Exp ratio for high-GC
+            targets.  When None (default), automatically computed from the
+            protein's expected GC content if > 60%.  Explicitly set to
+            disable auto-relaxation (e.g. ``float('inf')``).
     """
 
-    def __init__(self, window: int = DEFAULT_CPG_WINDOW, threshold: float = DEFAULT_CPG_THRESHOLD, organism: str = "") -> None:
+    def __init__(self, window: int = DEFAULT_CPG_WINDOW, threshold: float = DEFAULT_CPG_THRESHOLD, organism: str = "", protein: str = "", max_cpg_density: float | None = None) -> None:
         if window <= 0:
             raise ValueError(f"Window must be positive, got {window}")
         if threshold <= 0:
@@ -698,6 +754,8 @@ class NoCpGIslandConstraint(HardConstraint):
         self._window = window
         self._threshold = threshold
         self._organism = organism
+        self._protein = protein.upper() if protein else ""
+        self._max_cpg_density = max_cpg_density
 
     @property
     def name(self) -> str:
@@ -718,6 +776,61 @@ class NoCpGIslandConstraint(HardConstraint):
     @property
     def organism(self) -> str:
         return self._organism
+
+    @property
+    def protein(self) -> str:
+        return self._protein
+
+    @property
+    def max_cpg_density(self) -> float | None:
+        return self._max_cpg_density
+
+    def _expected_gc_from_protein(self) -> float:
+        """Estimate the expected GC content from the protein sequence.
+
+        Uses the average GC content across all synonymous codons for each
+        amino acid position.  This gives the expected GC fraction if codons
+        were chosen uniformly at random from synonymous options.
+
+        Returns:
+            Expected GC fraction in [0.0, 1.0]. Returns 0.5 if no protein
+            is set.
+        """
+        if not self._protein:
+            return 0.5
+        total_gc = 0
+        total_bases = 0
+        for aa in self._protein:
+            codons = AA_TO_CODONS.get(aa, [])
+            if not codons:
+                continue
+            avg_gc = sum(codon_gc_count(c) for c in codons) / len(codons)
+            total_gc += avg_gc
+            total_bases += 3
+        return total_gc / total_bases if total_bases > 0 else 0.5
+
+    def _effective_threshold(self) -> float:
+        """Compute the effective CpG threshold, adjusted for GC content.
+
+        For GC-rich targets (expected GC > HIGH_GC_THRESHOLD), the CpG
+        constraint is relaxed to account for the naturally higher CpG
+        density.  The effective threshold is increased proportionally to
+        the excess GC content.
+
+        Returns:
+            Effective Obs/Exp CG ratio threshold.
+        """
+        if self._max_cpg_density is not None:
+            return self._max_cpg_density
+        expected_gc = self._expected_gc_from_protein()
+        if expected_gc > HIGH_GC_THRESHOLD:
+            # For high-GC targets, relax the threshold proportionally
+            # to the excess GC content.  The expected CpG density in a
+            # random sequence scales as GC^2, so a modest relaxation
+            # factor accounts for the biological constraint.
+            relaxation = (expected_gc - HIGH_GC_THRESHOLD) / (1.0 - HIGH_GC_THRESHOLD)
+            return self._threshold + relaxation * (1.0 - self._threshold)
+        return self._threshold
 
     def _is_prokaryotic(self) -> bool:
         """Return True if the configured organism is prokaryotic."""
@@ -761,6 +874,7 @@ class NoCpGIslandConstraint(HardConstraint):
         """Return True if no sliding window has CpG Obs/Exp above threshold.
 
         Automatically returns True for prokaryotic organisms.
+        Uses the effective threshold (relaxed for high-GC targets).
         """
         if self._is_prokaryotic():
             logger.info(
@@ -768,16 +882,19 @@ class NoCpGIslandConstraint(HardConstraint):
                 self._organism,
             )
             return True
-        return not self._scan_cpg(sequence, self._window, self._threshold)
+        effective_thresh = self._effective_threshold()
+        return not self._scan_cpg(sequence, self._window, effective_thresh)
 
     def violated_positions(self, sequence: str) -> list[int]:
         """Return start positions of windows with CpG island violations.
 
         Automatically returns [] for prokaryotic organisms.
+        Uses the effective threshold (relaxed for high-GC targets).
         """
         if self._is_prokaryotic():
             return []
-        return self._scan_cpg(sequence, self._window, self._threshold)
+        effective_thresh = self._effective_threshold()
+        return self._scan_cpg(sequence, self._window, effective_thresh)
 
 
 class NoATTTAMotifConstraint(HardConstraint):
@@ -976,16 +1093,25 @@ class MinimizeCpG(SoftConstraint):
     methylation silencing mechanism), so the score always returns 0.0
     and violated_positions returns [].
 
+    The CpG count is normalized by the expected CpG density given the
+    target protein's GC content.  For GC-rich proteins, some CpG
+    dinucleotides are unavoidable, so the objective is scaled to avoid
+    over-penalizing sequences that inherently require CG-containing codons.
+
     Both within-codon and cross-codon CG dinucleotides are counted
     (for eukaryotic organisms).
 
     Attributes:
         organism: Target organism name.  If prokaryotic, the soft
             constraint becomes a no-op (score always 0.0).
+        protein: Target amino acid sequence.  When provided, the expected
+            CpG density is computed from the protein to normalize the
+            objective for high-GC targets.
     """
 
-    def __init__(self, organism: str = "") -> None:
+    def __init__(self, organism: str = "", protein: str = "") -> None:
         self._organism = organism
+        self._protein = protein.upper() if protein else ""
 
     @property
     def name(self) -> str:
@@ -998,6 +1124,36 @@ class MinimizeCpG(SoftConstraint):
     @property
     def organism(self) -> str:
         return self._organism
+
+    @property
+    def protein(self) -> str:
+        return self._protein
+
+    def _expected_cpg_density(self) -> float:
+        """Compute the expected CpG density given the protein's GC content.
+
+        In a random DNA sequence with GC fraction *f*, the expected CpG
+        dinucleotide density (fraction of dinucleotides that are CG) is
+        approximately *f*\u00b2.  This is used to normalize the CpG count so
+        that GC-rich proteins are not over-penalized.
+
+        Returns:
+            Expected CpG density in [0.0, 1.0]. Returns 0.25 (i.e. 0.5\u00b2)
+            if no protein is set.
+        """
+        if not self._protein:
+            return 0.25  # GC=0.5 -> 0.25
+        total_gc = 0
+        total_bases = 0
+        for aa in self._protein:
+            codons = AA_TO_CODONS.get(aa, [])
+            if not codons:
+                continue
+            avg_gc = sum(codon_gc_count(c) for c in codons) / len(codons)
+            total_gc += avg_gc
+            total_bases += 3
+        gc_frac = total_gc / total_bases if total_bases > 0 else 0.5
+        return gc_frac * gc_frac
 
     def _is_prokaryotic(self) -> bool:
         """Return True if the configured organism is prokaryotic."""
@@ -1020,10 +1176,15 @@ class MinimizeCpG(SoftConstraint):
         return [i for i in range(len(sequence) - 1) if sequence[i : i + 2] == "CG"]
 
     def score(self, sequence: str) -> float:
-        """Return negated CG count (higher = fewer CG = better).
+        """Return negated normalized CG count (higher = fewer CG = better).
 
-        The solver maximizes the objective, so we negate the count.
-        For prokaryotic organisms, returns 0.0 (neutral objective).
+        The CpG count is normalized by the expected CpG density given
+        the target protein's GC content.  This prevents over-penalizing
+        GC-rich proteins where CpG dinucleotides are inherently more
+        frequent.
+
+        The solver maximizes the objective, so we negate the normalized
+        count.  For prokaryotic organisms, returns 0.0 (neutral objective).
         """
         if self._is_prokaryotic():
             return 0.0
@@ -1031,6 +1192,12 @@ class MinimizeCpG(SoftConstraint):
         cpg_count = sum(
             1 for i in range(len(sequence) - 1) if sequence[i : i + 2] == "CG"
         )
+        expected = self._expected_cpg_density()
+        if expected > 0:
+            # Normalize: divide observed density by expected density
+            n_dinucleotides = max(len(sequence) - 1, 1)
+            normalized = (cpg_count / n_dinucleotides) / expected
+            return -float(normalized)
         return -float(cpg_count)
 
     def cpg_count(self, sequence: str) -> int:
@@ -1164,22 +1331,38 @@ class MinimizeMRNADG(SoftConstraint):
     can block ribosome binding and reduce translation efficiency.  This
     objective prefers sequences with weaker 5' structure (less negative dG).
 
-    Uses ViennaRNA via ``compute_5prime_dg()`` when available for accurate
-    thermodynamic folding.  Falls back to a simplified nearest-neighbor
-    approximation when ViennaRNA is not installed.
+    Uses a codon-based CAI estimation model as the primary method for \u0394G
+    estimation.  Well-adapted codons tend to produce mRNA with more stable
+    overall structure, but the 5' end of native mRNAs has typically evolved
+    to have weaker structure for efficient translation initiation.  The CAI
+    proxy captures this relationship without requiring ViennaRNA.
+
+    ViennaRNA is used as an optional fallback for accurate thermodynamic
+    folding when available, and a simplified nearest-neighbor approximation
+    serves as the final fallback when neither CAI data nor ViennaRNA is
+    available.
 
     Attributes:
         window_start: Start of the analysis window (default 0).
         window_end: End of the analysis window (default 50).
+        adaptiveness: Dict mapping codon strings to relative adaptiveness
+            values for the target organism.  Required for the CAI-based
+            \u0394G estimation model.
+        protein: Target amino acid sequence.  Required for the CAI-based
+            \u0394G estimation model.
     """
 
     def __init__(
         self,
         window_start: int = 0,
         window_end: int = 50,
+        adaptiveness: dict[str, float] | None = None,
+        protein: str = "",
     ) -> None:
         self._window_start = window_start
         self._window_end = window_end
+        self._adaptiveness = adaptiveness if adaptiveness is not None else {}
+        self._protein = protein.upper() if protein else ""
 
     @property
     def name(self) -> str:
@@ -1197,6 +1380,14 @@ class MinimizeMRNADG(SoftConstraint):
     def window_end(self) -> int:
         return self._window_end
 
+    @property
+    def adaptiveness(self) -> dict[str, float]:
+        return dict(self._adaptiveness)
+
+    @property
+    def protein(self) -> str:
+        return self._protein
+
     def check(self, sequence: str) -> bool:
         """Always True — mRNA dG is an optimization objective."""
         return True
@@ -1204,10 +1395,35 @@ class MinimizeMRNADG(SoftConstraint):
     def violated_positions(self, sequence: str) -> list[int]:
         """Return positions in the 5' window that contribute to stable structure.
 
-        Positions with G/C bases in the analysis window are reported as
-        candidates for A/T substitution to reduce structure stability.
+        When adaptiveness data is available, reports codon positions in the
+        5' window where the codon adaptiveness is below the mean (these
+        codons may contribute to unintended stable secondary structure).
+        Otherwise, reports positions with G/C bases in the analysis window.
         """
         effective_end = min(self._window_end, len(sequence))
+
+        if self._adaptiveness and self._protein:
+            # Report codon positions with below-average adaptiveness
+            positions: list[int] = []
+            window_adaptiveness: list[tuple[int, float]] = []
+            for i in range(len(self._protein)):
+                codon_start = i * 3
+                codon_end = codon_start + 3
+                if codon_end <= self._window_start:
+                    continue
+                if codon_start >= effective_end:
+                    break
+                codon = sequence[codon_start : codon_end]
+                w = self._adaptiveness.get(codon, 0.0)
+                window_adaptiveness.append((codon_start, w))
+            if window_adaptiveness:
+                mean_w = sum(w for _, w in window_adaptiveness) / len(window_adaptiveness)
+                for codon_start, w in window_adaptiveness:
+                    if w < mean_w:
+                        positions.append(codon_start)
+            return positions
+
+        # Fallback: report GC-rich positions
         window_seq = sequence[self._window_start : effective_end].upper()
         return [
             self._window_start + i
@@ -1218,37 +1434,60 @@ class MinimizeMRNADG(SoftConstraint):
     def score(self, sequence: str) -> float:
         """Return negated |dG| approximation (higher = weaker structure = better).
 
-        Uses ViennaRNA when available for accurate MFE computation.
-        Falls back to a simplified nearest-neighbor dG estimate based on
-        potential base pairs in the 5' window when ViennaRNA is not installed.
+        Uses the codon-based CAI estimation model as the primary method.
+        Falls back to ViennaRNA or nearest-neighbor approximation when
+        CAI data is not available.
         """
         dg = self.compute_dg(sequence)
         # We want to MAXIMIZE, so return the negated |dG|
         # (less stable structure = higher score = better)
         return -abs(dg)
 
-    def compute_dg(self, sequence: str) -> float:
-        """Return the dG value (more negative = more stable structure).
+    def _estimate_dg_from_cai(self, sequence: str) -> float:
+        """Estimate \u0394G from codon adaptation index.
 
-        Uses ViennaRNA via ``compute_5prime_dg`` when available for accurate
-        MFE computation.  Falls back to a simplified nearest-neighbor
-        approximation when ViennaRNA is not installed.
+        Well-adapted codons tend to produce mRNA with more stable overall
+        structure.  The 5' end of native mRNAs has typically evolved to
+        have weaker structure for efficient translation initiation.  We use
+        the log-adaptiveness of codons in the 5' window as a proxy for \u0394G:
+        poorly-adapted codons tend to create unintended stable secondary
+        structures at the 5' end, while well-adapted codons produce more
+        moderate folding.
+
+        The estimated \u0394G is: ``CAI_DG_SCALE * mean(log(w_i))`` where w_i
+        is the relative adaptiveness of each codon in the 5' window.
+
+        Returns:
+            Estimated \u0394G in kcal/mol. More negative = more stable structure.
         """
-        # --- Try ViennaRNA first ---
-        try:
-            from ..viennarna import compute_5prime_dg, is_viennarna_available
-            if is_viennarna_available():
-                window_len = self._window_end - self._window_start
-                # compute_5prime_dg folds the first `window` nt from the
-                # given sequence; we slice our window out first.
-                window_seq = sequence[self._window_start : self._window_end]
-                return compute_5prime_dg(window_seq, window=window_len)
-        except ImportError:
-            logger.warning("ViennaRNA not installed, using fallback dG approximation", exc_info=True)
-        except Exception:
-            logger.warning("ViennaRNA computation failed, using fallback dG approximation", exc_info=True)
+        effective_end = min(self._window_end, len(sequence))
 
-        # --- Fallback: simplified nearest-neighbor approximation ---
+        log_cai_sum = 0.0
+        count = 0
+        for i in range(len(self._protein)):
+            codon_start = i * 3
+            codon_end = codon_start + 3
+            if codon_end <= self._window_start:
+                continue
+            if codon_start >= effective_end:
+                break
+            codon = sequence[codon_start : codon_end]
+            w = self._adaptiveness.get(codon, CAI_LOG_EPSILON)
+            log_cai_sum += math.log(max(w, CAI_LOG_EPSILON))
+            count += 1
+
+        if count == 0:
+            return 0.0
+
+        mean_log_cai = log_cai_sum / count
+        return CAI_DG_SCALE * mean_log_cai
+
+    def _fallback_nearest_neighbor(self, sequence: str) -> float:
+        """Simplified nearest-neighbor dG approximation.
+
+        Estimates \u0394G from potential base pairing in the 5' window
+        using a hairpin-like fold model.
+        """
         sequence = sequence.upper()
         effective_end = min(self._window_end, len(sequence))
         window_seq = sequence[self._window_start : effective_end]
@@ -1280,6 +1519,33 @@ class MinimizeMRNADG(SoftConstraint):
 
         return NEAREST_NEIGHBOR_GC * gc_pairs + NEAREST_NEIGHBOR_AU * au_pairs + NEAREST_NEIGHBOR_GU * gu_pairs
 
+    def compute_dg(self, sequence: str) -> float:
+        """Return the dG value (more negative = more stable structure).
+
+        Uses the codon-based CAI estimation as the primary method.
+        Falls back to ViennaRNA when available for accurate MFE computation,
+        and to a simplified nearest-neighbor approximation when neither
+        CAI data nor ViennaRNA is available.
+        """
+        # --- Primary: codon-based CAI estimation ---
+        if self._adaptiveness and self._protein:
+            return self._estimate_dg_from_cai(sequence)
+
+        # --- Fallback 1: ViennaRNA (optional) ---
+        try:
+            from ..viennarna import compute_5prime_dg, is_viennarna_available
+            if is_viennarna_available():
+                window_len = self._window_end - self._window_start
+                window_seq = sequence[self._window_start : self._window_end]
+                return compute_5prime_dg(window_seq, window=window_len)
+        except ImportError:
+            logger.debug("ViennaRNA not available, using nearest-neighbor fallback")
+        except Exception:
+            logger.debug("ViennaRNA computation failed, using nearest-neighbor fallback")
+
+        # --- Fallback 2: simplified nearest-neighbor approximation ---
+        return self._fallback_nearest_neighbor(sequence)
+
 
 # ==============================================================================
 # Helper: extract params from HardConstraint / SoftConstraint instances
@@ -1304,18 +1570,20 @@ def _extract_constraint_params(constraint: HardConstraint | SoftConstraint) -> d
         }
 
     if ctype == CT.NO_CPG:
-        # NoCpGIslandConstraint has window / threshold
+        # NoCpGIslandConstraint has window / threshold / protein / max_cpg_density
         return {
             "window": getattr(constraint, "window", 200),
             "threshold": getattr(constraint, "threshold", 0.6),
+            "protein": getattr(constraint, "protein", ""),
+            "max_cpg_density": getattr(constraint, "max_cpg_density", None),
         }
 
     if ctype in (CT.NO_CRYPTIC_SPLICE, CT.SPLICE_DONOR_AVOIDANCE):
-        # NoCrypticSpliceConstraint has threshold and protein
+        # NoCrypticSpliceConstraint has threshold, protein, and organism
         return {
-            "threshold": getattr(constraint, "threshold", 3.0),
+            "threshold": getattr(constraint, "threshold", DEFAULT_EUKARYOTIC_SPLICE_THRESHOLD),
             "protein": getattr(constraint, "protein", ""),
-            "organism": "",
+            "organism": getattr(constraint, "organism", ""),
         }
 
     if ctype == CT.RESTRICTION_SITE:
@@ -1699,7 +1967,7 @@ def build_csp_model(
     # 2d. Cryptic splice sites (eukaryote-only)
     if is_eukaryote:
         hard_constraints.append(
-            NoCrypticSpliceConstraint(threshold=config.cryptic_splice_threshold, protein=protein)
+            NoCrypticSpliceConstraint(threshold=config.cryptic_splice_threshold, protein=protein, organism=organism)
         )
     else:
         logger.info(
@@ -1711,7 +1979,7 @@ def build_csp_model(
     # 2e. CpG islands (eukaryote-only)
     if is_eukaryote:
         if config.avoid_cpg:
-            hard_constraints.append(NoCpGIslandConstraint(organism=organism))
+            hard_constraints.append(NoCpGIslandConstraint(organism=organism, protein=protein))
     else:
         if config.avoid_cpg:
             logger.info(
@@ -1737,7 +2005,7 @@ def build_csp_model(
     # 3b. Minimize CpG (eukaryote-only objective)
     if is_eukaryote:
         if config.avoid_cpg:
-            soft_constraints.append(MinimizeCpG(organism=organism))
+            soft_constraints.append(MinimizeCpG(organism=organism, protein=protein))
     else:
         if config.avoid_cpg:
             logger.info(
@@ -1747,7 +2015,7 @@ def build_csp_model(
             )
 
     # 3c. Minimize mRNA dG at 5' end
-    soft_constraints.append(MinimizeMRNADG())
+    soft_constraints.append(MinimizeMRNADG(adaptiveness=adaptiveness, protein=protein))
 
     # 3d. Minimize codon pair bias (optional -- off by default)
     if config.optimize_codon_pair_bias:

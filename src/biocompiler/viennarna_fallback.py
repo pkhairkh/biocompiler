@@ -63,6 +63,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "nussinov_fold",
     "compute_approx_dg",
+    "compute_gc_dg_estimate",
+    "compute_nntm_dg",
     "predict_mfe_fallback",
     "predict_accessibility_fallback",
     "find_stable_structures_fallback",
@@ -188,10 +190,210 @@ MIN_LOOP_PENALTY: float = 5.4
 #: Asymmetry penalty for asymmetric internal loops.
 ASYMMETRY_PENALTY: float = 0.4
 
+#: Nearest-Neighbor Thermodynamic Model (NNTM) — Turner 2004 Watson-Crick
+#: dinucleotide parameters (kcal/mol at 37 °C, 1 M NaCl).
+#: Keyed by the 5'→3' dinucleotide on one strand; the complementary
+#: 3'→5' dinucleotide on the opposite strand is implicit.
+#: These 10 values cover all 16 possible Watson-Crick dinucleotide steps
+#: because reading the same helix from the opposite strand maps 6 entries
+#: onto existing ones (e.g., UU ↔ AA, CC ↔ GG).
+NNTM_DINUCLEOTIDE_PARAMS: dict[str, float] = {
+    # 5'XY3' / 3'X'Y'5'  —  the 10 unique Turner parameters
+    "AA": -0.9,   # AA/UU
+    "AU": -1.1,   # AU/UA
+    "UA": -1.3,   # UA/AU
+    "CA": -2.1,   # CA/GU
+    "GU": -2.2,   # GU/CA
+    "CU": -2.1,   # CU/GA
+    "GA": -2.3,   # GA/CU
+    "CG": -2.4,   # CG/GC
+    "GC": -3.4,   # GC/CG
+    "GG": -2.1,   # GG/CC
+    # 6 additional entries derived by reading the opposite strand
+    "UU": -0.9,   # UU/AA  (same as AA/UU)
+    "UG": -2.1,   # UG/AC  (same as CA/GU)
+    "AC": -2.2,   # AC/UG  (same as GU/CA)
+    "AG": -2.1,   # AG/UC  (same as CU/GA)
+    "UC": -2.3,   # UC/AG  (same as GA/CU)
+    "CC": -2.1,   # CC/GG  (same as GG/CC)
+}
+
+#: GC-fraction coefficient for the simple heuristic estimator.
+GC_DG_COEFFICIENT: float = -1.5
+
 
 # ==============================================================================
 # Helper functions
 # ==============================================================================
+
+# ==============================================================================
+# GC-based ΔG heuristic estimator
+# ==============================================================================
+
+def compute_gc_dg_estimate(dna_sequence: str) -> float:
+    """Quick GC-based ΔG estimate without any structure prediction.
+
+    Uses the formula::
+
+        ΔG ≈ -1.5 × (GC_fraction) × (length / 100)  kcal/mol
+
+    This is a very rough approximation but is **better than returning
+    UNCERTAIN** when ViennaRNA is unavailable.  It captures the basic
+    intuition that GC-rich sequences form more stable structures.
+
+    Args:
+        dna_sequence: DNA or RNA sequence (T is auto-converted to U).
+
+    Returns:
+        Estimated free energy in kcal/mol (negative = stable).
+        Returns 0.0 for empty sequences.
+
+    Example::
+
+        >>> compute_gc_dg_estimate("GGGGCCCC")  # 100% GC, len 8
+        -0.12
+        >>> compute_gc_dg_estimate("AAAAAAAA")  # 0% GC, len 8
+        0.0
+    """
+    rna = _transcribe_to_rna(dna_sequence)
+    n = len(rna)
+    if n == 0:
+        return 0.0
+    gc_count = sum(1 for nt in rna if nt in ("G", "C"))
+    gc_fraction = gc_count / n
+    return round(GC_DG_COEFFICIENT * gc_fraction * (n / 100.0), 2)
+
+
+# ==============================================================================
+# Nearest-Neighbor Thermodynamic Model (NNTM) estimator
+# ==============================================================================
+
+def compute_nntm_dg(
+    dna_sequence: str,
+    structure: str | None = None,
+) -> float:
+    """Estimate ΔG using the 10 Watson-Crick nearest-neighbor dinucleotide parameters.
+
+    Implements a basic Nearest-Neighbor Thermodynamic Model (NNTM) for RNA
+    using the well-known Turner 2004 dinucleotide parameters.  For each
+    consecutive base-pair step in a helical region, the corresponding
+    dinucleotide free energy is looked up and summed.
+
+    If *structure* is provided (dot-bracket), only stacked base pairs
+    identified in the structure contribute.  If *structure* is ``None``,
+    the sequence is first folded using :func:`nussinov_fold` and then
+    the NNTM energy is computed from the predicted structure.
+
+    Loop penalties (hairpin, bulge, internal) are approximated using
+    the same simplified Turner-inspired formulas as the rest of this
+    module.
+
+    Args:
+        dna_sequence: DNA or RNA sequence (T is auto-converted to U).
+        structure:    Optional dot-bracket secondary structure string.
+                      If ``None``, the structure is predicted by Nussinov.
+
+    Returns:
+        Estimated free energy in kcal/mol (negative = stable).
+
+    Example::
+
+        >>> dg = compute_nntm_dg("GGGAAACCC")
+        >>> dg < 0
+        True
+    """
+    rna = _transcribe_to_rna(dna_sequence)
+    n = len(rna)
+    if n == 0:
+        return 0.0
+
+    # If no structure provided, predict one
+    if structure is None:
+        structure, _ = nussinov_fold(rna)
+
+    if len(structure) != n:
+        logger.warning(
+            "Structure length (%d) != sequence length (%d); "
+            "falling back to GC estimate.",
+            len(structure), n,
+        )
+        return compute_gc_dg_estimate(dna_sequence)
+
+    # Build pair table
+    pair_table = [-1] * n
+    stack: list[int] = []
+    for pos, ch in enumerate(structure):
+        if ch == "(":
+            stack.append(pos)
+        elif ch == ")":
+            if stack:
+                partner = stack.pop()
+                pair_table[pos] = partner
+                pair_table[partner] = pos
+
+    # Sum NNTM dinucleotide parameters for consecutive base pairs
+    dg = 0.0
+    visited: set[tuple[int, int]] = set()
+
+    for i in range(n):
+        j = pair_table[i]
+        if j < 0 or i >= j:
+            continue
+        if (i, j) in visited:
+            continue
+
+        # Walk along the helix from the outside in
+        si, sj = i, j
+        prev_si = -1
+        prev_sj = -1
+        while (
+            si < sj
+            and pair_table[si] == sj
+        ):
+            # Add the dinucleotide step if there was a previous pair
+            if prev_si >= 0 and prev_sj >= 0:
+                # The step is from (prev_si, prev_sj) to (si, sj)
+                # Dinucleotide on 5' strand: rna[prev_si] + rna[si]
+                dinuc = rna[prev_si] + rna[si]
+                step_energy = NNTM_DINUCLEOTIDE_PARAMS.get(dinuc, 0.0)
+                dg += step_energy
+
+            visited.add((si, sj))
+            prev_si = si
+            prev_sj = sj
+            si += 1
+            sj -= 1
+
+    # Add loop penalties for the identified loops
+    loop_penalty_total = 0.0
+    loop_visited = [False] * n
+
+    for i in range(n):
+        if pair_table[i] < 0 or loop_visited[i]:
+            continue
+        j = pair_table[i]
+        loop_size = 0
+        k = i + 1
+        while k < j:
+            if pair_table[k] < 0:
+                loop_size += 1
+                loop_visited[k] = True
+                k += 1
+            else:
+                loop_visited[k] = True
+                loop_visited[pair_table[k]] = True
+                k = pair_table[k] + 1
+
+        if loop_size > 0:
+            loop_penalty_total += _loop_penalty(loop_size)
+
+        loop_visited[i] = True
+        loop_visited[j] = True
+
+    dg += loop_penalty_total
+
+    return round(dg, 2)
+
 
 def _can_pair(a: str, b: str) -> bool:
     """Check if two nucleotides can form a Watson-Crick or wobble pair.

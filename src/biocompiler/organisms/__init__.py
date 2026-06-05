@@ -188,6 +188,7 @@ YEAST_PREFERRED_CODONS: dict[str, str]  # type: ignore[no-redef]
 CODON_USAGE_TABLES: dict[str, dict[str, tuple[str, float, float, int]]] = {
     "Homo_sapiens": HUMAN_CODON_USAGE,
     "Escherichia_coli": E_COLI_CODON_USAGE,
+    "e_coli": E_COLI_CODON_USAGE,  # alias for resolve_organism convenience
     "Mus_musculus": MOUSE_CODON_USAGE,
     "CHO_K1": CHO_CODON_USAGE,
     "Saccharomyces_cerevisiae": YEAST_CODON_USAGE,
@@ -196,6 +197,7 @@ CODON_USAGE_TABLES: dict[str, dict[str, tuple[str, float, float, int]]] = {
 CODON_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {
     "Homo_sapiens": HUMAN_CODON_ADAPTIVENESS,
     "Escherichia_coli": E_COLI_CODON_ADAPTIVENESS,
+    "e_coli": E_COLI_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
     "Mus_musculus": MOUSE_CODON_ADAPTIVENESS,
     "CHO_K1": CHO_CODON_ADAPTIVENESS,
     "Saccharomyces_cerevisiae": YEAST_CODON_ADAPTIVENESS,
@@ -204,6 +206,7 @@ CODON_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {
 PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
     "Homo_sapiens": HUMAN_PREFERRED_CODONS,
     "Escherichia_coli": E_COLI_PREFERRED_CODONS,
+    "e_coli": E_COLI_PREFERRED_CODONS,  # alias for resolve_organism convenience
     "Mus_musculus": MOUSE_PREFERRED_CODONS,
     "CHO_K1": CHO_PREFERRED_CODONS,
     "Saccharomyces_cerevisiae": YEAST_PREFERRED_CODONS,
@@ -278,6 +281,19 @@ def get_sharp_li_adaptiveness_tables() -> dict[str, dict[str, float]]:
                 # Floor at 0.01 as per Sharp & Li recommendation
                 adaptiveness[codon] = max(w, 0.01)
         tables[organism] = adaptiveness
+
+    # Add short-name aliases to match CODON_ADAPTIVENESS_TABLES keys
+    _ALIASES = {
+        "Escherichia_coli": "e_coli",
+        "Homo_sapiens": "human",
+        "Mus_musculus": "mouse",
+        "Saccharomyces_cerevisiae": "yeast",
+        "CHO_K1": "cho",
+    }
+    for full_name, alias in _ALIASES.items():
+        if full_name in tables and alias not in tables:
+            tables[alias] = tables[full_name]
+
     SHARP_LI_ADAPTIVENESS_TABLES = tables
     return tables
 

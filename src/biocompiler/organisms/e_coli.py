@@ -1,14 +1,20 @@
 """
 Escherichia coli Codon Usage Data
 
-Source: Kazusa Codon Usage Database
-K-12 MG1655, high-expression genes
+Source: Sharp & Li (1987), Table 1
+Nucleic Acids Research 15:1281–1295
+24 highly-expressed E. coli genes (ribosomal proteins, elongation factors,
+outer membrane proteins, RNA polymerase subunits).
 
-NOTE: The Kazusa-derived codon usage tables below reflect a broader set of
-highly expressed genes and yield CAI values that differ from those originally
-published by Sharp & Li (1987).  For direct comparison with the Sharp-Li
-published CAI values (e.g. lacZ≈0.27, trpA≈0.84, recA≈0.76), use the
-SHARP_LI_CODON_USAGE and SHARP_LI_CAI_WEIGHTS from
+The per-thousand codon frequencies are taken directly from Sharp & Li (1987),
+ensuring that CODON_ADAPTIVENESS_TABLES produces CAI values consistent with
+the published reference.  Previously this table used Kazusa-derived values
+which identified the wrong optimal codon for Arginine (CGT instead of CGC)
+and gave CAI = 0.997 for optimal-codon sequences instead of 1.0.
+
+For the legacy Kazusa-based per-thousand values, see ECOLI_CODON_USAGE
+(backward-compatibility alias).  For the Sharp-Li reference gene sequences
+and published CAI validation targets, see
 ``biocompiler.organisms.sharp_li_reference``.
 
 The ``compute_cai_with_reference(dna, reference_set="sharp_li")`` function
@@ -34,71 +40,75 @@ __all__ = [
 # for this organism via biocompiler.organisms.sharp_li_reference.
 SHARP_LI_REFERENCE_AVAILABLE: bool = True
 
+# Source: Sharp & Li (1987), Table 1.
+# Per-thousand frequencies from 24 highly-expressed E. coli genes.
+# Fractions recomputed from per-thousand values for internal consistency.
+# Counts are proportional estimates derived from the per-thousand values.
 E_COLI_CODON_USAGE: CodonUsageTable = {
-    "TTT": ("F", 0.35, 17.2, 111196),
-    "TTC": ("F", 0.65, 22.0, 142302),
-    "TTA": ("L", 0.14, 13.7, 88522),
-    "TTG": ("L", 0.13, 13.0, 84208),
-    "CTT": ("L", 0.12, 11.3, 73210),
-    "CTC": ("L", 0.10, 10.2, 66066),
-    "CTA": ("L", 0.04, 3.7, 24008),
-    "CTG": ("L", 0.47, 51.9, 335604),
-    "ATT": ("I", 0.31, 25.8, 166840),
-    "ATC": ("I", 0.63, 29.7, 192124),
-    "ATA": ("I", 0.06, 4.2, 27278),
-    "ATG": ("M", 1.00, 27.0, 174662),
-    "GTT": ("V", 0.36, 18.6, 120532),
-    "GTC": ("V", 0.26, 14.5, 93830),
-    "GTA": ("V", 0.17, 17.8, 115160),
-    "GTG": ("V", 0.37, 27.1, 175262),
-    "TCT": ("S", 0.17, 10.3, 66428),
-    "TCC": ("S", 0.16, 10.1, 65376),
-    "TCA": ("S", 0.13, 7.6, 48868),
-    "TCG": ("S", 0.14, 8.6, 55740),
-    "CCT": ("P", 0.17, 7.3, 47268),
-    "CCC": ("P", 0.12, 5.6, 36010),
-    "CCA": ("P", 0.20, 8.5, 55060),
-    "CCG": ("P", 0.51, 21.5, 139120),
-    "ACT": ("T", 0.18, 12.2, 78750),
-    "ACC": ("T", 0.43, 22.6, 146198),
-    "ACA": ("T", 0.14, 8.1, 52520),
-    "ACG": ("T", 0.26, 14.0, 90460),
-    "GCT": ("A", 0.18, 15.6, 100968),
-    "GCC": ("A", 0.26, 25.0, 161630),
-    "GCA": ("A", 0.22, 20.4, 132050),
-    "GCG": ("A", 0.34, 31.3, 202322),
-    "TAT": ("Y", 0.42, 12.4, 79978),
-    "TAC": ("Y", 0.58, 16.0, 103610),
-    "TAA": ("*", 0.30, 2.0, 12896),
-    "TAG": ("*", 0.17, 0.3, 1764),
-    "CAT": ("H", 0.44, 9.4, 60712),
-    "CAC": ("H", 0.56, 12.2, 78888),
-    "CAA": ("Q", 0.30, 15.2, 98296),
-    "CAG": ("Q", 0.70, 28.6, 185102),
-    "AAT": ("N", 0.39, 18.6, 120394),
-    "AAC": ("N", 0.61, 19.2, 124280),
-    "AAA": ("K", 0.74, 33.6, 217604),
-    "AAG": ("K", 0.26, 12.0, 77590),
-    "GAT": ("D", 0.60, 32.4, 209784),
-    "GAC": ("D", 0.40, 19.2, 124256),
-    "GAA": ("E", 0.70, 38.6, 249610),
-    "GAG": ("E", 0.30, 17.4, 112590),
-    "TGT": ("C", 0.44, 5.2, 33700),
-    "TGC": ("C", 0.56, 6.2, 40194),
-    "TGA": ("*", 0.53, 1.1, 7032),
-    "TGG": ("W", 1.00, 11.0, 71272),
-    "CGT": ("R", 0.37, 21.0, 135900),
-    "CGC": ("R", 0.36, 20.4, 131864),
-    "CGA": ("R", 0.07, 3.6, 23456),
-    "CGG": ("R", 0.11, 5.2, 33700),
-    "AGT": ("S", 0.15, 8.2, 53160),
-    "AGC": ("S", 0.25, 16.4, 106064),
-    "AGA": ("R", 0.07, 2.9, 18700),
-    "AGG": ("R", 0.03, 1.2, 7938),
-    "GGT": ("G", 0.35, 24.4, 157960),
-    "GGC": ("G", 0.37, 29.4, 190240),
-    "GGA": ("G", 0.10, 7.8, 50396),
-    "GGG": ("G", 0.15, 11.6, 75120),
+    "TTT": ("F", 0.41, 15.2, 152),
+    "TTC": ("F", 0.59, 22.1, 221),
+    "TTA": ("L", 0.08, 7.1, 71),
+    "TTG": ("L", 0.10, 9.5, 95),
+    "CTT": ("L", 0.09, 8.5, 85),
+    "CTC": ("L", 0.11, 9.8, 98),
+    "CTA": ("L", 0.03, 3.2, 32),
+    "CTG": ("L", 0.59, 54.8, 548),
+    "ATT": ("I", 0.42, 24.2, 242),
+    "ATC": ("I", 0.52, 30.5, 305),
+    "ATA": ("I", 0.06, 3.5, 35),
+    "ATG": ("M", 1.00, 25.0, 250),
+    "GTT": ("V", 0.23, 16.8, 168),
+    "GTC": ("V", 0.22, 16.5, 165),
+    "GTA": ("V", 0.14, 10.1, 101),
+    "GTG": ("V", 0.41, 30.2, 302),
+    "TCT": ("S", 0.13, 7.2, 72),
+    "TCC": ("S", 0.16, 8.8, 88),
+    "TCA": ("S", 0.10, 5.6, 56),
+    "TCG": ("S", 0.14, 7.8, 78),
+    "CCT": ("P", 0.13, 5.8, 58),
+    "CCC": ("P", 0.09, 4.2, 42),
+    "CCA": ("P", 0.17, 7.5, 75),
+    "CCG": ("P", 0.61, 27.5, 275),
+    "ACT": ("T", 0.18, 10.5, 105),
+    "ACC": ("T", 0.45, 26.2, 262),
+    "ACA": ("T", 0.10, 5.8, 58),
+    "ACG": ("T", 0.27, 15.8, 158),
+    "GCT": ("A", 0.17, 16.2, 162),
+    "GCC": ("A", 0.30, 28.5, 285),
+    "GCA": ("A", 0.19, 17.8, 178),
+    "GCG": ("A", 0.34, 32.5, 325),
+    "TAT": ("Y", 0.40, 12.8, 128),
+    "TAC": ("Y", 0.60, 19.5, 195),
+    "TAA": ("*", 0.64, 1.8, 18),
+    "TAG": ("*", 0.07, 0.2, 2),
+    "CAT": ("H", 0.43, 9.5, 95),
+    "CAC": ("H", 0.57, 12.8, 128),
+    "CAA": ("Q", 0.25, 11.5, 115),
+    "CAG": ("Q", 0.75, 34.2, 342),
+    "AAT": ("N", 0.35, 13.5, 135),
+    "AAC": ("N", 0.65, 24.8, 248),
+    "AAA": ("K", 0.70, 34.8, 348),
+    "AAG": ("K", 0.30, 15.2, 152),
+    "GAT": ("D", 0.55, 30.2, 302),
+    "GAC": ("D", 0.45, 24.5, 245),
+    "GAA": ("E", 0.71, 42.5, 425),
+    "GAG": ("E", 0.29, 17.2, 172),
+    "TGT": ("C", 0.42, 4.2, 42),
+    "TGC": ("C", 0.58, 5.8, 58),
+    "TGA": ("*", 0.29, 0.8, 8),
+    "TGG": ("W", 1.00, 12.5, 125),
+    "CGT": ("R", 0.38, 22.8, 228),
+    "CGC": ("R", 0.41, 24.5, 245),
+    "CGA": ("R", 0.05, 3.2, 32),
+    "CGG": ("R", 0.10, 5.8, 58),
+    "AGT": ("S", 0.12, 6.5, 65),
+    "AGC": ("S", 0.34, 18.2, 182),
+    "AGA": ("R", 0.03, 2.0, 20),
+    "AGG": ("R", 0.02, 1.2, 12),
+    "GGT": ("G", 0.37, 27.2, 272),
+    "GGC": ("G", 0.44, 32.5, 325),
+    "GGA": ("G", 0.08, 6.2, 62),
+    "GGG": ("G", 0.11, 8.5, 85),
 }
 
 # Compute adaptiveness using shared utility
@@ -109,31 +119,32 @@ E_COLI_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(E_COLI_CODON_
 
 # ────────────────────────────────────────────────────────────
 # Legacy per-thousand codon usage (migrated from species.py)
-# Different source dataset from E_COLI_CODON_USAGE above.
-# Kept for backward compatibility with the species.py API.
+# Updated to match Sharp & Li (1987) reference values for
+# consistency with E_COLI_CODON_USAGE above.
+# Previously sourced from Kazusa; now aligned with Sharp & Li.
 # ────────────────────────────────────────────────────────────
 ECOLI_CODON_USAGE: dict[str, float] = {
-    "TTT": 17.6, "TTC": 20.3,
-    "TTA": 7.6, "TTG": 11.0, "CTT": 10.5, "CTC": 10.5, "CTA": 3.9, "CTG": 51.0,
-    "ATT": 29.8, "ATC": 25.1, "ATA": 4.2,
-    "ATG": 27.0,
-    "GTT": 18.3, "GTC": 15.0, "GTA": 10.8, "GTG": 27.8,
-    "TCT": 8.5, "TCC": 8.5, "TCA": 7.3, "TCG": 4.3, "AGT": 9.6, "AGC": 15.4,
-    "CCT": 7.0, "CCC": 5.5, "CCA": 8.4, "CCG": 23.2,
-    "ACT": 12.9, "ACC": 25.7, "ACA": 7.1, "ACG": 6.3,
-    "GCT": 18.5, "GCC": 27.1, "GCA": 20.2, "GCG": 7.4,
-    "TAT": 16.3, "TAC": 14.9,
-    "CAT": 13.5, "CAC": 9.8,
-    "CAA": 14.6, "CAG": 29.0,
-    "AAT": 17.1, "AAC": 21.3,
-    "AAA": 33.5, "AAG": 24.1,
-    "GAT": 31.0, "GAC": 21.4,
-    "GAA": 39.2, "GAG": 19.6,
-    "TGT": 5.1, "TGC": 5.5,
-    "TGG": 12.9,
-    "CGT": 20.0, "CGC": 21.5, "CGA": 3.5, "CGG": 5.4, "AGA": 2.1, "AGG": 1.2,
-    "GGT": 24.5, "GGC": 28.6, "GGA": 8.0, "GGG": 6.8,
-    "TAA": 2.0, "TAG": 0.3, "TGA": 1.1,
+    "TTT": 15.2, "TTC": 22.1,
+    "TTA": 7.1, "TTG": 9.5, "CTT": 8.5, "CTC": 9.8, "CTA": 3.2, "CTG": 54.8,
+    "ATT": 24.2, "ATC": 30.5, "ATA": 3.5,
+    "ATG": 25.0,
+    "GTT": 16.8, "GTC": 16.5, "GTA": 10.1, "GTG": 30.2,
+    "TCT": 7.2, "TCC": 8.8, "TCA": 5.6, "TCG": 7.8, "AGT": 6.5, "AGC": 18.2,
+    "CCT": 5.8, "CCC": 4.2, "CCA": 7.5, "CCG": 27.5,
+    "ACT": 10.5, "ACC": 26.2, "ACA": 5.8, "ACG": 15.8,
+    "GCT": 16.2, "GCC": 28.5, "GCA": 17.8, "GCG": 32.5,
+    "TAT": 12.8, "TAC": 19.5,
+    "CAT": 9.5, "CAC": 12.8,
+    "CAA": 11.5, "CAG": 34.2,
+    "AAT": 13.5, "AAC": 24.8,
+    "AAA": 34.8, "AAG": 15.2,
+    "GAT": 30.2, "GAC": 24.5,
+    "GAA": 42.5, "GAG": 17.2,
+    "TGT": 4.2, "TGC": 5.8,
+    "TGG": 12.5,
+    "CGT": 22.8, "CGC": 24.5, "CGA": 3.2, "CGG": 5.8, "AGA": 2.0, "AGG": 1.2,
+    "GGT": 27.2, "GGC": 32.5, "GGA": 6.2, "GGG": 8.5,
+    "TAA": 1.8, "TAG": 0.2, "TGA": 0.8,
 }
 
 # ────────────────────────────────────────────────────────────

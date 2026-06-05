@@ -96,6 +96,22 @@ _NUCLEOTIDE_ALPHABET_SIZE = 4
 # Default CAI weight for codons missing from adaptiveness tables
 _DEFAULT_CAI_WEIGHT = 0.01
 
+# Threshold protein length (in codons) for decomposed automaton encoding;
+# sequences longer than this use chunked automaton constraints instead of
+# a single large automaton for better solver performance
+_DECOMPOSED_AUTOMATON_CODON_THRESHOLD = 500
+
+# Threshold protein length (in codons) for reduced CAI scaling;
+# long proteins can cause integer overflow in the CP-SAT objective,
+# so we use a smaller scale factor
+_LONG_PROTEIN_CODON_THRESHOLD = 1000
+
+# Reduced CAI scaling factor for long proteins (avoids overflow)
+_CAI_SCALE_LONG = 1000
+
+# Chunk size (in nucleotides) for decomposed automaton encoding
+_AUTOMATON_CHUNK_SIZE = 600
+
 
 class ORTOOLSEngine:
     """OR-Tools CP-SAT solver engine for constraint-based gene optimization.
@@ -373,7 +389,15 @@ class ORTOOLSEngine:
             )
 
             # ── 9. Set CAI maximization objective ─────────────────────
-            self._set_cai_objective(cp_model, codon_vars, codon_domains, organism)
+            # Use reduced CAI scale for long proteins to avoid integer overflow
+            cai_scale = _CAI_SCALE_LONG if n_codons > _LONG_PROTEIN_CODON_THRESHOLD else _CAI_SCALE
+            if n_codons > _LONG_PROTEIN_CODON_THRESHOLD:
+                logger.info(
+                    "Long protein (%d codons): using reduced CAI scale=%d "
+                    "to avoid integer overflow",
+                    n_codons, cai_scale,
+                )
+            self._set_cai_objective(cp_model, codon_vars, codon_domains, organism, cai_scale)
 
         except Exception as build_exc:
             logger.error(
@@ -487,7 +511,7 @@ class ORTOOLSEngine:
                 cai=cai_val,
                 gc_content=gc_val,
                 solve_time_seconds=solve_time,
-                objective_value=obj_val / _CAI_SCALE,
+                objective_value=obj_val / cai_scale,
                 num_constraints=num_constraints,
                 num_variables=n_codons,
                 fallback_used=fallback,
@@ -529,13 +553,16 @@ class ORTOOLSEngine:
 
         else:
             # UNKNOWN status — timeout or other
-            # Try to get the best incumbent solution
+            # Try to extract any incumbent solution the solver may have found
+            # before timing out. Both OPTIMAL and FEASIBLE are already handled
+            # above; UNKNOWN means the solver could not prove feasibility or
+            # infeasibility within the time limit, but may still have a
+            # solution available.
             try:
-                bound = solver.BestObjectiveBound()
-                if bound > _NEGATIVE_INFINITY_THRESHOLD:
-                    sequence = self._extract_solution(
-                        solver, codon_vars, codon_domains, protein
-                    )
+                sequence = self._extract_solution(
+                    solver, codon_vars, codon_domains, protein
+                )
+                if sequence:
                     gc_val = self._compute_gc(sequence)
                     cai_val = self._compute_cai(sequence, protein, organism)
                     return SolverResult(
@@ -545,7 +572,7 @@ class ORTOOLSEngine:
                         cai=cai_val,
                         gc_content=gc_val,
                         solve_time_seconds=solve_time,
-                        objective_value=solver.ObjectiveValue() / _CAI_SCALE,
+                        objective_value=solver.ObjectiveValue() / cai_scale,
                         num_constraints=num_constraints,
                         num_variables=n_codons,
                         fallback_used=True,
@@ -747,13 +774,33 @@ class ORTOOLSEngine:
                 init_state, trans_list, final_states = dfa_to_ortools_format(
                     transition_table, accepting_states
                 )
-                try:
-                    cp_model.AddAutomaton(
-                        nucleotide_vars, init_state, final_states, trans_list
+
+                # For long sequences (>500aa), use decomposed (chunked) automaton
+                # encoding to avoid the performance issues of a single large
+                # automaton constraint on very long variable sequences.
+                use_decomposed = n_codons > _DECOMPOSED_AUTOMATON_CODON_THRESHOLD
+                if use_decomposed:
+                    max_pat_len = max(len(p) for p in all_patterns)
+                    overlap = max_pat_len - 1
+                    logger.info(
+                        "Using decomposed automaton encoding for long sequence "
+                        "(%d codons > %d threshold): %d patterns, "
+                        "chunk_size=%d, overlap=%d",
+                        n_codons, _DECOMPOSED_AUTOMATON_CODON_THRESHOLD,
+                        len(all_patterns), _AUTOMATON_CHUNK_SIZE, overlap,
                     )
-                    num_constraints += 1
-                except Exception as e:
-                    logger.warning("Failed to add composite automaton: %s", e)
+                    num_constraints += self._add_automaton_constraint_decomposed(
+                        cp_model, nucleotide_vars, init_state, final_states,
+                        trans_list, overlap,
+                    )
+                else:
+                    try:
+                        cp_model.AddAutomaton(
+                            nucleotide_vars, init_state, final_states, trans_list
+                        )
+                        num_constraints += 1
+                    except Exception as e:
+                        logger.warning("Failed to add composite automaton: %s", e)
 
         # T-run constraint: add as separate automaton
         # (This is a different type of constraint — it tracks consecutive
@@ -767,14 +814,91 @@ class ORTOOLSEngine:
                 init_state, trans_list, final_states = dfa_to_ortools_format(
                     trun_trans, trun_accepting
                 )
-                try:
-                    cp_model.AddAutomaton(
-                        nucleotide_vars, init_state, final_states, trans_list
+                use_decomposed = n_codons > _DECOMPOSED_AUTOMATON_CODON_THRESHOLD
+                if use_decomposed:
+                    overlap = _MAX_T_RUN_LENGTH  # T-run: forbid max_t+1 consecutive T's
+                    num_constraints += self._add_automaton_constraint_decomposed(
+                        cp_model, nucleotide_vars, init_state, final_states,
+                        trans_list, overlap,
                     )
-                    num_constraints += 1
-                except Exception as e:
-                    logger.warning("Failed to add T-run automaton: %s", e)
+                else:
+                    try:
+                        cp_model.AddAutomaton(
+                            nucleotide_vars, init_state, final_states, trans_list
+                        )
+                        num_constraints += 1
+                    except Exception as e:
+                        logger.warning("Failed to add T-run automaton: %s", e)
 
+        return num_constraints
+
+    # ==================================================================
+    # Helper: Decomposed (chunked) automaton constraint for long sequences
+    # ==================================================================
+
+    def _add_automaton_constraint_decomposed(
+        self,
+        cp_model: Any,
+        nucleotide_vars: list[Any],
+        init_state: int,
+        final_states: list[int],
+        trans_list: list[tuple[int, int, int]],
+        overlap: int,
+    ) -> int:
+        """Add automaton constraints in decomposed (chunked) form for long sequences.
+
+        Splits the nucleotide variable sequence into overlapping chunks and
+        adds a separate automaton constraint for each chunk. The overlap
+        ensures that forbidden patterns spanning chunk boundaries are detected
+        by at least one chunk.
+
+        This approach is essential for sequences > 500aa where a single large
+        automaton constraint on the entire variable sequence causes poor solver
+        performance due to the large propagation domain.
+
+        Args:
+            cp_model: CpModel instance.
+            nucleotide_vars: List of nucleotide IntVar variables.
+            init_state: Initial state of the DFA.
+            final_states: List of accepting (final) states.
+            trans_list: List of (from_state, symbol, to_state) transitions.
+            overlap: Number of overlapping nucleotides between consecutive
+                chunks. Should be at least (max_pattern_length - 1) to
+                catch patterns that span chunk boundaries.
+
+        Returns:
+            Number of automaton constraints added.
+        """
+        n_nucleotides = len(nucleotide_vars)
+        chunk_size = _AUTOMATON_CHUNK_SIZE
+        stride = chunk_size - overlap
+        num_constraints = 0
+
+        start = 0
+        while start < n_nucleotides:
+            end = min(start + chunk_size, n_nucleotides)
+            chunk_vars = nucleotide_vars[start:end]
+
+            try:
+                cp_model.AddAutomaton(
+                    chunk_vars, init_state, final_states, trans_list
+                )
+                num_constraints += 1
+            except Exception as e:
+                logger.warning(
+                    "Failed to add decomposed automaton chunk [%d:%d]: %s",
+                    start, end, e,
+                )
+
+            if end >= n_nucleotides:
+                break
+            start += stride
+
+        logger.info(
+            "Decomposed automaton: %d chunks for %d nucleotides "
+            "(chunk_size=%d, stride=%d, overlap=%d)",
+            num_constraints, n_nucleotides, chunk_size, stride, overlap,
+        )
         return num_constraints
 
     # ==================================================================
@@ -998,11 +1122,12 @@ class ORTOOLSEngine:
         codon_vars: list[Any],
         codon_domains: list[list[str]],
         organism: str,
+        cai_scale: int = _CAI_SCALE,
     ) -> None:
         """Set the CAI maximization objective on the CP-SAT model.
 
         For each codon position, computes the log(CAI) value for each possible
-        codon assignment, scales to integers (×_CAI_SCALE), and creates
+        codon assignment, scales to integers (×cai_scale), and creates
         auxiliary variables linked via element constraints. The objective is
         to maximize the sum of all CAI contribution terms.
 
@@ -1011,11 +1136,18 @@ class ORTOOLSEngine:
         where freq is the per-thousand usage frequency. The objective
         maximizes Σ log(w(c_i)).
 
+        The maximization objective is ALWAYS set, even when hard constraints
+        dominate, to ensure the solver finds the FEASIBLE solution with
+        MAXIMUM CAI rather than an arbitrary feasible solution.
+
         Args:
             cp_model: CpModel instance.
             codon_vars: List of codon IntVar variables.
             codon_domains: Parallel list of codon string lists.
             organism: Target organism name (e.g. "Homo_sapiens").
+            cai_scale: Scaling factor for converting float log-CAI to integer
+                objective. Use a smaller value (_CAI_SCALE_LONG=1000) for long
+                proteins (>1000aa) to avoid integer overflow.
         """
         adaptiveness = CODON_ADAPTIVENESS_TABLES.get(organism, {})
         cai_terms: list = []
@@ -1027,7 +1159,7 @@ class ORTOOLSEngine:
                 w = adaptiveness.get(codon, _DEFAULT_CAI_WEIGHT)  # Small default for missing data
                 if w <= 0:
                     w = _DEFAULT_CAI_WEIGHT  # Avoid log(0)
-                scaled = int(round(math.log(w) * _CAI_SCALE))
+                scaled = int(round(math.log(w) * cai_scale))
                 cai_values.append(scaled)
 
             # Create auxiliary variable and link via element constraint
@@ -1044,8 +1176,15 @@ class ORTOOLSEngine:
 
             cai_terms.append(cai_var)
 
+        # Always set the CAI maximization objective to ensure the solver
+        # seeks the FEASIBLE solution with MAXIMUM CAI, even when hard
+        # constraints dominate. Without an objective, the solver may return
+        # any arbitrary feasible solution with suboptimal CAI.
         if cai_terms:
             cp_model.Maximize(sum(cai_terms))
+        else:
+            # Edge case: no codon positions — set a trivial objective
+            cp_model.Maximize(0)
 
     # ==================================================================
     # Helper: Solution extraction

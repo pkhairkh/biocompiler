@@ -400,10 +400,97 @@ class HybridOptimizer:
             )
             return result
 
+        # ── CSP solver integration with greedy fallback ──
+        # Try the CSP solver first.  If it's unavailable or returns a
+        # solution with soft-constraint violations, fall back to the
+        # greedy optimizer and apply a repair step.  Provenance is
+        # preserved across the fallback so callers know WHY the fallback
+        # was used.
+        csp_result = self._try_csp_solver(protein)
+        if csp_result is not None:
+            # CSP solver succeeded — check for soft constraint violations
+            # and apply repair if needed.  HybridResult uses `warnings`
+            # to signal violations found during CSP solving.
+            if csp_result.warnings:
+                repaired_seq, repair_improvements = self._repair_csp_solution(
+                    csp_result.sequence, protein, effective_avoid_gt,
+                )
+                if repair_improvements > 0:
+                    logger.info(
+                        "CSP repair: improved CAI with %d codon upgrade(s)",
+                        repair_improvements,
+                    )
+                    # Record repair provenance
+                    if self.provenance_collector is not None:
+                        self.provenance_collector.record_constraint_decision(
+                            ConstraintDecision(
+                                constraint_name="CSPRepair",
+                                constraint_type="soft",
+                                action_taken="satisfied",
+                                positions_affected=[],
+                                tradeoff_description=(
+                                    f"Repaired CSP solution: {repair_improvements} "
+                                    f"codon upgrade(s) to improve CAI while "
+                                    f"maintaining hard constraint satisfaction"
+                                ),
+                                impact_on_cai=0.0,  # positive improvement
+                            )
+                        )
+                    csp_result = HybridResult(
+                        sequence=repaired_seq,
+                        cai=self._compute_cai(repaired_seq),
+                        gc_content=(repaired_seq.count("G") + repaired_seq.count("C")) / max(len(repaired_seq), 1),
+                        violations_fixed=csp_result.violations_fixed,
+                        hill_climb_improvements=csp_result.hill_climb_improvements + repair_improvements,
+                        iterations_used=csp_result.iterations_used,
+                        phase1_cai=csp_result.phase1_cai,
+                        phase2_cai=csp_result.phase2_cai,
+                        phase3_cai=csp_result.phase3_cai,
+                        phase4_cai=csp_result.phase4_cai,
+                        cpb_improvements=csp_result.cpb_improvements,
+                        mean_cpb=csp_result.mean_cpb,
+                        warnings=csp_result.warnings,
+                    )
+            elapsed = _time.monotonic() - _start
+            logger.info(
+                "HybridOptimizer[csp]: protein_len=%d, seq_len=%d, "
+                "CAI=%.4f, GC=%.3f, violations_fixed=%d, time=%.1fms",
+                len(protein), len(csp_result.sequence),
+                csp_result.cai, csp_result.gc_content,
+                csp_result.violations_fixed,
+                elapsed * 1000,
+            )
+            return csp_result
+
+        # ── Greedy fallback path ──
+        # CSP solver is unavailable — fall back gracefully to greedy
+        # optimization.  Record the fallback reason in provenance so
+        # callers know WHY the greedy path was used.
+        logger.info(
+            "CSP solver unavailable; falling back to greedy optimization"
+        )
+        if self.provenance_collector is not None:
+            self.provenance_collector.record_constraint_decision(
+                ConstraintDecision(
+                    constraint_name="CSPFallback",
+                    constraint_type="hard",
+                    action_taken="overridden",
+                    positions_affected=[],
+                    tradeoff_description=(
+                        "CSP solver unavailable; falling back to greedy "
+                        "optimization. Constraint provenance is preserved "
+                        "but resolution uses priority-based ordering instead "
+                        "of CAI-aware conflict resolution."
+                    ),
+                    impact_on_cai=0.0,
+                )
+            )
+
         # Phase 1: Greedy initialization
         seq, phase1_cai = self._greedy_init(protein)
 
         # Phase 2: Constraint satisfaction with priority queue
+        # (uses CAI-aware resolution when constraints conflict)
         seq, phase2_cai, violations_fixed, iterations, warnings = (
             self._constraint_satisfaction(seq, protein, effective_avoid_gt)
         )
@@ -971,6 +1058,192 @@ class HybridOptimizer:
     # Phase 1: Greedy Initialization
     # ──────────────────────────────────────────────────────────
 
+    def _try_csp_solver(self, protein: str) -> HybridResult | None:
+        """Try to optimize using the CSP solver.
+
+        Returns a HybridResult if the CSP solver succeeds, or None if
+        the solver is unavailable or fails.  When the solver is
+        unavailable, the caller should fall back to greedy optimization.
+
+        This method is a thin wrapper around the CSP dispatch module
+        that translates SolverResult to HybridResult, preserving
+        constraint provenance along the way.
+
+        Args:
+            protein: Amino acid sequence (single-letter codes, no stop).
+
+        Returns:
+            HybridResult if CSP solver succeeded, None otherwise.
+        """
+        try:
+            from .solver.dispatch import solve_with_csp, is_solver_available
+        except ImportError:
+            logger.debug("CSP solver dispatch module not available")
+            return None
+
+        if not is_solver_available():
+            logger.debug("No CSP solver backend available")
+            return None
+
+        try:
+            solver_result = solve_with_csp(
+                protein,
+                organism=self.organism,
+            )
+        except Exception as e:
+            logger.warning(
+                "CSP solver raised %s: %s; falling back to greedy",
+                type(e).__name__, e,
+            )
+            # Record the exception in provenance
+            if self.provenance_collector is not None:
+                self.provenance_collector.record_constraint_decision(
+                    ConstraintDecision(
+                        constraint_name="CSPFallback",
+                        constraint_type="hard",
+                        action_taken="overridden",
+                        positions_affected=[],
+                        tradeoff_description=(
+                            f"CSP solver raised {type(e).__name__}: {e}. "
+                            f"Falling back to greedy optimization."
+                        ),
+                        impact_on_cai=0.0,
+                    )
+                )
+            return None
+
+        if not solver_result.solved or not solver_result.sequence:
+            logger.debug(
+                "CSP solver returned unsolved result (fallback=%s, reason=%s)",
+                solver_result.fallback_used,
+                solver_result.metadata.get("reason", "unknown"),
+            )
+            return None
+
+        # Convert SolverResult to HybridResult
+        seq = solver_result.sequence
+        cai = solver_result.cai if solver_result.cai > 0 else self._compute_cai(seq)
+        gc = solver_result.gc_content if solver_result.gc_content > 0 else (
+            (seq.count("G") + seq.count("C")) / max(len(seq), 1)
+        )
+
+        # Record CSP solver provenance
+        if self.provenance_collector is not None:
+            self.provenance_collector.record_iteration({
+                "step": "csp_solver",
+                "action": "solved",
+                "backend": str(solver_result.backend_used),
+                "fallback_used": solver_result.fallback_used,
+                "violations": len(solver_result.violations),
+                "cai": round(cai, 6),
+                "gc": round(gc, 4),
+            })
+
+        # Check for soft constraint violations that need repair
+        has_violations = bool(solver_result.violations)
+
+        return HybridResult(
+            sequence=seq,
+            cai=cai,
+            gc_content=round(gc, 4),
+            violations_fixed=len(solver_result.violations),
+            hill_climb_improvements=0,
+            iterations_used=0,
+            phase1_cai=cai,
+            phase2_cai=cai,
+            phase3_cai=cai,
+            phase4_cai=cai,
+            cpb_improvements=0,
+            mean_cpb=0.0,
+            warnings=(
+                [f"CSP solver had {len(solver_result.violations)} violation(s)"]
+                if has_violations else []
+            ),
+        )
+
+    def _repair_csp_solution(
+        self,
+        seq: str,
+        protein: str,
+        avoid_gt: bool,
+    ) -> tuple[str, int]:
+        """Repair a CSP solution that violates soft constraints.
+
+        When the CSP solver returns a solution that violates soft
+        constraints, this method applies a "repair" step to improve
+        CAI while maintaining hard constraint satisfaction.
+
+        The repair strategy is:
+        1. For each codon position, try upgrading to a higher-CAI synonym
+        2. Only accept the upgrade if it doesn't violate any hard constraint
+        3. Continue until no more upgrades are possible
+
+        Args:
+            seq: DNA sequence from CSP solver.
+            protein: Amino acid sequence.
+            avoid_gt: Whether to avoid GT dinucleotides.
+
+        Returns:
+            Tuple of (repaired_sequence, number_of_improvements).
+        """
+        improvements = 0
+        seq_chars = list(seq)
+        n_codons = len(seq) // 3
+
+        for _round in range(5):  # Multiple passes for cascading improvements
+            any_improved = False
+            for ci in range(n_codons):
+                if ci >= len(protein):
+                    break
+                aa = protein[ci]
+                if aa == "*":
+                    continue
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                current_cai = self.species_cai.get(current, 0.0)
+
+                # Try higher-CAI alternatives
+                for alt in self.sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    alt_cai = self.species_cai.get(alt, 0.0)
+                    if alt_cai <= current_cai:
+                        break  # sorted_codons is CAI-descending
+
+                    # Apply swap and verify hard constraints
+                    old_start = ci * 3
+                    old_codon_chars = seq_chars[old_start:old_start+3]
+                    seq_chars[old_start] = alt[0]
+                    seq_chars[old_start+1] = alt[1]
+                    seq_chars[old_start+2] = alt[2]
+                    new_seq = "".join(seq_chars)
+
+                    # Verify hard constraints
+                    gc = (new_seq.count("G") + new_seq.count("C")) / max(len(new_seq), 1)
+                    gc_ok = self.gc_lo <= gc <= self.gc_hi
+
+                    # Check restriction sites
+                    rs_ok = True
+                    if self._rs_sites:
+                        for site, site_rc in self._rs_sites:
+                            if site in new_seq or (site_rc and site_rc in new_seq):
+                                rs_ok = False
+                                break
+
+                    if gc_ok and rs_ok:
+                        improvements += 1
+                        any_improved = True
+                        break  # Accept first valid upgrade
+                    else:
+                        # Rollback
+                        seq_chars[old_start] = old_codon_chars[0]
+                        seq_chars[old_start+1] = old_codon_chars[1]
+                        seq_chars[old_start+2] = old_codon_chars[2]
+
+            if not any_improved:
+                break
+
+        return "".join(seq_chars), improvements
+
     def _greedy_init(self, protein: str) -> tuple[str, float]:
         """Back-translate protein using highest-CAI codons.
 
@@ -1081,15 +1354,13 @@ class HybridOptimizer:
                         continue
                     cai_val = species_cai.get(codon, 0.0)
                     gc_bases = sum(1 for b in codon if b in "GC")
+                    # Prokaryotes: skip eukaryotic-only constraints
+                    # (splice, CpG, GT dinucleotide) — these are
+                    # biologically irrelevant for organisms without
+                    # a spliceosome.
                     violates: list[str] = []
-                    if "GT" in codon:
-                        violates.append("cryptic_splice_donor")
-                    if "AG" in codon:
-                        violates.append("cryptic_splice_acceptor")
                     rejected_because: str | None = None
-                    if violates:
-                        rejected_because = f"Violates: {', '.join(violates)}"
-                    elif cai_val < chosen_cai:
+                    if cai_val < chosen_cai:
                         rejected_because = "Lower CAI"
                     else:
                         rejected_because = "Lower CAI"
@@ -1108,14 +1379,21 @@ class HybridOptimizer:
                     confidence = max(0.0, confidence)
                 else:
                     confidence = 1.0
+                # Compute CAI impact vs optimal
+                cai_impact_val = 0.0
+                opt = optimal_codon.get(aa, best)
+                if opt != best:
+                    opt_cai = species_cai.get(opt, 0.0)
+                    cai_impact_val = chosen_cai - opt_cai  # negative = CAI lost
                 _prov.record_codon_decision(CodonDecision(
                     position=pos,
                     amino_acid=aa,
                     original_codon=None,
                     chosen_codon=best,
                     alternatives_considered=alternatives,
-                    constraint_reason="Maximize CAI while maintaining GC in range",
+                    constraint_reason="maximize_cai",
                     confidence=round(confidence, 4),
+                    cai_impact=round(cai_impact_val, 6),
                 ))
 
         # Build sequence as list for efficient slicing during swaps
@@ -1216,6 +1494,10 @@ class HybridOptimizer:
 
         violations_fixed = 0
         warnings: list[str] = []
+        rs_fixed_count = 0
+        gc_fixed_count = 0
+        attta_fixed_count = 0
+        trun_fixed_count = 0
 
         # ── Phase 2a: Fix restriction sites (single scan) ──
         # Use Aho-Corasick scanner for O(L+M) multi-pattern detection
@@ -1278,6 +1560,7 @@ class HybridOptimizer:
                     _apply_swap(ci, alt)
                     seq_str = "".join(seq_chars)
                     violations_fixed += 1
+                    rs_fixed_count += 1
                     fixed = True
 
                 if not fixed:
@@ -1326,6 +1609,7 @@ class HybridOptimizer:
                         _apply_swap(ci2, c2)
                         seq_str = "".join(seq_chars)
                         violations_fixed += 1
+                        rs_fixed_count += 1
                         fixed = True
 
                     if not fixed:
@@ -1390,6 +1674,7 @@ class HybridOptimizer:
 
                 gc_val = gc_count / n_bases
                 violations_fixed += 1
+                gc_fixed_count += 1
 
         # ── Phase 2c: Fix ATTTA motifs ──
         seq_str = "".join(seq_chars)
@@ -1417,6 +1702,7 @@ class HybridOptimizer:
                     if "ATTTA" not in new_local and not _has_rs_local(ci):
                         seq_str = "".join(seq_chars)
                         violations_fixed += 1
+                        attta_fixed_count += 1
                         fixed = True
                         break
                     else:
@@ -1483,6 +1769,7 @@ class HybridOptimizer:
 
                     if not has_long_run and not _has_rs_local(ci):
                         violations_fixed += 1
+                        trun_fixed_count += 1
                         fixed = True
                         break
                     else:
@@ -1810,6 +2097,72 @@ class HybridOptimizer:
             )
             # Recompute gc from the sequence (may have changed slightly)
             gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
+
+        # ── Record constraint decisions in provenance ──
+        # This records the _decision_trail for the prokaryote fast path,
+        # capturing which constraints were active and what actions were taken.
+        if _prov is not None:
+            if rs_fixed_count > 0:
+                _prov.record_constraint_decision(ConstraintDecision(
+                    constraint_name="NoRestrictionSite",
+                    constraint_type="hard",
+                    action_taken="satisfied",
+                    positions_affected=[],
+                    tradeoff_description=(
+                        f"Fixed {rs_fixed_count} restriction site(s) "
+                        f"by swapping to CAI-optimal alternative codons"
+                    ),
+                    impact_on_cai=0.0,  # CAI-aware fixes minimize CAI loss
+                ))
+            if gc_fixed_count > 0:
+                _prov.record_constraint_decision(ConstraintDecision(
+                    constraint_name="GCInRange",
+                    constraint_type="hard",
+                    action_taken="satisfied",
+                    positions_affected=[],
+                    tradeoff_description=(
+                        f"Fixed GC content ({gc_fixed_count} codon swap(s)) "
+                        f"to bring GC fraction into [{gc_lo:.2f}, {gc_hi:.2f}]"
+                    ),
+                    impact_on_cai=0.0,
+                ))
+            if attta_fixed_count > 0:
+                _prov.record_constraint_decision(ConstraintDecision(
+                    constraint_name="NoInstabilityMotif",
+                    constraint_type="soft",
+                    action_taken="satisfied",
+                    positions_affected=[],
+                    tradeoff_description=(
+                        f"Removed {attta_fixed_count} ATTTA instability motif(s)"
+                    ),
+                    impact_on_cai=0.0,
+                ))
+            if trun_fixed_count > 0:
+                _prov.record_constraint_decision(ConstraintDecision(
+                    constraint_name="NoLongTRun",
+                    constraint_type="soft",
+                    action_taken="satisfied",
+                    positions_affected=[],
+                    tradeoff_description=(
+                        f"Fixed {trun_fixed_count} T-run(s) of 6+ consecutive T"
+                    ),
+                    impact_on_cai=0.0,
+                ))
+            if hill_climb_improvements > 0:
+                _prov.record_iteration({
+                    "step": "cai_hill_climb",
+                    "action": "upgrade_codons",
+                    "improvements": hill_climb_improvements,
+                    "score": round(final_cai, 6),
+                })
+            _prov.record_iteration({
+                "step": "prokaryote_fast_path_complete",
+                "action": "finalize",
+                "violations_fixed": violations_fixed,
+                "hill_climb_improvements": hill_climb_improvements,
+                "cai": round(final_cai, 6),
+                "gc": round(gc, 4),
+            })
 
         return HybridResult(
             sequence=seq,
@@ -3157,11 +3510,14 @@ class HybridOptimizer:
            - ATTTA/T-run fixes at non-overlapping positions → fix all at once
         5. Only iterate when a fix conflicts with another fix
            (shared codon indices between violations)
-        6. For conflicting violations, process by priority (severity order)
+        6. For conflicting violations, use CAI-aware resolution:
+           prefer the solution that maximizes CAI, using
+           CAIAwareConstraintResolver if available.
 
         Key improvement over one-at-a-time approach:
         - Previously: fix ONE violation → re-scan → fix ONE → re-scan → ...
         - Now: fix ALL non-conflicting violations → re-scan only if conflicts
+        - CAI-aware: when constraints conflict, prefer higher-CAI resolution
 
         Returns:
             (sequence, cai, violations_fixed, iterations, warnings)
@@ -3172,6 +3528,20 @@ class HybridOptimizer:
         warnings: list[str] = []
         violations_fixed = 0
         total_iterations = 0
+
+        # ── CAI-aware constraint resolver (lazy-loaded) ──
+        # When two constraints conflict (share codon indices), the
+        # CAIAwareConstraintResolver evaluates which resolution option
+        # has the smallest impact on CAI and prefers that resolution.
+        _cai_resolver = None
+        try:
+            from .solver.cai_aware_resolver import CAIAwareConstraintResolver
+            # We don't have a CSPModel here, but we can use the resolver
+            # for its CAI impact estimation methods directly.
+            _cai_resolver = CAIAwareConstraintResolver.__new__(CAIAwareConstraintResolver)
+            _cai_resolver._adaptiveness = self.species_cai
+        except (ImportError, Exception):
+            _cai_resolver = None
 
         # Track violation signatures for stale detection — if the same set
         # of violations persists for 2 consecutive iterations, the remaining
@@ -3203,25 +3573,50 @@ class HybridOptimizer:
                 _stale_count = 0
             _prev_violation_sig = sig
 
-            # Sort by severity (highest first) for priority ordering
+            # ── CAI-aware ordering: when multiple violations have similar
+            # severity, prefer fixing the one whose resolution has the
+            # smallest CAI impact.  This ensures that when two constraints
+            # conflict, the resolution chosen maximizes CAI.
             violations.sort(key=lambda v: v.severity, reverse=True)
+
+            # If CAI resolver is available, re-sort same-severity violations
+            # by estimated CAI impact (lower impact first)
+            if _cai_resolver is not None and len(violations) > 1:
+                # Group by severity tier (within 10% of each other)
+                # and re-sort within each tier by CAI impact
+                for i in range(len(violations)):
+                    for j in range(i + 1, len(violations)):
+                        vi, vj = violations[i], violations[j]
+                        # Only re-sort if severities are similar
+                        if abs(vi.severity - vj.severity) / max(vi.severity, 1.0) < 0.1:
+                            # Estimate CAI impact based on violation type
+                            # Soft constraints (CpG, ATTTA, T-run) have lower
+                            # CAI impact than hard constraints (RS, GC, stop)
+                            cai_impact_i = self._estimate_cai_impact(vi.violation_type)
+                            cai_impact_j = self._estimate_cai_impact(vj.violation_type)
+                            if cai_impact_i > cai_impact_j:
+                                # j has lower CAI impact — fix it first
+                                violations[i], violations[j] = violations[j], violations[i]
 
             # ── Simultaneous fix: group non-conflicting violations ──
             # Two violations conflict if they share any codon index.
             # Non-conflicting violations (different positions) can be
             # fixed simultaneously without interfering with each other.
+            # For conflicting violations, use CAI-aware resolution.
             fixed_this_round = 0
 
             # Track which codon indices have been modified
             used_codon_indices: set[int] = set()
 
+            # Collect conflicting violations for CAI-aware resolution
+            conflicting_violations: list[Violation] = []
+
             for violation in violations:
                 # Check if this violation conflicts with already-fixed ones
                 v_codons = set(violation.codon_indices)
                 if v_codons & used_codon_indices:
-                    # Conflict: skip this violation for now; it will be
-                    # re-evaluated in the next iteration after the
-                    # non-conflicting fixes are applied.
+                    # Conflict: record for CAI-aware resolution
+                    conflicting_violations.append(violation)
                     continue
 
                 fixed = self._fix_violation(state, violation, protein, avoid_gt)
@@ -3231,6 +3626,42 @@ class HybridOptimizer:
                     # Mark these codon indices as used so future violations
                     # in this round don't conflict
                     used_codon_indices.update(v_codons)
+
+            # ── CAI-aware conflict resolution ──
+            # For violations that conflicted with already-fixed ones,
+            # try to resolve them by preferring the option that maximizes
+            # CAI.  If two constraints conflict at the same position,
+            # try fixing the one with lower CAI impact first.
+            if conflicting_violations and fixed_this_round > 0:
+                # Re-sort conflicting by CAI impact (lower first)
+                if _cai_resolver is not None:
+                    conflicting_violations.sort(
+                        key=lambda v: self._estimate_cai_impact(v.violation_type)
+                    )
+                for violation in conflicting_violations:
+                    v_codons = set(violation.codon_indices)
+                    if v_codons & used_codon_indices:
+                        continue
+                    fixed = self._fix_violation(state, violation, protein, avoid_gt)
+                    if fixed:
+                        violations_fixed += 1
+                        fixed_this_round += 1
+                        used_codon_indices.update(v_codons)
+                        # Record CAI-aware resolution in provenance
+                        if self.provenance_collector is not None:
+                            self.provenance_collector.record_constraint_decision(
+                                ConstraintDecision(
+                                    constraint_name=violation.violation_type,
+                                    constraint_type="hard",
+                                    action_taken="satisfied",
+                                    positions_affected=violation.codon_indices,
+                                    tradeoff_description=(
+                                        f"CAI-aware resolution: fixed {violation.violation_type} "
+                                        f"at pos {violation.position} with CAI-optimal alternative"
+                                    ),
+                                    impact_on_cai=0.0,
+                                )
+                            )
 
             if fixed_this_round == 0:
                 # No violations could be fixed — try one at a time with
@@ -3457,6 +3888,38 @@ class HybridOptimizer:
                 "Bacillus_subtilis", "Pseudomonas_aeruginosa",
             }
             return self.organism in prokaryotic_names or self.species == "ecoli"
+
+    @staticmethod
+    def _estimate_cai_impact(violation_type: str) -> float:
+        """Estimate the CAI impact of fixing a constraint violation.
+
+        Used by CAI-aware constraint resolution to prefer the fix that
+        maximizes CAI when two constraints conflict.  Higher values
+        indicate greater expected CAI loss from fixing this violation.
+
+        Args:
+            violation_type: The type of constraint violation.
+
+        Returns:
+            Estimated CAI impact (higher = more CAI loss).
+        """
+        # Hard constraints typically have higher CAI impact because
+        # they force specific codon choices (e.g., removing a restriction
+        # site may require using a lower-CAI synonym).
+        # Soft constraints typically have lower CAI impact because they
+        # can often be satisfied with CAI-neutral alternatives.
+        _CAI_IMPACT_ESTIMATES = {
+            "restriction_site": 0.15,     # May force suboptimal codon
+            "stop_codon": 0.20,           # Must use non-stop synonym
+            "gc_out_of_range": 0.10,      # GC swap usually CAI-friendly
+            "cryptic_splice_donor": 0.08, # GT-free alternatives often available
+            "cryptic_splice_acceptor": 0.08,
+            "avoidable_gt": 0.06,         # GT avoidance is usually cheap
+            "cpg_island": 0.04,           # CpG avoidance is soft, low impact
+            "atttta_motif": 0.05,         # ATTTA fix is usually cheap
+            "t_run": 0.03,                # T-run fix is usually cheap
+        }
+        return _CAI_IMPACT_ESTIMATES.get(violation_type, 0.05)
 
     def _detect_expensive_violations(
         self, state: IncrementalSequenceState

@@ -31,6 +31,9 @@ from biocompiler.immunogenicity import (
     score_peptide_pssm,
     binding_score_to_ic50,
     classify_binding,
+    scan_peptides,
+    DEFAULT_MHC_I_ALLELES,
+    DEFAULT_MHC_II_ALLELES,
     ImmunogenicityResult,
     EpitopePredictionResult,
     MHCPredictionResult,
@@ -108,14 +111,14 @@ class TestEvaluateLowImmunogenicityExtended:
     def test_returns_type_check_result(self):
         """Every call must return a TypeCheckResult."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert isinstance(result, TypeCheckResult)
 
     def test_predicate_name(self):
         """Predicate name must be 'LowImmunogenicity'."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.predicate == "LowImmunogenicity"
 
@@ -123,7 +126,7 @@ class TestEvaluateLowImmunogenicityExtended:
         """Verdict must be one of the five-valued verdicts."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN, EGFP, SOLUBLE_PROTEIN, SINGLE_AA]:
             result = evaluate_low_immunogenicity(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS,
             )
             assert result.verdict in VALID_VERDICTS_5, (
                 f"Verdict {result.verdict} not in VALID_VERDICTS_5 for protein of length {len(protein)}"
@@ -131,7 +134,7 @@ class TestEvaluateLowImmunogenicityExtended:
 
     def test_empty_protein_returns_uncertain(self):
         """Empty protein sequence should return UNCERTAIN."""
-        result = evaluate_low_immunogenicity(PLACEHOLDER_DNA, "", HOMO_SAPIENS)
+        result = evaluate_low_immunogenicity("", PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False)
         assert result.verdict == Verdict.UNCERTAIN
         assert result.violation is not None
         assert "Empty" in result.violation
@@ -139,7 +142,7 @@ class TestEvaluateLowImmunogenicityExtended:
     def test_derivation_contains_score_breakdown(self):
         """Derivation must contain immunogenicity score details."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         assert result.derivation is not None
         assert isinstance(result.derivation, list)
@@ -154,7 +157,7 @@ class TestEvaluateLowImmunogenicityExtended:
     def test_violation_absent_on_pass(self):
         """PASS/LIKELY_PASS should have no violation."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, SOLUBLE_PROTEIN, HOMO_SAPIENS,
+            SOLUBLE_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         if result.verdict in (Verdict.PASS, Verdict.LIKELY_PASS):
             assert result.violation is None
@@ -162,7 +165,7 @@ class TestEvaluateLowImmunogenicityExtended:
     def test_violation_present_on_fail(self):
         """FAIL/LIKELY_FAIL should have a violation message."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         if result.verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
             assert result.violation is not None
@@ -172,11 +175,11 @@ class TestEvaluateLowImmunogenicityExtended:
         """Custom threshold kwarg should change verdict boundaries."""
         # With very permissive threshold, even moderate proteins should pass
         result_permissive = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS, threshold=0.9,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, threshold=0.9, self_protein=False,
         )
         # With very strict threshold, most proteins should fail
         result_strict = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS, threshold=0.05,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, threshold=0.05, self_protein=False,
         )
         # The strict threshold should produce a worse or equal verdict
         assert result_strict.verdict.value <= result_permissive.verdict.value, (
@@ -187,7 +190,7 @@ class TestEvaluateLowImmunogenicityExtended:
         """Derivation score must be in [0, 1]."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN, EGFP]:
             result = evaluate_low_immunogenicity(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
             )
             score = result.derivation[0]["score"]
             assert 0.0 <= score <= 1.0, (
@@ -197,14 +200,14 @@ class TestEvaluateLowImmunogenicityExtended:
     def test_single_amino_acid(self):
         """Single AA protein should return a valid verdict."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, SINGLE_AA, HOMO_SAPIENS,
+            SINGLE_AA, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.verdict in VALID_VERDICTS_5
 
     def test_all_alanine_protein(self):
         """Low-complexity all-Ala protein should produce a valid result."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, ALL_ALANINE, HOMO_SAPIENS,
+            ALL_ALANINE, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         assert result.verdict in VALID_VERDICTS_5
         # All-Ala has very low antigenicity — likely low immunogenicity
@@ -217,29 +220,29 @@ class TestEvaluateNoStrongTCellEpitopeExtended:
 
     def test_returns_type_check_result(self):
         result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert isinstance(result, TypeCheckResult)
 
     def test_predicate_name(self):
         result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.predicate == "NoStrongTCellEpitope"
 
     def test_empty_protein_returns_uncertain(self):
-        result = evaluate_no_strong_t_cell_epitope(PLACEHOLDER_DNA, "", HOMO_SAPIENS)
+        result = evaluate_no_strong_t_cell_epitope("", PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
         assert result.verdict == Verdict.UNCERTAIN
         assert "Empty" in result.violation
 
     def test_derivation_contains_epitope_counts(self):
         """Derivation must contain total and strong epitope counts."""
         result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         assert result.derivation is not None
         step = result.derivation[0]
-        assert step["step"] == "predict_t_cell_epitopes"
+        assert step["step"] == "scan_peptides_offline"
         assert "total" in step
         assert "strong" in step
         assert isinstance(step["strong"], int)
@@ -248,13 +251,13 @@ class TestEvaluateNoStrongTCellEpitopeExtended:
     def test_custom_max_strong(self):
         """Custom max_strong kwarg should relax the pass threshold."""
         result_default = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         result_relaxed = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS, max_strong=10,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, max_strong=10, source_organism="foreign",
         )
         # Relaxed threshold should produce same or better verdict
-        assert result_relaxed.verdict.value >= result_default.verdict.value, (
+        assert result_relaxed.verdict.confidence >= result_default.verdict.confidence, (
             f"Relaxed max_strong=10 ({result_relaxed.verdict}) should be >= "
             f"default ({result_default.verdict})"
         )
@@ -263,7 +266,7 @@ class TestEvaluateNoStrongTCellEpitopeExtended:
         """Strong epitope count must be >= 0."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN, EGFP, SOLUBLE_PROTEIN]:
             result = evaluate_no_strong_t_cell_epitope(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
             )
             strong = result.derivation[0]["strong"]
             assert strong >= 0
@@ -271,14 +274,14 @@ class TestEvaluateNoStrongTCellEpitopeExtended:
     def test_verdict_for_short_peptide(self):
         """Short known-binder peptide should produce a valid verdict."""
         result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, FLU_M1_PEPTIDE, HOMO_SAPIENS,
+            FLU_M1_PEPTIDE, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         assert result.verdict in VALID_VERDICTS_5
 
     def test_violation_mentions_epitopes_on_fail(self):
         """FAIL verdict should mention epitopes in violation."""
         result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         if result.verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
             assert result.violation is not None
@@ -287,7 +290,7 @@ class TestEvaluateNoStrongTCellEpitopeExtended:
     def test_charged_protein_verdict(self):
         """Highly charged protein should return a valid verdict."""
         result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, CHARGED_PROTEIN, HOMO_SAPIENS,
+            CHARGED_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.verdict in VALID_VERDICTS_5
 
@@ -297,24 +300,24 @@ class TestEvaluateNoDominantBCellEpitopeExtended:
 
     def test_returns_type_check_result(self):
         result = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert isinstance(result, TypeCheckResult)
 
     def test_predicate_name(self):
         result = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.predicate == "NoDominantBCellEpitope"
 
     def test_empty_protein_returns_uncertain(self):
-        result = evaluate_no_dominant_b_cell_epitope(PLACEHOLDER_DNA, "", HOMO_SAPIENS)
+        result = evaluate_no_dominant_b_cell_epitope("", PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
         assert result.verdict == Verdict.UNCERTAIN
         assert "Empty" in result.violation
 
     def test_derivation_contains_dominant_count(self):
         result = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         step = result.derivation[0]
         assert step["step"] == "predict_b_cell_epitopes"
@@ -326,10 +329,10 @@ class TestEvaluateNoDominantBCellEpitopeExtended:
     def test_custom_score_threshold(self):
         """Higher score_threshold should find fewer dominant epitopes."""
         result_low = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS, score_threshold=0.3,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, score_threshold=0.3, source_organism="foreign",
         )
         result_high = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS, score_threshold=0.95,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, score_threshold=0.95, source_organism="foreign",
         )
         # Higher threshold → fewer dominant epitopes → same or better verdict
         assert result_high.verdict.value >= result_low.verdict.value, (
@@ -340,7 +343,7 @@ class TestEvaluateNoDominantBCellEpitopeExtended:
         """Protein with 0 dominant epitopes should PASS."""
         # All-Ala has very low B-cell epitope potential
         result = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, ALL_ALANINE, HOMO_SAPIENS,
+            ALL_ALANINE, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         dominant = result.derivation[0]["dominant"]
         if dominant == 0:
@@ -349,14 +352,14 @@ class TestEvaluateNoDominantBCellEpitopeExtended:
     def test_insoluble_protein_verdict(self):
         """Hydrophobic protein should produce a valid verdict."""
         result = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, INSOLUBLE_PROTEIN, HOMO_SAPIENS,
+            INSOLUBLE_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.verdict in VALID_VERDICTS_5
 
     def test_egfp_protein_verdict(self):
         """eGFP (239 AA) should produce a valid verdict."""
         result = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, EGFP, HOMO_SAPIENS,
+            EGFP, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.verdict in VALID_VERDICTS_5
 
@@ -366,24 +369,24 @@ class TestEvaluatePopulationCoverageSafeExtended:
 
     def test_returns_type_check_result(self):
         result = evaluate_population_coverage_safe(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert isinstance(result, TypeCheckResult)
 
     def test_predicate_name(self):
         result = evaluate_population_coverage_safe(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.predicate == "PopulationCoverageSafe"
 
     def test_empty_protein_returns_uncertain(self):
-        result = evaluate_population_coverage_safe(PLACEHOLDER_DNA, "", HOMO_SAPIENS)
+        result = evaluate_population_coverage_safe("", PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
         assert result.verdict == Verdict.UNCERTAIN
         assert "Empty" in result.violation
 
     def test_derivation_contains_binding_info(self):
         result = evaluate_population_coverage_safe(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         step = result.derivation[0]
         assert step["step"] == "compute_population_coverage"
@@ -396,7 +399,7 @@ class TestEvaluatePopulationCoverageSafeExtended:
         """Derivation binding_rate must be in [0, 1]."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN, EGFP]:
             result = evaluate_population_coverage_safe(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS,
             )
             rate = result.derivation[0]["binding_rate"]
             assert 0.0 <= rate <= 1.0, f"Binding rate {rate} out of [0, 1]"
@@ -404,10 +407,10 @@ class TestEvaluatePopulationCoverageSafeExtended:
     def test_custom_coverage_threshold(self):
         """Custom coverage_threshold should shift the UNCERTAIN boundary."""
         result_default = evaluate_population_coverage_safe(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         result_permissive = evaluate_population_coverage_safe(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS, coverage_threshold=0.9,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, coverage_threshold=0.9,
         )
         # Permissive threshold → same or better verdict
         assert result_permissive.verdict.value >= result_default.verdict.value, (
@@ -418,14 +421,14 @@ class TestEvaluatePopulationCoverageSafeExtended:
     def test_known_binder_peptide(self):
         """Known binder peptide should produce a valid verdict."""
         result = evaluate_population_coverage_safe(
-            PLACEHOLDER_DNA, FLU_M1_PEPTIDE, HOMO_SAPIENS,
+            FLU_M1_PEPTIDE, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         assert result.verdict in VALID_VERDICTS_5
 
     def test_short_peptide_binding_rate(self):
         """Short peptide should have a binding rate in [0, 1]."""
         result = evaluate_population_coverage_safe(
-            PLACEHOLDER_DNA, FLU_M1_PEPTIDE, HOMO_SAPIENS,
+            FLU_M1_PEPTIDE, PLACEHOLDER_DNA, HOMO_SAPIENS,
         )
         rate = result.derivation[0]["binding_rate"]
         assert 0.0 <= rate <= 1.0
@@ -434,7 +437,7 @@ class TestEvaluatePopulationCoverageSafeExtended:
         """Number of binders must be >= 0."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:
             result = evaluate_population_coverage_safe(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS,
             )
             assert result.derivation[0]["num_binders"] >= 0
             assert result.derivation[0]["num_strong_binders"] >= 0
@@ -455,10 +458,10 @@ class TestKnownImmunogenicSequences:
     def test_foreign_higher_than_self(self):
         """Foreign protein should have higher or comparable immunogenicity score."""
         result_self = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         result_foreign = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         score_self = result_self.derivation[0]["score"]
         score_foreign = result_foreign.derivation[0]["score"]
@@ -471,10 +474,10 @@ class TestKnownImmunogenicSequences:
     def test_self_protein_verdict_not_worse_than_foreign(self):
         """Self protein verdict should not be worse than foreign protein verdict."""
         result_self = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         result_foreign = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         assert result_self.verdict.value >= result_foreign.verdict.value, (
             f"Self protein verdict ({result_self.verdict}) should be >= "
@@ -484,7 +487,7 @@ class TestKnownImmunogenicSequences:
     def test_known_binder_peptide_is_not_pass(self):
         """Known strong binder (Flu M1) should not get a PASS for T-cell epitope predicate."""
         result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, FLU_M1_PEPTIDE, HOMO_SAPIENS,
+            FLU_M1_PEPTIDE, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         # GILGFVFTL is a well-known strong binder — at minimum it should
         # not be a clear PASS
@@ -499,7 +502,7 @@ class TestKnownImmunogenicSequences:
         may not be low; we only assert it is in [0, 1].
         """
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, ALL_ALANINE, HOMO_SAPIENS,
+            ALL_ALANINE, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         score = result.derivation[0]["score"]
         assert 0.0 <= score <= 1.0, (
@@ -509,7 +512,7 @@ class TestKnownImmunogenicSequences:
     def test_charged_protein_moderate_immunogenicity(self):
         """Highly charged protein should have a valid immunogenicity score."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, CHARGED_PROTEIN, HOMO_SAPIENS,
+            CHARGED_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         score = result.derivation[0]["score"]
         assert 0.0 <= score <= 1.0
@@ -517,10 +520,10 @@ class TestKnownImmunogenicSequences:
     def test_egfp_verdict_consistency(self):
         """eGFP should produce consistent results across all predicates."""
         results = [
-            evaluate_low_immunogenicity(PLACEHOLDER_DNA, EGFP, HOMO_SAPIENS),
-            evaluate_no_strong_t_cell_epitope(PLACEHOLDER_DNA, EGFP, HOMO_SAPIENS),
-            evaluate_no_dominant_b_cell_epitope(PLACEHOLDER_DNA, EGFP, HOMO_SAPIENS),
-            evaluate_population_coverage_safe(PLACEHOLDER_DNA, EGFP, HOMO_SAPIENS),
+            evaluate_low_immunogenicity(EGFP, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign"),
+            evaluate_no_strong_t_cell_epitope(EGFP, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign"),
+            evaluate_no_dominant_b_cell_epitope(EGFP, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign"),
+            evaluate_population_coverage_safe(EGFP, PLACEHOLDER_DNA, HOMO_SAPIENS),
         ]
         for r in results:
             assert r.verdict in VALID_VERDICTS_5
@@ -531,7 +534,7 @@ class TestKnownImmunogenicSequences:
         foreign_proteins = [FOREIGN_PROTEIN, INSOLUBLE_PROTEIN, CHARGED_PROTEIN]
         for protein in foreign_proteins:
             result = evaluate_low_immunogenicity(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
             )
             assert result.verdict in VALID_VERDICTS_5
             assert result.derivation[0]["score"] >= 0.0
@@ -544,7 +547,7 @@ class TestKnownImmunogenicSequences:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            result = fn(PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS)
+            result = fn(HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS)
             assert isinstance(result, TypeCheckResult), (
                 f"{fn.__name__} returned {type(result)}, expected TypeCheckResult"
             )
@@ -552,7 +555,7 @@ class TestKnownImmunogenicSequences:
     def test_t_cell_b_cell_scores_present(self):
         """Immunogenicity derivation should include T and B cell component scores."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         step = result.derivation[0]
         assert isinstance(step["t_cell_score"], float)
@@ -568,7 +571,7 @@ class TestKnownImmunogenicSequences:
         """Immunogenicity class must be one of: low, moderate, high."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN, EGFP]:
             result = evaluate_low_immunogenicity(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
             )
             cls = result.derivation[0]["immunogenicity_class"]
             assert cls in ("low", "moderate", "high"), (
@@ -589,7 +592,7 @@ class TestMHCBindingIntegration:
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:
             imm_result = compute_immunogenicity(protein)
             pred_result = evaluate_low_immunogenicity(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
             )
             pred_score = pred_result.derivation[0]["score"]
             assert abs(pred_score - imm_result.overall_score) < 1e-6, (
@@ -597,20 +600,26 @@ class TestMHCBindingIntegration:
                 f"{imm_result.overall_score}"
             )
 
-    def test_t_cell_predicate_matches_predict_epitopes(self):
-        """T-cell predicate strong count must match predict_epitopes result."""
+    def test_t_cell_predicate_matches_scan_peptides(self):
+        """T-cell predicate strong count must match scan_peptides result."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:
-            epi_result = predict_epitopes(protein)
+            # Count strong epitopes using the same method as the predicate:
+            # scan_peptides with IC50 < 50 nM threshold
+            strong_from_scan = 0
+            for allele in DEFAULT_MHC_I_ALLELES:
+                results = scan_peptides(protein, allele, peptide_length=9)
+                strong_from_scan += sum(1 for r in results if r.ic50_nm < 50.0)
+            for allele in DEFAULT_MHC_II_ALLELES:
+                results = scan_peptides(protein, allele, peptide_length=15)
+                strong_from_scan += sum(1 for r in results if r.ic50_nm < 50.0)
+
             pred_result = evaluate_no_strong_t_cell_epitope(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
-            )
-            strong_from_epitopes = sum(
-                1 for e in epi_result.linear_epitopes if e.score >= 0.7
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
             )
             strong_from_predicate = pred_result.derivation[0]["strong"]
-            assert strong_from_predicate == strong_from_epitopes, (
+            assert strong_from_predicate == strong_from_scan, (
                 f"Predicate strong count ({strong_from_predicate}) != "
-                f"predict_epitopes strong count ({strong_from_epitopes})"
+                f"scan_peptides strong count ({strong_from_scan})"
             )
 
     def test_b_cell_predicate_matches_predict_epitopes(self):
@@ -618,7 +627,7 @@ class TestMHCBindingIntegration:
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:
             epi_result = predict_epitopes(protein)
             pred_result = evaluate_no_dominant_b_cell_epitope(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
             )
             dominant_from_epitopes = sum(
                 1 for e in epi_result.linear_epitopes if e.score >= 0.7
@@ -634,7 +643,7 @@ class TestMHCBindingIntegration:
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:
             mhc_result = predict_all(protein)
             pred_result = evaluate_population_coverage_safe(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS,
             )
             pred_rate = pred_result.derivation[0]["binding_rate"]
             mhc_rate = mhc_result.binding_rate
@@ -686,7 +695,7 @@ class TestMHCBindingIntegration:
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:
             mhc_result = predict_all(protein)
             pred_result = evaluate_population_coverage_safe(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS,
             )
             pred_binders = pred_result.derivation[0]["num_binders"]
             mhc_binders = len(mhc_result.binders)
@@ -736,10 +745,10 @@ class TestCrossPredicateConsistency:
     def test_low_immunogenicity_and_t_cell_epitope_consistent(self):
         """If low immunogenicity fails, T-cell epitope should not be a clear pass."""
         low_result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         t_result = evaluate_no_strong_t_cell_epitope(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         # If immunogenicity FAIL, T-cell epitope should not be PASS
         if low_result.verdict == Verdict.FAIL:
@@ -750,10 +759,10 @@ class TestCrossPredicateConsistency:
     def test_low_immunogenicity_and_b_cell_epitope_consistent(self):
         """If low immunogenicity fails, B-cell epitope should not be a clear pass."""
         low_result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         b_result = evaluate_no_dominant_b_cell_epitope(
-            PLACEHOLDER_DNA, FOREIGN_PROTEIN, HOMO_SAPIENS,
+            FOREIGN_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign",
         )
         if low_result.verdict == Verdict.FAIL:
             # B-cell is just one component — could still pass if T-cell dominates
@@ -764,7 +773,7 @@ class TestCrossPredicateConsistency:
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:
             mhc_result = predict_all(protein)
             pop_result = evaluate_population_coverage_safe(
-                PLACEHOLDER_DNA, protein, HOMO_SAPIENS,
+                protein, PLACEHOLDER_DNA, HOMO_SAPIENS,
             )
             # Verify binding_rate in derivation matches MHC result
             pred_rate = pop_result.derivation[0]["binding_rate"]
@@ -778,7 +787,7 @@ class TestCrossPredicateConsistency:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            result = fn(PLACEHOLDER_DNA, "", HOMO_SAPIENS)
+            result = fn("", PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
             assert result.verdict == Verdict.UNCERTAIN, (
                 f"{fn.__name__} returned {result.verdict} for empty protein, expected UNCERTAIN"
             )
@@ -791,7 +800,7 @@ class TestCrossPredicateConsistency:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            result = fn(PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS)
+            result = fn(HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS)
             assert result.derivation is not None, (
                 f"{fn.__name__} derivation is None for valid protein"
             )
@@ -800,10 +809,10 @@ class TestCrossPredicateConsistency:
         """PASS > LIKELY_PASS > UNCERTAIN > LIKELY_FAIL > FAIL ordering."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN, EGFP]:
             results = [
-                evaluate_low_immunogenicity(PLACEHOLDER_DNA, protein, HOMO_SAPIENS),
-                evaluate_no_strong_t_cell_epitope(PLACEHOLDER_DNA, protein, HOMO_SAPIENS),
-                evaluate_no_dominant_b_cell_epitope(PLACEHOLDER_DNA, protein, HOMO_SAPIENS),
-                evaluate_population_coverage_safe(PLACEHOLDER_DNA, protein, HOMO_SAPIENS),
+                evaluate_low_immunogenicity(protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign"),
+                evaluate_no_strong_t_cell_epitope(protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign"),
+                evaluate_no_dominant_b_cell_epitope(protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign"),
+                evaluate_population_coverage_safe(protein, PLACEHOLDER_DNA, HOMO_SAPIENS),
             ]
             for r in results:
                 assert r.verdict in VALID_VERDICTS_5
@@ -826,7 +835,7 @@ class TestEdgeCasesExtended:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            result = fn(PLACEHOLDER_DNA, protein, HOMO_SAPIENS)
+            result = fn(protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
             assert result.verdict in VALID_VERDICTS_5
 
     def test_very_short_protein_5aa(self):
@@ -838,7 +847,7 @@ class TestEdgeCasesExtended:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            result = fn(PLACEHOLDER_DNA, protein, HOMO_SAPIENS)
+            result = fn(protein, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
             assert result.verdict in VALID_VERDICTS_5
 
     def test_single_methionine(self):
@@ -849,7 +858,7 @@ class TestEdgeCasesExtended:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            result = fn(PLACEHOLDER_DNA, "M", HOMO_SAPIENS)
+            result = fn("M", PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
             assert result.verdict in VALID_VERDICTS_5
 
     def test_hydrophobic_protein_all_predicates(self):
@@ -860,7 +869,7 @@ class TestEdgeCasesExtended:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            result = fn(PLACEHOLDER_DNA, INSOLUBLE_PROTEIN, HOMO_SAPIENS)
+            result = fn(INSOLUBLE_PROTEIN, PLACEHOLDER_DNA, HOMO_SAPIENS, source_organism="foreign")
             assert result.verdict in VALID_VERDICTS_5
 
     def test_repeated_calls_idempotent(self):
@@ -871,8 +880,8 @@ class TestEdgeCasesExtended:
             evaluate_no_dominant_b_cell_epitope,
             evaluate_population_coverage_safe,
         ):
-            r1 = fn(PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS)
-            r2 = fn(PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS)
+            r1 = fn(HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS)
+            r2 = fn(HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS)
             assert r1.verdict == r2.verdict, (
                 f"{fn.__name__} non-idempotent: {r1.verdict} != {r2.verdict}"
             )
@@ -884,22 +893,22 @@ class TestEdgeCasesExtended:
         """Different organism strings should be accepted (even if not used)."""
         for organism in ["Homo_sapiens", "Mus_musculus", "Escherichia_coli"]:
             result = evaluate_low_immunogenicity(
-                PLACEHOLDER_DNA, HBB_HUMAN, organism,
+                HBB_HUMAN, PLACEHOLDER_DNA, organism, source_organism="foreign",
             )
             assert result.verdict in VALID_VERDICTS_5
 
     def test_sequence_param_accepted(self):
         """The DNA sequence param is accepted but not used by predicates."""
         # Different DNA sequences, same protein — should give same results
-        r1 = evaluate_low_immunogenicity("ATGGCT", HBB_HUMAN, HOMO_SAPIENS)
-        r2 = evaluate_low_immunogenicity("TTTTTT", HBB_HUMAN, HOMO_SAPIENS)
+        r1 = evaluate_low_immunogenicity(HBB_HUMAN, "ATGGCT", HOMO_SAPIENS, self_protein=False)
+        r2 = evaluate_low_immunogenicity(HBB_HUMAN, "TTTTTT", HOMO_SAPIENS, self_protein=False)
         assert r1.verdict == r2.verdict
         assert r1.derivation == r2.derivation
 
     def test_knowledge_gap_field(self):
         """knowledge_gap should be None for predicates that have complete data."""
         result = evaluate_low_immunogenicity(
-            PLACEHOLDER_DNA, HBB_HUMAN, HOMO_SAPIENS,
+            HBB_HUMAN, PLACEHOLDER_DNA, HOMO_SAPIENS, self_protein=False,
         )
         # Predicates using compute_immunogenicity have no knowledge gap
         # (they always produce a score from the heuristic)

@@ -1135,6 +1135,107 @@ def _greedy_optimize(
                         if fixed_any:
                             break
 
+                    # Strategy 3 (Issue 2): Deep backtracking — 3-codon coordinated swap
+                    # When 2-codon swap can't eliminate GT, try modifying the GT codon
+                    # plus TWO neighboring codons simultaneously. This is especially
+                    # effective for Valine GTs where all codons contain GT but the
+                    # splice score can be reduced by changing the surrounding context.
+                    if not fixed_any:
+                        # Try the adjacent codon pair (codon_idx-1, codon_idx, codon_idx+1)
+                        for n1_offset in [-1, 1]:
+                            n1_idx = codon_idx + n1_offset
+                            if not (0 <= n1_idx < len(aas)):
+                                continue
+                            n1_aa = aas[n1_idx]
+                            n1_current = sequence[n1_idx*3:n1_idx*3+3]
+                            # Second neighbor — try both sides for maximum context coverage
+                            for n2_offset in [-2, 2, -3, 3]:
+                                n2_idx = codon_idx + n2_offset
+                                if not (0 <= n2_idx < len(aas)) or n2_idx == n1_idx:
+                                    continue
+                                n2_aa = aas[n2_idx]
+                                n2_current = sequence[n2_idx*3:n2_idx*3+3]
+                                # For Valine GTs: try ALL V codons (all contain GT but
+                                # give different splice scores due to 3rd base context).
+                                # For neighbors: try all alternatives to maximize the
+                                # chance of finding a low-scoring 9-mer context.
+                                v_limit = len(sorted_codons[aa])  # Try ALL V alternatives
+                                n1_limit = len(sorted_codons[n1_aa])  # Try ALL neighbor alts
+                                n2_limit = min(len(sorted_codons[n2_aa]), 6)  # Cap for performance
+                                for v_alt in sorted_codons[aa][:v_limit]:
+                                    for n1_alt in sorted_codons[n1_aa][:n1_limit]:
+                                        if n1_alt == n1_current and v_alt == current:
+                                            continue
+                                        for n2_alt in sorted_codons[n2_aa][:n2_limit]:
+                                            if n2_alt == n2_current and n1_alt == n1_current and v_alt == current:
+                                                continue
+                                            test = list(sequence)
+                                            test[codon_idx*3:codon_idx*3+3] = list(v_alt)
+                                            test[n1_idx*3:n1_idx*3+3] = list(n1_alt)
+                                            test[n2_idx*3:n2_idx*3+3] = list(n2_alt)
+                                            test_str = "".join(test)
+                                            if gt_pos < len(test_str) - 1 and test_str[gt_pos:gt_pos+2] == "GT":
+                                                new_s = score_donor(test_str, gt_pos)
+                                            else:
+                                                new_s = ELIMINATED_SITE_SCORE
+                                            if new_s < cryptic_splice_threshold:
+                                                sequence = test_str
+                                                fixed_any = True
+                                                break
+                                        if fixed_any:
+                                            break
+                                    if fixed_any:
+                                        break
+                                if fixed_any:
+                                    break
+                            if fixed_any:
+                                break
+
+                    # Strategy 4 (Issue 2): Frame-shift approach — when GT is at a
+                    # codon boundary and can't be eliminated within the current codon,
+                    # adjust the PREVIOUS codon to shift the reading frame. This is
+                    # especially effective for HBB where GT/AG dinucleotides persist
+                    # because the preceding codon ends with G and the next starts with T.
+                    if not fixed_any and codon_idx > 0:
+                        prev_idx = codon_idx - 1
+                        prev_aa = aas[prev_idx]
+                        prev_current = sequence[prev_idx*3:prev_idx*3+3]
+                        for prev_alt in sorted_codons[prev_aa]:
+                            if prev_alt == prev_current:
+                                continue
+                            # Check if this previous codon swap changes the boundary
+                            # Check GT at boundary between prev_alt and current codon
+                            if prev_alt[-1] == "G" and sequence[codon_idx*3] == "T":
+                                # This would create a new cross-codon GT — skip
+                                continue
+                            test = sequence[:prev_idx*3] + prev_alt + sequence[prev_idx*3+3:]
+                            # Now check if the original GT at gt_pos is still there
+                            if gt_pos < len(test) - 1 and test[gt_pos:gt_pos+2] == "GT":
+                                new_s = score_donor(test, gt_pos)
+                            else:
+                                new_s = ELIMINATED_SITE_SCORE
+                            if new_s < cryptic_splice_threshold:
+                                sequence = test
+                                fixed_any = True
+                                break
+                            # Also try combining previous codon swap with GT codon swap
+                            for v_alt in sorted_codons[aa][:TOP_CAI_ALTERNATIVES]:
+                                if v_alt == current:
+                                    continue
+                                test2 = list(test)  # test already has prev_alt applied
+                                test2[codon_idx*3:codon_idx*3+3] = list(v_alt)
+                                test2_str = "".join(test2)
+                                if gt_pos < len(test2_str) - 1 and test2_str[gt_pos:gt_pos+2] == "GT":
+                                    new_s = score_donor(test2_str, gt_pos)
+                                else:
+                                    new_s = ELIMINATED_SITE_SCORE
+                                if new_s < cryptic_splice_threshold:
+                                    sequence = test2_str
+                                    fixed_any = True
+                                    break
+                            if fixed_any:
+                                break
+
                     if fixed_any:
                         break  # Restart scanning
 
@@ -1231,6 +1332,89 @@ def _greedy_optimize(
                                 break
                         if fixed_any:
                             break
+
+                    # Strategy 3 (Issue 2): Deep backtracking for AG — 3-codon coordinated swap
+                    if not fixed_any:
+                        for n1_offset in [-1, 1]:
+                            n1_idx = codon_idx + n1_offset
+                            if not (0 <= n1_idx < len(aas)):
+                                continue
+                            n1_aa = aas[n1_idx]
+                            n1_current = sequence[n1_idx*3:n1_idx*3+3]
+                            for n2_offset in [-2, 2, -3, 3]:
+                                n2_idx = codon_idx + n2_offset
+                                if not (0 <= n2_idx < len(aas)) or n2_idx == n1_idx:
+                                    continue
+                                n2_aa = aas[n2_idx]
+                                n2_current = sequence[n2_idx*3:n2_idx*3+3]
+                                # Same expanded search as donor Strategy 3
+                                v_limit = len(sorted_codons[aa])
+                                n1_limit = len(sorted_codons[n1_aa])
+                                n2_limit = min(len(sorted_codons[n2_aa]), 6)
+                                for v_alt in sorted_codons[aa][:v_limit]:
+                                    for n1_alt in sorted_codons[n1_aa][:n1_limit]:
+                                        if n1_alt == n1_current and v_alt == current:
+                                            continue
+                                        for n2_alt in sorted_codons[n2_aa][:n2_limit]:
+                                            if n2_alt == n2_current and n1_alt == n1_current and v_alt == current:
+                                                continue
+                                            test = list(sequence)
+                                            test[codon_idx*3:codon_idx*3+3] = list(v_alt)
+                                            test[n1_idx*3:n1_idx*3+3] = list(n1_alt)
+                                            test[n2_idx*3:n2_idx*3+3] = list(n2_alt)
+                                            test_str = "".join(test)
+                                            if ag_pos < len(test_str) - 1 and test_str[ag_pos:ag_pos+2] == "AG":
+                                                new_s = score_acceptor(test_str, ag_pos)
+                                            else:
+                                                new_s = ELIMINATED_SITE_SCORE
+                                            if new_s < cryptic_splice_threshold:
+                                                sequence = test_str
+                                                fixed_any = True
+                                                break
+                                        if fixed_any:
+                                            break
+                                    if fixed_any:
+                                        break
+                                if fixed_any:
+                                    break
+                            if fixed_any:
+                                break
+
+                    # Strategy 4 (Issue 2): Frame-shift approach for AG
+                    if not fixed_any and codon_idx > 0:
+                        prev_idx = codon_idx - 1
+                        prev_aa = aas[prev_idx]
+                        prev_current = sequence[prev_idx*3:prev_idx*3+3]
+                        for prev_alt in sorted_codons[prev_aa]:
+                            if prev_alt == prev_current:
+                                continue
+                            if prev_alt[-1] == "A" and sequence[codon_idx*3] == "G":
+                                continue  # Would create new cross-codon AG
+                            test = sequence[:prev_idx*3] + prev_alt + sequence[prev_idx*3+3:]
+                            if ag_pos < len(test) - 1 and test[ag_pos:ag_pos+2] == "AG":
+                                new_s = score_acceptor(test, ag_pos)
+                            else:
+                                new_s = ELIMINATED_SITE_SCORE
+                            if new_s < cryptic_splice_threshold:
+                                sequence = test
+                                fixed_any = True
+                                break
+                            for v_alt in sorted_codons[aa][:TOP_CAI_ALTERNATIVES]:
+                                if v_alt == current:
+                                    continue
+                                test2 = list(test)
+                                test2[codon_idx*3:codon_idx*3+3] = list(v_alt)
+                                test2_str = "".join(test2)
+                                if ag_pos < len(test2_str) - 1 and test2_str[ag_pos:ag_pos+2] == "AG":
+                                    new_s = score_acceptor(test2_str, ag_pos)
+                                else:
+                                    new_s = ELIMINATED_SITE_SCORE
+                                if new_s < cryptic_splice_threshold:
+                                    sequence = test2_str
+                                    fixed_any = True
+                                    break
+                            if fixed_any:
+                                break
 
                     if fixed_any:
                         break
@@ -1537,9 +1721,28 @@ def _greedy_optimize(
     # without violating any constraint. This recovers CAI lost during
     # constraint resolution by swapping to higher-CAI synonymous codons
     # that don't reintroduce any forbidden pattern.
+    #
+    # Speed optimizations (Issue 3):
+    # - Incremental GC tracking: avoid O(N) gc_content() calls per position
+    # - Localized RS check: only check restriction sites near the changed codon
+    # - Batch CAI hill-climb: collect all improvements, apply non-conflicting ones
     _MAX_HILL_CLIMB_ITERATIONS = 10
+
+    # Pre-compute site lengths and RCs for localized checking
+    _local_rs_check_radius = max((len(s) for s in concrete_sites), default=0) + 3
+
+    # Incremental GC tracking for the hill climb
+    _hc_gc_count = sum(1 for b in sequence if b in "GC")
+    _hc_n_bases = len(sequence)
+
+    # Pre-build Aho-Corasick scanner for fast local RS check if available
+    _hc_scanner = concrete_scanner  # reuse the scanner from Step 2
+
     for _hc_iter in range(_MAX_HILL_CLIMB_ITERATIONS):
-        improved = False
+        # Batch mode: collect all possible CAI upgrades, then apply
+        # non-conflicting ones together (Issue 3: speed)
+        _hc_upgrades: list[tuple[int, str, float, str]] = []  # (ci, alt, alt_cai, current)
+
         for ci in range(len(aas)):
             aa = aas[ci]
             current = sequence[ci * 3:ci * 3 + 3]
@@ -1548,45 +1751,99 @@ def _greedy_optimize(
                 alt_cai = usage.get(alt, 0.0)
                 if alt_cai <= current_cai:
                     break  # sorted_codons is CAI-descending; no improvement possible
+
+                # Quick incremental GC check (O(1) instead of O(N))
+                current_gc_bases = sum(1 for b in current if b in "GC")
+                alt_gc_bases = sum(1 for b in alt if b in "GC")
+                new_gc_count = _hc_gc_count - current_gc_bases + alt_gc_bases
+                test_gc = new_gc_count / _hc_n_bases
+                if not (gc_lo <= test_gc <= gc_hi):
+                    continue
+
                 test = sequence[:ci * 3] + alt + sequence[ci * 3 + 3:]
-                # Verify no constraint violations:
-                # 1. No reintroduced restriction sites
+
+                # Localized RS check: only scan the region around the changed codon
+                # (Issue 3: avoid O(N) full-sequence scan per position)
                 site_ok = True
-                for site_upper in concrete_sites:
-                    site_rc = reverse_complement(site_upper)
-                    if site_upper in test or site_rc in test:
-                        site_ok = False
-                        break
+                if _hc_scanner is not None:
+                    # Scan only the region that could contain new sites
+                    scan_start = max(0, ci * 3 - _local_rs_check_radius)
+                    scan_end = min(len(test), ci * 3 + 3 + _local_rs_check_radius)
+                    local_region = test[scan_start:scan_end]
+                    local_matches = _hc_scanner.scan(local_region)
+                    # Check if any match corresponds to a genuinely new site
+                    for _m_pos, _m_site, _ in local_matches:
+                        # Map back to absolute position
+                        abs_pos = scan_start + _m_pos
+                        # Check if this site was already in the old sequence
+                        old_local = sequence[scan_start:scan_end]
+                        if _m_site not in old_local or abs_pos != sequence.find(_m_site, max(0, abs_pos - len(_m_site))):
+                            # More precise: check if the site exists in the old sequence
+                            # at any position overlapping the changed region
+                            if abs_pos + len(_m_site) > ci * 3 and abs_pos < ci * 3 + 3:
+                                # Site overlaps the changed region — check if it's new
+                                if _m_site not in sequence or reverse_complement(_m_site) not in sequence:
+                                    site_ok = False
+                                    break
+                                else:
+                                    # Site exists in old sequence but may have moved;
+                                    # do a full check to be safe
+                                    if _m_site in test and reverse_complement(_m_site) in test:
+                                        pass  # Both existed before, OK
+                                    elif _m_site in test and _m_site not in sequence:
+                                        site_ok = False
+                                        break
+                    # Fallback: full scan for safety on the first iteration
+                    if _hc_iter == 0 and site_ok:
+                        full_matches = _hc_scanner.scan(test)
+                        if full_matches:
+                            # Verify no new sites introduced
+                            old_matches = _hc_scanner.scan(sequence)
+                            new_match_sites = set((p, s) for p, s, _ in full_matches) - set((p, s) for p, s, _ in old_matches)
+                            if new_match_sites:
+                                site_ok = False
+                else:
+                    # No scanner: check concrete sites directly (localized)
+                    for site_upper in concrete_sites:
+                        site_rc = reverse_complement(site_upper)
+                        # Only check in the region that could be affected
+                        region_start = max(0, ci * 3 - len(site_upper) + 1)
+                        region_end = min(len(test), ci * 3 + 3 + len(site_upper) - 1)
+                        if site_upper in test[region_start:region_end] or site_rc in test[region_start:region_end]:
+                            # Check if this is a genuinely new site
+                            if site_upper not in sequence[region_start:region_end] and site_rc not in sequence[region_start:region_end]:
+                                site_ok = False
+                                break
                 if not site_ok:
                     continue
-                # 2. No ATTTA motif
+
+                # No ATTTA motif increase
                 if "ATTTA" in test:
-                    # Check if this swap specifically introduced ATTTA
                     old_attta = sequence.count("ATTTA")
                     new_attta = test.count("ATTTA")
                     if new_attta > old_attta:
                         continue
-                # 3. No 6+ T runs
-                max_t_run = 0
-                j = 0
-                while j < len(test):
+
+                # No 6+ T runs — only check near the changed codon (localized)
+                _t_run_region_start = max(0, ci * 3 - T_RUN_LENGTH_THRESHOLD)
+                _t_run_region_end = min(len(test), ci * 3 + 3 + T_RUN_LENGTH_THRESHOLD)
+                _region_has_long_t = False
+                j = _t_run_region_start
+                while j < _t_run_region_end:
                     if test[j] == "T":
                         k = j
                         while k < len(test) and test[k] == "T":
                             k += 1
-                        if k - j > max_t_run:
-                            max_t_run = k - j
+                        if k - j >= T_RUN_LENGTH_THRESHOLD:
+                            _region_has_long_t = True
+                            break
                         j = k
                     else:
                         j += 1
-                if max_t_run >= T_RUN_LENGTH_THRESHOLD:
+                if _region_has_long_t:
                     continue
-                # 4. GC still in range
-                test_gc = gc_content(test)
-                if not (gc_lo <= test_gc <= gc_hi):
-                    continue
-                # 5. No new CpG increase (soft preference, not hard block)
-                # 6. No worsening of cryptic splice scores (eukaryotes only)
+
+                # No worsening of cryptic splice scores (eukaryotes only)
                 # Prokaryotes have no spliceosome, so splice score checks
                 # are irrelevant and unnecessarily block CAI upgrades.
                 if not is_prokaryote:
@@ -1594,11 +1851,266 @@ def _greedy_optimize(
                         continue
                     if max_acceptor_score(test) > max_acceptor_score(sequence) + 0.5:
                         continue
-                # All checks passed — apply the upgrade
+
+                # Record this upgrade candidate
+                _hc_upgrades.append((ci, alt, alt_cai, current))
+                break  # Take the best (highest-CAI) alt for this position
+
+        if not _hc_upgrades:
+            break
+
+        # Apply upgrades in batch (non-conflicting = different codon positions)
+        _applied_any = False
+        _applied_positions: set[int] = set()
+        for ci, alt, alt_cai, current in _hc_upgrades:
+            if ci in _applied_positions:
+                continue
+            # Re-validate: the sequence may have changed from prior batch swaps
+            if sequence[ci * 3:ci * 3 + 3] != current:
+                continue  # Position was already modified
+
+            test = sequence[:ci * 3] + alt + sequence[ci * 3 + 3:]
+
+            # Quick re-validation of key constraints
+            current_gc_bases = sum(1 for b in current if b in "GC")
+            alt_gc_bases = sum(1 for b in alt if b in "GC")
+            new_gc = _hc_gc_count - current_gc_bases + alt_gc_bases
+            test_gc = new_gc / _hc_n_bases
+            if not (gc_lo <= test_gc <= gc_hi):
+                continue
+
+            # Localized RS re-check
+            rs_ok = True
+            for site_upper in concrete_sites:
+                site_rc = reverse_complement(site_upper)
+                region_start = max(0, ci * 3 - len(site_upper) + 1)
+                region_end = min(len(test), ci * 3 + 3 + len(site_upper) - 1)
+                if site_upper in test[region_start:region_end] or site_rc in test[region_start:region_end]:
+                    if site_upper not in sequence[region_start:region_end] and site_rc not in sequence[region_start:region_end]:
+                        rs_ok = False
+                        break
+            if not rs_ok:
+                continue
+
+            # Apply the upgrade
+            sequence = test
+            _hc_gc_count = new_gc  # Incremental GC update
+            _applied_any = True
+            _applied_positions.add(ci)
+
+        if not _applied_any:
+            break
+
+    # Step: CAI Recovery Pass (Issue 1)
+    # After the hill climb, some positions may still have suboptimal codons
+    # because the hill climb only tries one position at a time. This pass
+    # systematically checks EVERY position and ALWAYS picks the highest-CAI
+    # synonymous codon that doesn't violate any constraint.
+    # For prokaryotes, this should close the 0.997→1.0 gap since there are
+    # no splice constraints to block upgrades.
+    _CAI_RECOVERY_MAX_ITERS = 3
+    _rec_gc_count = _hc_gc_count  # Carry forward incremental GC tracking
+
+    for _rec_iter in range(_CAI_RECOVERY_MAX_ITERS):
+        _any_recovery = False
+        for ci in range(len(aas)):
+            aa = aas[ci]
+            if aa == "*" or aa == "M":
+                continue  # Skip stop and Met (only one codon)
+            current = sequence[ci * 3:ci * 3 + 3]
+            current_w = usage.get(current, 0.0)
+            best_codon = sorted_codons[aa][0]  # Highest-CAI codon for this AA
+            best_w = usage.get(best_codon, 0.0)
+
+            if best_w <= current_w or best_codon == current:
+                continue  # Already optimal
+
+            # Try the best codon first, then fall back to next-best
+            for alt in sorted_codons[aa]:
+                alt_w = usage.get(alt, 0.0)
+                if alt_w <= current_w:
+                    break  # No improvement possible
+
+                # Incremental GC check (O(1))
+                cur_gc = sum(1 for b in current if b in "GC")
+                alt_gc = sum(1 for b in alt if b in "GC")
+                new_gc = _rec_gc_count - cur_gc + alt_gc
+                if not (gc_lo <= new_gc / _hc_n_bases <= gc_hi):
+                    continue
+
+                test = sequence[:ci * 3] + alt + sequence[ci * 3 + 3:]
+
+                # Localized RS check
+                rs_ok = True
+                for site_upper in concrete_sites:
+                    site_rc = reverse_complement(site_upper)
+                    region_start = max(0, ci * 3 - len(site_upper) + 1)
+                    region_end = min(len(test), ci * 3 + 3 + len(site_upper) - 1)
+                    if site_upper in test[region_start:region_end] or site_rc in test[region_start:region_end]:
+                        if site_upper not in sequence[region_start:region_end] and site_rc not in sequence[region_start:region_end]:
+                            rs_ok = False
+                            break
+                if not rs_ok:
+                    continue
+
+                # No ATTTA increase
+                if "ATTTA" in test and test.count("ATTTA") > sequence.count("ATTTA"):
+                    continue
+
+                # No 6+ T runs (localized check)
+                _t_ok = True
+                _t_start = max(0, ci * 3 - T_RUN_LENGTH_THRESHOLD)
+                _t_end = min(len(test), ci * 3 + 3 + T_RUN_LENGTH_THRESHOLD)
+                j = _t_start
+                while j < _t_end:
+                    if test[j] == "T":
+                        k = j
+                        while k < len(test) and test[k] == "T":
+                            k += 1
+                        if k - j >= T_RUN_LENGTH_THRESHOLD:
+                            _t_ok = False
+                            break
+                        j = k
+                    else:
+                        j += 1
+                if not _t_ok:
+                    continue
+
+                # No worsening of splice scores (eukaryotes only)
+                if not is_prokaryote:
+                    if max_donor_score(test) > max_donor_score(sequence) + 0.5:
+                        continue
+                    if max_acceptor_score(test) > max_acceptor_score(sequence) + 0.5:
+                        continue
+
+                # All checks passed — accept the upgrade
                 sequence = test
-                improved = True
-                break
-        if not improved:
+                _rec_gc_count = new_gc
+                _any_recovery = True
+                logger.debug(
+                    "CAI recovery: upgraded codon %d from %s to %s (w %.4f→%.4f)",
+                    ci, current, alt, current_w, alt_w,
+                )
+                break  # Move to next position
+
+            # Paired CAI recovery: if single-codon upgrade was blocked (likely
+            # by a restriction site), try a paired swap — upgrade the target codon
+            # AND adjust an adjacent codon to eliminate the new restriction site.
+            # Net CAI must still improve.
+            if not _any_recovery:
+                import math as _rec_math
+                for _adj_offset in (1, -1):
+                    _adj_ci = ci + _adj_offset
+                    if _adj_ci < 0 or _adj_ci >= len(aas):
+                        continue
+                    _adj_aa = aas[_adj_ci]
+                    if _adj_aa == "*" or _adj_aa == "M":
+                        continue
+                    _adj_current = sequence[_adj_ci * 3:_adj_ci * 3 + 3]
+                    _adj_current_w = usage.get(_adj_current, 0.0)
+
+                    for alt in sorted_codons[aa]:
+                        alt_w = usage.get(alt, 0.0)
+                        if alt_w <= current_w:
+                            break
+
+                        _adj_sorted = sorted(
+                            AA_TO_CODONS.get(_adj_aa, []),
+                            key=lambda c: usage.get(c, 0.0),
+                            reverse=True,
+                        )
+                        for _adj_alt in _adj_sorted:
+                            if _adj_alt == _adj_current:
+                                continue
+                            _adj_alt_w = usage.get(_adj_alt, 0.0)
+                            # Net log-CAI change must be positive
+                            _old_log = _rec_math.log(max(current_w, 1e-10)) + _rec_math.log(max(_adj_current_w, 1e-10))
+                            _new_log = _rec_math.log(max(alt_w, 1e-10)) + _rec_math.log(max(_adj_alt_w, 1e-10))
+                            if _new_log <= _old_log:
+                                continue
+
+                            # Build test sequence with both swaps
+                            _lo_ci = min(ci, _adj_ci)
+                            _hi_ci = max(ci, _adj_ci)
+                            _test_seq = (
+                                sequence[:_lo_ci * 3]
+                                + (alt if _lo_ci == ci else _adj_alt)
+                                + sequence[_lo_ci * 3 + 3:_hi_ci * 3]
+                                + (alt if _hi_ci == ci else _adj_alt)
+                                + sequence[_hi_ci * 3 + 3:]
+                            )
+
+                            # Check: no new restriction sites
+                            _rs_ok = True
+                            for _site_upper in concrete_sites:
+                                _site_rc = reverse_complement(_site_upper)
+                                if _site_upper in _test_seq or (_site_rc and _site_rc in _test_seq):
+                                    # Check if this is genuinely new
+                                    if _site_upper not in sequence or _site_rc not in sequence:
+                                        _rs_ok = False
+                                        break
+                                    else:
+                                        # Count occurrences — no net increase
+                                        if _test_seq.count(_site_upper) + _test_seq.count(_site_rc) > sequence.count(_site_upper) + sequence.count(_site_rc):
+                                            _rs_ok = False
+                                            break
+                            if not _rs_ok:
+                                continue
+
+                            # Check: GC in range
+                            _cur_gc_both = sum(1 for b in current if b in "GC") + sum(1 for b in _adj_current if b in "GC")
+                            _alt_gc_both = sum(1 for b in alt if b in "GC") + sum(1 for b in _adj_alt if b in "GC")
+                            _new_gc = _rec_gc_count - _cur_gc_both + _alt_gc_both
+                            if not (gc_lo <= _new_gc / _hc_n_bases <= gc_hi):
+                                continue
+
+                            # Check: no new ATTTA
+                            if _test_seq.count("ATTTA") > sequence.count("ATTTA"):
+                                continue
+
+                            # Check: no 6+ T runs (localized)
+                            _t_ok = True
+                            _t_start = max(0, _lo_ci * 3 - T_RUN_LENGTH_THRESHOLD)
+                            _t_end = min(len(_test_seq), _hi_ci * 3 + 3 + T_RUN_LENGTH_THRESHOLD)
+                            _j = _t_start
+                            while _j < _t_end:
+                                if _test_seq[_j] == "T":
+                                    _k = _j
+                                    while _k < len(_test_seq) and _test_seq[_k] == "T":
+                                        _k += 1
+                                    if _k - _j >= T_RUN_LENGTH_THRESHOLD:
+                                        _t_ok = False
+                                        break
+                                    _j = _k
+                                else:
+                                    _j += 1
+                            if not _t_ok:
+                                continue
+
+                            # No worsening of splice scores (eukaryotes only)
+                            if not is_prokaryote:
+                                if max_donor_score(_test_seq) > max_donor_score(sequence) + 0.5:
+                                    continue
+                                if max_acceptor_score(_test_seq) > max_acceptor_score(sequence) + 0.5:
+                                    continue
+
+                            # Accept the paired upgrade
+                            sequence = _test_seq
+                            _rec_gc_count = _new_gc
+                            _any_recovery = True
+                            logger.debug(
+                                "CAI recovery: paired upgrade codon %d (%s→%s) + "
+                                "codon %d (%s→%s)",
+                                ci, current, alt,
+                                _adj_ci, _adj_current, _adj_alt,
+                            )
+                            break
+                        if _any_recovery:
+                            break
+                    if _any_recovery:
+                        break
+
+        if not _any_recovery:
             break
 
     # Post-condition: verify sequence still encodes the same protein

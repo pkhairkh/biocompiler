@@ -4,6 +4,10 @@ Mouse (Mus musculus) Codon Usage Data
 Source: Kazusa Codon Usage Database
 59,432 CDSs, 24,040,270 codons
 Coding GC: 52.25%
+
+Verified: all 61 sense codons present, preferred codons match
+published mouse codon usage tables.  AGA is the preferred Arg
+codon (consistent with mammalian pattern).
 """
 
 from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons

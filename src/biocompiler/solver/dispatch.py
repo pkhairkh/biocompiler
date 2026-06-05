@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import math
 import time
 import warnings
 from typing import TYPE_CHECKING, Any
@@ -41,13 +42,25 @@ from .types import (
     ConstraintPriority,
     ConstraintSpec,
     ConstraintStrictness,
+    ConstraintType,
     ConstraintViolation,
     CSPModel,
     SolverBackend,
     SolverConfig,
     SolverResult,
 )
-from .constraints import build_csp_model, HardConstraint, SoftConstraint
+from .constraints import (
+    build_csp_model,
+    HardConstraint,
+    SoftConstraint,
+    TranslationConstraint,
+    NoRestrictionSiteConstraint,
+    GCRangeConstraint,
+    NoCrypticSpliceConstraint,
+    NoCpGIslandConstraint,
+    NoATTTAMotifConstraint,
+    NoTRunConstraint,
+)
 from .mus import compute_mus, quick_feasibility_check, FeasibilityReport
 from .scoring import ConstraintScorer
 from .conflict_provenance import (
@@ -171,6 +184,7 @@ def _try_backend(
     config: SolverConfig,
     backend_name: str,
     backend_enum: SolverBackend,
+    attempted_backends: list[str] | None = None,
 ) -> SolverResult | None:
     """Try solving with a single backend engine.
 
@@ -178,6 +192,12 @@ def _try_backend(
     OR-Tools and Z3.  Returns a solved ``SolverResult`` with
     ``backend_used`` set, or ``None`` if the backend failed or returned
     infeasible.
+
+    When the backend returns a solved result but prior backends have
+    already failed (recorded in *attempted_backends*), the result is
+    marked with ``fallback_used=True`` and the fallback chain is
+    recorded in ``result.metadata["fallback_chain"]`` so that
+    constraint provenance is preserved across the fallback.
 
     Parameters
     ----------
@@ -191,6 +211,9 @@ def _try_backend(
         Human-readable name for log messages (e.g. ``"OR-Tools"``).
     backend_enum : SolverBackend
         Enum value to set on ``result.backend_used`` on success.
+    attempted_backends : list[str] | None
+        Names of backends that were tried before this one and failed.
+        Used to mark the result as a fallback and record provenance.
 
     Returns
     -------
@@ -203,7 +226,19 @@ def _try_backend(
         result = engine.solve(model)
         if result is not None and result.solved:
             result.backend_used = backend_enum
-            logger.info("%s solved successfully.", backend_name)
+            # If prior backends were attempted, this is a fallback —
+            # mark it and record the fallback chain for provenance.
+            if attempted_backends:
+                result.fallback_used = True
+                result.metadata["fallback_chain"] = attempted_backends + [backend_name]
+                result.metadata["primary_backend_failed"] = attempted_backends[0]
+                logger.info(
+                    "%s solved successfully (fallback from %s).",
+                    backend_name,
+                    ", ".join(attempted_backends),
+                )
+            else:
+                logger.info("%s solved successfully.", backend_name)
             return result
         elif result is not None and result.fallback_used:
             # Backend returned a fallback result (e.g. Z3 unavailable) —
@@ -349,8 +384,19 @@ def solve_with_csp(
         )
         provenance_records.extend(conflict_provenance)
 
-    # Try backends in priority order
+    # ── Fix 3: Filter eukaryotic constraints for prokaryotic organisms ──
+    # If the organism is prokaryotic, remove eukaryotic-only constraints
+    # (splice, CpG, GT) from the model before sending to any solver
+    # backend.  This is a defense-in-depth measure — build_csp_model
+    # already skips these constraints when auto_detect_organism_domain
+    # is True, but we filter here as well to guarantee that prokaryotic
+    # organisms never incur the cost of irrelevant constraints.
+    model = _filter_prokaryotic_constraints(model, organism, config)
+
+    # Try backends in priority order, tracking attempted backends
+    # for fallback-chain provenance (Fix 1).
     result: SolverResult | None = None
+    attempted_backends: list[str] = []
 
     # If the user explicitly requested GREEDY_FALLBACK, skip OR-Tools and Z3
     skip_csp_backends = config.backend == SolverBackend.GREEDY_FALLBACK
@@ -363,15 +409,35 @@ def solve_with_csp(
     if config.backend == SolverBackend.Z3:
         # User explicitly requested Z3 — try it first
         if not skip_csp_backends and _z3_engine is not None:
-            result = _try_backend(_z3_engine, model, config, "Z3", SolverBackend.Z3)
+            result = _try_backend(
+                _z3_engine, model, config, "Z3", SolverBackend.Z3,
+                attempted_backends=attempted_backends if attempted_backends else None,
+            )
+            if result is None:
+                attempted_backends.append("Z3")
         if result is None and not skip_csp_backends and _ortools_engine is not None:
-            result = _try_backend(_ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS)
+            result = _try_backend(
+                _ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS,
+                attempted_backends=attempted_backends if attempted_backends else None,
+            )
+            if result is None:
+                attempted_backends.append("OR-Tools")
     else:
         # Default priority: OR-Tools → Z3
         if not skip_csp_backends and _ortools_engine is not None:
-            result = _try_backend(_ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS)
+            result = _try_backend(
+                _ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS,
+                attempted_backends=None,
+            )
+            if result is None:
+                attempted_backends.append("OR-Tools")
         if not skip_csp_backends and result is None and _z3_engine is not None:
-            result = _try_backend(_z3_engine, model, config, "Z3", SolverBackend.Z3)
+            result = _try_backend(
+                _z3_engine, model, config, "Z3", SolverBackend.Z3,
+                attempted_backends=attempted_backends if attempted_backends else None,
+            )
+            if result is None:
+                attempted_backends.append("Z3")
 
     # If CSP backends failed or were skipped, try greedy fallback engine
     if result is None:
@@ -384,9 +450,13 @@ def solve_with_csp(
             greedy_engine = GreedyEngine(config)
             result = greedy_engine.solve(model)
             if result is not None and result.solved:
+                result.fallback_used = True
+                result.metadata["fallback_chain"] = attempted_backends + ["greedy"]
                 logger.info(
-                    "Greedy fallback engine solved successfully for organism=%s",
+                    "Greedy fallback engine solved successfully for organism=%s "
+                    "(fell back from: %s)",
                     organism,
+                    ", ".join(attempted_backends) if attempted_backends else "N/A",
                 )
             else:
                 logger.warning("Greedy fallback engine returned unsolved result")
@@ -410,7 +480,21 @@ def solve_with_csp(
         )
         if provenance_records:
             result.metadata["conflict_provenance"] = provenance_records
+        # Record attempted backends in metadata for debugging
+        result.metadata["attempted_backends"] = attempted_backends
         return result
+
+    # Record provenance for fallback if prior backends failed (Fix 1)
+    if attempted_backends and track_provenance:
+        provenance_records.append(
+            provenance_resolver.record_relaxation_provenance(
+                relaxed_constraint_name=f"<{attempted_backends[0]}_backend_failure>",
+                kept_constraint_name=f"<{result.backend_used.value}_backend_success>",
+                positions_affected=[],
+                sequence=result.sequence,
+                resolution_method="backend_fallback",
+            )
+        )
 
     # Post-solve validation (returns violations + composite enforcement score)
     if result.sequence:
@@ -431,9 +515,14 @@ def solve_with_csp(
                 )
                 provenance_records.extend(violation_provenance)
 
-    # Preserve fallback_used=True from greedy engine; CSP backends set False
-    if result.backend_used != SolverBackend.GREEDY_FALLBACK:
-        result.fallback_used = False
+    # ── Fix 4: Compute CAI and GC content for result enrichment ──────
+    # The SolverResult has cai and gc_content fields that were previously
+    # never populated.  Compute them from the actual result sequence so
+    # callers can evaluate solution quality without re-deriving them.
+    if result.sequence:
+        result.cai = _compute_cai(result.sequence, protein, organism, config)
+        result.gc_content = _compute_gc_content(result.sequence)
+
     result.solve_time_seconds = time.monotonic() - start
 
     # Store provenance in result metadata (if any records were captured)
@@ -654,7 +743,10 @@ def validate_csp_solution(
 
     Iterates over every constraint in the CSP model and calls its
     ``check()`` method, then performs a translation-fidelity sanity
-    check.  Uses the :func:`_check_constraint` helper so that both
+    check.  Additionally, validates **all** hard constraints derived
+    directly from the SolverConfig, ensuring comprehensive coverage
+    even if a constraint is missing from the model.  Uses the
+    :func:`_check_constraint` helper so that both
     ``HardConstraint``/``SoftConstraint`` instances (with ``.check()``)
     and ``ConstraintSpec`` objects are handled gracefully.
 
@@ -731,6 +823,16 @@ def validate_csp_solution(
             violations.append(violation)
             seen_names.add(violation.constraint_name)
 
+    # ── Fix 2: Comprehensive config-level hard constraint validation ──
+    # In addition to the model's constraints, check ALL hard constraints
+    # derived directly from the SolverConfig.  This ensures comprehensive
+    # validation even if a constraint was inadvertently omitted from the
+    # model (e.g. due to a build_csp_model bug).  Deduplicate against
+    # constraints already checked above.
+    _validate_config_hard_constraints(
+        sequence, protein, config, organism, violations, seen_names,
+    )
+
     # Extra sanity: translation fidelity
     from ..constants import CODON_TABLE
 
@@ -783,3 +885,296 @@ def validate_csp_solution(
     )
 
     return violations, composite_score
+
+
+# ==============================================================================
+# Fix 2: Comprehensive config-level hard constraint validation
+# ==============================================================================
+
+# Eukaryotic-only constraint types that should be skipped for prokaryotes
+_EUKARYOTIC_CONSTRAINT_TYPES: frozenset[ConstraintType] = frozenset({
+    ConstraintType.NO_CRYPTIC_SPLICE,
+    ConstraintType.SPLICE_DONOR_AVOIDANCE,
+    ConstraintType.NO_CPG,
+    ConstraintType.NO_GT_DINUCLEOTIDE,
+})
+
+
+def _validate_config_hard_constraints(
+    sequence: str,
+    protein: str,
+    config: SolverConfig,
+    organism: str,
+    violations: list[ConstraintViolation],
+    seen_names: set[str],
+) -> None:
+    """Check ALL hard constraints derived directly from SolverConfig.
+
+    This provides comprehensive validation beyond what the model's constraint
+    list covers.  It constructs HardConstraint instances from the config
+    parameters and checks each one, deduplicating against constraints already
+    validated from the model.
+
+    Parameters
+    ----------
+    sequence : str
+        Candidate DNA sequence.
+    protein : str
+        Target amino acid sequence.
+    config : SolverConfig
+        Solver configuration.
+    organism : str
+        Target organism name.
+    violations : list[ConstraintViolation]
+        Mutable list to append violations to.
+    seen_names : set[str]
+        Set of constraint names already checked (for dedup).
+    """
+    # Determine if organism is eukaryotic for constraint applicability
+    is_eukaryote = True  # safe default
+    try:
+        from ..organism_config import is_eukaryotic_organism
+        is_eukaryote = is_eukaryotic_organism(organism)
+    except Exception:
+        pass
+
+    # Build the full set of config-derived hard constraints
+    config_constraints: list[HardConstraint] = []
+
+    # Translation (always present)
+    config_constraints.append(TranslationConstraint(protein))
+
+    # Restriction sites
+    from ..constants import RESTRICTION_ENZYMES
+    sites = config.restriction_sites
+    if not sites:
+        sites = [
+            seq for seq in RESTRICTION_ENZYMES.values()
+            if all(b in "ACGT" for b in seq.upper()) and len(seq) >= 6
+        ]
+    concrete_sites = [s for s in sites if all(b in "ACGT" for b in s.upper())]
+    if concrete_sites:
+        config_constraints.append(NoRestrictionSiteConstraint(concrete_sites))
+
+    # GC range
+    config_constraints.append(GCRangeConstraint(gc_lo=config.gc_lo, gc_hi=config.gc_hi))
+
+    # Cryptic splice sites (eukaryote-only)
+    if is_eukaryote:
+        config_constraints.append(
+            NoCrypticSpliceConstraint(
+                threshold=config.cryptic_splice_threshold, protein=protein,
+            )
+        )
+
+    # CpG islands (eukaryote-only)
+    if is_eukaryote and config.avoid_cpg:
+        config_constraints.append(NoCpGIslandConstraint(organism=organism))
+
+    # ATTTA instability motifs
+    if config.avoid_attta:
+        config_constraints.append(NoATTTAMotifConstraint())
+
+    # T-runs
+    if config.avoid_t_runs:
+        config_constraints.append(NoTRunConstraint())
+
+    # Check each config-derived constraint, deduplicating against seen_names
+    for constraint in config_constraints:
+        if constraint.name in seen_names:
+            continue
+        violation = _check_constraint(constraint, sequence, ConstraintStrictness.HARD)
+        if violation is not None:
+            violations.append(violation)
+            seen_names.add(violation.constraint_name)
+
+
+# ==============================================================================
+# Fix 3: Prokaryotic constraint filtering
+# ==============================================================================
+
+def _filter_prokaryotic_constraints(
+    model: CSPModel,
+    organism: str,
+    config: SolverConfig,
+) -> CSPModel:
+    """Filter eukaryotic-only constraints from the model for prokaryotic organisms.
+
+    For prokaryotic organisms, constraints like cryptic splice sites, CpG
+    islands, and GT dinucleotide avoidance are biologically irrelevant (no
+    spliceosomes, no DNA methylation silencing).  This function removes such
+    constraints from the model before it is sent to solver backends, ensuring
+    that the solver doesn't waste time on constraints that can only restrict
+    the solution space without biological justification.
+
+    This is a defense-in-depth measure — ``build_csp_model`` already skips
+    eukaryotic constraints when ``auto_detect_organism_domain`` is True.
+    However, if that flag is disabled, or if the model was constructed by
+    other means, this filter ensures prokaryotic organisms are never
+    penalised by eukaryotic constraints.
+
+    Parameters
+    ----------
+    model : CSPModel
+        The CSP model to filter.
+    organism : str
+        Target organism name.
+    config : SolverConfig
+        Solver configuration.
+
+    Returns
+    -------
+    CSPModel
+        The filtered model (same object if no filtering needed, or a new
+        CSPModel with eukaryotic constraints removed).
+    """
+    # Only filter for prokaryotic organisms
+    is_eukaryote = True  # safe default
+    try:
+        from ..organism_config import is_eukaryotic_organism
+        is_eukaryote = is_eukaryotic_organism(organism)
+    except Exception:
+        pass
+
+    if is_eukaryote:
+        return model  # No filtering needed for eukaryotes
+
+    # Filter hard constraints
+    filtered_hard = [
+        c for c in model.hard_constraints
+        if c.constraint_type not in _EUKARYOTIC_CONSTRAINT_TYPES
+    ]
+
+    # Filter soft constraints
+    filtered_soft = [
+        c for c in model.soft_constraints
+        if c.constraint_type not in _EUKARYOTIC_CONSTRAINT_TYPES
+    ]
+
+    # Check if any filtering actually happened
+    n_hard_removed = len(model.hard_constraints) - len(filtered_hard)
+    n_soft_removed = len(model.soft_constraints) - len(filtered_soft)
+
+    if n_hard_removed == 0 and n_soft_removed == 0:
+        return model  # Nothing to filter
+
+    logger.info(
+        "Filtered %d hard and %d soft eukaryotic-only constraints for "
+        "prokaryotic organism %s",
+        n_hard_removed, n_soft_removed, organism,
+    )
+
+    # Rebuild the model with filtered constraints.
+    # Use the constraints.CSPModel constructor if available, otherwise
+    # create a new types.CSPModel.
+    from .constraints import CSPModel as ConstraintsCSPModel
+
+    if isinstance(model, ConstraintsCSPModel):
+        return ConstraintsCSPModel(
+            variables=model.variables,
+            hard_constraints=filtered_hard,
+            soft_constraints=filtered_soft,
+            protein=model.protein,
+            organism=model.organism,
+            config=model.config,
+        )
+    else:
+        # types.CSPModel — filter the constraints list
+        filtered_specs = [
+            c for c in model.constraints
+            if c.ctype not in _EUKARYOTIC_CONSTRAINT_TYPES
+        ]
+        return CSPModel(
+            protein_sequence=model.protein_sequence,
+            codon_domains=model.codon_domains,
+            constraints=filtered_specs,
+            config=model.config,
+            organism=model.organism,
+        )
+
+
+# ==============================================================================
+# Fix 4: CAI and GC content computation for result enrichment
+# ==============================================================================
+
+_CAI_LOG_EPSILON = 1e-10
+
+
+def _compute_cai(
+    sequence: str,
+    protein: str,
+    organism: str,
+    config: SolverConfig,
+) -> float:
+    """Compute the Codon Adaptation Index (CAI) for a result sequence.
+
+    CAI is the geometric mean of relative adaptiveness values across all
+    codon positions.  Uses the same adaptiveness table that the solver
+    used (Kazusa or Sharp-Li based on config.cai_reference_set).
+
+    Parameters
+    ----------
+    sequence : str
+        DNA sequence (must be len(protein) * 3).
+    protein : str
+        Amino acid sequence.
+    organism : str
+        Target organism name.
+    config : SolverConfig
+        Solver configuration (determines CAI reference set).
+
+    Returns
+    -------
+    float
+        CAI value in [0.0, 1.0], or 0.0 if computation fails.
+    """
+    if not sequence or not protein:
+        return 0.0
+
+    if len(sequence) != len(protein) * 3:
+        return 0.0
+
+    # Get the appropriate adaptiveness table
+    canonical = resolve_organism(organism)
+
+    try:
+        if config.cai_reference_set == "sharp_li":
+            from ..organisms import get_sharp_li_adaptiveness_tables
+            adaptiveness = get_sharp_li_adaptiveness_tables().get(canonical, {})
+        else:
+            adaptiveness = CODON_ADAPTIVENESS_TABLES.get(canonical, {})
+    except Exception:
+        adaptiveness = CODON_ADAPTIVENESS_TABLES.get(canonical, {})
+
+    if not adaptiveness:
+        return 0.0
+
+    # Compute geometric mean of adaptiveness values
+    n = len(protein)
+    log_sum = 0.0
+    for i in range(n):
+        codon = sequence[i * 3 : i * 3 + 3]
+        w = adaptiveness.get(codon, _CAI_LOG_EPSILON)
+        log_sum += math.log(max(w, _CAI_LOG_EPSILON))
+
+    cai = math.exp(log_sum / n) if n > 0 else 0.0
+    return min(max(cai, 0.0), 1.0)  # Clamp to [0, 1]
+
+
+def _compute_gc_content(sequence: str) -> float:
+    """Compute the GC content fraction of a DNA sequence.
+
+    Parameters
+    ----------
+    sequence : str
+        DNA sequence.
+
+    Returns
+    -------
+    float
+        GC fraction in [0.0, 1.0].
+    """
+    if not sequence:
+        return 0.0
+    gc = sum(1 for b in sequence.upper() if b in "GC")
+    return gc / len(sequence)

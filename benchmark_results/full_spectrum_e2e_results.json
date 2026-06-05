@@ -1,0 +1,4409 @@
+{
+  "metadata": {
+    "benchmark_type": "full_spectrum_e2e",
+    "total_predicates": 28,
+    "layers": [
+      "DNA",
+      "mRNA",
+      "Protein Structure",
+      "Protein Biophysics",
+      "Immunogenicity"
+    ],
+    "organisms": [
+      "Saccharomyces_cerevisiae",
+      "Homo_sapiens",
+      "Mus_musculus",
+      "Escherichia_coli",
+      "CHO_K1"
+    ],
+    "num_genes": 17
+  },
+  "results": [
+    {
+      "gene_name": "GFP",
+      "organism": "Escherichia_coli",
+      "domain": "prokaryote",
+      "protein_length": 238,
+      "optimization_success": true,
+      "optimization_time_s": 4.6139,
+      "cai": 0.99894,
+      "gc_content": 0.542,
+      "total_predicates": 30,
+      "predicates_passed": 20,
+      "predicates_uncertain": 4,
+      "predicates_failed": 2,
+      "pass_rate": 0.7692,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Cryptic splice check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CpG island check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GT dinucleotide check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9989",
+          "score": 0.9989,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst promoter score 0.583 at pos 129",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.579 at AA pos 217 exceeds 0.578 (2 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-16.1 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.5420",
+          "score": 0.542,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.2 (method=heuristic_fallback)",
+          "score": 53.18,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Cysteine count is even but spatial pairing cannot be verified without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Long aggregation-prone region of 14 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.872 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "356 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "11 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "mCherry",
+      "organism": "Escherichia_coli",
+      "domain": "prokaryote",
+      "protein_length": 225,
+      "optimization_success": true,
+      "optimization_time_s": 0.0019,
+      "cai": 0.996619,
+      "gc_content": 0.5452,
+      "total_predicates": 30,
+      "predicates_passed": 17,
+      "predicates_uncertain": 7,
+      "predicates_failed": 2,
+      "pass_rate": 0.6538,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Cryptic splice check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CpG island check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Restriction sites found at [418]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GT dinucleotide check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9966",
+          "score": 0.9966,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst promoter score 0.583 at pos 42",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.579 at AA pos 176 exceeds 0.578 (1 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-10.5 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.5452",
+          "score": 0.5452,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=52.4 (method=heuristic_fallback)",
+          "score": 52.44,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Hydrophobic fraction 0.293 is below normal range [0.3, 0.45] -- insufficient hydrophobic core",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Odd number of cysteines (1): at least one unpaired Cys that may form incorrect disulfides",
+          "score": 0.0,
+          "knowledge_gap": "Cannot determine if unpaired Cys is buried without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Hydrophobic fraction 0.293 is below normal range [0.3, 0.45] -- insufficient hydrophobic core",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "Borderline aggregation-prone region of 7 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.900 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "331 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "4 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "T4_lysozyme",
+      "organism": "Escherichia_coli",
+      "domain": "prokaryote",
+      "protein_length": 216,
+      "optimization_success": true,
+      "optimization_time_s": 0.0007,
+      "cai": 1.0,
+      "gc_content": 0.5463,
+      "total_predicates": 30,
+      "predicates_passed": 19,
+      "predicates_uncertain": 7,
+      "predicates_failed": 0,
+      "pass_rate": 0.7308,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Cryptic splice check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CpG island check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GT dinucleotide check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst promoter score 0.583 at pos 28",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.632 at AA pos 86 exceeds 0.578 (13 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-11.9 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.5463",
+          "score": 0.5463,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=54.0 (method=heuristic_fallback)",
+          "score": 54.02,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=10.25 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "Borderline aggregation-prone region of 6 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=10.25 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.915 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "317 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "9 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "groEL",
+      "organism": "Escherichia_coli",
+      "domain": "prokaryote",
+      "protein_length": 338,
+      "optimization_success": true,
+      "optimization_time_s": 0.0022,
+      "cai": 0.999252,
+      "gc_content": 0.5306,
+      "total_predicates": 30,
+      "predicates_passed": 21,
+      "predicates_uncertain": 4,
+      "predicates_failed": 1,
+      "pass_rate": 0.8077,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Cryptic splice check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CpG island check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GT dinucleotide check skipped for prokaryotic organism 'Escherichia_coli'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9993",
+          "score": 0.9993,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst promoter score 0.667 at pos 580",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.579 at AA pos 4 exceeds 0.578 (7 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-17.4 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.5306",
+          "score": 0.5306,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.8 (method=heuristic_fallback)",
+          "score": 53.75,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "Borderline aggregation-prone region of 7 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.905 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "504 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "5 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "Insulin",
+      "organism": "Homo_sapiens",
+      "domain": "eukaryote",
+      "protein_length": 110,
+      "optimization_success": true,
+      "optimization_time_s": 0.0081,
+      "cai": 1.0,
+      "gc_content": 0.6879,
+      "total_predicates": 30,
+      "predicates_passed": 17,
+      "predicates_uncertain": 4,
+      "predicates_failed": 5,
+      "pass_rate": 0.6538,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 7.11 at pos 47",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Worst CpG Obs/Exp ratio 0.533 <= 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [8, 47, 89, 116, 281, 305]; unavoidable at [75, 105, 123, 125, 186, 195, 273]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.750 at pos 115",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 (10 window(s) failing)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-14.0 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6879",
+          "score": 0.6879,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.4 (method=heuristic_fallback)",
+          "score": 53.38,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Cysteine count is even but spatial pairing cannot be verified without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Marginal solubility: CamSol score -0.512 is in the uncertain range [-1.0, 0.0)",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Very long aggregation-prone region of 17 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "Hydrophobic stretch of 8 residues slightly exceeds limit of 7 (borderline)",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic stretches assessed from sequence alone.  Structural context (buried vs. exposed) would clarify whether stretches contribute to aggregation."
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.975 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "124 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "6 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "HBB",
+      "organism": "Homo_sapiens",
+      "domain": "eukaryote",
+      "protein_length": 147,
+      "optimization_success": true,
+      "optimization_time_s": 0.0027,
+      "cai": 1.0,
+      "gc_content": 0.6712,
+      "total_predicates": 30,
+      "predicates_passed": 16,
+      "predicates_uncertain": 5,
+      "predicates_failed": 5,
+      "pass_rate": 0.6154,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 7.11 at pos 44",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "CpG island at pos 23, Obs/Exp=0.758 > 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [44, 365, 434]; unavoidable at [3, 33, 54, 60, 69, 99, 102, 104, 162, 180, 201, 294, 327, 333, 335, 339, 378, 399, 402, 411]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.750 at pos 282",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.632 at AA pos 124 exceeds 0.578 (8 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-13.9 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6712",
+          "score": 0.6712,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.5 (method=heuristic_fallback)",
+          "score": 53.46,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Cysteine count is even but spatial pairing cannot be verified without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Marginal solubility: CamSol score -0.253 is in the uncertain range [-1.0, 0.0)",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Long aggregation-prone region of 11 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.951 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "189 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "13 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "EPO",
+      "organism": "Homo_sapiens",
+      "domain": "eukaryote",
+      "protein_length": 193,
+      "optimization_success": true,
+      "optimization_time_s": 0.0042,
+      "cai": 1.0,
+      "gc_content": 0.6684,
+      "total_predicates": 30,
+      "predicates_passed": 13,
+      "predicates_uncertain": 5,
+      "predicates_failed": 8,
+      "pass_rate": 0.5,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 6.02 at pos 72",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "CpG island at pos 374, Obs/Exp=0.652 > 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [14, 29, 503, 545]; unavoidable at [6, 72, 111, 201, 216, 246, 261, 267, 269, 300, 324, 363, 375, 510, 512]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.762 at pos 494",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "TM domain detected: worst hydrophobic fraction 0.737 at AA pos 7 exceeds threshold 0.68 (4 window(s) failing)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-16.1 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6684",
+          "score": 0.6684,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.2 (method=heuristic_fallback)",
+          "score": 53.21,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=9.86 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Odd number of cysteines (5): at least one unpaired Cys that may form incorrect disulfides",
+          "score": 0.0,
+          "knowledge_gap": "Cannot determine if unpaired Cys is buried without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Marginal solubility: CamSol score -0.233 is in the uncertain range [-1.0, 0.0)",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Very long aggregation-prone region of 19 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=9.86 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.944 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "288 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "7 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "GH1",
+      "organism": "Homo_sapiens",
+      "domain": "eukaryote",
+      "protein_length": 217,
+      "optimization_success": true,
+      "optimization_time_s": 0.0083,
+      "cai": 1.0,
+      "gc_content": 0.6144,
+      "total_predicates": 30,
+      "predicates_passed": 15,
+      "predicates_uncertain": 5,
+      "predicates_failed": 6,
+      "pass_rate": 0.5769,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst splice score 5.92 at pos 233",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "CpG island at pos 359, Obs/Exp=0.766 > 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [47, 104, 167, 200, 233, 350, 512, 566, 620]; unavoidable at [345, 363, 365, 381, 383, 405, 407, 594, 615, 630]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.750 at pos 151",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.632 at AA pos 8 exceeds 0.578 (16 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-19.6 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6144",
+          "score": 0.6144,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=52.8 (method=heuristic_fallback)",
+          "score": 52.8,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Odd number of cysteines (5): at least one unpaired Cys that may form incorrect disulfides",
+          "score": 0.0,
+          "knowledge_gap": "Cannot determine if unpaired Cys is buried without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Marginal solubility: CamSol score -0.140 is in the uncertain range [-1.0, 0.0)",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Long aggregation-prone region of 11 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.906 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "313 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "7 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "IFNA2",
+      "organism": "Homo_sapiens",
+      "domain": "eukaryote",
+      "protein_length": 188,
+      "optimization_success": true,
+      "optimization_time_s": 0.005,
+      "cai": 0.999909,
+      "gc_content": 0.6099,
+      "total_predicates": 30,
+      "predicates_passed": 16,
+      "predicates_uncertain": 4,
+      "predicates_failed": 6,
+      "pass_rate": 0.6154,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 6.02 at pos 231",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "CpG island at pos 193, Obs/Exp=0.689 > 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [146, 194, 206, 266, 317, 332, 431, 452, 470]; unavoidable at [24, 36, 63, 231, 363, 375, 381, 423, 492, 495]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9999",
+          "score": 0.9999,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.762 at pos 398",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "TM domain detected: worst hydrophobic fraction 0.684 at AA pos 0 exceeds threshold 0.68 (1 window(s) failing)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-12.3 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6099",
+          "score": 0.6099,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.7 (method=heuristic_fallback)",
+          "score": 53.68,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Cysteine count is even but spatial pairing cannot be verified without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Marginal solubility: CamSol score -0.199 is in the uncertain range [-1.0, 0.0)",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Long aggregation-prone region of 14 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "Hydrophobic stretch of 10 residues slightly exceeds limit of 7 (borderline)",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic stretches assessed from sequence alone.  Structural context (buried vs. exposed) would clarify whether stretches contribute to aggregation."
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.968 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "296 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "9 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "Albumin",
+      "organism": "Homo_sapiens",
+      "domain": "eukaryote",
+      "protein_length": 607,
+      "optimization_success": true,
+      "optimization_time_s": 0.0117,
+      "cai": 1.0,
+      "gc_content": 0.6216,
+      "total_predicates": 30,
+      "predicates_passed": 16,
+      "predicates_uncertain": 4,
+      "predicates_failed": 6,
+      "pass_rate": 0.6154,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 6.31 at pos 1448",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "CpG island at pos 177, Obs/Exp=1.012 > 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [5, 29, 35, 158, 170, 215, 278, 293, 371, 482, 488, 536, 551, 572, 683, 734, 749, 800, 824, 854, 899, 1061, 1067, 1088, 1124, 1145, 1250, 1268, 1448, 1493, 1586, 1739]; unavoidable at [9, 60, 62, 90, 138, 189, 198, 207, 231, 300, 417, 429, 435, 440, 561, 563, 636, 714, 753, 759, 771, 789, 945, 1011, 1013, 1095, 1101, 1185, 1187, 1209, 1293, 1311, 1320, 1338, 1344, 1365, 1452, 1473, 1485, 1512, 1560, 1656, 1707, 1722, 1731, 1776, 1794, 1797]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.762 at pos 362",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.632 at AA pos 0 exceeds 0.578 (35 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-13.4 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6216",
+          "score": 0.6216,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=52.5 (method=heuristic_fallback)",
+          "score": 52.5,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Odd number of cysteines (35): at least one unpaired Cys that may form incorrect disulfides",
+          "score": 0.0,
+          "knowledge_gap": "Cannot determine if unpaired Cys is buried without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Long aggregation-prone region of 14 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "Hydrophobic stretch of 8 residues slightly exceeds limit of 7 (borderline)",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic stretches assessed from sequence alone.  Structural context (buried vs. exposed) would clarify whether stretches contribute to aggregation."
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.955 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "914 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "15 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "TDH3",
+      "organism": "Saccharomyces_cerevisiae",
+      "domain": "eukaryote",
+      "protein_length": 190,
+      "optimization_success": true,
+      "optimization_time_s": 0.0029,
+      "cai": 0.980718,
+      "gc_content": 0.2965,
+      "total_predicates": 30,
+      "predicates_passed": 20,
+      "predicates_uncertain": 3,
+      "predicates_failed": 3,
+      "pass_rate": 0.7692,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst splice score 5.69 at pos 102",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Worst CpG Obs/Exp ratio 0.000 <= 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [22, 82, 109, 151, 181, 229, 241, 331, 334, 376, 415, 472, 493, 511, 550]; unavoidable at [3, 9, 33, 102, 105, 138, 213, 234, 255, 282, 351, 360, 387, 438, 450, 465, 468, 477, 480, 513, 522, 540, 543, 555]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9807",
+          "score": 0.9807,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.917 at pos 93",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No TM domain detected (worst hydrophobic fraction 0.474)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-16.9 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "GC=0.2965",
+          "score": 0.2965,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.7 (method=heuristic_fallback)",
+          "score": 53.67,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.810 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "272 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "13 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "PGK1",
+      "organism": "Saccharomyces_cerevisiae",
+      "domain": "eukaryote",
+      "protein_length": 240,
+      "optimization_success": true,
+      "optimization_time_s": 0.0032,
+      "cai": 0.994908,
+      "gc_content": 0.3306,
+      "total_predicates": 30,
+      "predicates_passed": 18,
+      "predicates_uncertain": 5,
+      "predicates_failed": 3,
+      "pass_rate": 0.6923,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst splice score 5.72 at pos 614",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Worst CpG Obs/Exp ratio 0.000 <= 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [2, 58, 85, 130, 139, 146, 157, 181, 199, 220, 223, 229, 262, 292, 313, 379, 391, 397, 415, 439, 493, 529, 562, 586, 593, 614, 667, 670, 712]; unavoidable at [24, 72, 96, 120, 165, 177, 189, 231, 237, 297, 336, 357, 387, 468, 471, 531, 558, 564, 618, 627, 651, 702]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9949",
+          "score": 0.9949,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.917 at pos 75",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.579 at AA pos 200 exceeds 0.578 (1 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-11.7 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.3306",
+          "score": 0.3306,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=52.8 (method=heuristic_fallback)",
+          "score": 52.77,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Odd number of cysteines (1): at least one unpaired Cys that may form incorrect disulfides",
+          "score": 0.0,
+          "knowledge_gap": "Cannot determine if unpaired Cys is buried without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.920 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "265 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "8 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "ADH1",
+      "organism": "Saccharomyces_cerevisiae",
+      "domain": "eukaryote",
+      "protein_length": 306,
+      "optimization_success": true,
+      "optimization_time_s": 0.0085,
+      "cai": 0.99211,
+      "gc_content": 0.3007,
+      "total_predicates": 30,
+      "predicates_passed": 13,
+      "predicates_uncertain": 8,
+      "predicates_failed": 5,
+      "pass_rate": 0.5,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst splice score 5.50 at pos 285",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Worst CpG Obs/Exp ratio 0.000 <= 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Restriction sites found at [625]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [2, 23, 64, 97, 103, 112, 133, 181, 184, 187, 196, 215, 280, 298, 331, 370, 436, 478, 518, 572, 583, 608, 622, 634, 661, 673, 689, 700, 731, 749, 796, 835, 863, 868, 871, 895, 905]; unavoidable at [12, 60, 78, 117, 171, 222, 258, 267, 285, 288, 315, 318, 351, 378, 465, 468, 471, 591, 645, 735, 756, 783, 798, 801, 828, 846, 852, 876]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9921",
+          "score": 0.9921,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.917 at pos 413",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.632 at AA pos 255 exceeds 0.578 (10 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-17.8 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.3007",
+          "score": 0.3007,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=52.5 (method=heuristic_fallback)",
+          "score": 52.47,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=10.46 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Odd number of cysteines (1): at least one unpaired Cys that may form incorrect disulfides",
+          "score": 0.0,
+          "knowledge_gap": "Cannot determine if unpaired Cys is buried without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Marginal solubility: CamSol score -0.065 is in the uncertain range [-1.0, 0.0)",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Aggregation-prone region of 10 residues detected (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=10.46 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.881 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "375 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "10 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "mIL2",
+      "organism": "Mus_musculus",
+      "domain": "eukaryote",
+      "protein_length": 163,
+      "optimization_success": true,
+      "optimization_time_s": 0.0028,
+      "cai": 1.0,
+      "gc_content": 0.5685,
+      "total_predicates": 30,
+      "predicates_passed": 16,
+      "predicates_uncertain": 6,
+      "predicates_failed": 4,
+      "pass_rate": 0.6154,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 6.15 at pos 467",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Worst CpG Obs/Exp ratio 0.417 <= 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [143, 296, 404, 461, 467]; unavoidable at [2, 27, 42, 51, 90, 93, 156, 189, 336, 338, 477]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.762 at pos 1",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.632 at AA pos 0 exceeds 0.578 (6 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-15.9 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.5685",
+          "score": 0.5685,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=54.0 (method=heuristic_fallback)",
+          "score": 54.03,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=10.32 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Cysteine count is even but spatial pairing cannot be verified without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Aggregation-prone region of 9 residues detected (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=10.32 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.961 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "238 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "5 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "mIFNG",
+      "organism": "Mus_musculus",
+      "domain": "eukaryote",
+      "protein_length": 292,
+      "optimization_success": true,
+      "optimization_time_s": 0.0048,
+      "cai": 1.0,
+      "gc_content": 0.621,
+      "total_predicates": 30,
+      "predicates_passed": 18,
+      "predicates_uncertain": 3,
+      "predicates_failed": 5,
+      "pass_rate": 0.6923,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Worst splice score 5.22 at pos 156",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Worst CpG Obs/Exp ratio 0.593 <= 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [632, 692, 824, 872]; unavoidable at [2, 9, 15, 21, 42, 63, 156, 204, 219, 228, 282, 306, 330, 336, 354, 444, 549, 561, 570, 648, 705, 750, 792]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.762 at pos 143",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "TM domain detected: worst hydrophobic fraction 0.737 at AA pos 3 exceeds threshold 0.68 (6 window(s) failing)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-24.9 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6210",
+          "score": 0.621,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.6 (method=heuristic_fallback)",
+          "score": 53.64,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Cysteine count is even but spatial pairing cannot be verified without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Very long aggregation-prone region of 17 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.948 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "363 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "15 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "CHO_EPO",
+      "organism": "CHO_K1",
+      "domain": "eukaryote",
+      "protein_length": 193,
+      "optimization_success": true,
+      "optimization_time_s": 0.0047,
+      "cai": 0.990038,
+      "gc_content": 0.6995,
+      "total_predicates": 30,
+      "predicates_passed": 13,
+      "predicates_uncertain": 5,
+      "predicates_failed": 8,
+      "pass_rate": 0.5,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 6.02 at pos 72",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "CpG island at pos 378, Obs/Exp=0.703 > 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [14, 29, 122, 166, 503, 545]; unavoidable at [6, 72, 111, 201, 216, 246, 261, 267, 269, 300, 324, 363, 375, 377, 510, 512]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=0.9900",
+          "score": 0.99,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.762 at pos 511",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "TM domain detected: worst hydrophobic fraction 0.737 at AA pos 7 exceeds threshold 0.68 (4 window(s) failing)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Strong mRNA secondary structure (Nussinov fallback): \u0394G\u2248-41.6 kcal/mol <= -15.0",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6995",
+          "score": 0.6995,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.2 (method=heuristic_fallback)",
+          "score": 53.21,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=9.86 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Odd number of cysteines (5): at least one unpaired Cys that may form incorrect disulfides",
+          "score": 0.0,
+          "knowledge_gap": "Cannot determine if unpaired Cys is buried without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Marginal solubility: CamSol score -0.233 is in the uncertain range [-1.0, 0.0)",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Very long aggregation-prone region of 19 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "High isoelectric point (pI=9.86 > 9.0): protein may precipitate near its pI in typical buffers",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.944 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "288 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "7 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    },
+    {
+      "gene_name": "CHO_GFP",
+      "organism": "CHO_K1",
+      "domain": "eukaryote",
+      "protein_length": 238,
+      "optimization_success": true,
+      "optimization_time_s": 0.0043,
+      "cai": 1.0,
+      "gc_content": 0.6275,
+      "total_predicates": 30,
+      "predicates_passed": 17,
+      "predicates_uncertain": 4,
+      "predicates_failed": 5,
+      "pass_rate": 0.6538,
+      "error": "",
+      "predicate_details": [
+        {
+          "predicate": "NoStopCodons",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No internal stop codons",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst splice score 6.02 at pos 576",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "CpG island at pos 195, Obs/Exp=0.984 > 0.6",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No restriction sites found",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoAvoidableGT",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Avoidable GT dinucleotides at [20, 77, 134, 206, 218, 338, 425, 665, 707]; unavoidable at [30, 33, 45, 63, 84, 162, 180, 201, 276, 333, 357, 447, 449, 525, 576, 654, 669]",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ValidCodingSeq",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "All codons valid",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "ConservationScore",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "Translation matches original protein",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CodonOptimality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "CAI=1.0000",
+          "score": 1.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoCrypticPromoter",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Worst promoter score 0.762 at pos 230",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Borderline TM domain: worst hydrophobic fraction 0.579 at AA pos 217 exceeds 0.578 (2 window(s) borderline)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "mRNASecondaryStructure",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Moderate mRNA secondary structure (Nussinov fallback): \u0394G\u2248-11.5 kcal/mol <= -10.5",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CoTranslationalFolding",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: '<' not supported between instances of 'str' and 'int'",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "MRNAStability",
+          "verdict": "UNCERTAIN",
+          "passed": false,
+          "details": "Error: cannot import name 'scan_instability_motifs' from 'biocompiler.mrna_stability' (/home/z/my-project/biocompiler/scripts/../src/biocompiler/mrna_stability.py)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "GCContent",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "GC=0.6275",
+          "score": 0.6275,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StructureConfidence",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "pLDDT=53.2 (method=heuristic_fallback)",
+          "score": 53.18,
+          "knowledge_gap": "Heuristic fallback used"
+        },
+        {
+          "predicate": "NoMisfoldingRisk",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "0 long hydrophobic stretches (>15aa)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "CorrectFoldTopology",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoUnexpectedInteraction",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "StableFolding",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; stability estimated from sequence composition only.  Structural analysis would improve confidence."
+        },
+        {
+          "predicate": "NoDestabilizingMutation",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "No mutations (synonymous codon optimization preserves protein)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "DisulfideBondIntegrity",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Cysteine count is even but spatial pairing cannot be verified without structural data."
+        },
+        {
+          "predicate": "HydrophobicCoreQuality",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Hydrophobic fraction is within normal range, but core burial cannot be verified without structural data."
+        },
+        {
+          "predicate": "SolubleExpression",
+          "verdict": "LIKELY_PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "No PDB structure provided; solubility estimated from intrinsic sequence properties only.  Structural correction would improve accuracy."
+        },
+        {
+          "predicate": "NoAggregationProneRegion",
+          "verdict": "LIKELY_FAIL",
+          "passed": false,
+          "details": "Long aggregation-prone region of 14 residues (max allowed: 5)",
+          "score": 0.0,
+          "knowledge_gap": "Aggregation-prone regions identified from intrinsic sequence only.  Structural accessibility correction would refine the prediction."
+        },
+        {
+          "predicate": "ChargeComposition",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": "Charge composition assessed from sequence alone.  Surface accessibility of charged residues (from structure) would improve solubility prediction."
+        },
+        {
+          "predicate": "NoLongHydrophobicStretch",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": null
+        },
+        {
+          "predicate": "LowImmunogenicity",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "Immunogenicity score 0.872 is high (>0.7)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoStrongTCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "356 strong T-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "NoDominantBCellEpitope",
+          "verdict": "FAIL",
+          "passed": false,
+          "details": "11 dominant B-cell epitopes found (high immunogenicity risk)",
+          "score": 0.0,
+          "knowledge_gap": ""
+        },
+        {
+          "predicate": "PopulationCoverageSafe",
+          "verdict": "PASS",
+          "passed": true,
+          "details": "",
+          "score": 0.0,
+          "knowledge_gap": ""
+        }
+      ]
+    }
+  ]
+}

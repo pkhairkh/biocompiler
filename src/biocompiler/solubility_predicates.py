@@ -39,11 +39,13 @@ __all__ = [
 PKA_VALUES: dict[str, float] = {
     "N_term": 9.69,   # N-terminal amino group
     "C_term": 2.34,   # C-terminal carboxyl group
-    "K": 10.54,       # Lysine side chain
-    "R": 12.48,       # Arginine side chain
-    "H": 6.04,        # Histidine side chain
-    "D": 3.90,        # Aspartic acid side chain
-    "E": 4.07,        # Glutamic acid side chain
+    "K": 10.5,        # Lysine side chain
+    "R": 12.5,        # Arginine side chain
+    "H": 6.0,         # Histidine side chain
+    "D": 3.9,         # Aspartic acid side chain
+    "E": 4.1,         # Glutamic acid side chain
+    "C": 8.3,         # Cysteine side chain
+    "Y": 10.1,        # Tyrosine side chain
 }
 
 # ────────────────────────────────────────────────────────────
@@ -68,6 +70,46 @@ _CAMSOL_WINDOW = 7
 
 # Default hydrophobic residue set (AILMFWV)
 _DEFAULT_HYDROPHOBIC: set[str] = set("AILMFWV")
+
+# Membrane protein residue set (strongly hydrophobic transmembrane indicators)
+_MEMBRANE_HYDROPHOBIC: set[str] = set("AILMFWV")
+
+# Minimum consecutive hydrophobic residues to be flagged as aggregation-prone
+_AGG_MIN_CONSECUTIVE_HYDROPHOBIC: int = 6
+
+# Maximum aggregation score cutoff for FAIL verdict
+_AGG_FAIL_SCORE_CUTOFF: float = 1.5
+
+# N-terminal aggregation penalty factor (N-term aggregation is worse)
+_AGG_NTERM_PENALTY: float = 1.5
+
+# Hydrophobic fraction thresholds for solubility
+_HYDROPHOBIC_FRACTION_PASS: float = 0.45
+_HYDROPHOBIC_FRACTION_WARN: float = 0.55
+
+# Net charge thresholds at pH 7
+_NET_CHARGE_PASS: float = 2.0
+_NET_CHARGE_WARN: float = 1.0
+
+# Charge/length ratio thresholds
+_CHARGE_RATIO_LO: float = -0.15
+_CHARGE_RATIO_HI: float = 0.15
+
+# Organism-specific threshold adjustments
+_ORGANISM_THRESHOLDS: dict[str, dict] = {
+    "ecoli": {
+        "net_charge_min_offset": 1.0,    # E. coli needs more positive charge
+        "charge_ratio_lo": -0.20,        # E. coli prefers slightly negative
+        "charge_ratio_hi": 0.10,
+        "hydrophobic_fraction_pass": 0.43,
+    },
+    "mammalian": {
+        "net_charge_min_offset": -0.5,    # Mammalian needs less positive charge
+        "charge_ratio_lo": -0.10,         # Mammalian prefers more neutral
+        "charge_ratio_hi": 0.15,
+        "hydrophobic_fraction_pass": 0.47,
+    },
+}
 
 # ────────────────────────────────────────────────────────────
 # Verdict threshold constants
@@ -148,17 +190,22 @@ def _find_aggregation_regions(
     protein: str,
     window: int = _CAMSOL_WINDOW,
     score_threshold: float = -1.0,
+    min_consecutive: int = _AGG_MIN_CONSECUTIVE_HYDROPHOBIC,
 ) -> list[tuple[int, int, float]]:
     """Find aggregation-prone regions from CamSol per-residue scores.
 
     A region is a maximal consecutive run of residues whose smoothed
-    CamSol score is below *score_threshold*.
+    CamSol score is below *score_threshold* AND has at least
+    *min_consecutive* residues in the run.  Short runs are filtered
+    out to reduce false positives from transient hydrophobic patches.
 
     Args:
         protein: Upper-cased amino-acid sequence.
         window: Smoothing window width.
         score_threshold: Per-residue score below which a residue is
             considered aggregation-prone.
+        min_consecutive: Minimum number of consecutive low-scoring
+            residues to qualify as an aggregation-prone region.
 
     Returns:
         List of (start, end, avg_score) tuples (end is exclusive).
@@ -167,7 +214,8 @@ def _find_aggregation_regions(
     if not profile:
         return []
 
-    regions: list[tuple[int, int, float]] = []
+    # First find all maximal runs below threshold
+    raw_regions: list[tuple[int, int, float]] = []
     i = 0
     n = len(profile)
     while i < n:
@@ -176,10 +224,17 @@ def _find_aggregation_regions(
             while i < n and profile[i] < score_threshold:
                 i += 1
             end = i
-            avg_score = sum(profile[start:end]) / (end - start)
-            regions.append((start, end, round(avg_score, 3)))
+            raw_regions.append((start, end))
         else:
             i += 1
+
+    # Filter to regions meeting the minimum consecutive residue requirement
+    regions: list[tuple[int, int, float]] = []
+    for start, end in raw_regions:
+        length = end - start
+        if length >= min_consecutive:
+            avg_score = sum(profile[start:end]) / length
+            regions.append((start, end, round(avg_score, 3)))
 
     return regions
 
@@ -233,6 +288,10 @@ def compute_net_charge(protein: str, pH: float) -> float:
             charge -= 1.0 / (1.0 + 10.0 ** (PKA_VALUES["D"] - pH))
         elif aa == "E":
             charge -= 1.0 / (1.0 + 10.0 ** (PKA_VALUES["E"] - pH))
+        elif aa == "C":
+            charge -= 1.0 / (1.0 + 10.0 ** (PKA_VALUES["C"] - pH))
+        elif aa == "Y":
+            charge -= 1.0 / (1.0 + 10.0 ** (PKA_VALUES["Y"] - pH))
 
     return charge
 
@@ -309,6 +368,44 @@ def find_hydrophobic_stretches(
 
 
 # ────────────────────────────────────────────────────────────
+# Organism key helper
+# ────────────────────────────────────────────────────────────
+
+def _organism_key(organism: str) -> str:
+    """Normalize organism name to a lookup key for threshold tables."""
+    org_lower = organism.lower().strip()
+    if any(tok in org_lower for tok in ("ecoli", "e.coli", "e. coli", "escherichia")):
+        return "ecoli"
+    if any(tok in org_lower for tok in ("mammal", "human", "mouse", "cho", "hek", "hepg2")):
+        return "mammalian"
+    return "default"
+
+
+def _get_org_threshold(organism: str, param: str, default: float) -> float:
+    """Retrieve an organism-specific threshold parameter, falling back to *default*."""
+    key = _organism_key(organism)
+    if key in _ORGANISM_THRESHOLDS and param in _ORGANISM_THRESHOLDS[key]:
+        return _ORGANISM_THRESHOLDS[key][param]
+    return default
+
+
+# ────────────────────────────────────────────────────────────
+# Membrane protein heuristic
+# ────────────────────────────────────────────────────────────
+
+def _is_likely_membrane_protein(protein: str) -> bool:
+    """Heuristic: detect if a protein is likely a membrane protein.
+
+    Returns True if there are ≥2 hydrophobic stretches of ≥19 residues
+    (typical transmembrane helix length), suggesting a membrane protein
+    with multiple transmembrane domains.
+    """
+    stretches = find_hydrophobic_stretches(protein, hydrophobic=_MEMBRANE_HYDROPHOBIC)
+    long_stretches = [s for s in stretches if (s[1] - s[0]) >= 19]
+    return len(long_stretches) >= 2
+
+
+# ────────────────────────────────────────────────────────────
 # Predicate 1: Soluble Expression
 # ────────────────────────────────────────────────────────────
 
@@ -319,16 +416,32 @@ def evaluate_soluble_expression(
     min_solubility_score: float = 0.0,
     pdb_string: str | None = None,
 ) -> TypeCheckResult:
-    """Check if protein is predicted to be soluble using CamSol scoring.
+    """Check if protein is predicted to be soluble using CamSol scoring,
+    hydrophobic fraction, and net charge at pH 7.
 
-    Verdict logic (CamSol intrinsic score):
-    - Score > 1.5        → PASS  (highly soluble)
-    - Score 0.0 to 1.5   → LIKELY_PASS (soluble)
-    - Score -1.0 to 0.0  → UNCERTAIN (marginally soluble)
-    - Score < -1.0       → LIKELY_FAIL (insoluble)
+    Verdict logic considers three signals with organism-specific thresholds:
 
-    If *pdb_string* is provided, a note is added that structural
-    correction would improve accuracy.
+    1. **CamSol intrinsic score** (primary):
+       - Score > 1.5   → PASS
+       - Score 0.0–1.5 → LIKELY_PASS
+       - Score -1.0–0.0 → UNCERTAIN (moderate / WARN zone)
+       - Score < -1.0   → LIKELY_FAIL
+
+    2. **Hydrophobic fraction** (PASS if < organism-specific threshold ~0.45):
+       - < pass_threshold  → no penalty
+       - pass_threshold to warn_threshold (~0.55) → WARN (UNCERTAIN)
+       - > warn_threshold  → additional FAIL signal
+
+    3. **Net charge at pH 7** (PASS if |net_charge| > 2):
+       - |net_charge| > 2   → no penalty
+       - 1 < |net_charge| ≤ 2 → WARN (UNCERTAIN)
+       - |net_charge| ≤ 1    → additional FAIL signal
+
+    Organism-specific adjustments:
+       - E. coli: needs more positive charge (offset +1.0), tighter
+         hydrophobic fraction (0.43)
+       - Mammalian: less positive charge needed (offset -0.5), looser
+         hydrophobic fraction (0.47)
 
     Args:
         sequence: DNA coding sequence.
@@ -349,12 +462,25 @@ def evaluate_soluble_expression(
             violation="Empty protein sequence",
         )
 
+    n = len(protein)
+
+    # --- CamSol intrinsic score (primary signal) ---
     camsol_score = _camsol_overall_score(protein)
 
-    # Identify aggregation-prone regions for derivation
-    agg_regions = _find_aggregation_regions(protein)
+    # --- Hydrophobic fraction ---
+    hydrophobic_count = sum(1 for aa in protein if aa in _DEFAULT_HYDROPHOBIC)
+    hydrophobic_fraction = hydrophobic_count / n if n > 0 else 0.0
 
-    # Determine verdict
+    # --- Net charge at pH 7 ---
+    net_charge = compute_net_charge(protein, 7.0)
+    abs_net_charge = abs(net_charge)
+
+    # --- Organism-specific thresholds ---
+    org_hydro_pass = _get_org_threshold(organism, "hydrophobic_fraction_pass", _HYDROPHOBIC_FRACTION_PASS)
+    org_charge_offset = _get_org_threshold(organism, "net_charge_min_offset", 0.0)
+    effective_net_charge_min = _NET_CHARGE_PASS + org_charge_offset
+
+    # --- Determine verdict from CamSol score (primary) ---
     if camsol_score > _CAMSOL_HIGHLY_SOLUBLE:
         verdict = Verdict.PASS
         violation = None
@@ -373,6 +499,50 @@ def evaluate_soluble_expression(
             f"Insoluble protein: CamSol score {camsol_score:.3f} < {_CAMSOL_MARGINAL}"
         )
 
+    # --- Hydrophobic fraction adjustments (WARN / FAIL zones) ---
+    hydro_warnings: list[str] = []
+    if hydrophobic_fraction > _HYDROPHOBIC_FRACTION_WARN:
+        # Strong failure signal — downgrade by up to 2 levels
+        if verdict == Verdict.PASS:
+            verdict = Verdict.UNCERTAIN
+        elif verdict == Verdict.LIKELY_PASS:
+            verdict = Verdict.LIKELY_FAIL
+        hydro_warnings.append(
+            f"High hydrophobic fraction ({hydrophobic_fraction:.1%} > "
+            f"{_HYDROPHOBIC_FRACTION_WARN:.0%})"
+        )
+    elif hydrophobic_fraction > org_hydro_pass:
+        # Moderate zone — downgrade by 1 level
+        if verdict == Verdict.PASS:
+            verdict = Verdict.LIKELY_PASS
+        elif verdict == Verdict.LIKELY_PASS:
+            verdict = Verdict.UNCERTAIN
+        hydro_warnings.append(
+            f"Elevated hydrophobic fraction ({hydrophobic_fraction:.1%} > "
+            f"{org_hydro_pass:.0%})"
+        )
+
+    # --- Net charge adjustments ---
+    charge_warnings: list[str] = []
+    if abs_net_charge <= _NET_CHARGE_WARN:
+        # Very low charge — downgrade by up to 2 levels (but not below LIKELY_FAIL)
+        if verdict == Verdict.PASS:
+            verdict = Verdict.UNCERTAIN
+        elif verdict == Verdict.LIKELY_PASS:
+            verdict = Verdict.LIKELY_FAIL
+        charge_warnings.append(
+            f"Very low net charge at pH 7 (|{net_charge:.1f}| ≤ {_NET_CHARGE_WARN})"
+        )
+    elif abs_net_charge <= effective_net_charge_min:
+        # Moderate charge — WARN zone, downgrade by 1 level only
+        if verdict == Verdict.PASS:
+            verdict = Verdict.LIKELY_PASS
+        elif verdict == Verdict.LIKELY_PASS:
+            verdict = Verdict.UNCERTAIN
+        charge_warnings.append(
+            f"Low net charge at pH 7 (|{net_charge:.1f}| ≤ {effective_net_charge_min:.1f})"
+        )
+
     # If the score is below the user-specified minimum, that's a stronger
     # failure signal
     if camsol_score < min_solubility_score and verdict in (
@@ -384,10 +554,25 @@ def evaluate_soluble_expression(
             f"acceptable score {min_solubility_score}"
         )
 
+    # Combine violation messages
+    all_warnings = hydro_warnings + charge_warnings
+    if all_warnings and violation:
+        violation = f"{violation}; {'; '.join(all_warnings)}"
+    elif all_warnings:
+        violation = "; ".join(all_warnings)
+
+    # Identify aggregation-prone regions for derivation
+    agg_regions = _find_aggregation_regions(protein)
+
     # Build derivation
     derivation: list[dict] = [
         {"step": "camsol_intrinsic_score", "value": round(camsol_score, 3)},
         {"step": "min_solubility_score", "value": min_solubility_score},
+        {"step": "hydrophobic_fraction", "value": round(hydrophobic_fraction, 4)},
+        {"step": "hydrophobic_fraction_pass_threshold", "value": org_hydro_pass},
+        {"step": "net_charge_pH7", "value": round(net_charge, 2)},
+        {"step": "net_charge_pass_threshold", "value": effective_net_charge_min},
+        {"step": "organism", "value": organism},
     ]
     if agg_regions:
         derivation.append({
@@ -435,14 +620,24 @@ def evaluate_no_aggregation_prone_region(
 ) -> TypeCheckResult:
     """Check for aggregation-prone regions using CamSol per-residue scoring.
 
-    A region is a consecutive run of residues whose smoothed CamSol score
-    is below *score_threshold*.  Verdict depends on the longest region:
+    A region is a consecutive run of ≥6 residues whose smoothed CamSol score
+    is below *score_threshold*.  Verdict depends on the weighted worst region,
+    with position-weighted aggregation scores (N-terminal regions penalised
+    more heavily).
 
-    - No region longer than *max_region_length* → PASS
-    - Region length max_region_length+1 to 7    → LIKELY_PASS (borderline)
-    - Region length 8 to 10                     → UNCERTAIN
-    - Region length 11 to 15                    → LIKELY_FAIL
-    - Region length > 15                        → FAIL
+    Membrane proteins (detected heuristically via ≥2 long hydrophobic
+    stretches of ≥19 residues) automatically PASS, since they naturally
+    contain aggregation-prone transmembrane domains.
+
+    Verdict logic (position-weighted max aggregation score):
+    - No qualifying regions (≥6 consecutive)  → PASS
+    - max_weighted_score ≤ score_threshold    → PASS (mild)
+    - max_weighted_score ≤ 1.0                → LIKELY_PASS (borderline)
+    - max_weighted_score ≤ 1.5                → UNCERTAIN
+    - max_weighted_score ≤ 2.5                → LIKELY_FAIL
+    - max_weighted_score > 2.5                → FAIL
+
+    Only FAIL if the maximum aggregation score > 1.5 (not the previous 1.0).
 
     Args:
         sequence: DNA coding sequence.
@@ -463,7 +658,25 @@ def evaluate_no_aggregation_prone_region(
             verdict=Verdict.PASS,
         )
 
-    agg_regions = _find_aggregation_regions(protein, score_threshold=score_threshold)
+    # --- Membrane protein auto-PASS ---
+    if _is_likely_membrane_protein(protein):
+        return TypeCheckResult(
+            predicate=f"NoAggregationProneRegion(max={max_region_length}, "
+                      f"threshold={score_threshold})",
+            verdict=Verdict.PASS,
+            derivation=[
+                {"step": "membrane_protein_detected", "value": True},
+                {"step": "aggregation_prone_regions", "value": []},
+                {"step": "note", "value": "Auto-PASS: membrane proteins naturally "
+                 "contain aggregation-prone transmembrane domains"},
+            ],
+        )
+
+    agg_regions = _find_aggregation_regions(
+        protein,
+        score_threshold=score_threshold,
+        min_consecutive=_AGG_MIN_CONSECUTIVE_HYDROPHOBIC,
+    )
 
     if not agg_regions:
         return TypeCheckResult(
@@ -473,53 +686,88 @@ def evaluate_no_aggregation_prone_region(
             derivation=[
                 {"step": "aggregation_prone_regions", "value": []},
                 {"step": "longest_region", "value": 0},
+                {"step": "membrane_protein_detected", "value": False},
             ],
         )
 
-    # Find the longest region
-    longest = max(end - start for start, end, _ in agg_regions)
+    # --- Position-weighted aggregation scores ---
+    # N-terminal aggregation is worse than C-terminal.
+    # Weight = 1.0 + (1.0 - position_fraction) * penalty_factor
+    #   where position_fraction = region_midpoint / protein_length
+    n = len(protein)
+    worst_weighted_score = 0.0
+    worst_region_info: dict = {}
 
-    # Determine verdict based on longest region length
-    if longest <= max_region_length:
+    for start, end, avg_score in agg_regions:
+        length = end - start
+        midpoint = (start + end) / 2.0
+        position_fraction = midpoint / n if n > 0 else 0.5
+        # N-terminal (position_fraction near 0) gets higher weight
+        position_weight = 1.0 + (1.0 - position_fraction) * (_AGG_NTERM_PENALTY - 1.0)
+        # Weighted aggregation score: magnitude of avg_score × length_factor × position_weight
+        length_factor = min(length / 10.0, 2.0)  # cap at 2× for very long regions
+        weighted_score = abs(avg_score) * length_factor * position_weight
+
+        if weighted_score > worst_weighted_score:
+            worst_weighted_score = weighted_score
+            worst_region_info = {
+                "start": start,
+                "end": end,
+                "length": length,
+                "avg_score": avg_score,
+                "position_weight": round(position_weight, 3),
+                "weighted_score": round(weighted_score, 3),
+            }
+
+    # --- Determine verdict based on weighted max aggregation score ---
+    # Only FAIL if max aggregation score > _AGG_FAIL_SCORE_CUTOFF (1.5)
+    if worst_weighted_score <= 0.5:
         verdict = Verdict.PASS
         violation = None
-    elif longest <= _AGG_BORDERLINE_MAX:
+    elif worst_weighted_score <= 1.0:
         verdict = Verdict.LIKELY_PASS
         violation = (
-            f"Borderline aggregation-prone region of {longest} residues "
-            f"(max allowed: {max_region_length})"
+            f"Borderline aggregation-prone region: weighted score "
+            f"{worst_weighted_score:.3f} (mild)"
         )
-    elif longest <= _AGG_UNCERTAIN_MAX:
+    elif worst_weighted_score <= _AGG_FAIL_SCORE_CUTOFF:
         verdict = Verdict.UNCERTAIN
         violation = (
-            f"Aggregation-prone region of {longest} residues detected "
-            f"(max allowed: {max_region_length})"
+            f"Aggregation-prone region detected: weighted score "
+            f"{worst_weighted_score:.3f} (moderate)"
         )
-    elif longest <= _AGG_LIKELY_FAIL_MAX:
+    elif worst_weighted_score <= 2.5:
         verdict = Verdict.LIKELY_FAIL
         violation = (
-            f"Long aggregation-prone region of {longest} residues "
-            f"(max allowed: {max_region_length})"
+            f"Significant aggregation-prone region: weighted score "
+            f"{worst_weighted_score:.3f} > {_AGG_FAIL_SCORE_CUTOFF}"
         )
     else:
         verdict = Verdict.FAIL
         violation = (
-            f"Very long aggregation-prone region of {longest} residues "
-            f"(max allowed: {max_region_length})"
+            f"Very significant aggregation-prone region: weighted score "
+            f"{worst_weighted_score:.3f} >> {_AGG_FAIL_SCORE_CUTOFF}"
         )
 
-    # Build derivation: list all aggregation-prone regions
+    # Build derivation: list all aggregation-prone regions with weighting
     derivation: list[dict] = [
         {
             "step": "aggregation_prone_regions",
             "value": [
-                {"start": s, "end": e, "length": e - s, "avg_score": sc}
+                {
+                    "start": s, "end": e, "length": e - s, "avg_score": sc,
+                    "position_weight": round(
+                        1.0 + (1.0 - ((s + e) / 2.0) / n) * (_AGG_NTERM_PENALTY - 1.0), 3
+                    ) if n > 0 else 1.0,
+                }
                 for s, e, sc in agg_regions
             ],
         },
-        {"step": "longest_region", "value": longest},
-        {"step": "max_region_length", "value": max_region_length},
-        {"step": "score_threshold", "value": score_threshold},
+        {"step": "worst_weighted_score", "value": round(worst_weighted_score, 3)},
+        {"step": "worst_region", "value": worst_region_info},
+        {"step": "fail_score_cutoff", "value": _AGG_FAIL_SCORE_CUTOFF},
+        {"step": "min_consecutive_hydrophobic", "value": _AGG_MIN_CONSECUTIVE_HYDROPHOBIC},
+        {"step": "membrane_protein_detected", "value": False},
     ]
 
     knowledge_gap: str | None = None
@@ -554,13 +802,24 @@ def evaluate_charge_composition(
 ) -> TypeCheckResult:
     """Check charge composition for solubility.
 
-    Computes two metrics:
+    Computes three metrics:
     1. **Charged fraction** — fraction of K, R, H, D, E residues.
        Below *min_charged_fraction* → LIKELY_FAIL (too few charges
        for solubility).
     2. **Isoelectric point (pI)** — pH at which net charge is zero.
        Above *max_pI* → UNCERTAIN (protein may precipitate near its pI
        in typical buffers).
+    3. **Net charge / length ratio** — PASS if between -0.15 and +0.15.
+       Values outside this range indicate extreme charge imbalance.
+
+    Organism-specific charge preferences:
+       - E. coli: prefers slightly negative net charge/length ratio
+         (wider negative bound: -0.20)
+       - Mammalian: prefers more neutral ratio
+         (narrower negative bound: -0.10)
+
+    Uses standard pKa values: Asp=3.9, Glu=4.1, His=6.0, Cys=8.3,
+    Tyr=10.1, Lys=10.5, Arg=12.5.
 
     Both OK → PASS.
 
@@ -573,8 +832,8 @@ def evaluate_charge_composition(
         pdb_string: Optional PDB-format structure string.
 
     Returns:
-        TypeCheckResult with verdict, charged fraction, pI, and residue
-        counts in the derivation.
+        TypeCheckResult with verdict, charged fraction, pI, net charge
+        ratio, and residue counts in the derivation.
     """
     protein = protein.upper()
 
@@ -596,15 +855,38 @@ def evaluate_charge_composition(
     # Compute isoelectric point
     pI = compute_approximate_pI(protein)
 
-    # Evaluate both conditions
+    # Compute net charge / length ratio at pH 7
+    net_charge = compute_net_charge(protein, 7.0)
+    charge_ratio = net_charge / n if n > 0 else 0.0
+
+    # Organism-specific charge ratio bounds
+    org_ratio_lo = _get_org_threshold(organism, "charge_ratio_lo", _CHARGE_RATIO_LO)
+    org_ratio_hi = _get_org_threshold(organism, "charge_ratio_hi", _CHARGE_RATIO_HI)
+
+    # Evaluate conditions
     low_charge = charged_fraction < min_charged_fraction
     high_pI = pI > max_pI
+    extreme_charge_ratio = charge_ratio < org_ratio_lo or charge_ratio > org_ratio_hi
 
-    if low_charge and high_pI:
+    if low_charge and high_pI and extreme_charge_ratio:
+        verdict = Verdict.FAIL
+        violation = (
+            f"Low charged fraction ({charged_fraction:.1%} < {min_charged_fraction:.0%}), "
+            f"high pI ({pI:.2f} > {max_pI}), and extreme charge ratio "
+            f"({charge_ratio:.3f} outside [{org_ratio_lo}, {org_ratio_hi}])"
+        )
+    elif low_charge and high_pI:
         verdict = Verdict.LIKELY_FAIL
         violation = (
             f"Low charged fraction ({charged_fraction:.1%} < {min_charged_fraction:.0%}) "
             f"and high pI ({pI:.2f} > {max_pI})"
+        )
+    elif low_charge and extreme_charge_ratio:
+        verdict = Verdict.LIKELY_FAIL
+        violation = (
+            f"Low charged fraction ({charged_fraction:.1%} < {min_charged_fraction:.0%}) "
+            f"and extreme charge ratio ({charge_ratio:.3f} outside "
+            f"[{org_ratio_lo}, {org_ratio_hi}])"
         )
     elif low_charge:
         verdict = Verdict.LIKELY_FAIL
@@ -612,11 +894,24 @@ def evaluate_charge_composition(
             f"Low charged fraction ({charged_fraction:.1%} < {min_charged_fraction:.0%}): "
             f"insufficient surface charges for solubility"
         )
+    elif high_pI and extreme_charge_ratio:
+        verdict = Verdict.UNCERTAIN
+        violation = (
+            f"High isoelectric point (pI={pI:.2f} > {max_pI}) and extreme "
+            f"charge ratio ({charge_ratio:.3f} outside [{org_ratio_lo}, {org_ratio_hi}])"
+        )
     elif high_pI:
         verdict = Verdict.UNCERTAIN
         violation = (
             f"High isoelectric point (pI={pI:.2f} > {max_pI}): "
             f"protein may precipitate near its pI in typical buffers"
+        )
+    elif extreme_charge_ratio:
+        verdict = Verdict.UNCERTAIN
+        violation = (
+            f"Extreme charge ratio ({charge_ratio:.3f} outside "
+            f"[{org_ratio_lo}, {org_ratio_hi}]): charge imbalance may "
+            f"affect solubility"
         )
     else:
         verdict = Verdict.PASS
@@ -627,10 +922,15 @@ def evaluate_charge_composition(
         {"step": "min_charged_fraction", "value": min_charged_fraction},
         {"step": "isoelectric_point", "value": round(pI, 2)},
         {"step": "max_pI", "value": max_pI},
+        {"step": "net_charge_pH7", "value": round(net_charge, 2)},
+        {"step": "charge_ratio", "value": round(charge_ratio, 4)},
+        {"step": "charge_ratio_lo", "value": org_ratio_lo},
+        {"step": "charge_ratio_hi", "value": org_ratio_hi},
         {"step": "positive_residues", "value": pos_count},
         {"step": "negative_residues", "value": neg_count},
         {"step": "total_charged", "value": charged_count},
         {"step": "protein_length", "value": n},
+        {"step": "organism", "value": organism},
     ]
 
     knowledge_gap: str | None = None

@@ -96,6 +96,7 @@ __all__ = [
     "predict_structure_heuristic",
     "estimate_plddt_from_sequence",
     "estimate_secondary_structure_from_sequence",
+    "estimate_fold_quality",
     "compute_hydrophobicity_profile",
     "compute_charge_profile",
     "compute_contact_density",
@@ -104,6 +105,7 @@ __all__ = [
     "ChargeProfile",
     "SecondaryStructureEstimate",
     "ContactDensityProfile",
+    "FoldQualityEstimate",
 ]
 
 
@@ -840,6 +842,187 @@ def compute_contact_density(ss_assignments: list[str]) -> ContactDensityProfile:
 
 
 # ==============================================================================
+# Fold quality estimation (hydrophobic burial / polar surface)
+# ==============================================================================
+
+@dataclass
+class FoldQualityEstimate:
+    """Estimate of how well a sequence's hydrophobicity pattern supports folding.
+
+    A well-folded globular protein tends to have:
+      - Hydrophobic residues buried in the core (interior of the sequence
+        or clustered together)
+      - Polar / charged residues on the surface (termini or interspersed)
+
+    This estimate uses the Kyte-Doolittle hydrophobicity profile to assess
+    whether the sequence's hydrophobicity pattern is consistent with a
+    compact, well-folded structure.
+
+    Attributes:
+        hydro_burial_score:  0–1 score indicating how well hydrophobic residues
+                             are concentrated in the sequence interior (0 = poor,
+                             1 = ideal burial pattern).
+        polar_surface_score: 0–1 score indicating how well polar residues are
+                             positioned at sequence boundaries / surface (0 = poor,
+                             1 = ideal surface distribution).
+        hydro_core_detected: Whether a hydrophobic core region is detected
+                             (consecutive stretch of above-average hydrophobicity).
+        overall_quality:     0–1 composite score (weighted average of burial
+                             and surface scores).
+        interpretation:      Human-readable interpretation of the quality score.
+    """
+
+    hydro_burial_score: float
+    polar_surface_score: float
+    hydro_core_detected: bool
+    overall_quality: float
+    interpretation: str
+
+
+#: Window size for detecting hydrophobic core regions (residues).
+_HYDRO_CORE_WINDOW: int = 11
+
+#: Minimum average hydrophobicity in a window to count as "core" region.
+#: Positive Kyte-Doolittle values indicate hydrophobicity; this threshold
+#: means the window average must be above the scale midpoint.
+_HYDRO_CORE_THRESHOLD: float = 0.5
+
+#: Weight for hydrophobic burial score in overall quality.
+_BURIAL_WEIGHT: float = 0.6
+
+#: Weight for polar surface score in overall quality.
+_SURFACE_WEIGHT: float = 0.4
+
+
+def estimate_fold_quality(protein: str) -> FoldQualityEstimate:
+    """Estimate structure fold quality from hydrophobicity burial patterns.
+
+    Uses the Kyte-Doolittle hydrophobicity profile to assess whether the
+    sequence's hydrophobicity pattern is consistent with a compact,
+    well-folded globular protein:
+
+    1. **Hydrophobic burial**: In well-folded proteins, hydrophobic residues
+       cluster in the core.  We check if the smoothed hydrophobicity profile
+       has elevated values in the sequence interior (middle portion) compared
+       to the termini.
+
+    2. **Polar surface**: In well-folded proteins, polar/charged residues
+       are enriched at the surface.  We check if the N- and C-terminal
+       regions have lower hydrophobicity (more polar) than the interior.
+
+    3. **Hydrophobic core detection**: We scan for contiguous stretches
+       where the smoothed hydrophobicity exceeds a threshold, indicating
+       a potential buried core.
+
+    Returns a :class:`FoldQualityEstimate` with scores in 0–1 range.
+    Higher scores indicate a hydrophobicity pattern more consistent with
+    a well-folded globular protein.
+
+    Args:
+        protein: Amino acid sequence (single-letter codes).
+
+    Returns:
+        FoldQualityEstimate with burial, surface, and overall quality scores.
+    """
+    protein = protein.upper()
+    n = len(protein)
+
+    if n < 10:
+        return FoldQualityEstimate(
+            hydro_burial_score=0.0,
+            polar_surface_score=0.0,
+            hydro_core_detected=False,
+            overall_quality=0.0,
+            interpretation="Sequence too short for fold quality assessment",
+        )
+
+    hydro_profile = compute_hydrophobicity_profile(protein)
+    mean_hydro = sum(hydro_profile) / len(hydro_profile)
+
+    # --- 1. Hydrophobic burial score ---
+    # In a well-folded globular protein, the interior of the sequence
+    # (middle 60%) should be more hydrophobic than the terminal regions
+    # (first and last 20%).
+    inner_start = max(1, n // 5)
+    inner_end = min(n - 1, 4 * n // 5)
+    outer_start = 0
+    outer_end = inner_start
+    outer2_start = inner_end
+    outer2_end = n
+
+    inner_hydro = sum(hydro_profile[inner_start:inner_end]) / max(1, inner_end - inner_start)
+    outer1_hydro = sum(hydro_profile[outer_start:outer_end]) / max(1, outer_end - outer_start)
+    outer2_hydro = sum(hydro_profile[outer2_start:outer2_end]) / max(1, outer2_end - outer2_start)
+    outer_hydro = (outer1_hydro + outer2_hydro) / 2.0
+
+    # Burial score: how much more hydrophobic is the interior vs the termini?
+    # Normalize: typical difference is 0.5–2.0 on the KD scale for well-folded
+    hydro_diff = inner_hydro - outer_hydro
+    burial_score = max(0.0, min(1.0, (hydro_diff + 1.0) / 3.0))
+
+    # --- 2. Polar surface score ---
+    # Terminal regions should be more polar (lower KD score) than interior
+    # If outer_hydro < inner_hydro, that's good (polar termini)
+    if mean_hydro != 0:
+        polarity_ratio = 1.0 - (outer_hydro - mean_hydro) / (abs(mean_hydro) + 1.0)
+    else:
+        polarity_ratio = 0.5
+
+    # Also check: what fraction of charged residues are in the terminal 20%?
+    terminal_count = sum(1 for i, aa in enumerate(protein)
+                         if (i < inner_start or i >= inner_end)
+                         and aa in POSITIVELY_CHARGED_AAS | NEGATIVELY_CHARGED_AAS)
+    terminal_fraction = (inner_start + (n - inner_end)) / n
+    expected_terminal_charged = terminal_fraction  # if random
+    actual_terminal_charged_frac = terminal_count / max(1, n) / max(0.01, terminal_fraction)
+
+    # Surface score: polar termini + charged residues enriched at termini
+    surface_score = max(0.0, min(1.0,
+        0.5 * max(0.0, polarity_ratio) +
+        0.5 * min(1.0, actual_terminal_charged_frac)
+    ))
+
+    # --- 3. Hydrophobic core detection ---
+    # Scan for windows with above-average hydrophobicity
+    hydro_core_detected = False
+    if n >= _HYDRO_CORE_WINDOW:
+        half_w = _HYDRO_CORE_WINDOW // 2
+        for i in range(half_w, n - half_w):
+            window_avg = sum(hydro_profile[i - half_w:i + half_w + 1]) / _HYDRO_CORE_WINDOW
+            if window_avg > _HYDRO_CORE_THRESHOLD:
+                hydro_core_detected = True
+                break
+    else:
+        # For short sequences, just check if overall hydrophobicity is positive
+        hydro_core_detected = mean_hydro > _HYDRO_CORE_THRESHOLD
+
+    # --- 4. Overall quality ---
+    overall = _BURIAL_WEIGHT * burial_score + _SURFACE_WEIGHT * surface_score
+
+    # Bonus for detected hydrophobic core
+    if hydro_core_detected:
+        overall = min(1.0, overall + 0.05)
+
+    # --- 5. Interpretation ---
+    if overall >= 0.7:
+        interpretation = "Good: hydrophobic burial pattern consistent with folded globular protein"
+    elif overall >= 0.5:
+        interpretation = "Moderate: partial hydrophobic core, some polar surface enrichment"
+    elif overall >= 0.3:
+        interpretation = "Weak: limited hydrophobic burial, may be partially disordered"
+    else:
+        interpretation = "Poor: hydrophobicity pattern inconsistent with compact folding"
+
+    return FoldQualityEstimate(
+        hydro_burial_score=round(burial_score, 4),
+        polar_surface_score=round(surface_score, 4),
+        hydro_core_detected=hydro_core_detected,
+        overall_quality=round(overall, 4),
+        interpretation=interpretation,
+    )
+
+
+# ==============================================================================
 # Heuristic pLDDT estimation (improved with SS-based calibration)
 # ==============================================================================
 
@@ -1226,6 +1409,29 @@ def predict_structure_heuristic(protein: str) -> dict[str, Any]:
     actual_mean = max(HEURISTIC_MIN_CONFIDENCE, min(actual_mean, HEURISTIC_MAX_CONFIDENCE))
 
     ss = estimate["secondary_structure"]
+    # --- Fold quality from hydrophobic burial / polar surface analysis ---
+    fold_quality = estimate_fold_quality(protein)
+
+    # Modulate pLDDT by fold quality: if the hydrophobicity pattern is
+    # inconsistent with folding, reduce the heuristic pLDDT estimates.
+    if fold_quality.overall_quality < 0.3:
+        fold_modulation = 0.85
+    elif fold_quality.overall_quality < 0.5:
+        fold_modulation = 0.92
+    elif fold_quality.overall_quality >= 0.7:
+        fold_modulation = 1.0
+    else:
+        fold_modulation = 0.97
+
+    if fold_modulation < 1.0:
+        plddt_scores = [
+            max(HEURISTIC_MIN_CONFIDENCE,
+                min(round(s * fold_modulation, 2), HEURISTIC_MAX_CONFIDENCE))
+            for s in plddt_scores
+        ]
+        actual_mean = sum(plddt_scores) / len(plddt_scores) if plddt_scores else 0.0
+        actual_mean = max(HEURISTIC_MIN_CONFIDENCE, min(actual_mean, HEURISTIC_MAX_CONFIDENCE))
+
     result = {
         "protein": protein,
         "mean_plddt": round(actual_mean, 2),
@@ -1242,15 +1448,18 @@ def predict_structure_heuristic(protein: str) -> dict[str, Any]:
             "assignments": ss.assignments,
         },
         "ss_prediction": estimate["ss_prediction"],
+        "fold_quality": fold_quality,
     }
 
     logger.info(
         "Heuristic fallback prediction for %d-aa protein: "
         "estimated pLDDT=%.1f, confidence=%.2f, method=%s, "
-        "SS: H=%.2f E=%.2f T=%.2f C=%.2f",
+        "SS: H=%.2f E=%.2f T=%.2f C=%.2f, "
+        "fold_quality=%.2f (%s)",
         n, actual_mean, estimate["confidence"], "heuristic_fallback",
         ss.helix_fraction, ss.sheet_fraction,
         ss.turn_fraction, ss.coil_fraction,
+        fold_quality.overall_quality, fold_quality.interpretation,
     )
 
     return result

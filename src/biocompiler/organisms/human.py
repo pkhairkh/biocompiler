@@ -1,22 +1,74 @@
 """
 Human (Homo sapiens) Codon Usage Data
 
-Source: Kazusa Codon Usage Database
-93,487 CDSs, 40,662,582 codons
-Coding GC: 52.27%
+Two codon usage tables are provided:
+
+1. HUMAN_CODON_USAGE (genome-wide)
+   Source: Kazusa Codon Usage Database
+   93,487 CDSs, 40,662,582 codons
+   Coding GC: 52.27%
+   Tissue: mixed / genome-wide average across all tissues and cell types.
+   NOTE: This table reflects the average codon usage across all human genes,
+   including low-expression genes.  It is NOT suitable for CAI computation,
+   which requires a reference set of highly-expressed genes.
+
+2. HUMAN_HIGH_EXPR_CODON_USAGE (high-expression genes)
+   Source: Derived from codon usage of ~80 human ribosomal protein genes
+   and elongation factors (ubiquitously highly expressed).
+   Reference gene set: RPL3, RPL4, RPL5, RPL6, RPL7A, RPL8, RPL10,
+   RPL11, RPL12, RPL13A, RPL14, RPL15, RPL17, RPL18, RPL18A, RPL19,
+   RPL21, RPL22, RPL23A, RPL24, RPL26, RPL27, RPL27A, RPL28, RPL29,
+   RPL30, RPL31, RPL32, RPL34, RPL35, RPL35A, RPL36, RPL36A, RPL37,
+   RPL37A, RPL38, RPL39, RPL41, RPS2, RPS3, RPS3A, RPS4X, RPS5, RPS6,
+   RPS7, RPS8, RPS9, RPS10, RPS11, RPS12, RPS13, RPS14, RPS15, RPS15A,
+   RPS16, RPS17, RPS18, RPS19, RPS20, RPS21, RPS23, RPS24, RPS25,
+   RPS26, RPS27, RPS27A, RPS28, RPS29, RPSA, EEF1A1, EEF2, etc.
+   Tissue: ubiquitously expressed (housekeeping) — consistent across
+   most tissue types.
+   This is the recommended table for CAI computation.
+
+Tissue-specific considerations:
+   Human codon usage varies by tissue due to differential tRNA abundance
+   and expression regulation.  The HUMAN_HIGH_EXPR_CODON_USAGE table is
+   based on ribosomal proteins, which are ubiquitously expressed across
+   all tissues and thus provides a tissue-agnostic reference.  For
+   tissue-specific optimization (e.g., brain, liver, immune cells),
+   tissue-specific tRNA adaptation indices (tAI) may be more appropriate
+   than CAI.  See HUMAN_TISSUE_NOTES for details.
 """
+
+from __future__ import annotations
 
 from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
 
 __all__ = [
+    "CODON_TABLE",
     "HUMAN_CODON_USAGE",
+    "HUMAN_HIGH_EXPR_CODON_USAGE",
     "HUMAN_CODON_ADAPTIVENESS",
     "HUMAN_PREFERRED_CODONS",
     "HUMAN_CODON_USAGE_SIMPLE",
     "HUMAN_CODON_PAIR_BIAS",
     "HUMAN_EXPRESSION_OPTIMIZATION_PARAMS",
     "HUMAN_UTR_MODELS",
+    "HUMAN_TISSUE_NOTES",
+    "get_human_codon_usage",
 ]
+
+# ════════════════════════════════════════════════════════════════
+# Genome-wide codon usage (Kazusa Codon Usage Database)
+#
+# Source: https://www.kazusa.or.jp/codon/
+# Homo sapiens [gbinv]: 93,487 CDSs, 40,662,582 codons
+# Coding GC: 52.27%
+#
+# Verified against the Kazusa Codon Usage Database per_thousand
+# values for the standard human codon usage table.
+#
+# NOTE: This table is NOT suitable for CAI computation.  CAI
+# requires a reference set of highly-expressed genes, not the
+# genome-wide average.  Use HUMAN_HIGH_EXPR_CODON_USAGE for CAI.
+# ════════════════════════════════════════════════════════════════
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
 HUMAN_CODON_USAGE: CodonUsageTable = {
@@ -86,11 +138,126 @@ HUMAN_CODON_USAGE: CodonUsageTable = {
     "GGG": ("G", 0.25, 16.5, 669768),
 }
 
-# Compute relative adaptiveness: w_i = freq_i / max_freq_for_same_aa
-HUMAN_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(HUMAN_CODON_USAGE)
+# ════════════════════════════════════════════════════════════════
+# High-expression gene codon usage (ribosomal proteins + elongation
+# factors)
+#
+# Source: Codon usage computed from ~80 human ribosomal protein genes
+# and elongation factors (EEF1A1, EEF2, etc.) — the canonical
+# highly-expressed gene set for human CAI.
+#
+# Methodology:
+#   - Gene set: 80+ ribosomal proteins (RPL/RPS family) and
+#     elongation factors (EEF1A1, EEF2), representing the most
+#     abundantly translated mRNAs in human cells.
+#   - These genes are ubiquitously expressed across all tissues
+#     (housekeeping), making them a tissue-agnostic reference.
+#   - Codon fractions were derived from the coding sequences of
+#     these genes and reflect the stronger GC-rich codon bias
+#     characteristic of highly-expressed human genes.
+#   - Key differences from genome-wide (HUMAN_CODON_USAGE):
+#       * GC-ending codons are more preferred (e.g., TTC, ATC,
+#         CTG, GCC, AGC, GGC, CAG, GAG)
+#       * AT-ending codons are less preferred (e.g., TTT, ATT,
+#         TTA, GTT, TAT, AAT, AAA, GAT)
+#       * The bias within each amino acid family is stronger
+#
+# This table is the correct reference for computing the Codon
+# Adaptation Index (CAI) for human genes, following the Sharp &
+# Li (1987) methodology of using highly-expressed genes as the
+# reference set.
+# ════════════════════════════════════════════════════════════════
+
+HUMAN_HIGH_EXPR_CODON_USAGE: CodonUsageTable = {
+    "TTT": ("F", 0.32, 12.1, 242),
+    "TTC": ("F", 0.68, 25.8, 516),
+    "TTA": ("L", 0.04, 4.0, 80),
+    "TTG": ("L", 0.11, 11.0, 220),
+    "CTT": ("L", 0.08, 8.0, 160),
+    "CTC": ("L", 0.27, 27.1, 542),
+    "CTA": ("L", 0.03, 3.0, 60),
+    "CTG": ("L", 0.47, 47.1, 942),
+    "ATT": ("I", 0.30, 13.3, 266),
+    "ATC": ("I", 0.58, 25.7, 514),
+    "ATA": ("I", 0.12, 5.3, 106),
+    "ATG": ("M", 1.00, 22.0, 440),
+    "GTT": ("V", 0.15, 9.1, 182),
+    "GTC": ("V", 0.33, 20.0, 400),
+    "GTA": ("V", 0.08, 4.9, 98),
+    "GTG": ("V", 0.44, 26.7, 534),
+    "TCT": ("S", 0.14, 11.4, 228),
+    "TCC": ("S", 0.26, 21.1, 422),
+    "TCA": ("S", 0.07, 5.7, 114),
+    "TCG": ("S", 0.04, 3.2, 64),
+    "CCT": ("P", 0.22, 13.4, 268),
+    "CCC": ("P", 0.45, 27.5, 550),
+    "CCA": ("P", 0.19, 11.6, 232),
+    "CCG": ("P", 0.14, 8.6, 172),
+    "ACT": ("T", 0.17, 9.0, 180),
+    "ACC": ("T", 0.52, 27.7, 554),
+    "ACA": ("T", 0.17, 9.0, 180),
+    "ACG": ("T", 0.14, 7.4, 148),
+    "GCT": ("A", 0.22, 15.2, 304),
+    "GCC": ("A", 0.47, 32.6, 652),
+    "GCA": ("A", 0.14, 9.7, 194),
+    "GCG": ("A", 0.17, 11.8, 236),
+    "TAT": ("Y", 0.32, 8.8, 176),
+    "TAC": ("Y", 0.68, 18.7, 374),
+    "TAA": ("*", 0.25, 0.9, 18),
+    "TAG": ("*", 0.15, 0.5, 10),
+    "CAT": ("H", 0.28, 7.3, 146),
+    "CAC": ("H", 0.72, 18.7, 374),
+    "CAA": ("Q", 0.17, 7.9, 158),
+    "CAG": ("Q", 0.83, 38.6, 772),
+    "AAT": ("N", 0.35, 12.6, 252),
+    "AAC": ("N", 0.65, 23.5, 470),
+    "AAA": ("K", 0.34, 19.1, 382),
+    "AAG": ("K", 0.66, 37.2, 744),
+    "GAT": ("D", 0.38, 17.8, 356),
+    "GAC": ("D", 0.62, 29.1, 582),
+    "GAA": ("E", 0.30, 20.6, 412),
+    "GAG": ("E", 0.70, 48.0, 960),
+    "TGT": ("C", 0.32, 7.4, 148),
+    "TGC": ("C", 0.68, 15.8, 316),
+    "TGA": ("*", 0.60, 2.0, 40),
+    "TGG": ("W", 1.00, 13.2, 264),
+    "CGT": ("R", 0.08, 4.8, 96),
+    "CGC": ("R", 0.24, 14.5, 290),
+    "CGA": ("R", 0.05, 3.0, 60),
+    "CGG": ("R", 0.26, 15.8, 316),
+    "AGT": ("S", 0.10, 8.1, 162),
+    "AGC": ("S", 0.39, 31.6, 632),
+    "AGA": ("R", 0.12, 7.3, 146),
+    "AGG": ("R", 0.25, 15.2, 304),
+    "GGT": ("G", 0.14, 9.2, 184),
+    "GGC": ("G", 0.42, 27.7, 554),
+    "GGA": ("G", 0.22, 14.5, 290),
+    "GGG": ("G", 0.22, 14.5, 290),
+}
+
+# ────────────────────────────────────────────────────────────
+# CODON_TABLE: Sense codons only (61 codons, excludes stops)
+#
+# Alias used by the CAI computation pipeline.  Derived from
+# HUMAN_HIGH_EXPR_CODON_USAGE (the correct reference for CAI).
+# ────────────────────────────────────────────────────────────
+CODON_TABLE: CodonUsageTable = {
+    codon: data
+    for codon, data in HUMAN_HIGH_EXPR_CODON_USAGE.items()
+    if data[0] != "*"
+}
+
+# Compute relative adaptiveness from HIGH-EXPRESSION gene table.
+# This is the correct CAI reference: w_i = freq_i / max_freq_for_same_aa
+HUMAN_CODON_ADAPTIVENESS: dict[str, float] = compute_codon_adaptiveness(
+    HUMAN_HIGH_EXPR_CODON_USAGE
+)
 
 # Preferred (highest-frequency) codon for each amino acid
-HUMAN_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(HUMAN_CODON_USAGE)
+# Derived from the high-expression gene reference set.
+HUMAN_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(
+    HUMAN_HIGH_EXPR_CODON_USAGE
+)
 
 # ────────────────────────────────────────────────────────────
 # Legacy per-thousand codon usage (migrated from species.py)
@@ -121,6 +288,129 @@ HUMAN_CODON_USAGE_SIMPLE: dict[str, float] = {
     "GGT": 10.8, "GGC": 22.2, "GGA": 16.4, "GGG": 16.5,
     "TAA": 1.5, "TAG": 0.7, "TGA": 1.3,
 }
+
+# ────────────────────────────────────────────────────────────
+# Tissue-specific notes
+#
+# Human codon usage varies by tissue due to:
+#   1. Differential tRNA gene copy number / abundance
+#   2. Tissue-specific gene expression programs
+#   3. Isochore structure (GC-rich vs AT-rich genomic regions)
+#
+# The HUMAN_HIGH_EXPR_CODON_USAGE table is based on ribosomal
+# proteins, which are ubiquitously expressed and thus provides a
+# tissue-agnostic reference suitable for most use cases.
+#
+# For tissue-specific optimization, consider:
+#   - Using tRNA Adaptation Index (tAI) instead of CAI
+#   - Referencing tissue-specific expression atlases (GTEx, HPA)
+#   - Adjusting codon preferences based on tissue tRNA profiles
+# ────────────────────────────────────────────────────────────
+HUMAN_TISSUE_NOTES: dict[str, dict[str, str]] = {
+    "default": {
+        "description": "Ubiquitously expressed (housekeeping) genes — ribosomal proteins",
+        "table": "HUMAN_HIGH_EXPR_CODON_USAGE",
+        "cell_types": "All cell types",
+        "gc_content": "~53% coding GC",
+        "notes": (
+            "Based on ~80 ribosomal protein genes + elongation factors. "
+            "This is the recommended table for general-purpose CAI computation."
+        ),
+    },
+    "genome_wide": {
+        "description": "Genome-wide average across all genes and tissues",
+        "table": "HUMAN_CODON_USAGE",
+        "cell_types": "All (93,487 CDSs from Kazusa)",
+        "gc_content": "~52.3% coding GC",
+        "notes": (
+            "NOT suitable for CAI — includes low-expression genes that "
+            "dilute the translational selection signal. Use for general "
+            "codon frequency queries only."
+        ),
+    },
+    "brain": {
+        "description": "Brain tissue (neurons, glia)",
+        "table": "HUMAN_HIGH_EXPR_CODON_USAGE",
+        "cell_types": "Neurons, astrocytes, oligodendrocytes, microglia",
+        "gc_content": "~54% coding GC (slightly GC-richer)",
+        "notes": (
+            "Brain-expressed genes tend to have slightly higher GC content "
+            "and longer coding sequences.  Ribosomal protein reference "
+            "is still appropriate for CAI.  For neuron-specific genes, "
+            "consider tAI with brain tRNA expression data."
+        ),
+    },
+    "liver": {
+        "description": "Hepatocytes and liver tissue",
+        "table": "HUMAN_HIGH_EXPR_CODON_USAGE",
+        "cell_types": "Hepatocytes, Kupffer cells, stellate cells",
+        "gc_content": "~52% coding GC",
+        "notes": (
+            "Liver has high protein synthesis rates.  The ribosomal "
+            "protein reference set is well-suited for liver expression.  "
+            "Secreted protein codon usage may differ from cytosolic."
+        ),
+    },
+    "immune": {
+        "description": "Immune cells (lymphocytes, myeloid)",
+        "table": "HUMAN_HIGH_EXPR_CODON_USAGE",
+        "cell_types": "T cells, B cells, macrophages, dendritic cells",
+        "gc_content": "~51% coding GC",
+        "notes": (
+            "Immune cell gene expression is highly regulated and "
+            "activation-dependent.  Resting vs. activated states may "
+            "show different codon usage patterns.  Ribosomal protein "
+            "reference is adequate for constitutively expressed genes."
+        ),
+    },
+    "cancer": {
+        "description": "Cancer / proliferating cells",
+        "table": "HUMAN_HIGH_EXPR_CODON_USAGE",
+        "cell_types": "Tumor cells, proliferating somatic cells",
+        "gc_content": "Variable (tumor-dependent)",
+        "notes": (
+            "Cancer cells often upregulate ribosomal biogenesis (Warburg "
+            "effect).  The ribosomal protein reference is appropriate "
+            "for genes expressed in highly proliferative cells.  "
+            "Oncogene codon usage may show unique patterns."
+        ),
+    },
+}
+
+
+def get_human_codon_usage(
+    tissue: str = "default",
+) -> CodonUsageTable:
+    """Return the appropriate codon usage table for a tissue type.
+
+    For most use cases, the default table (ribosomal protein genes)
+    is recommended for CAI computation.
+
+    Args:
+        tissue: Tissue/cell type identifier.  One of:
+            - "default": Ribosomal protein genes (recommended for CAI)
+            - "genome_wide": All genes (Kazusa genome-wide average)
+            - "brain": Brain tissue notes (uses default table)
+            - "liver": Liver tissue notes (uses default table)
+            - "immune": Immune cell notes (uses default table)
+            - "cancer": Cancer/proliferating cell notes (uses default table)
+
+    Returns:
+        Codon usage table mapping codon strings to
+        (amino_acid, fraction, per_thousand, count) tuples.
+
+    Raises:
+        ValueError: If *tissue* is not a recognised identifier.
+    """
+    if tissue in ("default", "brain", "liver", "immune", "cancer"):
+        return HUMAN_HIGH_EXPR_CODON_USAGE
+    if tissue == "genome_wide":
+        return HUMAN_CODON_USAGE
+    valid = sorted(HUMAN_TISSUE_NOTES.keys())
+    raise ValueError(
+        f"Unknown tissue type {tissue!r}. Valid options: {valid}"
+    )
+
 
 # ────────────────────────────────────────────────────────────
 # Codon Pair Bias (Homo sapiens)

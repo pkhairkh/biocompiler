@@ -19,17 +19,18 @@ from .esmfold_fallback import (
 from .viennarna_fallback import (
     nussinov_fold,
     compute_approx_dg,
+    compute_gc_dg_estimate,
+    compute_nntm_dg,
     predict_mfe_fallback,
     predict_accessibility_fallback,
     find_stable_structures_fallback,
-    MFEResult,
-    AccessibilityResult,
-    StableStructure,
-    MIN_LOOP_LENGTH,
-    PAIR_ENERGIES,
-    DEFAULT_WINDOW_SIZE,
-    DEFAULT_STABLE_DG_THRESHOLD,
 )
+
+# Re-export types from viennarna (or local fallbacks)
+try:
+    from ..viennarna import MFEResult, StemLoop, AccessibilityResult
+except ImportError:
+    from .viennarna_fallback import MFEResult, StemLoop, AccessibilityResult  # type: ignore[no-redef]
 
 __all__ = [
     # esmfold_fallback
@@ -47,14 +48,13 @@ __all__ = [
     # viennarna_fallback
     "nussinov_fold",
     "compute_approx_dg",
+    "compute_gc_dg_estimate",
+    "compute_nntm_dg",
     "predict_mfe_fallback",
     "predict_accessibility_fallback",
     "find_stable_structures_fallback",
+    # types
     "MFEResult",
+    "StemLoop",
     "AccessibilityResult",
-    "StableStructure",
-    "MIN_LOOP_LENGTH",
-    "PAIR_ENERGIES",
-    "DEFAULT_WINDOW_SIZE",
-    "DEFAULT_STABLE_DG_THRESHOLD",
 ]

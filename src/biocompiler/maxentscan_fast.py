@@ -23,8 +23,8 @@ Usage:
 
     # Drop-in replacement for maxentscan.scan_splice_sites
     sites = scan_splice_sites_fast_str("ATGGCCAGGTGAGTCCGCTAGGTCAGGCCCCAGATCTGG",
-                                        donor_threshold=3.0,
-                                        acceptor_threshold=3.0)
+                                        donor_threshold=8.0,
+                                        acceptor_threshold=8.0)
     for position, site_type, score in sites:
         print(f"  {site_type} at pos {position}: score={score:.2f}")
 
@@ -45,12 +45,16 @@ from .maxentscan import (
     ACCEPTOR_PWM_SCORE,
     _EPSILON,
     _IMPOSSIBLE_SCORE,
+    _EDGE_CASE_SCORE,
     _SCORE_DECIMAL_PLACES,
     _DONOR_UPSTREAM,
     _DONOR_DOWNSTREAM,
     _ACCEPTOR_UPSTREAM,
     _ACCEPTOR_DOWNSTREAM,
     BG_PROB,
+    CRYPTIC_SPLICE_THRESHOLD,
+    score_donor as _score_donor_reference,
+    score_acceptor as _score_acceptor_reference,
 )
 
 __all__ = [
@@ -59,6 +63,7 @@ __all__ = [
     "scan_splice_sites_fast_str",
     "score_donor_fast",
     "score_acceptor_fast",
+    "check_consistency",
     "_DONOR_PWM_NP",
     "_ACCEPTOR_PWM_NP",
     "_BASE_IDX_NP",
@@ -141,14 +146,14 @@ if HAS_NUMBA_MAXENT:
         end = position + donor_downstream
         n = len(seq_bytes)
         if start < 0 or end > n:
-            return -50.0  # _IMPOSSIBLE_SCORE
+            return -20.0  # _EDGE_CASE_SCORE: moderate low for boundary sequences
 
         score = 0.0
         for pwm_idx in range(donor_log.shape[0]):
             b = seq_bytes[start + pwm_idx]
             idx = base_idx[b]
             if idx < 0:
-                return -50.0
+                return -50.0  # _IMPOSSIBLE_SCORE: invalid base
             score += donor_log[pwm_idx, idx]
         return score
 
@@ -170,14 +175,14 @@ if HAS_NUMBA_MAXENT:
         end = position + acceptor_downstream
         n = len(seq_bytes)
         if start < 0 or end > n:
-            return -50.0  # _IMPOSSIBLE_SCORE
+            return -20.0  # _EDGE_CASE_SCORE: moderate low for boundary sequences
 
         score = 0.0
         for pwm_idx in range(acceptor_log.shape[0]):
             b = seq_bytes[start + pwm_idx]
             idx = base_idx[b]
             if idx < 0:
-                return -50.0
+                return -50.0  # _IMPOSSIBLE_SCORE: invalid base
             score += acceptor_log[pwm_idx, idx]
         return score
 
@@ -251,8 +256,8 @@ if HAS_NUMBA_MAXENT:
 
     def scan_splice_sites_fast(
         seq_bytes: _np.ndarray,
-        donor_threshold: float = 3.0,
-        acceptor_threshold: float = 3.0,
+        donor_threshold: float = 8.0,
+        acceptor_threshold: float = 8.0,
     ) -> Tuple[_np.ndarray, _np.ndarray, _np.ndarray]:
         """NUMBA-accelerated splice site scan on a byte array.
 
@@ -349,7 +354,7 @@ if HAS_NUMBA_MAXENT:
                 _DONOR_LOG_NP, _ACCEPTOR_LOG_NP, _BASE_IDX_NP,
                 _np.int64(_DONOR_UPSTREAM), _np.int64(_DONOR_DOWNSTREAM),
                 _np.int64(_ACCEPTOR_UPSTREAM), _np.int64(_ACCEPTOR_DOWNSTREAM),
-                _np.float64(3.0), _np.float64(3.0),
+                _np.float64(8.0), _np.float64(8.0),
             )
         except Exception:
             pass
@@ -363,8 +368,8 @@ else:
 
     def scan_splice_sites_fast(
         seq_bytes,
-        donor_threshold: float = 3.0,
-        acceptor_threshold: float = 3.0,
+        donor_threshold: float = 8.0,
+        acceptor_threshold: float = 8.0,
     ):
         """Pure-Python fallback: scan byte array for splice sites.
 
@@ -405,7 +410,7 @@ else:
         end = position + _DONOR_DOWNSTREAM
         n = len(seq_bytes)
         if start < 0 or end > n:
-            return _IMPOSSIBLE_SCORE
+            return _EDGE_CASE_SCORE
         score = 0.0
         for pwm_idx in range(len(DONOR_PWM_SCORE)):
             b = seq_bytes[start + pwm_idx]
@@ -421,7 +426,7 @@ else:
         end = position + _ACCEPTOR_DOWNSTREAM
         n = len(seq_bytes)
         if start < 0 or end > n:
-            return _IMPOSSIBLE_SCORE
+            return _EDGE_CASE_SCORE
         score = 0.0
         for pwm_idx in range(len(ACCEPTOR_PWM_SCORE)):
             b = seq_bytes[start + pwm_idx]
@@ -446,8 +451,8 @@ else:
 
 def scan_splice_sites_fast_str(
     seq_str: str,
-    donor_threshold: float = 3.0,
-    acceptor_threshold: float = 3.0,
+    donor_threshold: float = 8.0,
+    acceptor_threshold: float = 8.0,
 ) -> List[Tuple[int, str, float]]:
     """Drop-in replacement for maxentscan.scan_splice_sites.
 
@@ -481,3 +486,93 @@ def scan_splice_sites_fast_str(
     # Sort by position (same as the original)
     results.sort(key=lambda x: x[0])
     return results
+
+
+# =====================================================================
+# Consistency check: fast vs. reference implementation
+# =====================================================================
+
+# Test sequences used by check_consistency.  These cover a range of
+# splice-site strengths and include boundary positions.
+_CONSISTENCY_TEST_SEQS: List[str] = [
+    "ATGCAGGTGATGCAGTCCGCTAGGTCAGGCCCCAGATCTGG",
+    "CCCGTAGGGTTCTTCTCCTTCTTCCCTTCAGATG",
+    "CAGGTAAGTCCTGTAAGTTTTGTTTTTCAGGTGAGTAAGGTAAGT",
+    "AAGAAGGAAGAAGGAAGAAAGGTCTCTCCTCCTCCTCCTCCCAGGTC",
+]
+
+
+def check_consistency(tolerance: float = 0.01) -> List[str]:
+    """Verify that the fast implementation matches the reference within tolerance.
+
+    Compares scores from :func:`score_donor_fast` and
+    :func:`score_acceptor_fast` against the reference implementation in
+    :mod:`biocompiler.maxentscan` for a set of test sequences.  Any
+    absolute difference greater than *tolerance* is reported.
+
+    This is critical because the NUMBA-optimised version uses pre-computed
+    log-odds tables and may accumulate floating-point differences due to
+    operation ordering.  A tolerance of 0.01 is generous enough to absorb
+    floating-point noise while catching genuine regressions.
+
+    Args:
+        tolerance: maximum allowed absolute difference between fast and
+            reference scores (default 0.01).
+
+    Returns:
+        List of error messages.  An empty list means all scores are
+        consistent within the specified tolerance.
+    """
+    errors: List[str] = []
+
+    for seq in _CONSISTENCY_TEST_SEQS:
+        seq_upper = seq.upper()
+        seq_bytes = _np.frombuffer(seq_upper.encode("ascii"), dtype=_np.uint8)
+
+        # Compare donor scores at every GT position
+        for i in range(len(seq_upper) - 1):
+            if seq_upper[i] == "G" and seq_upper[i + 1] == "T":
+                ref_score = _score_donor_reference(seq_upper, i)
+                fast_score = score_donor_fast(seq_bytes, i)
+                # Round fast_score the same way the reference does
+                fast_rounded = round(fast_score, _SCORE_DECIMAL_PLACES)
+                diff = abs(ref_score - fast_rounded)
+                if diff > tolerance:
+                    errors.append(
+                        f"Donor score mismatch at pos {i} in '{seq[:20]}...': "
+                        f"reference={ref_score:.4f}, fast={fast_rounded:.4f} "
+                        f"(diff={diff:.4f})"
+                    )
+
+        # Compare acceptor scores at every AG position
+        for i in range(len(seq_upper) - 1):
+            if seq_upper[i] == "A" and seq_upper[i + 1] == "G":
+                ref_score = _score_acceptor_reference(seq_upper, i)
+                fast_score = score_acceptor_fast(seq_bytes, i)
+                fast_rounded = round(fast_score, _SCORE_DECIMAL_PLACES)
+                diff = abs(ref_score - fast_rounded)
+                if diff > tolerance:
+                    errors.append(
+                        f"Acceptor score mismatch at pos {i} in '{seq[:20]}...': "
+                        f"reference={ref_score:.4f}, fast={fast_rounded:.4f} "
+                        f"(diff={diff:.4f})"
+                    )
+
+    # Also verify edge-case handling: short sequences should return _EDGE_CASE_SCORE
+    short_seq_bytes = _np.frombuffer(b"AGGT", dtype=_np.uint8)
+    fast_short_donor = score_donor_fast(short_seq_bytes, 1)
+    if fast_short_donor != _EDGE_CASE_SCORE:
+        errors.append(
+            f"Edge case: short donor sequence fast score should be "
+            f"{_EDGE_CASE_SCORE}, got {fast_short_donor}"
+        )
+
+    short_seq_bytes = _np.frombuffer(b"AGATG", dtype=_np.uint8)
+    fast_short_acceptor = score_acceptor_fast(short_seq_bytes, 1)
+    if fast_short_acceptor != _EDGE_CASE_SCORE:
+        errors.append(
+            f"Edge case: short acceptor sequence fast score should be "
+            f"{_EDGE_CASE_SCORE}, got {fast_short_acceptor}"
+        )
+
+    return errors

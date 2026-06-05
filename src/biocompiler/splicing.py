@@ -65,7 +65,10 @@ _PWM_DOWNSTREAM = 6          # Bases downstream of GT for PWM context
 
 # Default thresholds for splice site scoring (used by score_splice_sites)
 _DEFAULT_LOW_THRESH: float = 3.0     # Below this score → PASS
-_DEFAULT_HIGH_THRESH: float = 6.0    # At or above this score → FAIL
+_DEFAULT_HIGH_THRESH: float = 8.0    # At or above this score → FAIL
+# Raised from 6.0 to 8.0: legitimate coding sequences often score 3-6 on
+# MaxEntScan; only scores > 8.0 reliably indicate cryptic splice sites
+# (true splice sites typically score > 10).
 
 # Default parameters for compute_splice_isoforms
 _DEFAULT_MAX_ISOFORMS: int = 100             # Safety limit to prevent combinatorial explosion
@@ -74,6 +77,38 @@ _DEFAULT_TOLERANCE: int = 5                  # Position tolerance for matching k
 _DEFAULT_ALT_SITE_WINDOW: int = 50          # Window for alternative splice site detection
 _DEFAULT_MAX_ALT_SITES: int = 3              # Maximum alternative sites per intron
 _DEFAULT_CRYPTIC_SCORE_THRESHOLD: float = 8.0  # Minimum score for cryptic sites to be included
+
+# Maximum distance (bp) for donor-acceptor pairing context check
+_DONOR_ACCEPTOR_MAX_DISTANCE: int = 500
+
+# Helper: determine if an organism is eukaryotic (splice checks only apply to eukaryotes)
+def _is_eukaryote(organism: str) -> bool:
+    """Return True if *organism* is eukaryotic (has spliceosomes).
+
+    Uses ``organism_config.is_eukaryotic_organism`` when available;
+    falls back to a simple name-based heuristic for common prokaryotic
+    identifiers.
+
+    Args:
+        organism: Organism name (e.g. ``"E_coli"``, ``"Homo_sapiens"``).
+
+    Returns:
+        True if the organism is eukaryotic, False if prokaryotic.
+    """
+    if not organism:
+        return True  # default: assume eukaryote when organism is unspecified
+    try:
+        from .organism_config import is_eukaryotic_organism
+        return is_eukaryotic_organism(organism)
+    except Exception:
+        # Fallback: common prokaryotic identifiers
+        prokaryotic_names = {
+            "E_coli", "E_coli_K12", "E_coli_BL21",
+            "Escherichia_coli", "ecoli",
+            "Bacillus_subtilis", "bsub",
+            "Pseudomonas_aeruginosa",
+        }
+        return organism not in prokaryotic_names
 
 
 def _compute_pwm_score(context: str) -> float:
@@ -113,7 +148,10 @@ def maxent_score(context: str) -> float:
 
     Returns:
         PWM weighted sum score. Higher = stronger splice signal.
-        Thresholds: < 3.0 PASS, 3.0-6.0 UNCERTAIN, >= 6.0 FAIL.
+        Thresholds: < 3.0 PASS, 3.0-8.0 UNCERTAIN, >= 8.0 FAIL.
+        Note: FAIL threshold raised from 6.0 to 8.0 because legitimate coding
+        sequences often score 3-6 on MaxEntScan; only scores > 8 reliably
+        indicate cryptic splice sites (true sites typically score > 10).
     """
     warnings.warn(
         "splicing.maxent_score() is deprecated — its hand-crafted PWM is "
@@ -164,7 +202,13 @@ def maxent_score_v2(context: str) -> float:
     return _score_donor(padded, adjusted_pos)
 
 
-def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_thresh: float = _DEFAULT_HIGH_THRESH) -> list[tuple[int, float, SpliceVerdict]]:
+def score_splice_sites(
+    seq: str,
+    low_thresh: float = _DEFAULT_LOW_THRESH,
+    high_thresh: float = _DEFAULT_HIGH_THRESH,
+    organism: str = "",
+    known_splice_sites: list[int] | None = None,
+) -> list[tuple[int, float, "SpliceVerdict"]]:
     """Score all potential splice sites in a sequence using simplified PWM.
 
     .. deprecated:: 0.9.0
@@ -176,10 +220,25 @@ def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_t
     Scans for GT dinucleotides and classifies each site as
     PASS / UNCERTAIN / FAIL based on dual-threshold scoring.
 
+    Organism awareness: If *organism* is prokaryotic (no spliceosomes),
+    all sites auto-PASS because splicing is not biologically relevant.
+
+    Donor/acceptor context: A GT is only flagged as a cryptic splice
+    donor (UNCERTAIN or FAIL) if there is a compatible AG acceptor
+    within 500 bp downstream. Isolated GTs without a nearby AG are
+    unlikely to form functional splice sites.
+
+    Essential splice sites: Positions listed in *known_splice_sites*
+    are preserved and never flagged as FAIL — they represent the gene's
+    natural splicing pattern and must not be eliminated.
+
     Args:
         seq: DNA sequence to scan
         low_thresh: Below this score → PASS (default 3.0)
-        high_thresh: At or above this score → FAIL (default 6.0)
+        high_thresh: At or above this score → FAIL (default 8.0)
+        organism: Organism name. If prokaryotic, all sites auto-PASS.
+        known_splice_sites: Positions of known/essential splice sites
+            (from gene annotation) that should be preserved.
 
     Returns:
         List of (position, score, SpliceVerdict) tuples for each GT site found.
@@ -193,6 +252,25 @@ def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_t
         stacklevel=2,
     )
     from .type_system import SpliceVerdict  # noqa: F811 — runtime import for enum values
+
+    # ── Organism awareness: prokaryotes have no spliceosomes ──
+    if organism and not _is_eukaryote(organism):
+        logger.info(
+            "Splice site scoring skipped for prokaryotic organism '%s'; "
+            "all sites auto-PASS",
+            organism,
+        )
+        return []
+
+    seq_upper = seq.upper()
+    known = set(known_splice_sites) if known_splice_sites else set()
+
+    # Pre-scan AG positions for donor/acceptor context check
+    ag_positions = [
+        i for i in range(len(seq_upper) - 1)
+        if seq_upper[i:i + _DINUC_LEN] == "AG"
+    ]
+
     results: list[tuple[int, float, SpliceVerdict]] = []
     for i in range(len(seq) - 1):
         if seq[i:i + _DINUC_LEN] == "GT":
@@ -207,6 +285,21 @@ def score_splice_sites(seq: str, low_thresh: float = _DEFAULT_LOW_THRESH, high_t
                 verdict = SpliceVerdict.UNCERTAIN
             else:
                 verdict = SpliceVerdict.FAIL
+
+            # ── Essential splice site preservation ──
+            if i in known:
+                verdict = SpliceVerdict.PASS
+
+            # ── Donor/acceptor context: only flag if compatible AG nearby ──
+            if verdict in (SpliceVerdict.UNCERTAIN, SpliceVerdict.FAIL):
+                has_nearby_ag = any(
+                    ag_pos > i
+                    and ag_pos - i <= _DONOR_ACCEPTOR_MAX_DISTANCE
+                    for ag_pos in ag_positions
+                )
+                if not has_nearby_ag:
+                    verdict = SpliceVerdict.PASS
+
             results.append((i, sc, verdict))
     return results
 
@@ -253,6 +346,7 @@ def compute_splice_isoforms(
     alt_site_window: int = _DEFAULT_ALT_SITE_WINDOW,
     max_alt_sites: int = _DEFAULT_MAX_ALT_SITES,
     cryptic_score_threshold: float = _DEFAULT_CRYPTIC_SCORE_THRESHOLD,
+    organism: str = "",
 ) -> list[SpliceIsoform]:
     """
     Compute all possible splice isoforms via enumerative NDFST.
@@ -272,6 +366,10 @@ def compute_splice_isoforms(
 
     KEY PROPERTY: This computation is DETERMINISTIC. Same input → same isoform set.
 
+    Organism awareness: If *organism* is prokaryotic (no spliceosomes),
+    splicing is biologically irrelevant and the function returns a single
+    isoform representing the unspliced sequence.
+
     Args:
         pre_mrna: pre-mRNA sequence
         known_exon_boundaries: known correct exon positions [(start, end), ...]
@@ -282,11 +380,27 @@ def compute_splice_isoforms(
         alt_site_window: window for alternative splice site detection (default 50)
         max_alt_sites: maximum alternative sites per intron
         cryptic_score_threshold: minimum score for cryptic sites to be included
+        organism: Organism name. If prokaryotic, returns single unspliced isoform.
 
     Returns:
         List of SpliceIsoform objects, sorted by score (canonical first).
     """
     seq = pre_mrna.upper()
+
+    # ── Organism awareness: prokaryotes have no spliceosomes ──
+    if organism and not _is_eukaryote(organism):
+        logger.info(
+            "Splice isoform computation skipped for prokaryotic organism '%s'; "
+            "returning single unspliced isoform",
+            organism,
+        )
+        return [SpliceIsoform(
+            sequence=seq,
+            exon_boundaries=[(0, len(seq))],
+            parse_path=["no_splice_prokaryote"],
+            score=0.0,
+        )]
+
     # Use permissive thresholds for scanning — we want ALL potential sites
     # for isoform enumeration. Scoring/filtering happens at the isoform level.
     tokens = scan_sequence(
@@ -411,10 +525,16 @@ def compute_splice_isoforms(
         ))
 
     # === Path 4: Cryptic splice sites ===
+    # Only include cryptic pairs where the donor-acceptor distance is within
+    # the maximum functional range (500 bp). Real splice sites require both
+    # a donor (GT) and acceptor (AG) within ~500 bp — isolated GTs without
+    # a nearby AG are unlikely to form functional splice sites.
     cryptic_pairs = [
         (d_pos, a_pos, score, label)
         for d_pos, a_pos, score, label in valid_pairs
-        if "cryptic" in label and score > cryptic_score_threshold
+        if "cryptic" in label
+        and score > cryptic_score_threshold
+        and (a_pos - d_pos) <= _DONOR_ACCEPTOR_MAX_DISTANCE
     ]
 
     for d_pos, a_pos, score, label in cryptic_pairs:

@@ -57,6 +57,7 @@ from .constraints import (
     CSPModel,
     HardConstraint,
     MaximizeCAI,
+    MinimizeCodonPairBias,
     MinimizeCpG,
     MinimizeMRNADG,
     SoftConstraint,
@@ -381,6 +382,40 @@ _CPG_NORMALIZATION_SCALE: float = 10.0
 _MRNA_DG_NORMALIZATION_SCALE: float = 30.0
 """Sigmoid scale for mRNA dG normalization: controls normalization sensitivity."""
 
+_CPB_NORMALIZATION_SCALE: float = 10.0
+"""Sigmoid scale for codon pair bias normalization: maps CPB to [0, 1]."""
+
+# ==============================================================================
+# Calibrated default weights
+# ==============================================================================
+
+# CAI is the dominant soft objective — codon optimality is the primary driver
+# of expression level.  Weight 10.0 ensures the solver prioritises codon
+# adaptation over secondary concerns.
+_DEFAULT_CAI_WEIGHT: float = 10.0
+
+# CpG weight is GC-dependent.  High-GC targets inherently have more CpG
+# dinucleotides, so the weight should be reduced to avoid over-penalising
+# unavoidable CpG occurrences.  Low-GC targets can afford stronger CpG
+# avoidance.
+_DEFAULT_CPG_WEIGHT_HIGH_GC: float = 0.5   # For target GC > 60%
+_DEFAULT_CPG_WEIGHT_LOW_GC: float = 2.0    # For target GC < 40%
+_DEFAULT_CPG_WEIGHT_MID_GC: float = 1.0   # For 40% <= GC <= 60%
+
+# Codon pair bias has a moderate but real effect on translation efficiency.
+# Weight 3.0 reflects that CPB is less dominant than CAI but more important
+# than the old default of 0.2.
+_DEFAULT_CPB_WEIGHT: float = 3.0
+
+# mRNA stability weight differs by domain of life:
+# - Prokaryotes: mRNA is short-lived regardless; moderate weight (1.0)
+#   acknowledges the role of 5' structure in ribosome binding without
+#   over-optimising for stability that doesn't persist.
+# - Eukaryotes: mRNA stability is a major determinant of expression level;
+#   high weight (5.0) ensures the solver prioritises 5' accessibility.
+_DEFAULT_PROKARYOTE_MRNA_DG_WEIGHT: float = 1.0
+_DEFAULT_EUKARYOTE_MRNA_DG_WEIGHT: float = 5.0
+
 
 # ==============================================================================
 # ScoringResult dataclass
@@ -405,6 +440,9 @@ class ScoringResult:
         mrna_dg_score: Normalized mRNA stability score in [0.0, 1.0].
             Higher = weaker 5' secondary structure (better for translation
             initiation).  Derived from sigmoid transform of |dG|.
+        cpb_score: Normalized codon pair bias score in [0.0, 1.0].  Higher =
+            more over-represented (favoured) codon pairs.  Derived from
+            sigmoid transform of the mean CPB score.
         weighted_total: Weighted combination of individual scores using
             weights from SolverConfig.  Higher = better overall.
         individual_scores: Dictionary mapping constraint names to their
@@ -415,13 +453,32 @@ class ScoringResult:
     cai_score: float
     cpg_score: float
     mrna_dg_score: float
-    weighted_total: float
-    individual_scores: dict[str, float]
+    cpb_score: float = 0.0
+    weighted_total: float = 0.0
+    individual_scores: dict[str, float] = field(default_factory=dict)
+
+    # Backward compatibility: allow construction without cpb_score
+    def __init__(
+        self,
+        cai_score: float = 0.0,
+        cpg_score: float = 0.0,
+        mrna_dg_score: float = 0.0,
+        cpb_score: float = 0.0,
+        weighted_total: float = 0.0,
+        individual_scores: Optional[dict[str, float]] = None,
+    ) -> None:
+        self.cai_score = cai_score
+        self.cpg_score = cpg_score
+        self.mrna_dg_score = mrna_dg_score
+        self.cpb_score = cpb_score
+        self.weighted_total = weighted_total
+        self.individual_scores = individual_scores if individual_scores is not None else {}
 
     def __repr__(self) -> str:
         return (
             f"ScoringResult(cai={self.cai_score:.4f}, cpg={self.cpg_score:.4f}, "
-            f"mrna_dg={self.mrna_dg_score:.4f}, total={self.weighted_total:.4f})"
+            f"mrna_dg={self.mrna_dg_score:.4f}, cpb={self.cpb_score:.4f}, "
+            f"total={self.weighted_total:.4f})"
         )
 
 
@@ -466,15 +523,50 @@ class CAIImpactResult:
 
 
 # ==============================================================================
+# GC-aware CpG weight helper
+# ==============================================================================
+
+def _gc_aware_cpg_weight(target_gc: float) -> float:
+    """Compute CpG weight scaled inversely with target GC content.
+
+    High-GC targets (>60%) inherently contain more CpG dinucleotides,
+    making aggressive CpG avoidance counterproductive.  Low-GC targets
+    (<40%) have fewer unavoidable CpG occurrences, so stronger avoidance
+    is feasible.
+
+    Args:
+        target_gc: Target GC content as a fraction (e.g. 0.55 for 55%).
+
+    Returns:
+        CpG weight: 0.5 for GC > 60%, 2.0 for GC < 40%, 1.0 otherwise.
+    """
+    if target_gc > 0.60:
+        return _DEFAULT_CPG_WEIGHT_HIGH_GC   # 0.5
+    elif target_gc < 0.40:
+        return _DEFAULT_CPG_WEIGHT_LOW_GC    # 2.0
+    else:
+        return _DEFAULT_CPG_WEIGHT_MID_GC    # 1.0
+
+
+# ==============================================================================
 # SoftConstraintScorer
 # ==============================================================================
 
 class SoftConstraintScorer:
     """Scores candidate DNA sequences against soft constraints.
 
-    Evaluates a candidate sequence using the three standard soft constraints
-    (CAI, CpG, mRNA dG) from the CSP model, normalizes each score to [0, 1],
-    and computes a weighted total using the SolverConfig weights.
+    Evaluates a candidate sequence using the soft constraints (CAI, CpG,
+    mRNA dG, and optionally codon pair bias) from the CSP model, normalizes
+    each score to [0, 1], and computes a weighted total using calibrated
+    SolverConfig weights.
+
+    Weight calibration is applied during initialization to ensure proper
+    relative importance of objectives:
+
+    - CAI weight = 10.0 (dominant soft objective)
+    - CpG weight = GC-dependent (0.5–2.0, inversely scaled with target GC)
+    - CPB weight = 3.0 (moderate, affects translation efficiency)
+    - mRNA dG weight = organism-dependent (1.0 prokaryote / 5.0 eukaryote)
 
     The scorer is stateless with respect to sequences — it can score any
     number of candidate sequences against the same or different models.
@@ -493,28 +585,43 @@ class SoftConstraintScorer:
     def __init__(self, config: SolverConfig) -> None:
         """Initialize the scorer with solver configuration.
 
+        Applies weight calibration on top of the SolverConfig defaults
+        to ensure proper relative weighting of soft objectives:
+
+        - CAI weight is set to 10.0 (dominant soft objective)
+        - CpG weight is scaled by target GC content
+        - CPB weight is set to 3.0 (moderate, affects translation efficiency)
+        - mRNA dG weight is set based on organism domain (prokaryote vs eukaryote)
+
         Args:
-            config: Solver configuration providing CAI, CpG, and mRNA dG
-                weights.  The weights control the relative importance of
-                each objective in the weighted total.
+            config: Solver configuration providing CAI, CpG, mRNA dG, and
+                CPB weights.  The weights are calibrated upon initialization
+                to ensure proper relative importance.
         """
         self._config = config
+        self._calibrate_weights()
         logger.debug(
-            "SoftConstraintScorer initialized with weights: "
-            "cai=%.2f, cpg=%.2f, mrna_dg=%.2f",
-            config.cai_weight,
-            config.cpg_weight,
-            config.mrna_dg_weight,
+            "SoftConstraintScorer initialized with calibrated weights: "
+            "cai=%.2f, cpg=%.2f, mrna_dg=%.2f, cpb=%.2f",
+            self._config.cai_weight,
+            self._config.cpg_weight,
+            self._config.mrna_dg_weight,
+            self._config.codon_pair_bias_weight,
         )
 
     def adjust_weights_for_organism(self, organism: str) -> None:
         """Dynamically adjust scoring weights based on the target organism.
 
         Inspects the organism's domain (prokaryote vs eukaryote) and
-        adjusts the scorer's internal config weights accordingly.  For
-        prokaryotic organisms the CpG weight is automatically zeroed out
-        because prokaryotes lack DNA methylation and thus CpG islands
-        are not a biological concern.
+        adjusts the scorer's internal config weights accordingly:
+
+        - **Prokaryotes**: CpG weight is zeroed out (no DNA methylation),
+          and mRNA dG weight is set to a moderate value (1.0) since
+          prokaryotic mRNA is short-lived regardless.
+        - **Eukaryotes**: CpG weight is scaled by target GC content
+          (high GC → low weight, low GC → high weight), and mRNA dG
+          weight is set to a high value (5.0) since mRNA stability is
+          a major determinant of expression level.
 
         This method mutates the scorer's config in-place so that
         subsequent calls to :meth:`score_sequence` use the adjusted
@@ -533,6 +640,8 @@ class SoftConstraintScorer:
         >>> scorer.adjust_weights_for_organism("E_coli_K12")
         >>> scorer.config.cpg_weight
         0.0
+        >>> scorer.config.mrna_dg_weight  # moderate for prokaryotes
+        1.0
         """
         from ..organism_config import get_organism_config
 
@@ -541,15 +650,45 @@ class SoftConstraintScorer:
         old_cai = self._config.cai_weight
         old_cpg = self._config.cpg_weight
         old_mrna = self._config.mrna_dg_weight
+        old_cpb = self._config.codon_pair_bias_weight
 
-        # For prokaryotes, zero out CpG weight (no DNA methylation)
+        # ── Prokaryote-specific adjustments ────────────────────────────
         if not org_config.is_eukaryote:
+            # CpG weight: zero for prokaryotes (no DNA methylation)
             self._config.cpg_weight = 0.0
             self._config.avoid_cpg = False
             logger.info(
                 "Prokaryotic organism %r detected: zeroing cpg_weight "
                 "(was %.2f) and disabling avoid_cpg",
                 organism, old_cpg,
+            )
+
+            # mRNA dG weight: moderate for prokaryotes (short-lived mRNA)
+            self._config.mrna_dg_weight = _DEFAULT_PROKARYOTE_MRNA_DG_WEIGHT
+            logger.info(
+                "Prokaryotic organism %r: setting mrna_dg_weight to "
+                "%.2f (moderate, short-lived mRNA) (was %.2f)",
+                organism, _DEFAULT_PROKARYOTE_MRNA_DG_WEIGHT, old_mrna,
+            )
+
+        # ── Eukaryote-specific adjustments ─────────────────────────────
+        else:
+            # mRNA dG weight: high for eukaryotes (stability matters)
+            self._config.mrna_dg_weight = _DEFAULT_EUKARYOTE_MRNA_DG_WEIGHT
+            logger.info(
+                "Eukaryotic organism %r: setting mrna_dg_weight to "
+                "%.2f (high, stability matters) (was %.2f)",
+                organism, _DEFAULT_EUKARYOTE_MRNA_DG_WEIGHT, old_mrna,
+            )
+
+            # CpG weight: scale by target GC content
+            target_gc = (org_config.gc_target_lo + org_config.gc_target_hi) / 2.0
+            cpg_weight = _gc_aware_cpg_weight(target_gc)
+            self._config.cpg_weight = cpg_weight
+            logger.info(
+                "Eukaryotic organism %r: GC-aware cpg_weight=%.2f "
+                "(target GC=%.2f) (was %.2f)",
+                organism, cpg_weight, target_gc, old_cpg,
             )
 
         # Adjust mRNA dG weight based on the organism's degradation model
@@ -560,15 +699,6 @@ class SoftConstraintScorer:
                 "mrna_dg_weight (was %.2f)",
                 organism, old_mrna,
             )
-        elif org_config.mrna_degradation_model == "simple":
-            # Use a moderate weight for simple models
-            if self._config.mrna_dg_weight > 0.3:
-                self._config.mrna_dg_weight = 0.2
-                logger.info(
-                    "Organism %r uses simple mRNA model: capping "
-                    "mrna_dg_weight at 0.2 (was %.2f)",
-                    organism, old_mrna,
-                )
 
         # Update GC bounds from organism config
         if org_config.gc_target_lo != org_config.gc_target_hi:
@@ -582,11 +712,12 @@ class SoftConstraintScorer:
         logger.info(
             "Weight adjustment for organism %r: "
             "cai_weight %.2f -> %.2f, cpg_weight %.2f -> %.2f, "
-            "mrna_dg_weight %.2f -> %.2f",
+            "mrna_dg_weight %.2f -> %.2f, cpb_weight %.2f -> %.2f",
             organism,
             old_cai, self._config.cai_weight,
             old_cpg, self._config.cpg_weight,
             old_mrna, self._config.mrna_dg_weight,
+            old_cpb, self._config.codon_pair_bias_weight,
         )
 
     @property
@@ -634,6 +765,7 @@ class SoftConstraintScorer:
         cai_score = self._normalize_cai(individual_scores, model, sequence)
         cpg_score = self._normalize_cpg(individual_scores)
         mrna_dg_score = self._normalize_mrna_dg(individual_scores, model, sequence)
+        cpb_score = self._normalize_cpb(individual_scores)
 
         # ── Compute weighted total ────────────────────────────────────
         weights = self._build_weight_map()
@@ -641,6 +773,7 @@ class SoftConstraintScorer:
             "MaximizeCAI": cai_score,
             "MinimizeCpG": cpg_score,
             "MinimizeMRNADG": mrna_dg_score,
+            "MinimizeCodonPairBias": cpb_score,
         }
         weighted_total = self.compute_weighted_score(normalized_scores, weights)
 
@@ -648,6 +781,7 @@ class SoftConstraintScorer:
             cai_score=cai_score,
             cpg_score=cpg_score,
             mrna_dg_score=mrna_dg_score,
+            cpb_score=cpb_score,
             weighted_total=weighted_total,
             individual_scores=individual_scores,
         )
@@ -749,13 +883,18 @@ class SoftConstraintScorer:
 
         Returns:
             Dictionary with keys 'MaximizeCAI', 'MinimizeCpG',
-            'MinimizeMRNADG' and their respective config weights.
+            'MinimizeMRNADG', 'MinimizeCodonPairBias' and their
+            respective config weights.
         """
-        return {
+        weights = {
             "MaximizeCAI": self._config.cai_weight,
             "MinimizeCpG": self._config.cpg_weight,
             "MinimizeMRNADG": self._config.mrna_dg_weight,
         }
+        # Include CPB weight only if codon pair bias optimisation is enabled
+        if self._config.optimize_codon_pair_bias:
+            weights["MinimizeCodonPairBias"] = self._config.codon_pair_bias_weight
+        return weights
 
     def _normalize_cai(
         self,
@@ -863,6 +1002,91 @@ class SoftConstraintScorer:
 
         return max(0.0, min(1.0, normalized))
 
+    def _normalize_cpb(self, individual_scores: dict[str, float]) -> float:
+        """Normalize the codon pair bias score to [0.0, 1.0].
+
+        The raw MinimizeCodonPairBias score is the mean CPB across all
+        codon pairs.  CPB values are typically in [-0.5, 0.5], where
+        positive = over-represented (favoured) pairs and negative =
+        under-represented (disfavoured) pairs.
+
+        We normalize using a sigmoid-like transform:
+
+            normalized = 1.0 / (1.0 + exp(-cpb * scale))
+
+        This maps negative CPB (disfavoured) → ~0.0, zero CPB → 0.5,
+        and positive CPB (favoured) → ~1.0.
+
+        Args:
+            individual_scores: Raw scores dict containing
+                'MinimizeCodonPairBias'.
+
+        Returns:
+            Normalized codon pair bias score in [0.0, 1.0].
+        """
+        raw = individual_scores.get("MinimizeCodonPairBias", 0.0)
+
+        # Sigmoid normalization: maps CPB to (0, 1)
+        # positive CPB → high score, negative CPB → low score
+        try:
+            normalized = 1.0 / (1.0 + math.exp(-raw * _CPB_NORMALIZATION_SCALE))
+        except OverflowError:
+            # Very negative CPB → exp overflows → normalized ≈ 0
+            normalized = 0.0
+
+        return max(0.0, min(1.0, normalized))
+
+    def _calibrate_weights(self) -> None:
+        """Calibrate scoring weights to ensure proper relative importance.
+
+        Applies the following calibrations to the scorer's config:
+
+        - **CAI weight** → 10.0: CAI is the dominant soft objective; codon
+          optimality is the primary driver of expression level.
+        - **CPG weight** → GC-dependent: high GC (>60%) = 0.5 (less
+          avoidance, more unavoidable CpG), low GC (<40%) = 2.0 (strong
+          avoidance feasible), mid-range = 1.0.
+        - **CPB weight** → 3.0: Codon pair bias has a moderate but real
+          effect on translation efficiency.
+        - **mRNA dG weight** → organism-dependent: moderate (1.0) for
+          prokaryotes (short-lived mRNA), high (5.0) for eukaryotes
+          (stability critical for expression).
+
+        This method is called during ``__init__`` and ensures the scorer
+        uses calibrated defaults regardless of the SolverConfig's initial
+        values.  Subsequent calls to :meth:`adjust_weights_for_organism`
+        may further refine these weights.
+        """
+        # CAI: dominant soft objective
+        old_cai = self._config.cai_weight
+        self._config.cai_weight = _DEFAULT_CAI_WEIGHT
+
+        # CpG: GC-dependent weight
+        old_cpg = self._config.cpg_weight
+        target_gc = (self._config.gc_lo + self._config.gc_hi) / 2.0
+        self._config.cpg_weight = _gc_aware_cpg_weight(target_gc)
+
+        # CPB: moderate weight for translation efficiency
+        old_cpb = self._config.codon_pair_bias_weight
+        self._config.codon_pair_bias_weight = _DEFAULT_CPB_WEIGHT
+
+        # mRNA dG: organism-dependent weight
+        old_mrna = self._config.mrna_dg_weight
+        if self._config.is_eukaryotic:
+            self._config.mrna_dg_weight = _DEFAULT_EUKARYOTE_MRNA_DG_WEIGHT
+        else:
+            self._config.mrna_dg_weight = _DEFAULT_PROKARYOTE_MRNA_DG_WEIGHT
+
+        logger.info(
+            "Weight calibration: cai %.2f -> %.2f, cpg %.2f -> %.2f (target GC=%.2f), "
+            "cpb %.2f -> %.2f, mrna_dg %.2f -> %.2f (%s)",
+            old_cai, self._config.cai_weight,
+            old_cpg, self._config.cpg_weight, target_gc,
+            old_cpb, self._config.codon_pair_bias_weight,
+            old_mrna, self._config.mrna_dg_weight,
+            "eukaryote" if self._config.is_eukaryotic else "prokaryote",
+        )
+
 
 # ==============================================================================
 # Pareto frontier analysis
@@ -876,10 +1100,11 @@ def compute_pareto_frontier(results: list[ScoringResult]) -> list[ScoringResult]
     In other words, a Pareto-optimal solution represents a trade-off where
     improving one objective would require sacrificing another.
 
-    The three objectives (all to be maximized) are:
+    The four objectives (all to be maximized) are:
     - cai_score: Codon adaptation quality
     - cpg_score: CpG avoidance
     - mrna_dg_score: mRNA structural accessibility
+    - cpb_score: Codon pair bias (over-represented pairs)
 
     Args:
         results: List of ScoringResult instances to analyze.  May be empty.
@@ -890,9 +1115,9 @@ def compute_pareto_frontier(results: list[ScoringResult]) -> list[ScoringResult]
         input is empty.
 
     Examples:
-        >>> r1 = ScoringResult(cai_score=0.9, cpg_score=0.3, mrna_dg_score=0.5, weighted_total=0.0, individual_scores={})
-        >>> r2 = ScoringResult(cai_score=0.7, cpg_score=0.8, mrna_dg_score=0.4, weighted_total=0.0, individual_scores={})
-        >>> r3 = ScoringResult(cai_score=0.6, cpg_score=0.4, mrna_dg_score=0.3, weighted_total=0.0, individual_scores={})
+        >>> r1 = ScoringResult(cai_score=0.9, cpg_score=0.3, mrna_dg_score=0.5, cpb_score=0.6)
+        >>> r2 = ScoringResult(cai_score=0.7, cpg_score=0.8, mrna_dg_score=0.4, cpb_score=0.7)
+        >>> r3 = ScoringResult(cai_score=0.6, cpg_score=0.4, mrna_dg_score=0.3, cpb_score=0.4)
         >>> pareto = compute_pareto_frontier([r1, r2, r3])
         >>> len(pareto)
         2
@@ -904,11 +1129,12 @@ def compute_pareto_frontier(results: list[ScoringResult]) -> list[ScoringResult]
     if len(results) == 1:
         return list(results)
 
-    # Objectives to maximize (name → accessor function)
+    # Objectives to maximize (name → type hint)
     objectives: list[tuple[str, type[ScoringResult]]] = [
         ("cai_score", float),
         ("cpg_score", float),
         ("mrna_dg_score", float),
+        ("cpb_score", float),
     ]
 
     def _dominates(a: ScoringResult, b: ScoringResult) -> bool:

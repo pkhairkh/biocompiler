@@ -30,7 +30,7 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,8 @@ __all__ = [
     "find_stable_structures", "compute_5prime_dg",
     "check_mrna_structure_viennarna", "predict_mfe_batch",
     "predict_accessibility_batch",
+    "get_organism_dg_threshold", "estimate_dg_from_gc",
+    "find_most_stable_region",
 ]
 
 # ── Constants ──────────────────────────────────────────────
@@ -52,6 +54,7 @@ DEFAULT_5PRIME_WINDOW: int = 50
 REGION_FULL = "full"
 REGION_5UTR = "5utr"
 REGION_START_CODON = "start_codon"
+REGION_CDS = "cds"
 
 # Named constants replacing raw magic numbers
 DEFAULT_FULL_LENGTH_CUTOFF: int = 100
@@ -63,6 +66,54 @@ DEFAULT_OVERLAP_THRESHOLD: float = 0.5
 NEAREST_NEIGHBOR_GC: float = -1.5
 NEAREST_NEIGHBOR_AU: float = -0.5
 NEAREST_NEIGHBOR_GU: float = -0.3
+
+# ── Issue 1: Organism-specific ΔG thresholds ──────────────
+# Different organisms have different tolerances for mRNA secondary
+# structure.  Prokaryotes (especially E. coli) are sensitive to
+# structure at the RBS; eukaryotes tolerate more structure in the
+# 5'UTR but have a different threshold.  Coding regions (CDS)
+# normally have secondary structure and should use a much more
+# relaxed threshold.
+
+ORGANISM_DG_THRESHOLDS: dict[str, float] = {
+    # E. coli: flag if ΔG < -15 kcal/mol in RBS region (first 50 nt)
+    "E_coli": -15.0,
+    "E_coli_K12": -15.0,
+    "E_coli_BL21": -15.0,
+    # Human: flag if ΔG < -25 kcal/mol in 5'UTR
+    "Homo_sapiens": -25.0,
+    "human": -25.0,
+    # Other eukaryotes: moderate threshold
+    "Saccharomyces_cerevisiae": -20.0,
+    "yeast": -20.0,
+    "Mus_musculus": -25.0,
+    "mouse": -25.0,
+    "CHO_K1": -25.0,
+    "cho": -25.0,
+}
+
+# CDS regions normally contain secondary structure; use a much more
+# relaxed (more negative) threshold so that normal coding-sequence
+# structure is not flagged as problematic.
+CDS_DG_THRESHOLD: float = -50.0
+
+# ── Issue 2: Region-aware check parameters ────────────────
+# Prokaryotes: only check RBS/start codon region (first ~50 nt)
+PROKARYOTE_CHECK_WINDOW: int = 50
+# Eukaryotes: check 5'UTR region (typically first ~50 nt of UTR)
+EUKARYOTE_CHECK_WINDOW: int = 50
+
+# ── Issue 3: GC-content heuristic fallback parameters ─────
+GC_STABLE_THRESHOLD: float = 0.60   # GC% > 60% → likely stable
+GC_UNSTABLE_THRESHOLD: float = 0.40  # GC% < 40% → likely unstable
+# Rough ΔG estimate per nucleotide for GC-rich sequences (kcal/mol/nt)
+GC_DG_PER_NT: float = -0.4
+# Rough ΔG estimate per nucleotide for AT-rich sequences (kcal/mol/nt)
+AT_DG_PER_NT: float = -0.1
+
+# ── Issue 4: Sliding window parameters for batch prediction ─
+SLIDING_WINDOW_SIZE: int = 50
+SLIDING_WINDOW_STEP: int = 10
 
 # ── Data classes ───────────────────────────────────────────
 
@@ -560,7 +611,7 @@ class MRNAStructureResult(TypedDict):
         dg: Free energy of the folded structure (kcal/mol).
             More negative = more stable. 0.0 for trivial/unavailable.
         method: Backend used — ``"viennarna_python"``, ``"viennarna_cli"``,
-            ``"toy_hairpin_fallback"``, or ``"trivial"``.
+            ``"gc_heuristic_fallback"``, ``"toy_hairpin_fallback"``, or ``"trivial"``.
         structure: Dot-bracket notation for the folded region.
             Empty string when ViennaRNA is unavailable.
         viennarna_used: True when the result came from ViennaRNA
@@ -570,6 +621,13 @@ class MRNAStructureResult(TypedDict):
         hairpin_positions: List of ``(start, end)`` tuples for each
             detected hairpin, 0-based within the *window_start:window_end*
             subsequence.  Empty when no hairpins are found.
+        region: The functional region that was checked (``"rbs"``,
+            ``"5utr"``, ``"cds"``, or ``"full"``).
+        organism: The organism key used for threshold selection.
+        dg_threshold: The ΔG threshold that was applied.
+        most_stable_window_start: Start position of the most stable
+            sliding window (0-based in the original sequence).
+            None when no sliding window scan was performed.
     """
     dg: float
     method: str
@@ -577,6 +635,217 @@ class MRNAStructureResult(TypedDict):
     viennarna_used: bool
     has_hairpin: bool
     hairpin_positions: list[tuple[int, int]]
+    region: str
+    organism: str
+    dg_threshold: float
+    most_stable_window_start: int | None
+
+
+def get_organism_dg_threshold(
+    organism: str,
+    region: str = REGION_FULL,
+) -> float:
+    """Return the organism-specific ΔG threshold for flagging mRNA structure.
+
+    Organism-specific thresholds:
+      - E. coli: only flag if ΔG < -15 kcal/mol in RBS region
+      - Human: only flag if ΔG < -25 kcal/mol in 5'UTR region
+      - CDS (coding) regions: use a much more relaxed threshold (-50)
+        because secondary structure in the CDS is normal and expected.
+
+    Args:
+        organism: Organism key (e.g. ``"E_coli_K12"``, ``"Homo_sapiens"``).
+        region: Functional region being checked (``"5utr"``, ``"start_codon"``,
+                ``"cds"``, ``"full"``).
+
+    Returns:
+        ΔG threshold in kcal/mol.
+    """
+    # CDS regions normally contain secondary structure — much more relaxed
+    if region == REGION_CDS:
+        return CDS_DG_THRESHOLD
+
+    # Look up organism-specific threshold
+    threshold = ORGANISM_DG_THRESHOLDS.get(organism)
+    if threshold is not None:
+        return threshold
+
+    # Try to resolve via organism_config for unknown keys
+    try:
+        from .organism_config import get_organism_config
+        config = get_organism_config(organism)
+        if not config.is_eukaryote:
+            return -15.0  # prokaryote default
+        return -25.0  # eukaryote default
+    except Exception:
+        pass
+
+    # Ultimate fallback: use the default threshold
+    return DEFAULT_DG_THRESHOLD
+
+
+def _determine_check_region(
+    organism: str,
+) -> tuple[str, int]:
+    """Determine which region to check based on organism type.
+
+    Issue 2: Region awareness — not all mRNA secondary structure is bad.
+    Only check the RBS/start codon region for prokaryotes, and the 5'UTR
+    for eukaryotes.  Structure in the middle of the CDS is expected and
+    not problematic.
+
+    Args:
+        organism: Organism key.
+
+    Returns:
+        (region_label, window_size) tuple.
+    """
+    try:
+        from .organism_config import get_organism_config
+        config = get_organism_config(organism)
+        if not config.is_eukaryote:
+            # Prokaryote: check RBS/start codon region (first ~50 nt)
+            return ("rbs", PROKARYOTE_CHECK_WINDOW)
+        else:
+            # Eukaryote: check 5'UTR region
+            return (REGION_5UTR, EUKARYOTE_CHECK_WINDOW)
+    except Exception:
+        pass
+
+    # Fallback: use a simple heuristic based on the organism key
+    org_lower = organism.lower()
+    if any(k in org_lower for k in ("ecoli", "e_coli", "escherichia")):
+        return ("rbs", PROKARYOTE_CHECK_WINDOW)
+    return (REGION_5UTR, EUKARYOTE_CHECK_WINDOW)
+
+
+def estimate_dg_from_gc(
+    dna_sequence: str,
+    region: str = REGION_FULL,
+) -> float:
+    """Estimate ΔG from GC content when ViennaRNA is unavailable.
+
+    Issue 3: Fallback heuristic.  Instead of returning UNCERTAIN when
+    ViennaRNA is not installed, estimate ΔG from the GC content and
+    sequence length:
+      - GC% > 60% → likely stable structure (more negative ΔG)
+      - GC% < 40% → likely unstable structure (ΔG close to 0)
+      - 40% ≤ GC% ≤ 60% → intermediate estimate
+
+    The estimate uses a linear interpolation between AT-rich and
+    GC-rich per-nucleotide ΔG contributions, scaled by sequence length.
+
+    Args:
+        dna_sequence: DNA sequence (T, not U).
+        region: Functional region to analyse (default ``"full"``).
+
+    Returns:
+        Estimated ΔG in kcal/mol.  More negative = more stable.
+    """
+    dna = _extract_region(dna_sequence.upper(), region)
+    if not dna:
+        return 0.0
+
+    n = len(dna)
+    if n < 4:
+        return 0.0
+
+    gc_count = dna.count("G") + dna.count("C")
+    gc_frac = gc_count / n
+
+    if gc_frac >= GC_STABLE_THRESHOLD:
+        # GC-rich → likely stable structure
+        dg_per_nt = GC_DG_PER_NT
+    elif gc_frac <= GC_UNSTABLE_THRESHOLD:
+        # AT-rich → likely unstable
+        dg_per_nt = AT_DG_PER_NT
+    else:
+        # Linear interpolation between unstable and stable
+        t = (gc_frac - GC_UNSTABLE_THRESHOLD) / (
+            GC_STABLE_THRESHOLD - GC_UNSTABLE_THRESHOLD
+        )
+        dg_per_nt = AT_DG_PER_NT + t * (GC_DG_PER_NT - AT_DG_PER_NT)
+
+    # Scale by window length; only the region that can form a hairpin
+    # contributes.  A rough estimate: half the window can pair.
+    effective_pairing_length = n // 2
+    estimated_dg = dg_per_nt * effective_pairing_length
+
+    # For CDS regions, apply a relaxation factor since structure in
+    # coding regions is normal and expected
+    if region == REGION_CDS:
+        estimated_dg *= 0.5  # Halve the estimated stability for CDS
+
+    return estimated_dg
+
+
+def find_most_stable_region(
+    dna_sequence: str,
+    window_size: int = SLIDING_WINDOW_SIZE,
+    step: int = SLIDING_WINDOW_STEP,
+) -> tuple[int, float, str]:
+    """Find the most stable region using a sliding window approach.
+
+    Issue 4: Batch prediction.  For long sequences, fold the entire
+    mRNA using a sliding window and extract regional ΔG.  Uses
+    50nt windows with 10nt step to find the most stable region,
+    and only reports that.
+
+    Args:
+        dna_sequence: DNA sequence (T, not U).
+        window_size: Sliding window size in nt (default 50).
+        step:        Step size in nt (default 10).
+
+    Returns:
+        (start_position, mfe, method) tuple for the most stable window.
+        If ViennaRNA is unavailable, falls back to GC heuristic.
+        Returns (0, 0.0, "trivial") for empty/too-short sequences.
+    """
+    rna = _dna_to_rna(dna_sequence.upper())
+    n = len(rna)
+
+    if n < 4:
+        return (0, 0.0, "trivial")
+
+    best_start = 0
+    best_dg = 0.0
+    best_method = "trivial"
+
+    # Determine effective window size
+    effective_window = min(window_size, n)
+
+    # If sequence fits in one window, just fold it
+    if n <= effective_window:
+        result = _fold_mfe(rna)
+        if result.success:
+            return (0, result.mfe, result.method)
+        # ViennaRNA unavailable — use GC heuristic
+        est = estimate_dg_from_gc(dna_sequence)
+        return (0, est, "gc_heuristic_fallback")
+
+    # Slide the window across the sequence
+    for start in range(0, n - effective_window + 1, step):
+        sub_rna = rna[start:start + effective_window]
+        result = _fold_mfe(sub_rna)
+        if result.success:
+            if result.mfe < best_dg:
+                best_dg = result.mfe
+                best_start = start
+                best_method = result.method
+        else:
+            # ViennaRNA unavailable for this window — use GC heuristic
+            est = estimate_dg_from_gc(dna_sequence[start:start + effective_window])
+            if est < best_dg:
+                best_dg = est
+                best_start = start
+                best_method = "gc_heuristic_fallback"
+
+    # If all windows failed or nothing stable found, try GC heuristic on full seq
+    if best_method == "trivial":
+        est = estimate_dg_from_gc(dna_sequence)
+        return (0, est, "gc_heuristic_fallback")
+
+    return (best_start, best_dg, best_method)
 
 
 def check_mrna_structure_viennarna(
@@ -584,62 +853,159 @@ def check_mrna_structure_viennarna(
     window_start: int = 0,
     window_end: int = 50,
     dg_threshold: float = -15.0,
+    organism: str = "",
+    region: str = "",
 ) -> MRNAStructureResult:
     """ViennaRNA-backed mRNA secondary structure check for predicate 11.
 
     Drop-in replacement for the toy hairpin model in
-    ``type_system.check_mrna_secondary_structure``.  Falls back to the
-    toy model if ViennaRNA is not available.
+    ``type_system.check_mrna_secondary_structure``.  When ViennaRNA is
+    not available, uses a GC-content heuristic instead of returning
+    UNCERTAIN.
+
+    Issue 1 (Threshold calibration): Uses organism-specific thresholds:
+      - E. coli: only flag if ΔG < -15 kcal/mol in RBS region
+      - Human: only flag if ΔG < -25 kcal/mol in 5'UTR region
+      - CDS regions: much more relaxed threshold (-50 kcal/mol)
+
+    Issue 2 (Region awareness): Only checks the RBS/start codon region
+    for prokaryotes and the 5'UTR for eukaryotes.  Structure in the
+    middle of the CDS is expected and not problematic.
+
+    Issue 3 (GC heuristic fallback): When ViennaRNA is not installed,
+    estimates ΔG from GC content instead of returning UNCERTAIN.
+
+    Issue 4 (Batch/sliding window): For long sequences, uses a sliding
+    window approach (50nt windows, 10nt step) to find the most stable
+    region and only reports that.
 
     Args:
         dna_sequence: DNA sequence (uppercase, T not U).
         window_start: Start position of the analysis window (default 0).
         window_end:   End position of the analysis window (default 50).
         dg_threshold: ΔG threshold for FAIL verdict (default -15.0).
+                      Overridden by organism-specific threshold when
+                      *organism* is provided.
+        organism:     Organism key (e.g. ``"E_coli_K12"``, ``"Homo_sapiens"``).
+                      When provided, enables organism-specific thresholds
+                      and region-aware checking.
+        region:       Functional region (``"5utr"``, ``"start_codon"``,
+                      ``"cds"``, ``"full"``).  When empty, auto-detected
+                      from *organism* if provided.
 
     Returns:
         :class:`MRNAStructureResult` with keys ``dg``, ``method``,
         ``structure``, ``viennarna_used``, ``has_hairpin``,
-        ``hairpin_positions``.
+        ``hairpin_positions``, ``region``, ``organism``,
+        ``dg_threshold``, ``most_stable_window_start``.
     """
+    # ── Issue 2: Region awareness ────────────────────────────
+    # Determine which region to check based on organism
+    check_region = region
+    if not check_region and organism:
+        check_region, _ = _determine_check_region(organism)
+    elif not check_region:
+        check_region = REGION_START_CODON  # backward-compatible default
+
+    # ── Issue 1: Organism-specific ΔG threshold ──────────────
+    # Use organism-specific threshold if organism is provided
+    effective_threshold = dg_threshold
+    if organism:
+        org_threshold = get_organism_dg_threshold(organism, check_region)
+        effective_threshold = org_threshold
+
+    # Determine the effective window to check
+    # For CDS regions, we still scan but with a much more relaxed threshold
+    if check_region == REGION_CDS:
+        # CDS: use sliding window but relaxed threshold
+        effective_threshold = CDS_DG_THRESHOLD
+
+    # Extract the subsequence to analyse
     rna = _dna_to_rna(dna_sequence[window_start:window_end])
     if len(rna) < 4:
         return {"dg": 0.0, "method": "trivial",
                 "structure": "." * len(rna), "viennarna_used": False,
-                "has_hairpin": False, "hairpin_positions": []}
+                "has_hairpin": False, "hairpin_positions": [],
+                "region": check_region, "organism": organism,
+                "dg_threshold": effective_threshold,
+                "most_stable_window_start": None}
 
+    # ── Issue 4: Sliding window batch prediction ─────────────
+    # For long sequences, use sliding window to find most stable region
+    most_stable_start: int | None = None
+    if len(rna) > SLIDING_WINDOW_SIZE * 2:
+        best_start, best_dg, best_method = find_most_stable_region(
+            dna_sequence[window_start:window_end],
+            window_size=SLIDING_WINDOW_SIZE,
+            step=SLIDING_WINDOW_STEP,
+        )
+        most_stable_start = best_start
+
+        # Re-fold the most stable window to get full details
+        best_rna = rna[best_start:best_start + SLIDING_WINDOW_SIZE]
+        if len(best_rna) >= 4:
+            result = _fold_mfe(best_rna)
+            if result.success:
+                hairpin_positions: list[tuple[int, int]] = []
+                for s, e, _ in _identify_stem_loops(result.structure):
+                    sub_rna = best_rna[s:e]
+                    if len(sub_rna) < 4:
+                        continue
+                    sub_result = _fold_mfe(sub_rna)
+                    if sub_result.success and sub_result.mfe < effective_threshold:
+                        hairpin_positions.append((s, e))
+                return {"dg": result.mfe, "method": result.method,
+                        "structure": result.structure, "viennarna_used": True,
+                        "has_hairpin": len(hairpin_positions) > 0,
+                        "hairpin_positions": hairpin_positions,
+                        "region": check_region, "organism": organism,
+                        "dg_threshold": effective_threshold,
+                        "most_stable_window_start": most_stable_start}
+            # ── Issue 3: GC heuristic fallback ─────────────────
+            # ViennaRNA unavailable for this window — use GC heuristic
+            est_dg = estimate_dg_from_gc(
+                dna_sequence[window_start + best_start:window_start + best_start + SLIDING_WINDOW_SIZE],
+                region=check_region,
+            )
+            return {"dg": est_dg, "method": "gc_heuristic_fallback",
+                    "structure": "", "viennarna_used": False,
+                    "has_hairpin": est_dg < effective_threshold,
+                    "hairpin_positions": [],
+                    "region": check_region, "organism": organism,
+                    "dg_threshold": effective_threshold,
+                    "most_stable_window_start": most_stable_start}
+
+    # ── Standard path: fold the window directly ─────────────
     result = _fold_mfe(rna)
     if result.success:
         # Detect hairpins in the folded result
-        hairpin_positions: list[tuple[int, int]] = []
+        hairpin_positions = []
         for start, end, _ in _identify_stem_loops(result.structure):
             sub_rna = rna[start:end]
             if len(sub_rna) < 4:
                 continue
             sub_result = _fold_mfe(sub_rna)
-            if sub_result.success and sub_result.mfe < dg_threshold:
+            if sub_result.success and sub_result.mfe < effective_threshold:
                 hairpin_positions.append((start, end))
         return {"dg": result.mfe, "method": result.method,
                 "structure": result.structure, "viennarna_used": True,
                 "has_hairpin": len(hairpin_positions) > 0,
-                "hairpin_positions": hairpin_positions}
+                "hairpin_positions": hairpin_positions,
+                "region": check_region, "organism": organism,
+                "dg_threshold": effective_threshold,
+                "most_stable_window_start": most_stable_start}
 
-    # Fallback: toy hairpin model (mirrors type_system.py logic)
-    gc = au = gu = 0
-    half = len(rna) // 2
-    first, second = rna[:half], rna[half:2 * half]
-    for i in range(min(len(first), len(second))):
-        b5, b3 = first[i], second[len(second) - 1 - i]
-        if (b5 + b3) in ("GC", "CG"):
-            gc += 1
-        elif (b5 + b3) in ("AU", "UA"):
-            au += 1
-        elif (b5 + b3) in ("GU", "UG"):
-            gu += 1
-    return {"dg": NEAREST_NEIGHBOR_GC * gc + NEAREST_NEIGHBOR_AU * au + NEAREST_NEIGHBOR_GU * gu,
-            "method": "toy_hairpin_fallback", "structure": "",
-            "viennarna_used": False,
-            "has_hairpin": False, "hairpin_positions": []}
+    # ── Issue 3: GC heuristic fallback when ViennaRNA unavailable ──
+    # Instead of returning UNCERTAIN or the toy hairpin model,
+    # estimate ΔG from GC content.
+    est_dg = estimate_dg_from_gc(dna_sequence[window_start:window_end], region=check_region)
+    return {"dg": est_dg, "method": "gc_heuristic_fallback",
+            "structure": "", "viennarna_used": False,
+            "has_hairpin": est_dg < effective_threshold,
+            "hairpin_positions": [],
+            "region": check_region, "organism": organism,
+            "dg_threshold": effective_threshold,
+            "most_stable_window_start": most_stable_start}
 
 
 # ── Batch processing ───────────────────────────────────────

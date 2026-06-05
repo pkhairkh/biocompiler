@@ -23,7 +23,7 @@ import math
 import warnings
 from typing import TypedDict
 
-from .constants import CODON_TABLE, START_CODON, reverse_complement
+from .constants import CODON_TABLE, START_CODON, STOP_CODONS, reverse_complement
 from .scanner import validate_dna_sequence
 from .organisms import (
     CODON_ADAPTIVENESS_TABLES, SUPPORTED_ORGANISMS,
@@ -45,10 +45,13 @@ HAS_NUMBA: bool = _HAS_NUMBA
 
 __all__ = [
     "translate",
+    "translate_with_confidence",
     "compute_cai",
     "find_orfs",
     "ORFResult",
     "DEFAULT_MIN_ORF_LENGTH_AA",
+    "BACTERIAL_START_CODONS",
+    "STANDARD_START_CODON",
 ]
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,17 @@ _CAI_ROUND_PRECISION: int = 4
 
 # Epsilon floor for zero-adaptiveness codons in CAI computation
 _ZERO_ADAPTIVENESS_EPSILON: float = 1e-10
+
+# ── Start codon constants ──────────────────────────────────────────
+# Standard (canonical) start codon used in all organisms
+STANDARD_START_CODON: str = "ATG"
+
+# Bacterial start codons per NCBI translation table 1:
+#   ATG — canonical start (Met)
+#   GTG — alternative start (codes Val internally, Met at initiation)
+#   TTG — alternative start (codes Leu internally, Met at initiation)
+# Source: NCBI Genetic Codes Table 1; Blattner et al. (1997) Science 277:1453
+BACTERIAL_START_CODONS: frozenset[str] = frozenset({"ATG", "GTG", "TTG"})
 
 
 class ORFResult(TypedDict):
@@ -111,6 +125,56 @@ def translate(sequence: str, to_stop: bool = True) -> str:
         if aa is None:
             logger.warning("Unknown codon '%s' at position %d — mapping to 'X'", codon, i)
             aa = "X"
+        if aa == "*" and to_stop:
+            break
+        protein.append(aa)
+    return "".join(protein)
+
+
+def translate_with_confidence(sequence: str, to_stop: bool = True) -> str:
+    """Translate a DNA sequence, raising an error for unknown codons.
+
+    This is the strict variant of :func:`translate`.  Unlike
+    :func:`translate`, which silently maps unknown codons to ``'X'``,
+    this function raises a :class:`ValueError` whenever a codon is
+    not found in the standard genetic code (NCBI translation table 1).
+
+    Use this function when silent fallback to ``'X'`` is undesirable,
+    e.g., in optimisation pipelines where every codon must be valid.
+
+    Args:
+        sequence: DNA coding sequence.
+        to_stop: If True, stop at first stop codon; if False, include
+            stops as ``'*'``.
+
+    Returns:
+        Protein sequence as single-letter amino acid codes.
+
+    Raises:
+        ValueError: If the sequence contains a codon that is not in the
+            standard genetic code (NCBI table 1).
+    """
+    sequence = validate_dna_sequence(sequence)
+    if not sequence:
+        return ""
+
+    # Warn about partial codons
+    if len(sequence) % _CODON_LENGTH != 0:
+        logger.warning(
+            "Sequence length %d is not a multiple of %d; last %d base(s) will be ignored",
+            len(sequence), _CODON_LENGTH, len(sequence) % _CODON_LENGTH,
+        )
+
+    protein: list[str] = []
+    for i in range(0, len(sequence) - (_CODON_LENGTH - 1), _CODON_LENGTH):
+        codon = sequence[i:i + _CODON_LENGTH]
+        aa = CODON_TABLE.get(codon)
+        if aa is None:
+            raise ValueError(
+                f"Unknown codon '{codon}' at position {i} — "
+                f"not in the standard genetic code (NCBI translation table 1). "
+                f"Use translate() for a lenient variant that maps unknown codons to 'X'."
+            )
         if aa == "*" and to_stop:
             break
         protein.append(aa)
@@ -264,21 +328,43 @@ def compute_cai(
     return round(cai, _CAI_ROUND_PRECISION)
 
 
-def find_orfs(sequence: str, min_length_aa: int = DEFAULT_MIN_ORF_LENGTH_AA) -> list[ORFResult]:
-    """
-    Find all Open Reading Frames in all 6 frames (3 forward + 3 reverse complement).
+def find_orfs(
+    sequence: str,
+    min_length_aa: int = DEFAULT_MIN_ORF_LENGTH_AA,
+    start_codons: set[str] | frozenset[str] | None = None,
+) -> list[ORFResult]:
+    """Find all Open Reading Frames in all 6 frames (3 forward + 3 reverse complement).
 
     This is a production feature — the toy model didn't do ORF finding at all.
+
+    Bacterial start codons (ATG, GTG, TTG) are recognised when the
+    *start_codons* argument is set to :data:`BACTERIAL_START_CODONS`.
+    By default only the canonical ATG start codon is used.
+
+    When an alternative start codon (GTG or TTG) initiates an ORF, the
+    first amino acid is translated as **M** (methionine), consistent
+    with the biological behaviour of bacterial initiation where the
+    initiator fMet-tRNA recognises all three codons.
 
     Args:
         sequence: DNA sequence
         min_length_aa: minimum ORF length in amino acids
+        start_codons: Set of codons to treat as start codons.  Defaults
+            to ``{STANDARD_START_CODON}`` (i.e. ``{"ATG"}``).  Pass
+            :data:`BACTERIAL_START_CODONS` to include GTG and TTG as
+            bacterial alternative starts.
 
     Returns:
         List of ORF dicts with keys: start, end, frame, strand, protein, length
     """
     sequence = validate_dna_sequence(sequence)
     orfs: list[ORFResult] = []
+
+    # Resolve start codon set
+    if start_codons is None:
+        start_codons = {STANDARD_START_CODON}
+    else:
+        start_codons = set(start_codons)
 
     def _find_forward_orfs(seq: str, strand: str) -> list[ORFResult]:
         """Scan a single-strand sequence for ORFs in all 3 forward frames."""
@@ -287,20 +373,27 @@ def find_orfs(sequence: str, min_length_aa: int = DEFAULT_MIN_ORF_LENGTH_AA) -> 
             i: int = frame
             while i < len(seq) - (_CODON_LENGTH - 1):
                 codon = seq[i:i + _CODON_LENGTH]
-                if codon == START_CODON:
-                    # Found start codon — translate until stop
+                if codon in start_codons:
+                    # Found start codon — translate until stop.
+                    # Bacterial alternative starts (GTG, TTG) encode
+                    # Met at the initiation position, not their internal
+                    # amino acid identity (Val / Leu).
                     protein: list[str] = []
                     orf_start: int = i
                     j: int = i
                     while j < len(seq) - (_CODON_LENGTH - 1):
                         c = seq[j:j + _CODON_LENGTH]
-                        aa = CODON_TABLE.get(c)
-                        if aa is None:
-                            logger.warning(
-                                "Unknown codon '%s' at position %d in ORF scan — mapping to 'X'",
-                                c, j,
-                            )
-                            aa = "X"
+                        if j == orf_start and c in BACTERIAL_START_CODONS:
+                            # Initiator Met — even for GTG/TTG
+                            aa = "M"
+                        else:
+                            aa = CODON_TABLE.get(c)
+                            if aa is None:
+                                logger.warning(
+                                    "Unknown codon '%s' at position %d in ORF scan — mapping to 'X'",
+                                    c, j,
+                                )
+                                aa = "X"
                         if aa == "*":
                             break
                         protein.append(aa)

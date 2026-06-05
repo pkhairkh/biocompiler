@@ -4,20 +4,29 @@ BioCompiler NUMBA JIT-Compiled Kernels
 
 NUMBA-accelerated inner loops for codon optimization hot paths:
 
-1. count_dinucleotides  — Count occurrences of a dinucleotide (GT, CG, AG) in a DNA sequence
-2. count_gc             — Count G and C characters in a DNA sequence
-3. compute_cai_kernel   — Compute CAI from pre-indexed adaptiveness values (log-sum-exp)
-4. scan_restriction_sites — Find all positions of a restriction site pattern
+Existing kernels:
+1. count_gc                — Count G and C characters in a DNA sequence
+2. count_dinucleotides     — Count occurrences of a dinucleotide (GT, CG, AG)
+3. compute_cai_kernel      — Compute CAI from pre-indexed adaptiveness values (log-sum-exp)
+4. scan_restriction_sites  — Find all positions of a restriction site pattern
 5. find_all_dinucleotide_positions — Find all positions of a dinucleotide
 
-All kernels use @numba.njit(cache=True) for maximum performance with cached compilation.
-Pure-Python fallbacks are provided when NUMBA is unavailable.
+New kernels (v2 — incremental / batch):
+6. compute_cai_incremental — Update CAI after a single codon swap without full recompute
+7. batch_codon_swap_score  — Score all possible codon swaps at one position (vectorized)
+8. fast_gc_window          — Sliding-window GC% with incremental state updates
+9. fast_dinucleotide_count — Count multiple dinucleotides in a single pass
+
+All kernels use @numba.njit(cache=True, nogil=True) for maximum performance
+with cached compilation and thread safety. Pure-Python fallbacks are provided
+when NUMBA is unavailable.
 
 Architecture:
     - Input: byte arrays (np.frombuffer or np.array) for zero-copy NUMBA access
     - Output: scalar int/float or numpy arrays of positions
     - All kernels are stateless and side-effect free
     - Compilation cache avoids re-JIT overhead on repeated imports
+    - prange used for data-parallel loops where dependencies allow
 
 Usage:
     from biocompiler.numba_kernels import HAS_NUMBA, count_gc, count_dinucleotides
@@ -37,7 +46,7 @@ from typing import List
 try:
     import numba
     import numpy as np
-    from numba import njit
+    from numba import njit, prange
 
     HAS_NUMBA: bool = True
     _NUMBA_VERSION: str = numba.__version__
@@ -45,6 +54,7 @@ except ImportError:
     HAS_NUMBA = False
     _NUMBA_VERSION = ""
     numba = None  # type: ignore[assignment]
+    prange = range  # type: ignore[assignment]
 
 __all__ = [
     "HAS_NUMBA",
@@ -54,6 +64,14 @@ __all__ = [
     "scan_restriction_sites",
     "find_all_dinucleotide_positions",
     "seq_to_bytes",
+    # New v2 kernels
+    "compute_cai_incremental",
+    "batch_codon_swap_score",
+    "fast_gc_window",
+    "fast_dinucleotide_count",
+    # Additional optimized utility kernels
+    "count_gc_parallel",
+    "scan_restriction_sites_multi",
 ]
 
 # ── Byte constants for DNA characters ─────────────────────────────────
@@ -91,7 +109,9 @@ def seq_to_bytes(seq: str) -> "np.ndarray":
 if HAS_NUMBA:
     import numpy as np
 
-    @njit(cache=True)
+    # ── Existing kernels (optimized) ──────────────────────────────────
+
+    @njit(cache=True, nogil=True)
     def count_gc(seq_bytes: np.ndarray) -> int:
         """Count G and C characters in a DNA byte sequence.
 
@@ -111,7 +131,7 @@ if HAS_NUMBA:
                 count += 1
         return count
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def count_dinucleotides(seq_bytes: np.ndarray, dinuc_bytes: np.ndarray) -> int:
         """Count occurrences of a dinucleotide in a DNA byte sequence.
 
@@ -134,7 +154,7 @@ if HAS_NUMBA:
                 count += 1
         return count
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def compute_cai_kernel(
         adaptiveness_array: np.ndarray,
         codon_indices: np.ndarray,
@@ -178,7 +198,7 @@ if HAS_NUMBA:
 
         return math.exp(log_sum / n_codons)
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def scan_restriction_sites(
         seq_bytes: np.ndarray,
         pattern_bytes: np.ndarray,
@@ -224,7 +244,7 @@ if HAS_NUMBA:
 
         return results[:count].copy()
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def find_all_dinucleotide_positions(
         seq_bytes: np.ndarray,
         dinuc_bytes: np.ndarray,
@@ -255,6 +275,316 @@ if HAS_NUMBA:
 
         return results[:count].copy()
 
+    # ── New v2 kernels ────────────────────────────────────────────────
+
+    @njit(cache=True, nogil=True)
+    def compute_cai_incremental(
+        current_log_sum: float,
+        n_codons: int,
+        old_adaptiveness: float,
+        new_adaptiveness: float,
+    ) -> float:
+        """Update CAI after a single codon swap without full recompute.
+
+        Instead of recomputing the entire log-sum from scratch, this
+        kernel adjusts the running sum by subtracting the old codon's
+        log-adaptiveness and adding the new one. This is O(1) instead
+        of O(n_codons).
+
+        The geometric mean is:
+            CAI = exp(log_sum / n_codons)
+
+        After swapping codon at position i:
+            new_log_sum = old_log_sum - log(w_old) + log(w_new)
+
+        Args:
+            current_log_sum: The current sum of log(w_i) values.
+            n_codons: Number of codons in the CAI computation (unchanged).
+            old_adaptiveness: Adaptiveness value of the old codon being replaced.
+            new_adaptiveness: Adaptiveness value of the new codon.
+
+        Returns:
+            Updated CAI value (float64). Returns 0.0 if n_codons == 0.
+        """
+        if n_codons == 0:
+            return 0.0
+
+        epsilon = 1e-10
+
+        w_old = old_adaptiveness
+        if w_old <= 0.0:
+            w_old = epsilon
+
+        w_new = new_adaptiveness
+        if w_new <= 0.0:
+            w_new = epsilon
+
+        new_log_sum = current_log_sum - math.log(w_old) + math.log(w_new)
+        return math.exp(new_log_sum / n_codons)
+
+    @njit(cache=True, nogil=True)
+    def batch_codon_swap_score(
+        adaptiveness_array: np.ndarray,
+        codon_indices: np.ndarray,
+        n_codons: int,
+        swap_position: int,
+        candidate_indices: np.ndarray,
+        n_candidates: int,
+        current_log_sum: float,
+    ) -> np.ndarray:
+        """Score all possible codon swaps at a single position.
+
+        Given the current CAI log-sum and the index of the codon being
+        swapped, compute the resulting CAI for each candidate replacement
+        codon in a single vectorized pass.
+
+        This avoids calling compute_cai_incremental N times from Python,
+        eliminating per-call overhead and enabling SIMD-friendly access
+        patterns.
+
+        Args:
+            adaptiveness_array: numpy float64 array of adaptiveness values.
+            codon_indices: numpy int64 array of codon adaptiveness indices.
+            n_codons: Total number of codons in CAI computation.
+            swap_position: Index into codon_indices of the codon being swapped.
+            candidate_indices: numpy int64 array of adaptiveness indices for
+                candidate replacement codons.
+            n_candidates: Number of candidate codons.
+            current_log_sum: Current sum of log(w_i) for all codons.
+
+        Returns:
+            numpy float64 array of CAI scores, one per candidate.
+            Length equals n_candidates.
+        """
+        scores = np.empty(n_candidates, dtype=np.float64)
+        epsilon = 1e-10
+
+        if n_codons == 0:
+            for k in range(n_candidates):
+                scores[k] = 0.0
+            return scores
+
+        # Get old codon's adaptiveness
+        old_idx = codon_indices[swap_position]
+        w_old = adaptiveness_array[old_idx]
+        if w_old <= 0.0:
+            w_old = epsilon
+        log_w_old = math.log(w_old)
+
+        for k in range(n_candidates):
+            w_new = adaptiveness_array[candidate_indices[k]]
+            if w_new <= 0.0:
+                w_new = epsilon
+            new_log_sum = current_log_sum - log_w_old + math.log(w_new)
+            scores[k] = math.exp(new_log_sum / n_codons)
+
+        return scores
+
+    @njit(cache=True, nogil=True, parallel=True)
+    def fast_gc_window(
+        seq_bytes: np.ndarray,
+        window_size: int,
+    ) -> np.ndarray:
+        """Sliding-window GC% computation with incremental state updates.
+
+        Computes GC content for each window of `window_size` bases using
+        an O(n) incremental approach: maintain a running count of G+C in
+        the window, subtract the outgoing base and add the incoming base
+        as the window slides.
+
+        The parallel=True flag enables prange for the initial GC count
+        computation, while the sliding window itself is sequential due
+        to data dependencies.
+
+        Args:
+            seq_bytes: numpy uint8 array of DNA characters.
+            window_size: Size of the sliding window in bases.
+
+        Returns:
+            numpy float64 array of GC% values for each window position.
+            Length is max(len(seq_bytes) - window_size + 1, 0).
+            Returns empty array if sequence is shorter than window_size.
+        """
+        n = len(seq_bytes)
+        n_windows = n - window_size + 1
+
+        if n_windows <= 0:
+            return np.empty(0, dtype=np.float64)
+
+        results = np.empty(n_windows, dtype=np.float64)
+
+        # Compute GC count for the first window using prange
+        gc_count = 0
+        for i in prange(window_size):
+            b = seq_bytes[i]
+            if b == _G_BYTE or b == _C_BYTE:
+                gc_count += 1
+
+        results[0] = gc_count / window_size
+
+        # Slide the window: subtract outgoing, add incoming
+        for i in range(1, n_windows):
+            outgoing = seq_bytes[i - 1]
+            incoming = seq_bytes[i + window_size - 1]
+
+            if outgoing == _G_BYTE or outgoing == _C_BYTE:
+                gc_count -= 1
+            if incoming == _G_BYTE or incoming == _C_BYTE:
+                gc_count += 1
+
+            results[i] = gc_count / window_size
+
+        return results
+
+    @njit(cache=True, nogil=True)
+    def fast_dinucleotide_count(
+        seq_bytes: np.ndarray,
+        dinuc_keys: np.ndarray,
+        n_dinucs: int,
+    ) -> np.ndarray:
+        """Count multiple dinucleotides in a single pass over the sequence.
+
+        Instead of calling count_dinucleotides() separately for each
+        dinucleotide (which scans the entire sequence each time), this
+        kernel scans the sequence once and counts all requested
+        dinucleotides simultaneously.
+
+        Each dinucleotide is encoded as a pair of bytes in dinuc_keys:
+            dinuc_keys[i, 0] = first byte of dinucleotide i
+            dinuc_keys[i, 1] = second byte of dinucleotide i
+
+        This is O(n * d) where d is the number of dinucleotides, but
+        with far better cache behavior than d separate O(n) scans.
+
+        Common use case: counting CpG (CG), GT, and AG dinucleotides
+        for splice site and CpG island checks.
+
+        Args:
+            seq_bytes: numpy uint8 array of DNA characters.
+            dinuc_keys: numpy uint8 2D array of shape (n_dinucs, 2),
+                where each row is a dinucleotide's two bytes.
+            n_dinucs: Number of dinucleotides to count.
+
+        Returns:
+            numpy int64 array of counts, one per dinucleotide.
+            Length equals n_dinucs.
+        """
+        counts = np.zeros(n_dinucs, dtype=np.int64)
+        n = len(seq_bytes)
+
+        for i in range(n - 1):
+            b0 = seq_bytes[i]
+            b1 = seq_bytes[i + 1]
+            for d in range(n_dinucs):
+                if b0 == dinuc_keys[d, 0] and b1 == dinuc_keys[d, 1]:
+                    counts[d] += 1
+
+        return counts
+
+    # ── Additional optimized utility kernel ────────────────────────────
+
+    @njit(cache=True, nogil=True, parallel=True)
+    def count_gc_parallel(seq_bytes: np.ndarray) -> int:
+        """Count G and C characters in a DNA byte sequence using parallel reduction.
+
+        This is the parallel version of count_gc, suitable for very long
+        sequences (e.g., whole chromosomes). For sequences shorter than
+        ~10KB, the single-threaded count_gc is faster due to threading
+        overhead.
+
+        Args:
+            seq_bytes: numpy uint8 array of DNA characters.
+
+        Returns:
+            Number of G and C characters.
+        """
+        n = len(seq_bytes)
+        count = 0
+        # prange with += reduction is supported by numba
+        for i in prange(n):
+            b = seq_bytes[i]
+            if b == _G_BYTE or b == _C_BYTE:
+                count += 1
+        return count
+
+    @njit(cache=True, nogil=True, parallel=True)
+    def scan_restriction_sites_multi(
+        seq_bytes: np.ndarray,
+        pattern_bytes: np.ndarray,
+        pattern_offsets: np.ndarray,
+        pattern_lens: np.ndarray,
+        n_patterns: int,
+    ) -> np.ndarray:
+        """Find positions of multiple restriction site patterns in parallel.
+
+        Each pattern is scanned independently, making this suitable for
+        prange parallelism. Results for all patterns are concatenated
+        with pattern_id encoded as (position << 16) | pattern_id to
+        allow the caller to separate them.
+
+        Args:
+            seq_bytes: numpy uint8 array of DNA characters.
+            pattern_bytes: numpy uint8 flat array of all pattern bytes concatenated.
+            pattern_offsets: numpy int64 array of start offsets for each pattern
+                in pattern_bytes.
+            pattern_lens: numpy int64 array of lengths for each pattern.
+            n_patterns: Number of patterns to scan.
+
+        Returns:
+            numpy int64 array of encoded matches. Each match is encoded as
+            (position << 16) | pattern_id. Caller should decode to separate
+            positions from pattern IDs. Array may be larger than actual
+            matches; trailing entries should be ignored up to returned count.
+        """
+        n = len(seq_bytes)
+        max_total = n * n_patterns  # worst case
+        # We'll use a simpler approach: count per pattern, then merge
+        # For efficiency, pre-allocate per-pattern counts
+        match_counts = np.zeros(n_patterns, dtype=np.int64)
+
+        for p in prange(n_patterns):
+            plen = pattern_lens[p]
+            poff = pattern_offsets[p]
+            cnt = 0
+            for i in range(n - plen + 1):
+                match = True
+                for j in range(plen):
+                    if seq_bytes[i + j] != pattern_bytes[poff + j]:
+                        match = False
+                        break
+                if match:
+                    cnt += 1
+            match_counts[p] = cnt
+
+        # Total matches
+        total = 0
+        for p in range(n_patterns):
+            total += match_counts[p]
+
+        results = np.empty(total, dtype=np.int64)
+        # Second pass: fill results
+        # (Can't easily parallelize the fill due to write ordering,
+        #  but the expensive pattern matching was parallelized above)
+        offsets = np.zeros(n_patterns, dtype=np.int64)
+        for p in range(1, n_patterns):
+            offsets[p] = offsets[p - 1] + match_counts[p - 1]
+
+        for p in range(n_patterns):
+            plen = pattern_lens[p]
+            poff = pattern_offsets[p]
+            idx = offsets[p]
+            for i in range(n - plen + 1):
+                match = True
+                for j in range(plen):
+                    if seq_bytes[i + j] != pattern_bytes[poff + j]:
+                        match = False
+                        break
+                if match:
+                    results[idx] = (i << 16) | p
+                    idx += 1
+
+        return results
+
     # ── Pre-warm: trigger NUMBA compilation at import time ──────────
     # This adds ~1-2s to first import but avoids JIT latency during
     # optimization. We use tiny dummy arrays to minimize compile time.
@@ -266,11 +596,32 @@ if HAS_NUMBA:
             _dummy_adapt = np.array([0.5, 1.0], dtype=np.float64)
             _dummy_indices = np.array([0, 1], dtype=np.int64)
 
+            # Existing kernels
             count_gc(_dummy_seq)
             count_dinucleotides(_dummy_seq, _dummy_dinuc)
             compute_cai_kernel(_dummy_adapt, _dummy_indices, 2)
             scan_restriction_sites(_dummy_seq, _dummy_dinuc, 2)
             find_all_dinucleotide_positions(_dummy_seq, _dummy_dinuc)
+
+            # New v2 kernels
+            compute_cai_incremental(-1.3862943611198906, 2, 0.5, 1.0)
+            batch_codon_swap_score(
+                _dummy_adapt, _dummy_indices, 2, 0,
+                np.array([0, 1], dtype=np.int64), 2, -1.3862943611198906
+            )
+            fast_gc_window(_dummy_seq, 2)
+            fast_dinucleotide_count(
+                _dummy_seq,
+                np.array([[71, 84], [67, 71]], dtype=np.uint8), 2
+            )
+
+            # Additional utility kernels
+            count_gc_parallel(_dummy_seq)
+            scan_restriction_sites_multi(
+                _dummy_seq, _dummy_dinuc,
+                np.array([0], dtype=np.int64),
+                np.array([2], dtype=np.int64), 1
+            )
         except Exception:
             pass  # Warmup failure is non-fatal
 
@@ -345,3 +696,110 @@ else:
     def seq_to_bytes(seq: str):  # type: ignore[misc]
         """Pure-Python fallback: Convert DNA string to byte array."""
         return array.array('B', seq.encode('ascii'))
+
+    # ── New v2 kernel fallbacks ─────────────────────────────────────
+
+    def compute_cai_incremental(
+        current_log_sum: float,
+        n_codons: int,
+        old_adaptiveness: float,
+        new_adaptiveness: float,
+    ) -> float:
+        """Pure-Python fallback: Update CAI after a single codon swap.
+
+        Instead of recomputing the entire log-sum, adjust by subtracting
+        the old codon's log-adaptiveness and adding the new one.
+        """
+        if n_codons == 0:
+            return 0.0
+        epsilon = 1e-10
+        w_old = old_adaptiveness if old_adaptiveness > 0.0 else epsilon
+        w_new = new_adaptiveness if new_adaptiveness > 0.0 else epsilon
+        new_log_sum = current_log_sum - math.log(w_old) + math.log(w_new)
+        return math.exp(new_log_sum / n_codons)
+
+    def batch_codon_swap_score(
+        adaptiveness_array,
+        codon_indices,
+        n_codons: int,
+        swap_position: int,
+        candidate_indices,
+        n_candidates: int,
+        current_log_sum: float,
+    ) -> list:
+        """Pure-Python fallback: Score all candidate codon swaps at a position."""
+        scores = []
+        if n_codons == 0:
+            return [0.0] * n_candidates
+        epsilon = 1e-10
+        old_idx = codon_indices[swap_position]
+        w_old = adaptiveness_array[old_idx]
+        if w_old <= 0.0:
+            w_old = epsilon
+        log_w_old = math.log(w_old)
+        for k in range(n_candidates):
+            w_new = adaptiveness_array[candidate_indices[k]]
+            if w_new <= 0.0:
+                w_new = epsilon
+            new_log_sum = current_log_sum - log_w_old + math.log(w_new)
+            scores.append(math.exp(new_log_sum / n_codons))
+        return scores
+
+    def fast_gc_window(seq_bytes, window_size: int) -> list:
+        """Pure-Python fallback: Sliding-window GC% with incremental updates."""
+        n = len(seq_bytes)
+        n_windows = n - window_size + 1
+        if n_windows <= 0:
+            return []
+        results = []
+        gc_count = 0
+        for i in range(window_size):
+            b = seq_bytes[i]
+            if b == _G_BYTE or b == _C_BYTE:
+                gc_count += 1
+        results.append(gc_count / window_size)
+        for i in range(1, n_windows):
+            outgoing = seq_bytes[i - 1]
+            incoming = seq_bytes[i + window_size - 1]
+            if outgoing == _G_BYTE or outgoing == _C_BYTE:
+                gc_count -= 1
+            if incoming == _G_BYTE or incoming == _C_BYTE:
+                gc_count += 1
+            results.append(gc_count / window_size)
+        return results
+
+    def fast_dinucleotide_count(seq_bytes, dinuc_keys, n_dinucs: int) -> list:
+        """Pure-Python fallback: Count multiple dinucleotides in one pass."""
+        counts = [0] * n_dinucs
+        n = len(seq_bytes)
+        for i in range(n - 1):
+            b0 = seq_bytes[i]
+            b1 = seq_bytes[i + 1]
+            for d in range(n_dinucs):
+                if b0 == dinuc_keys[d][0] and b1 == dinuc_keys[d][1]:
+                    counts[d] += 1
+        return counts
+
+    # ── Additional utility fallbacks ────────────────────────────────
+
+    def count_gc_parallel(seq_bytes) -> int:
+        """Pure-Python fallback: Same as count_gc (no parallelism available)."""
+        return count_gc(seq_bytes)
+
+    def scan_restriction_sites_multi(
+        seq_bytes, pattern_bytes, pattern_offsets, pattern_lens, n_patterns: int
+    ) -> list:
+        """Pure-Python fallback: Find positions of multiple patterns."""
+        results = []
+        for p in range(n_patterns):
+            plen = pattern_lens[p]
+            poff = pattern_offsets[p]
+            for i in range(len(seq_bytes) - plen + 1):
+                match = True
+                for j in range(plen):
+                    if seq_bytes[i + j] != pattern_bytes[poff + j]:
+                        match = False
+                        break
+                if match:
+                    results.append((i << 16) | p)
+        return results

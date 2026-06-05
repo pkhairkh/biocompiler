@@ -133,6 +133,8 @@ __all__ = [
     "predict_b_cell_epitopes",
     "compute_immunogenicity",
     "find_deimmunization_mutations",
+    "suggest_mutations",
+    "compute_epitope_density",
     "compute_immunogenicity_batch",
     "IMMUNOGENICITY_PSSM_AUC_ROC_LOW",
     "IMMUNOGENICITY_PSSM_AUC_ROC_HIGH",
@@ -165,6 +167,8 @@ __all__ = [
     # Conformational epitope constants
     "CONF_EPITOPE_NEIGHBOR_CUTOPT_ANGSTROM",
     "CONF_EPITOPE_MAX_NEIGHBORS",
+    # Epitope density constants
+    "EPITOPE_DENSITY_CLUSTER_DISTANCE",
     # Offline prediction API
     "PeptideResult",
     "ImmunogenicityPrediction",
@@ -696,6 +700,427 @@ _ensure_pssms_built()
 # aliases derived from PSSMs — use MHC_I_PSSM / MHC_II_PSSM instead).
 # Removed in v7.5.0: _DEFAULT_MHC_I_ALLELES, _DEFAULT_MHC_II_ALLELES,
 # _DEFAULT_MHC_ALLELES (private backward-compat aliases).
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Generic PSSM fallback for alleles without a dedicated PSSM
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: MHC supertype families — maps common HLA alleles to their supertype
+#: so that alleles without a dedicated PSSM can fall back to a generic
+#: supertype PSSM.
+_MHC_SUPERTYPES: dict[str, str] = {
+    # A2 supertype
+    "HLA-A*02:02": "A2", "HLA-A*02:03": "A2", "HLA-A*02:05": "A2",
+    "HLA-A*02:06": "A2", "HLA-A*02:07": "A2", "HLA-A*02:09": "A2",
+    # A1 supertype
+    "HLA-A*01:02": "A1", "HLA-A*01:03": "A1",
+    # A3 supertype
+    "HLA-A*03:02": "A3", "HLA-A*03:03": "A3",
+    "HLA-A*11:01": "A3", "HLA-A*11:02": "A3", "HLA-A*31:01": "A3",
+    "HLA-A*33:01": "A3", "HLA-A*68:01": "A3",
+    # A24 supertype
+    "HLA-A*24:03": "A24", "HLA-A*24:07": "A24",
+    "HLA-A*23:01": "A24",
+    # B7 supertype
+    "HLA-B*07:03": "B7", "HLA-B*07:04": "B7",
+    "HLA-B*35:01": "B7", "HLA-B*35:03": "B7",
+    "HLA-B*51:01": "B7", "HLA-B*53:01": "B7",
+    "HLA-B*54:01": "B7", "HLA-B*55:01": "B7", "HLA-B*56:01": "B7",
+    "HLA-B*67:01": "B7",
+    # B8 supertype
+    "HLA-B*08:02": "B8",
+    # B44 supertype
+    "HLA-B*44:02": "B44", "HLA-B*44:03": "B44",
+    "HLA-B*40:01": "B44", "HLA-B*40:02": "B44",
+    # B58 supertype
+    "HLA-B*58:01": "B58", "HLA-B*57:01": "B58",
+    # B62 supertype
+    "HLA-B*62:01": "B62", "HLA-B*15:01": "B62",
+    "HLA-B*46:01": "B62", "HLA-B*52:01": "B62",
+    # DR supertypes
+    "HLA-DRB1*01:02": "DR1", "HLA-DRB1*01:03": "DR1",
+    "HLA-DRB1*04:02": "DR4", "HLA-DRB1*04:03": "DR4",
+    "HLA-DRB1*04:04": "DR4", "HLA-DRB1*04:05": "DR4",
+    "HLA-DRB1*07:02": "DR7", "HLA-DRB1*07:03": "DR7",
+    "HLA-DRB1*03:01": "DR3", "HLA-DRB1*03:02": "DR3",
+    "HLA-DRB1*11:01": "DR11", "HLA-DRB1*13:01": "DR11",
+    "HLA-DRB1*15:01": "DR15", "HLA-DRB1*16:01": "DR15",
+}
+
+
+def _build_supertype_pssms() -> dict[str, list[dict[str, float]]]:
+    """Construct generic PSSMs for MHC supertypes.
+
+    These serve as fallbacks when a specific allele does not have its
+    own dedicated PSSM but belongs to a known supertype family.
+    """
+    pssms: dict[str, list[dict[str, float]]] = {}
+
+    # A2 supertype — hydrophobic anchors at P2 and P9
+    pssms["A2"] = [
+        _make_pssm_row(
+            preferred={"L": 1.1, "M": 1.1, "I": 1.1, "V": 1.1, "A": 1.05},
+            disfavored={"D": 0.6, "E": 0.6, "K": 0.6, "R": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"L": 1.8, "M": 1.8, "I": 1.6, "V": 1.6},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.4, "R": 0.4},
+            default=0.8,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"V": 1.4, "L": 1.4, "I": 1.2, "A": 1.1},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.5, "R": 0.5},
+            default=0.8,
+        ),
+    ]
+
+    # A1 supertype — small/serine at P2, tyrosine at P9
+    pssms["A1"] = [
+        _make_pssm_row(
+            preferred={"A": 1.05, "S": 1.05},
+            disfavored={"W": 0.6, "R": 0.6},
+        ),
+        _make_pssm_row(
+            preferred={"T": 1.6, "S": 1.4, "D": 1.3, "E": 1.3},
+            disfavored={"L": 0.5, "I": 0.5, "V": 0.6},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"Y": 1.6, "F": 1.4},
+            disfavored={"K": 0.5, "R": 0.5, "D": 0.6},
+            default=0.85,
+        ),
+    ]
+
+    # A3 supertype — hydrophobic at P2, basic at P9
+    pssms["A3"] = [
+        _make_pssm_row(
+            preferred={"A": 1.05, "S": 1.05},
+        ),
+        _make_pssm_row(
+            preferred={"V": 1.6, "I": 1.6, "L": 1.4, "M": 1.4},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.8, "R": 1.6, "H": 1.3},
+            disfavored={"D": 0.4, "E": 0.4},
+            default=0.75,
+        ),
+    ]
+
+    # A24 supertype — aromatic at P2, hydrophobic at P9
+    pssms["A24"] = [
+        _make_pssm_row(
+            preferred={"Y": 1.1, "F": 1.05},
+        ),
+        _make_pssm_row(
+            preferred={"Y": 1.8, "F": 1.8, "W": 1.5},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.4},
+            default=0.75,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"F": 1.4, "L": 1.4, "I": 1.2},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.5},
+            default=0.85,
+        ),
+    ]
+
+    # B7 supertype — proline at P2, hydrophobic at P9
+    pssms["B7"] = [
+        _make_pssm_row(
+            preferred={"A": 1.05, "P": 1.05},
+        ),
+        _make_pssm_row(
+            preferred={"P": 1.8, "A": 1.6},
+            disfavored={"D": 0.4, "E": 0.4, "K": 0.4},
+            default=0.75,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.4, "I": 1.4, "V": 1.2},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+    ]
+
+    # B8 supertype — basic at P2, hydrophobic at P9
+    pssms["B8"] = [
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.6, "R": 1.6},
+            disfavored={"D": 0.4, "E": 0.4, "P": 0.5},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.4, "I": 1.2, "V": 1.2},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+    ]
+
+    # B44 supertype — glutamate at P2, hydrophobic/aromatic at P9
+    pssms["B44"] = [
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"E": 1.8, "D": 1.5},
+            disfavored={"K": 0.4, "R": 0.4},
+            default=0.8,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"Y": 1.5, "F": 1.4, "L": 1.3, "I": 1.2},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+    ]
+
+    # B58 supertype — small/serine at P2, aromatic/hydrophobic at P9
+    pssms["B58"] = [
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"S": 1.5, "A": 1.4, "T": 1.3},
+            disfavored={"W": 0.5, "F": 0.6},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"W": 1.6, "F": 1.4, "Y": 1.4, "L": 1.2},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+    ]
+
+    # B62 supertype — glutamine at P2, hydrophobic at P9
+    pssms["B62"] = [
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"Q": 1.6, "N": 1.3},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.4, "I": 1.3, "V": 1.2, "F": 1.3},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+    ]
+
+    # DR1 supertype — hydrophobic at P1, small at P4, hydrophobic at P6
+    pssms["DR1"] = [
+        _make_pssm_row(
+            preferred={"F": 1.6, "Y": 1.5, "W": 1.4, "L": 1.3, "I": 1.2, "V": 1.2},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.4, "S": 1.3, "T": 1.3, "N": 1.2},
+            disfavored={"W": 0.6, "F": 0.7},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.4, "I": 1.3, "V": 1.3, "M": 1.2},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.2, "R": 1.2, "N": 1.1, "Q": 1.1},
+        ),
+    ]
+
+    # DR4 supertype — hydrophobic at P1, acidic at P4, small at P6
+    pssms["DR4"] = [
+        _make_pssm_row(
+            preferred={"F": 1.6, "Y": 1.5, "W": 1.4, "L": 1.2},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"D": 1.6, "E": 1.4},
+            disfavored={"K": 0.5, "R": 0.5},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.4, "S": 1.3, "G": 1.2},
+            disfavored={"W": 0.6, "F": 0.7},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.3, "I": 1.2, "V": 1.2},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+    ]
+
+    # DR7 supertype — hydrophobic at P1, small at P4, hydrophobic at P6
+    pssms["DR7"] = [
+        _make_pssm_row(
+            preferred={"F": 1.5, "Y": 1.4, "L": 1.3, "I": 1.2, "V": 1.2},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.3, "S": 1.2, "T": 1.2},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.3, "I": 1.2, "V": 1.2, "F": 1.2},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.2, "R": 1.2, "N": 1.1, "Q": 1.1},
+        ),
+    ]
+
+    # DR3 supertype — similar to DR1 with broader anchor tolerance
+    pssms["DR3"] = pssms["DR1"][:]
+
+    # DR11 supertype — similar to DR1 with intermediate P4 preference
+    pssms["DR11"] = [
+        _make_pssm_row(
+            preferred={"F": 1.5, "Y": 1.4, "W": 1.3, "L": 1.2, "I": 1.1},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.3, "S": 1.2, "N": 1.2, "G": 1.1},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.3, "I": 1.2, "V": 1.2},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+    ]
+
+    # DR15 supertype — similar to DR1 with P6 preferring small residues
+    pssms["DR15"] = [
+        _make_pssm_row(
+            preferred={"F": 1.4, "Y": 1.3, "L": 1.2, "V": 1.1},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.3, "S": 1.2},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.3, "S": 1.2, "G": 1.2},
+            disfavored={"W": 0.6, "F": 0.7},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.2, "I": 1.2, "V": 1.1},
+            default=0.9,
+        ),
+    ]
+
+    return pssms
+
+
+_SUPERTYPE_PSSM: dict[str, list[dict[str, float]]] = {}
+_supertype_built: bool = False
+
+
+def _ensure_supertype_pssms_built() -> None:
+    """Build supertype PSSMs on first access."""
+    global _SUPERTYPE_PSSM, _supertype_built
+    if not _supertype_built:
+        _SUPERTYPE_PSSM = _build_supertype_pssms()
+        _supertype_built = True
+
+
+def _get_supertype_pssm(allele: str) -> list[dict[str, float]] | None:
+    """Get a supertype fallback PSSM for an allele.
+
+    Looks up the allele's supertype in :data:`_MHC_SUPERTYPES` and
+    returns the corresponding PSSM.  Returns None if no supertype
+    mapping exists.
+    """
+    _ensure_supertype_pssms_built()
+    supertype = _MHC_SUPERTYPES.get(allele)
+    if supertype is not None:
+        return _SUPERTYPE_PSSM.get(supertype)
+    return None
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Prediction cache
@@ -1265,9 +1690,22 @@ def predict_mhc_i_binding(
 
     for allele in alleles:
         pssm = mhc_i_pssms.get(allele)
+        method = "pssm"
+        confidence = 0.5
+
         if pssm is None:
-            logger.debug("No PSSM for allele %s — skipping", allele)
-            continue
+            # Try supertype fallback PSSM
+            fallback = _get_supertype_pssm(allele)
+            if fallback is not None and len(fallback) == peptide_length:
+                pssm = fallback
+                method = "pssm_fallback"
+                confidence = 0.3
+                logger.debug(
+                    "Using supertype fallback PSSM for allele %s", allele,
+                )
+            else:
+                logger.debug("No PSSM for allele %s — skipping", allele)
+                continue
 
         if len(pssm) != peptide_length:
             logger.debug(
@@ -1300,6 +1738,8 @@ def predict_mhc_i_binding(
                     binding_class=binding_class,
                     anchor_residues=anchor_residues,
                     anchor_scores={k: round(v, 4) for k, v in anchor_scores.items()},
+                    method=method,
+                    confidence=confidence,
                 )
             )
 
@@ -1393,9 +1833,22 @@ def predict_mhc_ii_binding(
 
     for allele in alleles:
         pssm = mhc_ii_pssms.get(allele)
+        method = "pssm"
+        confidence = 0.5
+
         if pssm is None:
-            logger.debug("No PSSM for allele %s — skipping", allele)
-            continue
+            # Try supertype fallback PSSM for MHC-II
+            fallback = _get_supertype_pssm(allele)
+            if fallback is not None and len(fallback) == MHC_II_CORE_LENGTH:
+                pssm = fallback
+                method = "pssm_fallback"
+                confidence = 0.3
+                logger.debug(
+                    "Using supertype fallback PSSM for MHC-II allele %s", allele,
+                )
+            else:
+                logger.debug("No PSSM for allele %s — skipping", allele)
+                continue
 
         if len(pssm) != MHC_II_CORE_LENGTH:
             logger.debug(
@@ -1450,6 +1903,8 @@ def predict_mhc_ii_binding(
                     binding_class=binding_class,
                     anchor_residues=adjusted_anchors,
                     anchor_scores=adjusted_scores,
+                    method=method,
+                    confidence=confidence,
                 )
             )
 
@@ -2791,6 +3246,7 @@ def compute_immunogenicity(
     protein: str,
     mhc_alleles: list[str] | None = None,
     organism: str = "Homo_sapiens",
+    is_self_protein: bool = False,
 ) -> ImmunogenicityResult:
     """Compute combined immunogenicity score for a protein.
 
@@ -2816,11 +3272,36 @@ def compute_immunogenicity(
         Amino-acid sequence.
     mhc_alleles : list[str] | None
         MHC alleles for T-cell epitope prediction.
+    organism : str
+        Host organism (default ``"Homo_sapiens"``).
+    is_self_protein : bool
+        If True, the protein is from the host organism and
+        immunogenicity assessment is not applicable.  Returns a
+        result with classification ``"not_applicable"`` and a
+        score of 0.0 instead of flagging epitopes.
 
     Returns
     -------
     ImmunogenicityResult
     """
+    # Self-protein short-circuit: skip assessment entirely
+    if is_self_protein:
+        logger.info(
+            "Protein marked as self-protein — skipping immunogenicity assessment"
+        )
+        return ImmunogenicityResult(
+            sequence=protein if protein else "",
+            primary_score=0.0,
+            classification="not_applicable",
+            t_cell_score=0.0,
+            b_cell_score=0.0,
+            t_cell_epitopes=[],
+            b_cell_epitopes=[],
+            mutations=[],
+            success=True,
+            error=None,
+        )
+
     try:
         protein = _validate_protein(protein)
     except ImmunogenicityError as exc:
@@ -2839,6 +3320,10 @@ def compute_immunogenicity(
             t_cell_score = min(1.0, max(e["score"] for e in t_epitopes))
         else:
             t_cell_score = 0.0
+
+        # Epitope density bonus
+        density_score = compute_epitope_density(t_epitopes)
+        t_cell_score = min(1.0, t_cell_score + density_score)
 
         # B-cell prediction using epitope.py's predict_epitopes
         b_result = predict_epitopes(protein)
@@ -2883,8 +3368,235 @@ def compute_immunogenicity(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Epitope density scoring
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Maximum distance (in amino acids) between epitope centres for them to
+#: be considered part of the same cluster.
+EPITOPE_DENSITY_CLUSTER_DISTANCE: int = 15
+
+
+def compute_epitope_density(
+    epitopes: list[TCellEpitopeDict],
+    cluster_distance: int = EPITOPE_DENSITY_CLUSTER_DISTANCE,
+) -> float:
+    """Compute epitope density score based on clustering nearby epitopes.
+
+    Epitopes within *cluster_distance* amino acids of each other are
+    clustered together.  The density score is based on the number of
+    epitopes in the largest cluster relative to the protein length,
+    with a bonus for clusters containing multiple strong binders.
+
+    Parameters
+    ----------
+    epitopes : list[TCellEpitopeDict]
+        Predicted T-cell epitopes (each with ``start``, ``end``, ``score``,
+        ``allele``, ``binding_class``).
+    cluster_distance : int
+        Maximum distance (aa) between epitope centres for clustering
+        (default 15).
+
+    Returns
+    -------
+    float
+        Density bonus score in [0, 0.3].  A higher score indicates
+        a denser epitope region, suggesting stronger immunogenicity.
+    """
+    if not epitopes:
+        return 0.0
+
+    # Compute centre position for each epitope
+    centres: list[tuple[int, TCellEpitopeDict]] = []
+    for epi in epitopes:
+        centre = (epi["start"] + epi["end"]) // 2
+        centres.append((centre, epi))
+
+    # Sort by centre position
+    centres.sort(key=lambda x: x[0])
+
+    # Cluster epitopes within cluster_distance of each other
+    clusters: list[list[TCellEpitopeDict]] = []
+    if not centres:
+        return 0.0
+
+    current_cluster: list[TCellEpitopeDict] = [centres[0][1]]
+    last_centre = centres[0][0]
+
+    for centre, epi in centres[1:]:
+        if centre - last_centre <= cluster_distance:
+            current_cluster.append(epi)
+        else:
+            if len(current_cluster) >= 2:
+                clusters.append(current_cluster)
+            current_cluster = [epi]
+        last_centre = centre
+
+    if len(current_cluster) >= 2:
+        clusters.append(current_cluster)
+
+    if not clusters:
+        return 0.0
+
+    # Score: base density from cluster size, bonus for strong binders
+    max_cluster_size = max(len(c) for c in clusters)
+    max_strong_in_cluster = max(
+        sum(1 for e in c if e.get("binding_class") == "strong_binder")
+        for c in clusters
+    )
+
+    # Density score scales with cluster size (capped at 0.2) plus
+    # a strong-binder bonus (capped at 0.1)
+    density_score = min(0.2, max_cluster_size * 0.04)
+    strong_bonus = min(0.1, max_strong_in_cluster * 0.05)
+
+    return round(density_score + strong_bonus, 4)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Deimmunization mutation finding
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def suggest_mutations(
+    protein: str,
+    epitope_threshold: float = 0.5,
+    blosum62_min: int = 1,
+    max_suggestions: int = 20,
+) -> list[MutationResult]:
+    """Suggest conservative mutations to reduce immunogenicity.
+
+    Unlike :func:`find_deimmunization_mutations`, which evaluates all
+    19 possible substitutions at each epitope position, this function
+    only proposes **conservative** substitutions — those with a
+    BLOSUM62 score >= *blosum62_min* (default 1), meaning the mutant
+    amino acid is chemically similar to the wildtype.  This is useful
+    when protein function must be preserved while reducing
+    immunogenicity.
+
+    Parameters
+    ----------
+    protein : str
+        Amino-acid sequence.
+    epitope_threshold : float
+        Only consider epitopes with score > this threshold (default 0.5).
+    blosum62_min : int
+        Minimum BLOSUM62 substitution score for a mutation to be
+        considered conservative (default 1, i.e. only similar AAs).
+    max_suggestions : int
+        Maximum number of mutation suggestions to return (default 20).
+
+    Returns
+    -------
+    list[MutationResult]
+        Conservative mutation suggestions sorted by largest binding
+        score reduction, then by highest BLOSUM62 score.
+    """
+    protein = _validate_protein(protein)
+
+    # Get T-cell epitopes
+    t_epitopes = predict_t_cell_epitopes(protein)
+
+    # Filter to epitopes above threshold
+    strong_epitopes = [
+        e for e in t_epitopes if e["score"] > epitope_threshold
+    ]
+
+    if not strong_epitopes:
+        return []
+
+    # Track which (position, allele) combos we've already scored
+    seen: set[tuple[int, str]] = set()
+    candidates: list[MutationResult] = []
+
+    mhc_i_pssms = _get_mhc_i_pssms()
+    mhc_ii_pssms = _get_mhc_ii_pssms()
+
+    for epi in strong_epitopes:
+        allele = epi["allele"]
+        original_score = epi["score"]
+        start = epi["start"]
+        end = epi["end"]  # exclusive
+        peptide = epi["peptide"]
+
+        for pos in range(start, end):
+            if pos >= len(protein):
+                continue
+            key = (pos, allele)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            wildtype = protein[pos]
+
+            for mutant in sorted(_STANDARD_AA_SET):
+                if mutant == wildtype:
+                    continue
+
+                # Only consider conservative substitutions
+                blosum_score = BLOSUM62.get(wildtype, {}).get(mutant, -10)
+                if blosum_score < blosum62_min:
+                    continue
+
+                # Build mutated protein and re-score
+                mutated_protein = protein[:pos] + mutant + protein[pos + 1 :]
+
+                if allele in mhc_i_pssms:
+                    if end <= len(mutated_protein):
+                        new_peptide = mutated_protein[start:end]
+                        new_score = score_peptide_pssm(new_peptide, allele)
+                    else:
+                        new_score = original_score
+                elif allele in mhc_ii_pssms:
+                    mhc_ii_window = 15
+                    pep_end = start + mhc_ii_window
+                    if pep_end <= len(mutated_protein):
+                        new_peptide = mutated_protein[start:pep_end]
+                        new_score = _score_peptide_for_allele(new_peptide, allele)
+                    else:
+                        new_score = original_score
+                else:
+                    # Try supertype fallback PSSM
+                    fallback_pssm = _get_supertype_pssm(allele)
+                    if fallback_pssm is not None and end <= len(mutated_protein):
+                        new_peptide = mutated_protein[start:end]
+                        if len(new_peptide) == len(fallback_pssm):
+                            new_score = score_peptide_pssm(new_peptide, fallback_pssm)
+                        else:
+                            new_score = original_score
+                    else:
+                        new_score = original_score
+
+                score_change = new_score - original_score
+
+                if score_change < 0:
+                    candidates.append(
+                        MutationResult(
+                            position=pos,
+                            original=wildtype,
+                            mutant=mutant,
+                            delta_score=round(-score_change, 4),
+                            score_type="immunogenicity",
+                            engine="immunogenicity",
+                            recommendation="deimmunizing_conservative",
+                            description=(
+                                f"{wildtype}{pos+1}{mutant}: conservatively reduces "
+                                f"{allele} binding by {abs(score_change):.4f} "
+                                f"(BLOSUM62={blosum_score})"
+                            ),
+                            details={
+                                "epitope": peptide,
+                                "binding_score_change": round(score_change, 4),
+                                "blosum62": blosum_score,
+                                "conservative": True,
+                                "allele": allele,
+                            },
+                        )
+                    )
+
+    # Sort by largest improvement then highest BLOSUM62
+    candidates.sort(key=lambda c: (-c.delta_score, -c.details.get("blosum62", 0)))
+
+    return candidates[:max_suggestions]
 
 
 def find_deimmunization_mutations(

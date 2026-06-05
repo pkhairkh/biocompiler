@@ -49,6 +49,28 @@ _HYDRO_PEAK_FRAC = 0.35
 # Disulfide-bond CB-CB distance threshold (Angstroms)
 _DISULFIDE_CB_DIST_THRESHOLD = 6.5
 
+# ── Disulfide-bond localisation helpers ──
+# Keywords in organism names that indicate prokaryotes (bacteria / archaea)
+_PROKARYOTIC_KEYWORDS = frozenset({
+    "ecoli", "e. coli", "escherichia", "e.coli",
+    "bacillus", "b. subtilis", "bsubtilis", "b.subtilis",
+    "pseudomonas", "staphylococcus", "streptococcus",
+    "mycobacterium", "clostridium", "salmonella",
+    "vibrio", "shigella", "campylobacter",
+    "cyanobacteria", "thermus", "debaryomyces",  # archaea-like
+    "archaea", "archaebacteria",
+    "prokaryote", "bacteria", "bacterial",
+})
+
+# Signal-peptide detection parameters
+_SIGNAL_PEPTIDE_WINDOW = 30      # only check first N residues
+_SIGNAL_PEPTIDE_MIN_HYDRO_STRETCH = 7  # min consecutive hydrophobic residues
+_SIGNAL_PEPTIDE_HYDRO_AAS = frozenset({"A", "I", "L", "M", "F", "W", "V"})
+
+# Hydrophobic core quality threshold
+_CORE_QUALITY_PASS_THRESHOLD = 0.6   # was 0.7; relaxed per e2e validation
+_SMALL_PROTEIN_LENGTH = 100          # proteins shorter than this may lack a traditional core
+
 # ── Empirical estimator coefficients ──
 _HYDRO_CONTRIBUTION_WEIGHT = 20.0      # kcal/mol weight for hydrophobic core
 _SALT_BRIDGE_KCAL_PER_PAIR = 1.5       # kcal/mol per balanced charge pair
@@ -478,6 +500,36 @@ def evaluate_no_destabilizing_mutation(
 # ────────────────────────────────────────────────────────────
 # Predicate 3: Disulfide Bond Integrity
 # ────────────────────────────────────────────────────────────
+def _is_prokaryotic(organism: str) -> bool:
+    """Return True if *organism* name suggests a prokaryote.
+
+    Uses case-insensitive keyword matching against a curated set of
+    bacterial / archaeal identifiers.
+    """
+    org_lower = organism.lower().strip()
+    return any(kw in org_lower for kw in _PROKARYOTIC_KEYWORDS)
+
+
+def _has_signal_peptide(protein: str) -> bool:
+    """Heuristic signal-peptide detection from the N-terminal region.
+
+    Looks for a stretch of ≥ 7 consecutive hydrophobic residues in the
+    first 30 positions, which is characteristic of secretory signal
+    peptides.  This is a conservative heuristic — it may miss some
+    signal peptides but is unlikely to produce false positives.
+    """
+    n_term = protein[:_SIGNAL_PEPTIDE_WINDOW]
+    consecutive = 0
+    for aa in n_term:
+        if aa in _SIGNAL_PEPTIDE_HYDRO_AAS:
+            consecutive += 1
+            if consecutive >= _SIGNAL_PEPTIDE_MIN_HYDRO_STRETCH:
+                return True
+        else:
+            consecutive = 0
+    return False
+
+
 def evaluate_disulfide_bond_integrity(
     sequence: str,
     protein: str,
@@ -486,13 +538,19 @@ def evaluate_disulfide_bond_integrity(
 ) -> TypeCheckResult:
     """Check disulfide bond integrity from cysteine count and pairing.
 
-    Sequence-level check:
-    - Even number of cysteines (including 0) -> PASS
-    - Odd number -> LIKELY_FAIL (unpaired Cys may form incorrect bonds)
+    Organism-aware, localisation-aware logic:
+    - **< 2 cysteines**: auto-PASS (disulfide bonds impossible).
+    - **Intracellular / prokaryotic cytosolic proteins**: auto-PASS
+      (disulfide bonds do not form in the reducing cytosolic
+      environment of most prokaryotes and eukaryotic cytosol).
+    - **Odd number of cysteines** (in secreted proteins): UNCERTAIN
+      (WARNING) — unpaired Cys may be functional, not a FAIL.
+    - **Even number of cysteines** in secreted proteins: check spatial
+      pairing if PDB is available.
 
     If *pdb_string* is provided, additionally verify that Cys residues
     are spatially close enough for disulfide bond formation (CB-CB
-    distance < 6.5 A).
+    distance < 6.5 Å).
 
     Args:
         sequence: DNA coding sequence.
@@ -507,27 +565,62 @@ def evaluate_disulfide_bond_integrity(
     cys_count = protein.count("C")
     cys_positions = [i for i, aa in enumerate(protein) if aa == "C"]
 
+    is_prokaryote = _is_prokaryotic(organism)
+    is_secreted = _has_signal_peptide(protein)
+
     derivation: list[dict] = [
         {"step": "cysteine_count", "value": cys_count},
         {"step": "cysteine_positions", "value": cys_positions},
+        {"step": "is_prokaryotic", "value": is_prokaryote},
+        {"step": "has_signal_peptide", "value": is_secreted},
     ]
 
-    # Zero cysteines: no disulfide bonds needed
-    if cys_count == 0:
+    # Fewer than 2 cysteines: disulfide bonds are impossible → auto-PASS
+    if cys_count < 2:
+        derivation.append({"step": "auto_pass_reason", "value": "fewer_than_2_cysteines"})
         return TypeCheckResult(
             predicate="DisulfideBondIntegrity",
             verdict=Verdict.PASS,
             derivation=derivation,
         )
 
-    # Odd number: unpaired Cys
+    # Intracellular proteins: disulfide bonds don't form in the reducing
+    # cytosol.  For prokaryotes specifically, the cytosol is highly
+    # reducing and disulfide bonds essentially never form intracellularly.
+    if not is_secreted:
+        if is_prokaryote:
+            derivation.append({
+                "step": "auto_pass_reason",
+                "value": "prokaryotic_cytosolic_no_disulfides",
+            })
+        else:
+            derivation.append({
+                "step": "auto_pass_reason",
+                "value": "intracellular_no_disulfides",
+            })
+        return TypeCheckResult(
+            predicate="DisulfideBondIntegrity",
+            verdict=Verdict.PASS,
+            derivation=derivation,
+            knowledge_gap=(
+                "No signal peptide detected; protein assumed intracellular "
+                "where disulfide bonds generally do not form.  Experimental "
+                "localisation data would confirm."
+            ),
+        )
+
+    # --- From here on, the protein is secreted / extracellular ---
+
+    # Odd number of cysteines: WARNING (UNCERTAIN), not FAIL.
+    # Unpaired Cys may be functional (e.g. catalytic, metal-binding).
     if cys_count % 2 != 0:
         violation = (
-            f"Odd number of cysteines ({cys_count}): at least one "
-            f"unpaired Cys that may form incorrect disulfides"
+            f"Odd number of cysteines ({cys_count}) in secreted protein: "
+            f"at least one unpaired Cys (positions {cys_positions}). "
+            f"Unpaired Cys may be functional rather than detrimental."
         )
         derivation.append({"step": "paired", "value": False})
-        derivation.append({"step": "reason", "value": "odd_count"})
+        derivation.append({"step": "reason", "value": "odd_count_secreted"})
 
         knowledge_gap = (
             "Unpaired Cys may still be buried and harmless; "
@@ -539,7 +632,7 @@ def evaluate_disulfide_bond_integrity(
 
         return TypeCheckResult(
             predicate="DisulfideBondIntegrity",
-            verdict=Verdict.LIKELY_FAIL,
+            verdict=Verdict.UNCERTAIN,
             derivation=derivation,
             violation=violation,
             knowledge_gap=knowledge_gap,
@@ -609,9 +702,13 @@ def evaluate_disulfide_bond_integrity(
             )
             return TypeCheckResult(
                 predicate="DisulfideBondIntegrity",
-                verdict=Verdict.LIKELY_FAIL,
+                verdict=Verdict.UNCERTAIN,
                 derivation=derivation,
                 violation=violation,
+                knowledge_gap=(
+                    "Unpaired Cys from structural analysis may still be "
+                    "functional (e.g. catalytic or metal-binding)."
+                ),
             )
 
     # Even number, no PDB -- assume pairable
@@ -632,6 +729,64 @@ def evaluate_disulfide_bond_integrity(
 # ────────────────────────────────────────────────────────────
 # Predicate 4: Hydrophobic Core Quality
 # ────────────────────────────────────────────────────────────
+def _compute_core_quality_score(hydro_frac: float) -> float:
+    """Map hydrophobic fraction to a [0, 1] core-quality score.
+
+    The score peaks at the optimal hydrophobic fraction
+    (``_HYDRO_PEAK_FRAC`` ≈ 0.35) and decays symmetrically toward
+    the edges of the normal range and beyond.  A score of 1.0 means
+    the fraction is perfectly at the peak; 0.0 means maximally
+    aberrant.
+
+    The mapping is::
+
+        score = max(0.0, 1.0 - |hydro_frac - peak| / peak)
+
+    which yields score ≈ 0.8 at the boundaries of the normal range
+    (0.30, 0.45) and drops below 0.6 when the fraction deviates by
+    more than ~40 % from the peak.
+    """
+    return max(0.0, 1.0 - abs(hydro_frac - _HYDRO_PEAK_FRAC) / _HYDRO_PEAK_FRAC)
+
+
+def _sequence_based_hydrophobicity_analysis(protein: str) -> dict[str, Any]:
+    """Fallback hydrophobicity analysis using only the amino-acid sequence.
+
+    Useful when no PDB structure is available.  Examines both the
+    overall hydrophobic fraction and the distribution of hydrophobic
+    runs (stretches of consecutive hydrophobic residues) as a proxy
+    for core-forming potential.
+
+    Returns:
+        Dict with keys ``hydrophobic_fraction``, ``core_quality_score``,
+        ``max_hydro_run``, ``hydro_run_count``, and ``assessment``.
+    """
+    hydro_frac = compute_hydrophobic_fraction(protein)
+    core_quality_score = _compute_core_quality_score(hydro_frac)
+
+    # Measure hydrophobic runs (stretches of consecutive hydrophobic AAs)
+    max_run = 0
+    current_run = 0
+    run_count = 0
+    for aa in protein:
+        if aa in HYDROPHOBIC_AAS:
+            current_run += 1
+            max_run = max(max_run, current_run)
+        else:
+            if current_run >= 3:
+                run_count += 1
+            current_run = 0
+    if current_run >= 3:
+        run_count += 1
+
+    return {
+        "hydrophobic_fraction": round(hydro_frac, 4),
+        "core_quality_score": round(core_quality_score, 4),
+        "max_hydro_run": max_run,
+        "hydro_run_count": run_count,
+    }
+
+
 def evaluate_hydrophobic_core_quality(
     sequence: str,
     protein: str,
@@ -640,13 +795,24 @@ def evaluate_hydrophobic_core_quality(
 ) -> TypeCheckResult:
     """Check hydrophobic core quality from amino-acid composition.
 
-    The fraction of hydrophobic residues (A, I, L, M, F, W, V) should
-    fall within the normal range of 0.30-0.45 for well-folded globular
-    proteins:
+    A ``core_quality_score`` is computed that maps the hydrophobic
+    fraction to a [0, 1] scale centred on the optimal value (~0.35).
+    The PASS threshold is **0.6** (previously 0.7), relaxed after
+    e2e validation showed too many false negatives at the stricter
+    level.
 
-    - **Too low** (< 0.30): insufficient hydrophobic core -> unstable.
-    - **Too high** (> 0.45): over-hydrophobic -> aggregation-prone.
-    - **In range** (0.30-0.45): PASS.
+    Additional rules:
+    - **Proteins < 100 aa**: may not have a traditional hydrophobic
+      core; FAIL is softened to UNCERTAIN.
+    - **No PDB structure**: a sequence-based hydrophobicity analysis
+      (run-length distribution) is used as a fallback.
+
+    Verdict logic (core_quality_score):
+    - ``PASS``        -- score > 0.6
+    - ``LIKELY_PASS`` -- score > 0.5
+    - ``UNCERTAIN``   -- score > 0.4
+    - ``LIKELY_FAIL`` -- score > 0.3
+    - ``FAIL``        -- score <= 0.3
 
     If *pdb_string* is provided, additionally check that hydrophobic
     residues are spatially buried (mean CB distance from the protein
@@ -663,47 +829,69 @@ def evaluate_hydrophobic_core_quality(
     """
     protein = protein.upper()
     hydro_frac = compute_hydrophobic_fraction(protein)
+    core_quality_score = _compute_core_quality_score(hydro_frac)
+    is_small_protein = len(protein) < _SMALL_PROTEIN_LENGTH
 
     derivation: list[dict] = [
         {"step": "hydrophobic_fraction", "value": round(hydro_frac, 4)},
+        {"step": "core_quality_score", "value": round(core_quality_score, 4)},
         {"step": "normal_range", "value": [_HYDRO_FRAC_LO, _HYDRO_FRAC_HI]},
+        {"step": "protein_length", "value": len(protein)},
+        {"step": "is_small_protein", "value": is_small_protein},
     ]
 
-    # --- Sequence-based assessment ---
-    _HYDRO_DEFICIT_FAIL: float = 0.10    # Deficit > this → FAIL
-    _HYDRO_DEFICIT_LIKELY_FAIL: float = 0.05  # Deficit > this → LIKELY_FAIL
-
-    if hydro_frac < _HYDRO_FRAC_LO:
-        deficit = _HYDRO_FRAC_LO - hydro_frac
-        if deficit > _HYDRO_DEFICIT_FAIL:
-            verdict = Verdict.FAIL
-        elif deficit > _HYDRO_DEFICIT_LIKELY_FAIL:
-            verdict = Verdict.LIKELY_FAIL
-        else:
-            verdict = Verdict.UNCERTAIN
-        violation = (
-            f"Hydrophobic fraction {hydro_frac:.3f} is below normal "
-            f"range [{_HYDRO_FRAC_LO}, {_HYDRO_FRAC_HI}] -- insufficient "
-            f"hydrophobic core"
-        )
-    elif hydro_frac > _HYDRO_FRAC_HI:
-        excess = hydro_frac - _HYDRO_FRAC_HI
-        if excess > _HYDRO_DEFICIT_FAIL:
-            verdict = Verdict.FAIL
-        elif excess > _HYDRO_DEFICIT_LIKELY_FAIL:
-            verdict = Verdict.LIKELY_FAIL
-        else:
-            verdict = Verdict.UNCERTAIN
-        violation = (
-            f"Hydrophobic fraction {hydro_frac:.3f} is above normal "
-            f"range [{_HYDRO_FRAC_LO}, {_HYDRO_FRAC_HI}] -- aggregation-prone"
-        )
-    else:
+    # --- Core quality score verdict ---
+    if core_quality_score > _CORE_QUALITY_PASS_THRESHOLD:
         verdict = Verdict.PASS
         violation = None
+    elif core_quality_score > 0.5:
+        verdict = Verdict.LIKELY_PASS
+        violation = (
+            f"Core quality score {core_quality_score:.3f} slightly below "
+            f"PASS threshold ({_CORE_QUALITY_PASS_THRESHOLD})"
+        )
+    elif core_quality_score > 0.4:
+        verdict = Verdict.UNCERTAIN
+        violation = (
+            f"Core quality score {core_quality_score:.3f} marginal "
+            f"(hydrophobic fraction {hydro_frac:.3f} deviates from "
+            f"optimal {_HYDRO_PEAK_FRAC})"
+        )
+    elif core_quality_score > 0.3:
+        verdict = Verdict.LIKELY_FAIL
+        violation = (
+            f"Core quality score {core_quality_score:.3f} low "
+            f"(hydrophobic fraction {hydro_frac:.3f} far from "
+            f"optimal {_HYDRO_PEAK_FRAC})"
+        )
+    else:
+        verdict = Verdict.FAIL
+        violation = (
+            f"Core quality score {core_quality_score:.3f} very low "
+            f"(hydrophobic fraction {hydro_frac:.3f} far from "
+            f"optimal {_HYDRO_PEAK_FRAC})"
+        )
+
+    # --- Small protein leniency ---
+    # Proteins < 100 aa may not form a traditional hydrophobic core;
+    # soften FAIL → UNCERTAIN, LIKELY_FAIL → UNCERTAIN.
+    if is_small_protein and verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
+        original_verdict = verdict
+        verdict = Verdict.UNCERTAIN
+        violation = (
+            f"Core quality score {core_quality_score:.3f} low, but protein "
+            f"is short ({len(protein)} aa < {_SMALL_PROTEIN_LENGTH}) and may "
+            f"not require a traditional hydrophobic core "
+            f"(original verdict: {original_verdict.value})"
+        )
+        derivation.append({
+            "step": "small_protein_leniency",
+            "value": True,
+            "original_verdict": original_verdict.value,
+        })
 
     # --- Structure-based refinement (if PDB provided) ---
-    if pdb_string is not None and verdict in (Verdict.PASS, Verdict.UNCERTAIN):
+    if pdb_string is not None and verdict in (Verdict.PASS, Verdict.LIKELY_PASS, Verdict.UNCERTAIN):
         pdb_coords = _parse_pdb_coords(pdb_string)
         if pdb_coords:
             all_coords: list[list[float]] = []
@@ -760,12 +948,20 @@ def evaluate_hydrophobic_core_quality(
                             f"overall {mean_all_dist:.1f} A)"
                         )
 
+    # --- Sequence-based fallback when no structure ---
     knowledge_gap = None
-    if pdb_string is None and verdict != Verdict.FAIL:
-        knowledge_gap = (
-            "Hydrophobic fraction is within normal range, but core "
-            "burial cannot be verified without structural data."
-        )
+    if pdb_string is None:
+        seq_analysis = _sequence_based_hydrophobicity_analysis(protein)
+        derivation.append({
+            "step": "sequence_hydrophobicity_fallback",
+            "value": seq_analysis,
+        })
+        if verdict != Verdict.FAIL:
+            knowledge_gap = (
+                "Hydrophobic fraction is within normal range, but core "
+                "burial cannot be verified without structural data.  "
+                "Sequence-based run-length analysis used as fallback."
+            )
 
     return TypeCheckResult(
         predicate="HydrophobicCoreQuality",

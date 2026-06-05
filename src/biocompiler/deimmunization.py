@@ -6,18 +6,33 @@ T-cell epitopes through conservative amino acid substitutions.
 
 Algorithm:
   1. Compute current immunogenicity score
-  2. If below target_score -> done
+  2. If below target_score AND no strong binders remain -> done
   3. Find strongest T-cell epitopes
   4. For each epitope, find positions where mutation reduces MHC binding most
-  5. Rank mutations by: binding_reduction * (1 - |blosum62|/4) * (1 - max(0, ddg)/5)
-  6. Apply best mutation (if it passes filters: blosum62 >= blosum62_min, ddg < max_ddg)
-  7. Repeat until target_score reached or max_mutations applied
+  5. Rank mutations by: binding_reduction * conservation_factor * stability_factor
+     - conservation_factor = (blosum62 + 4) / 8  (rewards conservative substitutions)
+     - Anchor positions get 1.5x binding_reduction bonus
+  6. Apply best mutation (if it passes filters: blosum62 >= blosum62_min,
+     ddg < max_ddg, not structurally dangerous)
+  7. Re-check for epitopes (including newly created ones) after each mutation
+  8. Repeat until no strong epitopes remain or max_mutations reached
+
+Key fixes (Task 26):
+  Fix 1: BLOSUM62-based substitution ranking — try conservative (score > 0)
+         substitutions first; combined score rewards high BLOSUM62.
+  Fix 2: Anchor position priority — MHC-I anchors at P2/P9, MHC-II anchors
+         at P1/P4/P6/P9 receive 1.5× binding_reduction weight.
+  Fix 3: Structure preservation — reject proline in helical regions and
+         hydrophobic→hydrophilic mutations in the hydrophobic core.
+  Fix 4: Iterative deimmunization — loop continues until no strong binders
+         remain (not just until score < target), re-checking for new epitopes.
 
 References:
   - BLOSUM62: Henikoff & Henikoff (1992) PNAS 89:10915
   - Kyte-Doolittle hydropathy: Kyte & Doolittle (1982) J Mol Biol 157:105
   - MHC binding prediction: PSSM-based scoring (immunogenicity module)
   - CamSol: Sormanni et al. (2015) J Mol Biol 427:478
+  - Helix propensity: Pace & Scholtz (1998) Biophys J 75:422
 """
 
 from __future__ import annotations
@@ -125,6 +140,56 @@ _PROLINE_INTRODUCTION_PENALTY = 1.0
 
 # Proline removal penalty (kcal/mol)
 _PROLINE_REMOVAL_PENALTY = 0.5
+
+# ────────────────────────────────────────────────────────────
+# Fix 1: BLOSUM62-based conservative substitution ranking
+# ────────────────────────────────────────────────────────────
+# Minimum BLOSUM62 score to consider a substitution "conservative".
+# Substitutions with BLOSUM62 > 0 are tried first.
+_CONSERVATIVE_BLOSUM62_CUTOFF = 0
+
+# ────────────────────────────────────────────────────────────
+# Fix 2: Anchor position priority for epitope disruption
+# ────────────────────────────────────────────────────────────
+# MHC class I anchor positions (0-indexed within the 9-mer peptide).
+# Positions 2 and 9 (1-indexed) are the primary anchor residues
+# that dock into the MHC binding groove (P2 and P9/Ω).
+_MHC_I_ANCHOR_POSITIONS: set[int] = {1, 8}
+
+# MHC class II anchor positions (0-indexed within the 9-mer core).
+# Positions 1, 4, 6, 9 (1-indexed) are the key anchor residues
+# that interact with the MHC-II binding groove pockets.
+_MHC_II_ANCHOR_POSITIONS: set[int] = {0, 3, 5, 8}
+
+# Weight multiplier applied to binding reduction at anchor positions.
+# Anchor mutations are more effective at disrupting MHC binding.
+_ANCHOR_POSITION_WEIGHT = 1.5
+
+# ────────────────────────────────────────────────────────────
+# Fix 3: Structure preservation heuristics
+# ────────────────────────────────────────────────────────────
+# Amino acids with high alpha-helix propensity
+# (Pace & Scholtz, 1998, Biophys J 75:422)
+_HELIX_FAVORING: set[str] = {"A", "E", "L", "M", "Q", "K", "R", "H"}
+
+# Hydrophobic core residues (Kyte-Doolittle hydropathy > 1.0)
+_HYDROPHOBIC_CORE_AAS: set[str] = {"A", "C", "F", "I", "L", "M", "V"}
+
+# Window size for local structure context checks
+_STRUCTURE_WINDOW = 3
+
+# Minimum number of helix-favoring neighbors to classify as helical region
+_HELIX_NEIGHBOR_THRESHOLD = 3
+
+# Minimum number of hydrophobic neighbors to classify as hydrophobic core
+_HYDROPHOBIC_NEIGHBOR_THRESHOLD = 3
+
+# ────────────────────────────────────────────────────────────
+# Fix 4: Iterative deimmunization loop control
+# ────────────────────────────────────────────────────────────
+# Only consider "strong_binders" as epitopes that must be removed
+# before the loop can exit (in addition to score-based exit).
+_STRONG_BINDER_CLASS = "strong_binder"
 
 
 # ────────────────────────────────────────────────────────────
@@ -476,6 +541,104 @@ def _filter_binder_epitopes(epitopes: list[dict]) -> list[dict]:
     ]
 
 
+def _filter_strong_binder_epitopes(epitopes: list[dict]) -> list[dict]:
+    """Filter epitope predictions to only include strong binders."""
+    return [
+        e for e in epitopes
+        if e.get("binding_class", "") == _STRONG_BINDER_CLASS
+    ]
+
+
+def _is_anchor_position(
+    position: int, epitope_start: int, mhc_class: int = 1
+) -> bool:
+    """Check whether a protein position is an MHC anchor residue.
+
+    Determines the position's offset within the overlapping 9-mer and
+    checks if it falls on a known anchor position for the given MHC class.
+
+    Args:
+        position: 0-based position in the full protein.
+        epitope_start: 0-based start of the epitope/9-mer.
+        mhc_class: 1 for MHC-I, 2 for MHC-II.
+
+    Returns:
+        True if the position is an anchor residue.
+    """
+    pos_in_peptide = position - epitope_start
+    if mhc_class == 1:
+        return pos_in_peptide in _MHC_I_ANCHOR_POSITIONS
+    return pos_in_peptide in _MHC_II_ANCHOR_POSITIONS
+
+
+def _detect_mhc_class(allele: str) -> int:
+    """Detect MHC class from allele name.
+
+    DRB1, DP, DQ alleles are MHC class II; everything else is class I.
+    """
+    allele_upper = allele.upper()
+    if "DRB" in allele_upper or "DPB" in allele_upper or "DQB" in allele_upper:
+        return 2
+    # Mouse MHC-II alleles (I-A, I-E)
+    if "-IA" in allele_upper or "-IE" in allele_upper:
+        return 2
+    return 1
+
+
+def _is_structurally_dangerous(
+    wildtype: str,
+    mutant: str,
+    protein: str,
+    position: int,
+) -> bool:
+    """Check whether a mutation is likely to destabilize the protein fold.
+
+    Uses heuristics to reject mutations that would:
+      1. Introduce proline into a likely alpha-helical region
+      2. Replace a hydrophobic core residue with a hydrophilic one
+         (when surrounded by other hydrophobic residues)
+
+    Args:
+        wildtype: Wild-type amino acid.
+        mutant: Mutant amino acid.
+        protein: Full protein sequence.
+        position: 0-based position of the mutation.
+
+    Returns:
+        True if the mutation is likely structurally dangerous.
+    """
+    # 1. Proline introduction in likely alpha-helical regions
+    if mutant == "P" and wildtype != "P":
+        start = max(0, position - _STRUCTURE_WINDOW)
+        end = min(len(protein), position + _STRUCTURE_WINDOW + 1)
+        neighbors = protein[start:position] + protein[position + 1:end]
+        helix_count = sum(1 for aa in neighbors if aa in _HELIX_FAVORING)
+        if helix_count >= _HELIX_NEIGHBOR_THRESHOLD:
+            logger.debug(
+                "Rejecting Pro introduction at pos %d: helical region "
+                "(%d/%d helix-favoring neighbors)",
+                position, helix_count, len(neighbors),
+            )
+            return True
+
+    # 2. Breaking the hydrophobic core: replacing a hydrophobic residue
+    #    with a hydrophilic one when surrounded by other hydrophobic residues
+    if wildtype in _HYDROPHOBIC_CORE_AAS and mutant not in _HYDROPHOBIC_CORE_AAS:
+        start = max(0, position - _STRUCTURE_WINDOW)
+        end = min(len(protein), position + _STRUCTURE_WINDOW + 1)
+        neighbors = protein[start:position] + protein[position + 1:end]
+        hydro_count = sum(1 for aa in neighbors if aa in _HYDROPHOBIC_CORE_AAS)
+        if hydro_count >= _HYDROPHOBIC_NEIGHBOR_THRESHOLD:
+            logger.debug(
+                "Rejecting hydrophobic→hydrophilic mutation at pos %d: "
+                "hydrophobic core (%d/%d hydrophobic neighbors)",
+                position, hydro_count, len(neighbors),
+            )
+            return True
+
+    return False
+
+
 # ────────────────────────────────────────────────────────────
 # Public API
 # ────────────────────────────────────────────────────────────
@@ -590,6 +753,19 @@ def find_epitope_disrupting_mutations(
     epitope region, computes binding score change using score_peptide_pssm
     from the immunogenicity module, and filters by BLOSUM62 conservation.
 
+    Fix 1 – Conservative-first ranking: substitutions are tried in
+    BLOSUM62-descending order so that conservative (BLOSUM62 > 0)
+    mutations are evaluated before non-conservative ones.
+
+    Fix 2 – Anchor position priority: mutations at MHC anchor residues
+    (P2/P9 for MHC-I, P1/P4/P6/P9 for MHC-II) receive a weighting
+    bonus on their binding_reduction score, reflecting their stronger
+    effect on MHC binding disruption.
+
+    Fix 3 – Structure preservation: mutations that are structurally
+    dangerous (proline in helices, breaking hydrophobic core) are
+    rejected outright.
+
     Args:
         protein: Full protein sequence.
         epitope_start: Start position (0-based) of epitope.
@@ -598,8 +774,8 @@ def find_epitope_disrupting_mutations(
         blosum62_min: Minimum BLOSUM62 score for acceptable substitutions.
 
     Returns:
-        List of MutationResult objects, sorted by score
-        (binding_reduction, most disruption first).
+        List of MutationResult objects, sorted by combined score
+        (binding_reduction with anchor bonus, most disruption first).
     """
     if mhc_alleles is None:
         mhc_alleles = _DEFAULT_MHC_ALLELES.get("Homo_sapiens", [])
@@ -609,6 +785,10 @@ def find_epitope_disrupting_mutations(
         protein, epitope_start, epitope_end, mhc_alleles
     )
 
+    # Detect dominant MHC class from the allele list (for anchor detection)
+    mhc_classes = {_detect_mhc_class(a) for a in mhc_alleles} if mhc_alleles else {1}
+    dominant_mhc_class = 2 if 2 in mhc_classes else 1
+
     mutations: list[MutationResult] = []
 
     for pos in range(max(0, epitope_start), min(len(protein), epitope_end)):
@@ -616,14 +796,24 @@ def find_epitope_disrupting_mutations(
         if wildtype not in BLOSUM62:
             continue
 
+        # Fix 1: Sort candidate substitutions by BLOSUM62 score descending
+        # so that conservative (BLOSUM62 > 0) substitutions are tried first.
+        candidates = []
         for mutant in STANDARD_AAS:
             if mutant == wildtype:
                 continue
             if mutant not in BLOSUM62:
                 continue
-
             blosum = BLOSUM62[wildtype][mutant]
             if blosum < blosum62_min:
+                continue
+            candidates.append((mutant, blosum))
+        # Sort by BLOSUM62 descending – conservative substitutions first
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        for mutant, blosum in candidates:
+            # Fix 3: Reject structurally dangerous mutations
+            if _is_structurally_dangerous(wildtype, mutant, protein, pos):
                 continue
 
             # Build mutated protein
@@ -640,6 +830,22 @@ def find_epitope_disrupting_mutations(
             if binding_reduction <= 0:
                 continue
 
+            # Fix 2: Apply anchor position weight
+            # Determine if this position is an anchor in any overlapping 9-mer
+            is_anchor = False
+            for pep_start in range(
+                max(0, pos - _MHC_I_PEPTIDE_LENGTH + 1),
+                min(len(protein) - _MHC_I_PEPTIDE_LENGTH + 1, pos + 1)
+            ):
+                if not (pep_start <= pos < pep_start + _MHC_I_PEPTIDE_LENGTH):
+                    continue
+                if _is_anchor_position(pos, pep_start, dominant_mhc_class):
+                    is_anchor = True
+                    break
+
+            if is_anchor:
+                binding_reduction *= _ANCHOR_POSITION_WEIGHT
+
             # Estimate ΔΔG
             ddg = _estimate_ddg(wildtype, mutant, protein, pos)
 
@@ -649,6 +855,7 @@ def find_epitope_disrupting_mutations(
             # Find the 9-mer with highest binding score that includes this position
             best_score = 0.0
             best_peptide = ""
+            best_pep_start = epitope_start
             for pep_start in range(
                 max(0, pos - _MHC_I_PEPTIDE_LENGTH + 1),
                 min(len(protein) - _MHC_I_PEPTIDE_LENGTH + 1, pos + 1)
@@ -663,6 +870,7 @@ def find_epitope_disrupting_mutations(
                     if sc > best_score:
                         best_score = sc
                         best_peptide = pep
+                        best_pep_start = pep_start
 
             mutations.append(EpitopeMutation(
                 position=pos,
@@ -676,6 +884,7 @@ def find_epitope_disrupting_mutations(
                     "blosum62": blosum,
                     "ddg_estimate": ddg,
                     "solubility_impact": sol_impact,
+                    "is_anchor": is_anchor,
                 },
             ))
 
@@ -728,15 +937,17 @@ def rank_deimmunization_mutations(
         all_mutations.extend(epi_mutations)
 
     # Rank by combined score:
-    # binding_reduction * (1 - |blosum62|/4) * (1 - max(0, ddg)/5)
+    # Fix 1: Reward high BLOSUM62 (conservative) instead of penalizing it.
+    # Old formula used (1 - |blosum62|/4) which penalized conservative mutations.
+    # New formula: conservation_factor = (blosum62 + 4) / 8  maps [-4,4] → [0,1]
+    # so that conservative substitutions (high BLOSUM62) get higher scores.
     def _combined_score(m: MutationResult) -> float:
         blosum62 = m.details.get("blosum62", 0)
         ddg = m.details.get("ddg_estimate", 0.0)
-        conservation_factor = 1.0 - abs(blosum62) / _BLOSUM62_RANGE_DIVISOR
-        stability_factor = 1.0 - max(0.0, ddg) / _DDG_SCALING_DIVISOR
-        # Ensure factors are non-negative
-        conservation_factor = max(0.0, conservation_factor)
-        stability_factor = max(0.0, stability_factor)
+        # Reward conservation: higher BLOSUM62 = more conservative = preferred
+        conservation_factor = max(0.0, (blosum62 + 4.0) / 8.0)
+        # Penalize instability: higher ddG = more destabilizing = less preferred
+        stability_factor = max(0.0, 1.0 - max(0.0, ddg) / _DDG_SCALING_DIVISOR)
         return m.score * conservation_factor * stability_factor
 
     all_mutations.sort(key=_combined_score, reverse=True)
@@ -892,12 +1103,17 @@ def deimmunize(
 
     Algorithm:
       1. Compute current immunogenicity score
-      2. If below target_score -> done
+      2. If below target_score AND no strong binders remain -> done
       3. Find strongest T-cell epitopes
       4. For each epitope, find positions where mutation reduces MHC binding most
-      5. Rank mutations by: binding_reduction * (1 - |blosum62|/4) * (1 - max(0, ddg)/5)
-      6. Apply best mutation (if it passes filters: blosum62 >= blosum62_min, ddg < max_ddg)
-      7. Repeat until target_score reached or max_mutations applied
+      5. Rank mutations by: binding_reduction * conservation_factor * stability_factor
+         where conservation_factor rewards high BLOSUM62 (Fix 1),
+         anchor positions get a binding_reduction bonus (Fix 2),
+         and structurally dangerous mutations are rejected (Fix 3).
+      6. Apply best mutation (if it passes filters: blosum62 >= blosum62_min,
+         ddg < max_ddg, not structurally dangerous)
+      7. Re-check for epitopes (including newly created ones) after each mutation
+      8. Repeat until no strong epitopes remain or max_mutations reached (Fix 4)
 
     Args:
         protein: Protein sequence (1-letter amino acid codes).
@@ -941,21 +1157,29 @@ def deimmunize(
         total_ddg = 0.0
         iteration = 0
 
+        # Fix 4: Iterative loop continues until no strong epitopes remain
+        # OR max_mutations reached.  We re-scan for epitopes (including
+        # any newly created ones) after every single mutation.
         while iteration < max_mutations:
-            # Check if target is reached
+            # Re-check immunogenicity score on the current protein
             current_score = _compute_immunogenicity_score(
                 current_protein, organism, allele_list
             )
-            if current_score <= target_score:
-                break
 
-            # Find T-cell epitopes using predict_t_cell_epitopes
+            # Find T-cell epitopes on the *current* (possibly mutated) protein
             all_epitopes = predict_t_cell_epitopes(current_protein, allele_list)
             epitopes = _filter_binder_epitopes(all_epitopes)
+
+            # Fix 4: Exit when score is below target AND no strong binders remain
+            strong_epitopes = _filter_strong_binder_epitopes(all_epitopes)
+            if current_score <= target_score and not strong_epitopes:
+                break
+
+            # Also exit if no binder epitopes at all
             if not epitopes:
                 break
 
-            # Collect all possible mutations for the strongest epitopes
+            # Collect all possible mutations for the current epitopes
             # Process epitopes in order of strength (strongest first)
             all_candidates: list[MutationResult] = []
 
@@ -972,14 +1196,14 @@ def deimmunize(
                 logger.info("No disruptive mutations found for remaining epitopes")
                 break
 
-            # Rank by combined score
+            # Rank by combined score (Fix 1: rewards high BLOSUM62)
             def _combined_score(m: MutationResult) -> float:
                 blosum62 = m.details.get("blosum62", 0)
                 ddg = m.details.get("ddg_estimate", 0.0)
-                conservation_factor = 1.0 - abs(blosum62) / _BLOSUM62_RANGE_DIVISOR
-                stability_factor = 1.0 - max(0.0, ddg) / _DDG_SCALING_DIVISOR
-                conservation_factor = max(0.0, conservation_factor)
-                stability_factor = max(0.0, stability_factor)
+                # Reward conservation: higher BLOSUM62 = more conservative = preferred
+                conservation_factor = max(0.0, (blosum62 + 4.0) / 8.0)
+                # Penalize instability: higher ddG = more destabilizing
+                stability_factor = max(0.0, 1.0 - max(0.0, ddg) / _DDG_SCALING_DIVISOR)
                 return m.score * conservation_factor * stability_factor
 
             all_candidates.sort(key=_combined_score, reverse=True)
@@ -1013,6 +1237,13 @@ def deimmunize(
                 if already_mutated:
                     continue
 
+                # Fix 3: Reject structurally dangerous mutations
+                if _is_structurally_dangerous(
+                    candidate.original, candidate.mutant,
+                    current_protein, candidate.position,
+                ):
+                    continue
+
                 best_mutation = candidate
                 break
 
@@ -1039,11 +1270,12 @@ def deimmunize(
                 "blosum62": best_mutation.details.get("blosum62", 0),
                 "binding_reduction": best_mutation.score,
                 "solubility_impact": best_mutation.details.get("solubility_impact", 0.0),
+                "is_anchor": best_mutation.details.get("is_anchor", False),
             })
 
             iteration += 1
             logger.debug(
-                "Iteration %d: %s%d%s (ddG=%.2f, BLOSUM62=%d, binding_reduction=%.4f)",
+                "Iteration %d: %s%d%s (ddG=%.2f, BLOSUM62=%d, binding_reduction=%.4f, anchor=%s)",
                 iteration,
                 best_mutation.original,
                 best_mutation.position + 1,  # 1-based for display
@@ -1051,6 +1283,7 @@ def deimmunize(
                 ddg_est,
                 best_mutation.details.get("blosum62", 0),
                 best_mutation.score,
+                best_mutation.details.get("is_anchor", False),
             )
 
         # Compute final metrics

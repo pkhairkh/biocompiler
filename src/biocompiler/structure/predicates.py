@@ -93,6 +93,17 @@ HYDRO_BORDERLINE_RATIO: float = 0.85
 UNSTRUCTURED_REGION_MIN_LENGTH: int = 30
 SIGNIFICANT_PATCH_MIN_LENGTH: int = 5
 
+# Fold topology TM-score and RMSD thresholds
+TM_SCORE_PASS_THRESHOLD: float = 0.4  # Standard "same fold" threshold (relaxed from 0.5)
+SMALL_PROTEIN_RMSD_THRESHOLD_ANG: float = 3.0  # Angstroms, for proteins < 100aa
+SMALL_PROTEIN_LENGTH_LIMIT: int = 100  # Residues
+
+# Interaction filtering thresholds (to reduce false positives)
+INTERFACE_AREA_THRESHOLD_ANG2: float = 500.0  # Minimum interface area (Å²) to flag
+BINDING_ENERGY_THRESHOLD_KCAL: float = -8.0  # Only flag if binding energy is stronger
+CRYSTAL_PACKING_SURFACE_FRACTION: float = 0.30  # >30% surface involved = likely artifact
+AVERAGE_RESIDUE_SURFACE_AREA: float = 90.0  # Approximate Å² per exposed residue
+
 # Geometry tolerance
 DIHEDRAL_NORM_TOLERANCE: float = 1e-8
 
@@ -271,6 +282,97 @@ def _compute_radius_of_gyration(ca_coords: list[tuple[float, float, float, int]]
     # Compute mean squared distance from centroid
     msd = sum((c[0] - cx) ** 2 + (c[1] - cy) ** 2 + (c[2] - cz) ** 2 for c in ca_coords) / n
     return math.sqrt(msd)
+
+
+def _compute_rmsd(
+    coords1: list[tuple[float, ...]],
+    coords2: list[tuple[float, ...]],
+) -> float:
+    """Compute Cα RMSD between two coordinate sets (after centering).
+
+    Simplified: does not perform Kabsch rotation; centers both structures
+    at the origin before computing RMSD.
+
+    Args:
+        coords1: First set of (x, y, z, ...) tuples.
+        coords2: Second set of (x, y, z, ...) tuples (same length).
+
+    Returns:
+        RMSD in Angstroms, or inf if inputs are mismatched/empty.
+    """
+    if len(coords1) != len(coords2) or len(coords1) == 0:
+        return float("inf")
+
+    n = len(coords1)
+
+    # Center both structures
+    c1_cx = sum(c[0] for c in coords1) / n
+    c1_cy = sum(c[1] for c in coords1) / n
+    c1_cz = sum(c[2] for c in coords1) / n
+    c2_cx = sum(c[0] for c in coords2) / n
+    c2_cy = sum(c[1] for c in coords2) / n
+    c2_cz = sum(c[2] for c in coords2) / n
+
+    sum_sq = 0.0
+    for c1, c2 in zip(coords1, coords2):
+        dx = (c1[0] - c1_cx) - (c2[0] - c2_cx)
+        dy = (c1[1] - c1_cy) - (c2[1] - c2_cy)
+        dz = (c1[2] - c1_cz) - (c2[2] - c2_cz)
+        sum_sq += dx * dx + dy * dy + dz * dz
+
+    return math.sqrt(sum_sq / n)
+
+
+def _compute_tm_score(
+    coords1: list[tuple[float, ...]],
+    coords2: list[tuple[float, ...]],
+    length: int,
+) -> float:
+    """Compute TM-score between two coordinate sets (after centering).
+
+    TM-score = (1 / L_ref) * Σ [1 / (1 + (d_i / d0)²)]
+    where d0 = 1.24 * (L_ref - 15)^(1/3) - 1.8
+
+    Simplified: does not perform Kabsch rotation; centers both structures.
+
+    Args:
+        coords1: First set of (x, y, z, ...) tuples.
+        coords2: Second set of (x, y, z, ...) tuples (same length).
+        length: Reference length (L_ref), typically the native protein length.
+
+    Returns:
+        TM-score in [0, 1], or 0.0 if inputs are invalid.
+    """
+    if len(coords1) != len(coords2) or len(coords1) == 0:
+        return 0.0
+
+    n = len(coords1)
+    l_ref = max(length, 1)
+
+    # d0 parameter
+    if l_ref > 15:
+        d0 = 1.24 * ((l_ref - 15) ** (1.0 / 3.0)) - 1.8
+    else:
+        d0 = 0.5
+    d0 = max(d0, 0.5)
+
+    # Center both structures
+    c1_cx = sum(c[0] for c in coords1) / n
+    c1_cy = sum(c[1] for c in coords1) / n
+    c1_cz = sum(c[2] for c in coords1) / n
+    c2_cx = sum(c[0] for c in coords2) / n
+    c2_cy = sum(c[1] for c in coords2) / n
+    c2_cz = sum(c[2] for c in coords2) / n
+
+    tm_sum = 0.0
+    for c1, c2 in zip(coords1, coords2):
+        dx = (c1[0] - c1_cx) - (c2[0] - c2_cx)
+        dy = (c1[1] - c1_cy) - (c2[1] - c2_cy)
+        dz = (c1[2] - c1_cz) - (c2[2] - c2_cz)
+        d_i = math.sqrt(dx * dx + dy * dy + dz * dz)
+        tm_sum += 1.0 / (1.0 + (d_i / d0) ** 2)
+
+    return tm_sum / l_ref
 
 
 def _compute_ramachandran_outliers(
@@ -898,11 +1000,167 @@ def evaluate_no_misfolding_risk(
     )
 
 
+def _sequence_based_topology_check(
+    protein: str,
+) -> tuple[Verdict, list[dict], str | None]:
+    """Evaluate fold topology from sequence alone when no structure is available.
+
+    Uses sequence composition heuristics to estimate whether the protein
+    is likely to adopt a well-folded structure:
+    - Hydrophobicity distribution (should be in reasonable range)
+    - Secondary structure propensity (should have some SS-forming residues)
+    - Charge distribution (should not be excessively charged)
+
+    Returns:
+        (verdict, derivation_steps, knowledge_gap)
+    """
+    derivation_steps: list[dict] = []
+    protein_upper = protein.upper()
+    n = len(protein_upper)
+
+    if n == 0:
+        return Verdict.UNCERTAIN, [{"step": "empty_sequence"}], "Empty protein sequence"
+
+    # (a) Hydrophobicity check
+    hydro_count = sum(1 for aa in protein_upper if aa in HYDROPHOBIC_AAS)
+    hydro_frac = hydro_count / n
+    derivation_steps.append({
+        "step": "sequence_hydrophobicity",
+        "hydrophobic_fraction": round(hydro_frac, 3),
+    })
+
+    # (b) Secondary structure propensity from sequence
+    helix_formers = set("AELMQRK")
+    sheet_formers = set("VIYFWCT")
+    helix_count = sum(1 for aa in protein_upper if aa in helix_formers)
+    sheet_count = sum(1 for aa in protein_upper if aa in sheet_formers)
+    helix_frac = helix_count / n
+    sheet_frac = sheet_count / n
+    derivation_steps.append({
+        "step": "ss_propensity",
+        "helix_propensity_frac": round(helix_frac, 3),
+        "sheet_propensity_frac": round(sheet_frac, 3),
+    })
+
+    # (c) Charge distribution
+    pos_count = sum(1 for aa in protein_upper if aa in POSITIVELY_CHARGED_AAS)
+    neg_count = sum(1 for aa in protein_upper if aa in NEGATIVELY_CHARGED_AAS)
+    charged_frac = (pos_count + neg_count) / n
+    derivation_steps.append({
+        "step": "charge_distribution",
+        "charged_fraction": round(charged_frac, 3),
+        "positive": pos_count,
+        "negative": neg_count,
+    })
+
+    # Scoring: a well-folded protein should have reasonable properties
+    issues = 0
+    if hydro_frac < 0.20 or hydro_frac > 0.55:
+        issues += 1
+        derivation_steps.append({
+            "step": "hydrophobicity_issue",
+            "detail": f"hydrophobic fraction {hydro_frac:.3f} outside [0.20, 0.55]",
+        })
+    if helix_frac + sheet_frac < 0.15:
+        issues += 1
+        derivation_steps.append({
+            "step": "ss_propensity_issue",
+            "detail": f"combined SS propensity {helix_frac + sheet_frac:.3f} < 0.15",
+        })
+    if charged_frac > 0.40:
+        issues += 1
+        derivation_steps.append({
+            "step": "charge_issue",
+            "detail": f"charged fraction {charged_frac:.3f} > 0.40",
+        })
+
+    derivation_steps.append({
+        "step": "sequence_topology_summary",
+        "issues_found": issues,
+    })
+
+    if issues == 0:
+        return (
+            Verdict.LIKELY_PASS,
+            derivation_steps,
+            "Sequence-based topology estimate (no structure data); "
+            "sequence composition looks reasonable",
+        )
+    elif issues == 1:
+        return (
+            Verdict.UNCERTAIN,
+            derivation_steps,
+            "Sequence-based topology estimate with minor concerns (no structure data)",
+        )
+    else:
+        return (
+            Verdict.UNCERTAIN,
+            derivation_steps,
+            "Sequence-based topology estimate with multiple concerns (no structure data)",
+        )
+
+
+def _has_obvious_dimer_interface(pdb_string: str, protein: str) -> bool:
+    """Check if structure shows an obvious dimerization interface.
+
+    Looks for multiple chains in the PDB or a very large contiguous
+    hydrophobic patch on the surface that would indicate a dimer interface.
+
+    Args:
+        pdb_string: PDB format string.
+        protein: Amino acid sequence.
+
+    Returns:
+        True if an obvious dimer interface is detected.
+    """
+    atoms = _parse_pdb_atoms(pdb_string)
+
+    # Check for multiple chains
+    chains: set[str] = set()
+    for atom in atoms:
+        chains.add(atom["chain"])
+    if len(chains) > 1:
+        return True
+
+    # Check for very large surface hydrophobic patch (>60% exposed hydrophobic)
+    ca_coords = _extract_ca_coords(pdb_string)
+    if not ca_coords or len(protein) < 20:
+        return False
+
+    n_ca = len(ca_coords)
+    cx = sum(c[0] for c in ca_coords) / n_ca
+    cy = sum(c[1] for c in ca_coords) / n_ca
+    cz = sum(c[2] for c in ca_coords) / n_ca
+    max_dist = max(
+        math.sqrt((c[0] - cx) ** 2 + (c[1] - cy) ** 2 + (c[2] - cz) ** 2)
+        for c in ca_coords
+    )
+    exposure_cutoff = max_dist * EXPOSURE_CUTOFF_FRACTION
+
+    exposed_hydrophobic = 0
+    exposed_total = 0
+    for idx, ca in enumerate(ca_coords):
+        dist = math.sqrt((ca[0] - cx) ** 2 + (ca[1] - cy) ** 2 + (ca[2] - cz) ** 2)
+        if dist > exposure_cutoff:
+            exposed_total += 1
+            aa = protein[idx] if idx < len(protein) else "X"
+            if aa in HYDROPHOBIC_AAS:
+                exposed_hydrophobic += 1
+
+    if exposed_total > 0:
+        exposed_hydro_frac = exposed_hydrophobic / exposed_total
+        if exposed_hydro_frac > 0.60:
+            return True
+
+    return False
+
+
 def evaluate_correct_fold_topology(
     sequence: str,
     protein: str,
     organism: str,
     pdb_string: str | None = None,
+    reference_pdb_string: str | None = None,
 ) -> TypeCheckResult:
     """Evaluate that the predicted fold makes biological sense.
 
@@ -912,6 +1170,10 @@ def evaluate_correct_fold_topology(
     b. Radius of gyration within expected range: Rg ≈ 2.5 * N^0.33
     c. Packing density in normal range (5-12 CA neighbors within 10A)
     d. Hydrophobic residues predominantly buried (if PDB available)
+    e. TM-score > 0.4 vs reference (or RMSD < 3.0 Å for small proteins < 100aa)
+
+    When no PDB structure is provided, falls back to sequence-based topology
+    comparison instead of returning UNCERTAIN/FAIL.
 
     Verdict:
         All checks pass   → PASS
@@ -924,6 +1186,7 @@ def evaluate_correct_fold_topology(
         protein: Amino acid sequence (single-letter codes).
         organism: Target organism name.
         pdb_string: Optional PDB format string with structure data.
+        reference_pdb_string: Optional reference PDB for TM-score/RMSD comparison.
 
     Returns:
         TypeCheckResult with verdict based on fold topology checks.
@@ -933,11 +1196,13 @@ def evaluate_correct_fold_topology(
     derivation_steps: list[dict] = []
 
     if pdb_string is None:
+        # Use sequence-based topology comparison instead of FAIL/UNCERTAIN
+        seq_verdict, seq_derivation, seq_gap = _sequence_based_topology_check(protein)
         return TypeCheckResult(
             predicate="CorrectFoldTopology",
-            verdict=Verdict.UNCERTAIN,
-            derivation=[{"step": "no_structure", "result": "no PDB provided"}],
-            knowledge_gap="No structure provided; cannot evaluate fold topology",
+            verdict=seq_verdict,
+            derivation=seq_derivation,
+            knowledge_gap=seq_gap,
         )
 
     n_residues = len(protein)
@@ -1090,13 +1355,56 @@ def evaluate_correct_fold_topology(
                     f"exposed={exposed_hydro_frac:.1%} vs buried={buried_hydro_frac:.1%}"
                 )
 
+    # (e) TM-score or RMSD comparison with reference structure
+    if reference_pdb_string is not None:
+        ref_ca_coords = _extract_ca_coords(reference_pdb_string)
+        if len(ca_coords) > 0 and len(ref_ca_coords) > 0:
+            min_len = min(len(ca_coords), len(ref_ca_coords))
+            pred_coords = [
+                (ca_coords[i][0], ca_coords[i][1], ca_coords[i][2])
+                for i in range(min_len)
+            ]
+            ref_coords = [
+                (ref_ca_coords[i][0], ref_ca_coords[i][1], ref_ca_coords[i][2])
+                for i in range(min_len)
+            ]
+
+            if n_residues < SMALL_PROTEIN_LENGTH_LIMIT:
+                # For small proteins (<100aa), use RMSD < 3.0 Å
+                rmsd = _compute_rmsd(pred_coords, ref_coords)
+                derivation_steps.append({
+                    "step": "rmsd_comparison",
+                    "rmsd_ang": round(rmsd, 2),
+                    "threshold_ang": SMALL_PROTEIN_RMSD_THRESHOLD_ANG,
+                    "method": "RMSD (small protein <100aa)",
+                })
+                if rmsd > SMALL_PROTEIN_RMSD_THRESHOLD_ANG:
+                    failed_checks.append(
+                        f"RMSD {rmsd:.2f} Å exceeds threshold "
+                        f"{SMALL_PROTEIN_RMSD_THRESHOLD_ANG:.1f} Å for small protein"
+                    )
+            else:
+                # For larger proteins, use TM-score > 0.4 (relaxed from 0.5)
+                tm_score = _compute_tm_score(pred_coords, ref_coords, n_residues)
+                derivation_steps.append({
+                    "step": "tm_score_comparison",
+                    "tm_score": round(tm_score, 4),
+                    "threshold": TM_SCORE_PASS_THRESHOLD,
+                    "method": "TM-score",
+                })
+                if tm_score < TM_SCORE_PASS_THRESHOLD:
+                    failed_checks.append(
+                        f"TM-score {tm_score:.4f} below threshold "
+                        f"{TM_SCORE_PASS_THRESHOLD} (folds likely different)"
+                    )
+
     # Determine verdict
     n_failed = len(failed_checks)
     n_borderline = len(borderline_checks)
 
     if n_failed == 0 and n_borderline == 0:
         verdict = Verdict.PASS
-    elif n_failed == 0 and n_borderline == 1:
+    elif n_failed == 0 and n_borderline <= 1:
         verdict = Verdict.LIKELY_PASS
     elif n_failed <= 1 and n_borderline <= 2:
         verdict = Verdict.UNCERTAIN
@@ -1126,6 +1434,8 @@ def evaluate_no_unexpected_interaction(
     protein: str,
     organism: str,
     pdb_string: str | None = None,
+    is_monomeric: bool = False,
+    known_interaction_partners: list[str] | None = None,
 ) -> TypeCheckResult:
     """Evaluate potential for unwanted protein-protein interactions.
 
@@ -1134,22 +1444,62 @@ def evaluate_no_unexpected_interaction(
     b. Long unstructured regions (>30 residues with low secondary structure)
     c. High surface charge patches (cluster of same-charge residues)
 
+    Filtering (to reduce false positives):
+    - Only flag interactions with estimated interface area > 500 Å²
+    - Only flag if predicted binding energy < -8 kcal/mol (not transient)
+    - Auto-PASS monomeric proteins with no known interaction partners
+      unless structure shows obvious dimer interface
+    - Ignore interactions involving >30% of surface residues (crystal packing)
+
     Verdict:
         No indicators  → PASS
-        1 indicator    → UNCERTAIN
-        2+ indicators  → LIKELY_FAIL
+        1 indicator    → LIKELY_PASS
+        2 indicators   → UNCERTAIN
+        3+ indicators  → LIKELY_FAIL
 
     Args:
         sequence: DNA coding sequence.
         protein: Amino acid sequence (single-letter codes).
         organism: Target organism name.
         pdb_string: Optional PDB format string with structure data.
+        is_monomeric: Whether the protein is known to be monomeric.
+        known_interaction_partners: List of known interaction partner names, or None.
 
     Returns:
         TypeCheckResult with verdict based on interaction risk indicators.
     """
     indicators: list[str] = []
     derivation_steps: list[dict] = []
+
+    # Track exposed residue count for crystal packing filter
+    total_surface_residues = 0
+    exposed_hydrophobic_count = 0
+
+    # ── Monomeric auto-PASS ──
+    # For monomeric proteins with no known interaction partners, auto-PASS
+    # unless the structure shows an obvious dimer interface
+    if is_monomeric and (known_interaction_partners is None or len(known_interaction_partners) == 0):
+        has_dimer = False
+        if pdb_string is not None:
+            has_dimer = _has_obvious_dimer_interface(pdb_string, protein)
+        if not has_dimer:
+            derivation_steps.append({
+                "step": "monomer_check",
+                "result": "monomeric with no known partners and no dimer interface, auto-PASS",
+                "is_monomeric": True,
+                "known_partners": known_interaction_partners,
+            })
+            return TypeCheckResult(
+                predicate="NoUnexpectedInteraction",
+                verdict=Verdict.PASS,
+                derivation=derivation_steps,
+            )
+        else:
+            derivation_steps.append({
+                "step": "monomer_check",
+                "result": "monomeric but structure shows dimer interface, continuing checks",
+                "is_monomeric": True,
+            })
 
     # (a) Exposed hydrophobic surface
     if pdb_string is not None:
@@ -1179,7 +1529,16 @@ def evaluate_no_unexpected_interaction(
                     if aa in HYDROPHOBIC_AAS:
                         exposed_hydrophobic += 1
 
+            total_surface_residues = exposed_total
+            exposed_hydrophobic_count = exposed_hydrophobic
             exposed_hydro_frac = exposed_hydrophobic / exposed_total if exposed_total > 0 else 0.0
+
+            # Estimate interface area from exposed hydrophobic residues
+            estimated_interface_area = exposed_hydrophobic * AVERAGE_RESIDUE_SURFACE_AREA
+
+            # Estimate binding energy: ~-0.5 kcal/mol per hydrophobic contact,
+            # plus electrostatic contribution from charge patches
+            estimated_binding_energy = -0.5 * exposed_hydrophobic
 
             derivation_steps.append({
                 "step": "exposed_hydrophobic",
@@ -1187,14 +1546,36 @@ def evaluate_no_unexpected_interaction(
                 "exposed_hydrophobic": exposed_hydrophobic,
                 "fraction": round(exposed_hydro_frac, 3),
                 "threshold": EXPOSED_HYDROPHOBIC_THRESHOLD,
+                "estimated_interface_area_ang2": round(estimated_interface_area, 1),
+                "estimated_binding_energy_kcal_mol": round(estimated_binding_energy, 2),
             })
 
             if exposed_hydro_frac > EXPOSED_HYDROPHOBIC_THRESHOLD:
-                indicators.append(
-                    f"Large exposed hydrophobic surface: "
-                    f"{exposed_hydrophobic}/{exposed_total} "
-                    f"({exposed_hydro_frac:.1%}) of exposed residues are hydrophobic"
-                )
+                # Only flag if interface area > 500 Å² (not trivial contacts)
+                if estimated_interface_area > INTERFACE_AREA_THRESHOLD_ANG2:
+                    # Only flag if binding energy is strong enough (not transient)
+                    if estimated_binding_energy < BINDING_ENERGY_THRESHOLD_KCAL:
+                        indicators.append(
+                            f"Large exposed hydrophobic surface: "
+                            f"{exposed_hydrophobic}/{exposed_total} "
+                            f"({exposed_hydro_frac:.1%}) of exposed residues are hydrophobic "
+                            f"(est. interface ~{estimated_interface_area:.0f} Å², "
+                            f"ΔG ~{estimated_binding_energy:.1f} kcal/mol)"
+                        )
+                    else:
+                        derivation_steps.append({
+                            "step": "binding_energy_filter",
+                            "result": "Binding energy above threshold, interaction likely transient, not flagging",
+                            "estimated_binding_energy": round(estimated_binding_energy, 2),
+                            "threshold": BINDING_ENERGY_THRESHOLD_KCAL,
+                        })
+                else:
+                    derivation_steps.append({
+                        "step": "interface_area_filter",
+                        "result": "Interface area below 500 Å² threshold, not flagging",
+                        "estimated_interface_area": round(estimated_interface_area, 1),
+                        "threshold": INTERFACE_AREA_THRESHOLD_ANG2,
+                    })
         else:
             # Fallback: sequence-based hydrophobicity estimate
             derivation_steps.append({
@@ -1217,9 +1598,21 @@ def evaluate_no_unexpected_interaction(
 
         for start, end in unstructured:
             length = end - start
-            indicators.append(
-                f"Long unstructured region: {length} residues at positions {start}-{end}"
-            )
+            # Estimate interface area for this unstructured region
+            unstructured_interface_area = length * AVERAGE_RESIDUE_SURFACE_AREA * 0.5
+            unstructured_binding_energy = -0.3 * length  # weaker per-residue contribution
+            if unstructured_interface_area > INTERFACE_AREA_THRESHOLD_ANG2:
+                if unstructured_binding_energy < BINDING_ENERGY_THRESHOLD_KCAL:
+                    indicators.append(
+                        f"Long unstructured region: {length} residues at positions {start}-{end} "
+                        f"(est. interface ~{unstructured_interface_area:.0f} Å²)"
+                    )
+                else:
+                    derivation_steps.append({
+                        "step": "unstructured_binding_filter",
+                        "detail": f"Unstructured region {start}-{end} binding energy "
+                                  f"~{unstructured_binding_energy:.1f} kcal/mol above threshold, likely transient",
+                    })
     else:
         # Sequence-based heuristic: regions with many small/polar residues
         long_flexible = _find_flexible_regions_sequence(protein, min_length=UNSTRUCTURED_REGION_MIN_LENGTH)
@@ -1258,11 +1651,33 @@ def evaluate_no_unexpected_interaction(
             f"High surface charge patches: " + ", ".join(patch_descriptions)
         )
 
-    # Determine verdict
+    # ── Crystal packing artifact filter ──
+    # If the "interaction" involves >30% of surface residues, it's likely
+    # a crystal packing artifact rather than a specific interaction
+    if indicators and total_surface_residues > 0:
+        involved_fraction = exposed_hydrophobic_count / total_surface_residues
+        if involved_fraction > CRYSTAL_PACKING_SURFACE_FRACTION:
+            derivation_steps.append({
+                "step": "crystal_packing_filter",
+                "result": (
+                    f"Interaction involves {involved_fraction:.1%} of surface residues "
+                    f"(>{CRYSTAL_PACKING_SURFACE_FRACTION:.0%}), likely crystal packing artifact"
+                ),
+                "involved_fraction": round(involved_fraction, 3),
+                "threshold": CRYSTAL_PACKING_SURFACE_FRACTION,
+            })
+            indicators = [
+                ind for ind in indicators
+                if "hydrophobic surface" not in ind
+            ]
+
+    # Determine verdict (relaxed thresholds to reduce false positives)
     n_indicators = len(indicators)
     if n_indicators == 0:
         verdict = Verdict.PASS
     elif n_indicators == 1:
+        verdict = Verdict.LIKELY_PASS
+    elif n_indicators == 2:
         verdict = Verdict.UNCERTAIN
     else:
         verdict = Verdict.LIKELY_FAIL

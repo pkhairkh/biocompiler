@@ -70,12 +70,14 @@ References
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
 import math
 import os
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from dataclasses import dataclass, field
 from threading import Semaphore
@@ -113,6 +115,7 @@ __all__ = [
     "ESMFoldCache",
     "BatchStructureRequest",
     "BatchStructureResult",
+    "StructureComparison",
     "STANDARD_AMINO_ACIDS",
     "DEFAULT_API_URL",
     "DEFAULT_TIMEOUT",
@@ -125,6 +128,7 @@ __all__ = [
     "predict_structure_batch",
     "predict_batch",
     "predict_proteins",
+    "predict_pair",
     "analyze_structure",
     "is_esmfold_available",
     "parse_pdb",
@@ -354,6 +358,36 @@ class ESMFoldResult(BaseEngineResult):
         else:
             return "low"
 
+    @property
+    def normalized_confidence(self) -> float:
+        """Normalized confidence score in the 0–1 range.
+
+        Converts the mean pLDDT score (0–100 scale) to a 0–1 confidence
+        value.  For heuristic fallback predictions, the confidence is
+        capped at 0.5 since these estimates are inherently low-confidence.
+
+        The normalization follows the pLDDT interpretation convention:
+          - pLDDT >= 90 → confidence >= 0.9  (very high)
+          - pLDDT 70–90 → confidence 0.7–0.9 (confident)
+          - pLDDT 50–70 → confidence 0.5–0.7 (low)
+          - pLDDT < 50  → confidence < 0.5   (very low / disordered)
+
+        For failed predictions (``success=False``), returns 0.0.
+
+        Returns:
+            Float in the range [0.0, 1.0].
+        """
+        if not self.success:
+            return 0.0
+        # pLDDT is on a 0-100 scale; normalize to 0-1
+        raw = self.primary_score / 100.0
+        # Clamp to [0, 1] for safety
+        normalized = max(0.0, min(1.0, raw))
+        # Cap heuristic fallback at 0.5
+        if self.method == "heuristic_fallback":
+            normalized = min(normalized, 0.5)
+        return round(normalized, 4)
+
 
 # ==============================================================================
 # ESMFold Cache (merged from esmfold_cache.py)
@@ -362,7 +396,9 @@ class ESMFoldResult(BaseEngineResult):
 class ESMFoldCache:
     """Cache for ESMFold structure predictions.
 
-    Supports in-memory caching with optional file-based persistence.
+    Supports in-memory LRU (Least Recently Used) caching with optional
+    file-based persistence.  When the cache reaches *max_size*, the
+    least-recently-used entry is evicted first.
     """
 
     def __init__(self, cache_dir: Optional[str] = None, max_size: int = 1000):
@@ -373,7 +409,7 @@ class ESMFoldCache:
                        If None, uses in-memory only.
             max_size: Maximum number of entries in memory cache.
         """
-        self._cache: dict[str, ESMFoldResult] = {}
+        self._cache: OrderedDict[str, ESMFoldResult] = OrderedDict()
         self._cache_dir = cache_dir
         self._max_size = max_size
         self._hits = 0
@@ -397,6 +433,8 @@ class ESMFoldCache:
 
         # Check memory cache
         if key in self._cache:
+            # Move to end (most recently used) for LRU ordering
+            self._cache.move_to_end(key)
             self._hits += 1
             return self._cache[key]
 
@@ -419,7 +457,7 @@ class ESMFoldCache:
                         error=data.get("error"),
                         method=data.get("method", "esmfold_api"),
                     )
-                    # Promote to memory cache
+                    # Promote to memory cache (at end = most recently used)
                     self._cache[key] = result
                     self._hits += 1
                     return result
@@ -440,10 +478,14 @@ class ESMFoldCache:
         """
         key = self._key(protein)
 
-        # Evict oldest entries if at capacity
-        if len(self._cache) >= self._max_size and key not in self._cache:
-            oldest_key = next(iter(self._cache))
-            del self._cache[oldest_key]
+        # If key already exists, remove it first (will be re-added at end)
+        if key in self._cache:
+            del self._cache[key]
+
+        # Evict least-recently-used entries if at capacity
+        while len(self._cache) >= self._max_size:
+            # popitem(last=False) removes the first (oldest / least recently used) item
+            self._cache.popitem(last=False)
 
         self._cache[key] = result
 
@@ -512,8 +554,28 @@ def _get_default_cache() -> ESMFoldCache:
 
 
 def clear_cache() -> None:
-    """Clear the ESMFold prediction cache."""
+    """Clear the ESMFold prediction cache.
+
+    Clears both the ESMFoldCache (in-memory LRU + file persistence) and
+    the ``functools.lru_cache`` memoization layer.
+    """
     _get_default_cache().clear()
+    _predict_structure_cached.cache_clear()
+
+
+@functools.lru_cache(maxsize=256)
+def _predict_structure_cached(protein: str) -> ESMFoldResult:
+    """LRU-cached wrapper for structure prediction.
+
+    This provides a fast memoization layer on top of the full prediction
+    pipeline.  Calls are keyed on the protein sequence string only;
+    parameters like ``use_api`` and ``timeout`` are NOT part of the key
+    — the assumption is that the same sequence should always yield the
+    same structure prediction.
+
+    Call :func:`clear_cache` to invalidate.
+    """
+    return _predict_structure_uncached(protein)
 
 
 # ==============================================================================
@@ -852,10 +914,18 @@ def predict_structure(
 ) -> ESMFoldResult:
     """Predict the 3-D structure of a protein using ESMFold.
 
+    This function is the main public API for structure prediction.  It
+    automatically checks the LRU cache before performing a prediction;
+    repeated calls with the same sequence return the cached result.
+
     Strategy priority:
-      1. **API** — POST the sequence to ESM Atlas and parse the PDB response.
-      2. **Local esm** — ``import esm`` and run ESMFold locally (if installed).
-      3. **Heuristic fallback** — Use sequence-based heuristics (hydrophobicity,
+      1. **LRU cache** — Return cached result if this sequence was predicted
+         before (via ``functools.lru_cache``).
+      2. **ESMFoldCache** — Check the module-level ESMFoldCache instance
+         (in-memory LRU + optional file persistence).
+      3. **API** — POST the sequence to ESM Atlas and parse the PDB response.
+      4. **Local esm** — ``import esm`` and run ESMFold locally (if installed).
+      5. **Heuristic fallback** — Use sequence-based heuristics (hydrophobicity,
          charge distribution, secondary structure propensity) to produce a
          low-confidence estimate.  Per-residue pLDDT is calibrated based on
          predicted secondary structure (helix: 45-55, sheet: 40-50, coil: 25-35)
@@ -863,7 +933,7 @@ def predict_structure(
          The ``method`` field is set to ``"heuristic_fallback"``.
          This is NOT a substitute for ESMFold — it exists so that structure
          predicates can return a tentative verdict instead of UNCERTAIN.
-      4. **Complete failure** — Return ``ESMFoldResult(success=False)`` with
+      6. **Complete failure** — Return ``ESMFoldResult(success=False)`` with
          an error (only if the heuristic fallback itself raises an exception).
 
     Retry logic: up to 3 attempts with exponential backoff on transient
@@ -883,6 +953,36 @@ def predict_structure(
 
     Raises:
         ESMFoldError: If the protein contains invalid amino acid codes.
+    """
+    # Check ESMFoldCache first (in-memory LRU + file persistence)
+    cache = _get_default_cache()
+    cached = cache.get(protein)
+    if cached is not None:
+        return cached
+
+    # Perform the actual prediction
+    result = _predict_structure_uncached(
+        protein, organism=organism, use_api=use_api,
+        api_url=api_url, timeout=timeout,
+    )
+
+    # Store in ESMFoldCache for future lookups
+    cache.put(protein, result)
+
+    return result
+
+
+def _predict_structure_uncached(
+    protein: str,
+    organism: str = "Homo_sapiens",
+    use_api: bool = True,
+    api_url: str = DEFAULT_API_URL,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> ESMFoldResult:
+    """Internal uncached implementation of predict_structure.
+
+    See :func:`predict_structure` for documentation.  This function
+    performs the actual prediction without checking caches.
     """
     _validate_protein(protein)
 
@@ -1100,6 +1200,109 @@ def _build_result_from_pdb(
         execution_time_s=0.0,  # filled by caller
         success=True,
         method=method,
+    )
+
+
+# ==============================================================================
+# Pair prediction (wild-type vs mutant / optimized)
+# ==============================================================================
+
+@dataclass
+class StructureComparison:
+    """Result of comparing two protein structure predictions.
+
+    Typically used for wild-type vs. mutant (optimized) comparisons.
+
+    Attributes:
+        wildtype_result:    ESMFoldResult for the wild-type sequence.
+        mutant_result:      ESMFoldResult for the mutant / optimized sequence.
+        plddt_delta:        Difference in mean pLDDT (mutant − wildtype).
+                            Positive values indicate the mutant has higher
+                            predicted confidence.
+        plddt_per_residue_delta: Per-residue pLDDT difference
+                                 (mutant − wildtype).  Length matches the
+                                 shorter of the two sequences; beyond that,
+                                 values are None.
+        confidence_delta:   Difference in normalized_confidence
+                            (mutant − wildtype).
+        improved:           True if the mutant has equal or higher mean pLDDT
+                            than the wildtype.
+    """
+
+    wildtype_result: ESMFoldResult
+    mutant_result: ESMFoldResult
+    plddt_delta: float
+    plddt_per_residue_delta: list[float | None]
+    confidence_delta: float
+    improved: bool
+
+
+def predict_pair(
+    wildtype: str,
+    mutant: str,
+    use_api: bool = True,
+    api_url: str = DEFAULT_API_URL,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> StructureComparison:
+    """Predict structures for wild-type and mutant sequences in the same batch.
+
+    Convenience method for comparing wild-type vs. optimized structures.
+    Both sequences are predicted in the same batch call for efficiency,
+    then compared on pLDDT and normalized confidence.
+
+    This is particularly useful for evaluating whether a sequence
+    optimization (e.g., codon optimization, stabilizing mutations)
+    is predicted to improve structural confidence.
+
+    Args:
+        wildtype: Wild-type protein sequence (single-letter codes).
+        mutant:   Mutant / optimized protein sequence (single-letter codes).
+        use_api:  If True, try the remote API first.
+        api_url:  ESM Atlas API endpoint.
+        timeout:  Per-protein request timeout in seconds.
+
+    Returns:
+        :class:`StructureComparison` with both results and delta metrics.
+
+    Raises:
+        ESMFoldError: If either sequence contains invalid amino acid codes.
+    """
+    # Predict both in one batch call for efficiency
+    batch = predict_structure_batch(
+        [wildtype, mutant],
+        max_concurrent=2,
+        use_api=use_api,
+        api_url=api_url,
+        timeout=timeout,
+    )
+    wt_result = batch.results[0]
+    mt_result = batch.results[1]
+
+    # Compute delta metrics
+    plddt_delta = mt_result.primary_score - wt_result.primary_score
+    confidence_delta = mt_result.normalized_confidence - wt_result.normalized_confidence
+
+    # Per-residue delta
+    wt_scores = wt_result.plddt_scores
+    mt_scores = mt_result.plddt_scores
+    min_len = min(len(wt_scores), len(mt_scores))
+    max_len = max(len(wt_scores), len(mt_scores))
+    per_residue_delta: list[float | None] = []
+    for i in range(max_len):
+        if i < min_len:
+            per_residue_delta.append(round(mt_scores[i] - wt_scores[i], 2))
+        else:
+            per_residue_delta.append(None)
+
+    improved = plddt_delta >= 0
+
+    return StructureComparison(
+        wildtype_result=wt_result,
+        mutant_result=mt_result,
+        plddt_delta=round(plddt_delta, 2),
+        plddt_per_residue_delta=per_residue_delta,
+        confidence_delta=round(confidence_delta, 4),
+        improved=improved,
     )
 
 

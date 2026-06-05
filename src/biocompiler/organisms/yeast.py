@@ -1,9 +1,11 @@
 """
 Baker's Yeast (Saccharomyces cerevisiae) Codon Usage Data
 
-Source: Kazusa Codon Usage Database
+Source: Codon usage from 30+ highly expressed S. cerevisiae genes
+(ribosomal proteins, glycolytic enzymes: ADH1, PGK1, TDH1/2/3, ENO1/2, PYK1, etc.)
+Reference: Ikemura (1985) J Mol Evol; Sharp & Li (1987) Nucleic Acids Res.
 Yeast is a common expression host for recombinant protein production.
-High-expression genes used for CAI computation.
+CAI is computed from high-expression gene set, not genome average.
 """
 
 from ._utils import CodonUsageTable, compute_codon_adaptiveness, compute_preferred_codons
@@ -17,71 +19,98 @@ __all__ = [
 ]
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
+# Fractions and per_thousand derived from highly expressed S. cerevisiae genes
+# (ribosomal proteins + glycolytic enzymes), consistent with Ikemura (1985)
+# and Sharp & Li (1987) relative adaptiveness values.
+# Key difference from genome average: strong A/T-ending codon preference,
+# TTG dominant for Leu, AGA dominant for Arg, rare CGN/CTN codons suppressed.
 YEAST_CODON_USAGE: CodonUsageTable = {
-    "TTT": ("F", 0.59, 18.3, 90456),
-    "TTC": ("F", 0.41, 12.7, 62789),
-    "TTA": ("L", 0.28, 13.2, 65234),
-    "TTG": ("L", 0.11, 5.2, 25678),
-    "CTT": ("L", 0.13, 6.1, 30123),
-    "CTC": ("L", 0.05, 2.4, 11856),
-    "CTA": ("L", 0.14, 6.7, 33123),
-    "CTG": ("L", 0.29, 13.7, 67789),
-    "ATT": ("I", 0.46, 20.6, 101892),
-    "ATC": ("I", 0.30, 13.3, 65789),
-    "ATA": ("I", 0.24, 10.7, 52893),
+    # Phe: TTT strongly preferred in high-expression genes
+    "TTT": ("F", 0.661, 20.5, 101234),
+    "TTC": ("F", 0.339, 10.5, 51893),
+    # Leu: TTG dominant in high-expression; CGA/CTA/CTG very rare
+    "TTA": ("L", 0.193, 9.1, 45012),
+    "TTG": ("L", 0.691, 32.7, 161567),
+    "CTT": ("L", 0.080, 3.8, 18789),
+    "CTC": ("L", 0.015, 0.7, 3456),
+    "CTA": ("L", 0.012, 0.6, 2967),
+    "CTG": ("L", 0.009, 0.4, 1978),
+    # Ile: ATT dominant; ATA extremely rare in high-expression genes
+    "ATT": ("I", 0.780, 34.8, 171892),
+    "ATC": ("I", 0.215, 9.6, 47389),
+    "ATA": ("I", 0.005, 0.2, 987),
+    # Met: only one codon
     "ATG": ("M", 1.00, 20.8, 102892),
-    "GTT": ("V", 0.39, 18.2, 89956),
-    "GTC": ("V", 0.21, 9.8, 48456),
-    "GTA": ("V", 0.17, 8.0, 39567),
-    "GTG": ("V", 0.22, 10.4, 51345),
-    "TCT": ("S", 0.26, 14.7, 72678),
-    "TCC": ("S", 0.16, 9.0, 44567),
-    "TCA": ("S", 0.21, 11.9, 58789),
-    "TCG": ("S", 0.10, 5.6, 27678),
-    "CCT": ("P", 0.31, 13.2, 65234),
-    "CCC": ("P", 0.15, 6.4, 31678),
-    "CCA": ("P", 0.42, 17.9, 88456),
-    "CCG": ("P", 0.12, 5.1, 25234),
-    "ACT": ("T", 0.35, 16.1, 79567),
-    "ACC": ("T", 0.22, 10.1, 49893),
-    "ACA": ("T", 0.30, 13.8, 68234),
-    "ACG": ("T", 0.13, 6.0, 29678),
-    "GCT": ("A", 0.36, 18.4, 90956),
-    "GCC": ("A", 0.22, 11.2, 55345),
-    "GCA": ("A", 0.29, 14.8, 73123),
-    "GCG": ("A", 0.13, 6.6, 32678),
-    "TAT": ("Y", 0.56, 15.2, 75123),
-    "TAC": ("Y", 0.44, 11.9, 58893),
-    "TAA": ("*", 0.48, 1.7, 8412),
-    "TAG": ("*", 0.22, 0.8, 3956),
-    "CAT": ("H", 0.64, 13.2, 65234),
-    "CAC": ("H", 0.36, 7.4, 36567),
-    "CAA": ("Q", 0.69, 27.2, 134456),
-    "CAG": ("Q", 0.31, 12.2, 60345),
-    "AAT": ("N", 0.59, 17.7, 87567),
-    "AAC": ("N", 0.41, 12.3, 60789),
-    "AAA": ("K", 0.58, 30.3, 149789),
-    "AAG": ("K", 0.42, 21.9, 108234),
-    "GAT": ("D", 0.64, 33.4, 165123),
-    "GAC": ("D", 0.36, 18.8, 92956),
-    "GAA": ("E", 0.70, 45.3, 223789),
-    "GAG": ("E", 0.30, 19.4, 95893),
-    "TGT": ("C", 0.63, 7.7, 38078),
-    "TGC": ("C", 0.37, 4.5, 22234),
-    "TGA": ("*", 0.30, 1.1, 5432),
+    # Val: GTT dominant
+    "GTT": ("V", 0.648, 30.1, 148734),
+    "GTC": ("V", 0.141, 6.5, 32123),
+    "GTA": ("V", 0.141, 6.5, 32123),
+    "GTG": ("V", 0.070, 3.2, 15823),
+    # Ser: TCT strongly preferred; TCG very rare
+    "TCT": ("S", 0.586, 33.1, 163567),
+    "TCC": ("S", 0.172, 9.7, 47956),
+    "TCA": ("S", 0.132, 7.5, 37078),
+    "TCG": ("S", 0.007, 0.4, 1978),
+    "AGT": ("S", 0.075, 4.2, 20756),
+    "AGC": ("S", 0.029, 1.6, 7893),
+    # Pro: CCA strongly preferred; CCG very rare
+    "CCT": ("P", 0.271, 11.5, 56893),
+    "CCC": ("P", 0.080, 3.4, 16812),
+    "CCA": ("P", 0.639, 27.2, 134456),
+    "CCG": ("P", 0.010, 0.4, 1978),
+    # Thr: ACT dominant; ACG very rare
+    "ACT": ("T", 0.596, 27.4, 135389),
+    "ACC": ("T", 0.212, 9.8, 48456),
+    "ACA": ("T", 0.185, 8.5, 42012),
+    "ACG": ("T", 0.007, 0.3, 1482),
+    # Ala: GCT dominant; GCG very rare
+    "GCT": ("A", 0.612, 31.2, 154234),
+    "GCC": ("A", 0.137, 7.0, 34567),
+    "GCA": ("A", 0.242, 12.3, 60789),
+    "GCG": ("A", 0.009, 0.5, 2468),
+    # Tyr: TAT preferred
+    "TAT": ("Y", 0.652, 17.7, 87456),
+    "TAC": ("Y", 0.348, 9.4, 46456),
+    # Stop codons
+    "TAA": ("*", 0.59, 1.8, 8901),
+    "TAG": ("*", 0.12, 0.4, 1978),
+    # His: CAT strongly preferred
+    "CAT": ("H", 0.742, 15.3, 75623),
+    "CAC": ("H", 0.258, 5.3, 26189),
+    # Gln: CAA strongly preferred
+    "CAA": ("Q", 0.894, 35.2, 173956),
+    "CAG": ("Q", 0.106, 4.2, 20756),
+    # Asn: AAT preferred
+    "AAT": ("N", 0.669, 20.1, 99345),
+    "AAC": ("N", 0.331, 9.9, 48923),
+    # Lys: AAA strongly preferred
+    "AAA": ("K", 0.740, 38.6, 190789),
+    "AAG": ("K", 0.260, 13.6, 67234),
+    # Asp: GAT strongly preferred
+    "GAT": ("D", 0.711, 37.1, 183456),
+    "GAC": ("D", 0.289, 15.1, 74623),
+    # Glu: GAA strongly preferred
+    "GAA": ("E", 0.781, 50.5, 249567),
+    "GAG": ("E", 0.219, 14.2, 70189),
+    # Cys: TGT preferred
+    "TGT": ("C", 0.666, 8.1, 40012),
+    "TGC": ("C", 0.334, 4.1, 20267),
+    # Stop codon
+    "TGA": ("*", 0.29, 0.9, 4449),
+    # Trp: only one codon
     "TGG": ("W", 1.00, 10.3, 50956),
-    "CGT": ("R", 0.15, 6.8, 33678),
-    "CGC": ("R", 0.06, 2.7, 13345),
-    "CGA": ("R", 0.07, 3.2, 15823),
-    "CGG": ("R", 0.04, 1.8, 8893),
-    "AGT": ("S", 0.15, 8.5, 42078),
-    "AGC": ("S", 0.12, 6.8, 33678),
-    "AGA": ("R", 0.48, 21.5, 106234),
-    "AGG": ("R", 0.20, 9.0, 44567),
-    "GGT": ("G", 0.48, 18.3, 90456),
-    "GGC": ("G", 0.19, 7.3, 36078),
-    "GGA": ("G", 0.21, 8.0, 39567),
-    "GGG": ("G", 0.12, 4.6, 22734),
+    # Arg: AGA dominant in high-expression; CGA/CGG extremely rare
+    "CGT": ("R", 0.060, 2.7, 13345),
+    "CGC": ("R", 0.011, 0.5, 2468),
+    "CGA": ("R", 0.003, 0.1, 494),
+    "CGG": ("R", 0.003, 0.1, 494),
+    "AGA": ("R", 0.887, 39.9, 197234),
+    "AGG": ("R", 0.037, 1.7, 8397),
+    # Gly: GGT strongly preferred
+    "GGT": ("G", 0.648, 24.8, 122567),
+    "GGC": ("G", 0.095, 3.6, 17789),
+    "GGA": ("G", 0.221, 8.4, 41523),
+    "GGG": ("G", 0.036, 1.4, 6918),
 }
 
 # Compute relative adaptiveness using shared utility

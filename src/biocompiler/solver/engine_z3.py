@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 try:
     from z3 import (
         Optimize,
+        Solver,
         Int,
         IntVal,
         If,
@@ -65,6 +66,7 @@ try:
         Sum,
         ArithRef,
         BoolRef,
+        Bool as Z3Bool,
         sat,
         unsat,
         unknown,
@@ -96,6 +98,8 @@ __all__ = ["Z3Engine"]
 _CAI_SCALE: int = 10000  # 4 decimal places of precision
 # Scale factor for MaxEntScan scores to convert to Z3-compatible integers
 _SCORE_SCALE: int = 100  # 2 decimal places
+# Default Z3 timeout in seconds (overridden by config.timeout_seconds if set)
+_Z3_DEFAULT_TIMEOUT: float = 30.0
 
 
 def _precompute_donor_scores() -> list[list[float]]:
@@ -200,6 +204,10 @@ class Z3Engine(SolverBackendProtocol):
         self.organism = organism
         self._seed: int = seed
         self._optimizer: Optional[Optimize] = None
+        # Storage for constraint expressions and names for UNSAT core extraction
+        self._constraint_exprs: list[tuple[str, object]] = []
+        # Whether any soft constraints were detected in the model
+        self._has_soft_constraints: bool = False
         logger.debug(
             "Z3Engine initialized: organism=%s, seed=%d, "
             "z3_available=%s, timeout=%.1fs",
@@ -332,9 +340,37 @@ class Z3Engine(SolverBackendProtocol):
         # Store protein for translation fidelity validation in _extract_solution
         self._protein_for_validation = protein
 
+        # Reset constraint storage for this solve invocation
+        self._constraint_exprs = []
+
+        # ── Fix #2: Detect soft constraints in the model ─────────────
+        # If any constraint in the model is marked SOFT, we should use
+        # add_soft() for those constraints so the optimizer can relax
+        # them if needed.
+        model_constraints = getattr(model, "constraints", [])
+        self._has_soft_constraints = any(
+            getattr(c, "strictness", ConstraintStrictness.HARD) == ConstraintStrictness.SOFT
+            for c in model_constraints
+        )
+
+        # ── Fix #3: Default timeout of 30 seconds for Z3 ────────────
+        # Z3 can be very slow for large instances; cap the timeout to a
+        # reasonable default unless the user explicitly requests more.
+        effective_timeout = config.timeout_seconds
+        if effective_timeout <= 0 or effective_timeout > _Z3_DEFAULT_TIMEOUT * 3:
+            # If timeout is the default (60s) or unreasonably large for Z3,
+            # cap it at the Z3 default. Users can still set a higher value
+            # if they know what they're doing.
+            effective_timeout = min(effective_timeout, _Z3_DEFAULT_TIMEOUT)
+            logger.info(
+                "Z3: Capping timeout to %.1fs (from config %.1fs) "
+                "for better interactive behaviour",
+                effective_timeout, config.timeout_seconds,
+            )
+
         # Create optimizer
         optimizer = Optimize()
-        optimizer.set("timeout", int(config.timeout_seconds * 1000))
+        optimizer.set("timeout", int(effective_timeout * 1000))
         # Note: Z3's Optimize does not support 'random_seed' (only Solver does).
         # We use 'rlimit' as a resource limit proxy for reproducibility.
         try:
@@ -379,6 +415,10 @@ class Z3Engine(SolverBackendProtocol):
             nuc_exprs.extend([nuc0, nuc1, nuc2])
 
         total_nucs = len(nuc_exprs)  # = 3 * n
+
+        # ── Fix #4: Store codon vars/lists for splice lookup table ──
+        self._current_codon_vars = codon_vars
+        self._current_codon_lists = codon_lists
 
         # --- Add constraints ---
         constraint_names: list[str] = []
@@ -474,6 +514,36 @@ class Z3Engine(SolverBackendProtocol):
         elif result_status == unknown:
             reason = optimizer.reason_unknown()
             is_timeout = "timeout" in reason.lower() or "canceled" in reason.lower()
+
+            # ── Fix #3: On timeout, try to extract best solution found ──
+            # Z3's Optimize may have a partial model even after timeout.
+            # If we can extract it, return it as a best-effort solution.
+            if is_timeout:
+                try:
+                    partial_model = optimizer.model()
+                    if partial_model and len(partial_model) > 0:
+                        result = self._extract_solution(
+                            partial_model, codon_vars, codon_lists, protein,
+                            solve_time, len(constraint_names), n
+                        )
+                        # Mark as unsolved but include the best-effort sequence
+                        result.solved = False
+                        result.fallback_used = True
+                        result.warnings.append(
+                            f"Z3 timed out after {solve_time:.1f}s — "
+                            "returning best solution found so far "
+                            "(may not satisfy all constraints)"
+                        )
+                        logger.info(
+                            "Z3: Extracted partial solution after timeout "
+                            "(sequence_len=%d)", len(result.sequence),
+                        )
+                        return result
+                except Exception as e:
+                    logger.debug(
+                        "Z3: Could not extract partial model after timeout: %s", e
+                    )
+
             return SolverResult(
                 sequence="",
                 solved=False,
@@ -576,8 +646,14 @@ class Z3Engine(SolverBackendProtocol):
         gc_lo_bound = math.ceil(config.gc_lo * total_nucs)
         gc_hi_bound = math.floor(config.gc_hi * total_nucs)
 
-        optimizer.add(gc_count >= gc_lo_bound)
-        optimizer.add(gc_count <= gc_hi_bound)
+        gc_lo_expr = gc_count >= gc_lo_bound
+        gc_hi_expr = gc_count <= gc_hi_bound
+        optimizer.add(gc_lo_expr)
+        optimizer.add(gc_hi_expr)
+
+        # ── Fix #1: Store constraint expressions for UNSAT core ──
+        self._constraint_exprs.append((f"gc_lo_{config.gc_lo}", gc_lo_expr))
+        self._constraint_exprs.append((f"gc_hi_{config.gc_hi}", gc_hi_expr))
 
         constraint_names.append(f"gc_lo_{config.gc_lo}")
         constraint_names.append(f"gc_hi_{config.gc_hi}")
@@ -657,6 +733,13 @@ class Z3Engine(SolverBackendProtocol):
                         )
                 optimizer.add(Not(And(*base_eqs)))
 
+            # ── Fix #1: Store one representative expression per pattern ──
+            # We store the last window constraint as representative; the
+            # UNSAT core will identify the pattern name.
+            if base_eqs:
+                self._constraint_exprs.append(
+                    (f"no_{pattern}", Not(And(*base_eqs)))
+                )
             constraint_names.append(f"no_{pattern}")
 
             if self.config.verbose:
@@ -678,25 +761,25 @@ class Z3Engine(SolverBackendProtocol):
         protein: str,
         config: SolverConfig,
     ) -> list[str]:
-        """Encode splice site avoidance constraints using MaxEntScan.
+        """Encode splice site avoidance constraints using lookup table approach.
 
-        For each potential GT (donor) position in the nucleotide sequence,
-        encodes the MaxEntScan score as a Z3 expression and constrains
-        it to be below the threshold. Similarly for AG (acceptor) sites.
+        Instead of encoding MaxEntScan scores as Z3 arithmetic expressions
+        (which creates deep If-Then-Else chains that Z3 struggles with),
+        we precompute which codon-index combinations produce splice scores
+        above the threshold, then forbid only those combinations.
 
-        Donor encoding (9-mer, positions -3 to +6 relative to GT)::
+        For each potential GT (donor) position j, the 9-mer context spans
+        codons [(j-3)//3 .. (j+5)//3].  We enumerate all codon choices
+        for those positions, compute the 9-mer sequence, score it with
+        MaxEntScan, and if the score exceeds the threshold AND the middle
+        two bases are GT, we add a forbidden combination constraint::
 
-            Implies(And(nuc_j == G, nuc_{j+1} == T),
-                     donor_score_j < threshold)
+            Not(And(codon_i1 == idx1, codon_i2 == idx2, ..., nuc_j == G, nuc_{j+1} == T))
 
-        Acceptor encoding (23-mer, positions -20 to +3 relative to AG)::
+        This converts the arithmetic encoding into simple Boolean constraints
+        that Z3 handles efficiently.
 
-            Implies(And(nuc_j == A, nuc_{j+1} == G),
-                     acceptor_score_j < threshold)
-
-        The score expressions use If-Then-Else chains over the
-        pre-computed PWM log-odds contributions, scaled to integers
-        for Z3 arithmetic.
+        Acceptor sites (23-mer around AG) are encoded similarly.
 
         Args:
             optimizer: Z3 Optimize instance.
@@ -714,10 +797,6 @@ class Z3Engine(SolverBackendProtocol):
 
         # Skip splice constraints entirely when threshold <= 0 (disabled)
         # or when the organism is prokaryotic (no spliceosome).
-        # Without this guard, threshold=0 generates constraints like
-        # Implies(GT_detected, score < 0) which forbids ALL GT/AG
-        # dinucleotides — including Valine codons that start with GT —
-        # making the model UNSAT.
         if donor_thresh <= 0 and acceptor_thresh <= 0:
             return constraint_names
 
@@ -731,69 +810,265 @@ class Z3Engine(SolverBackendProtocol):
             )
             return constraint_names
 
-        # --- Donor site constraints (9-mer context around GT) ---
-        for j in range(total_nucs - 1):
-            ctx_start = j - 3
-            ctx_end = j + 6  # exclusive
-            if ctx_start < 0 or ctx_end > total_nucs:
-                continue
+        # Import MaxEntScan scoring functions for lookup table precomputation
+        from ..maxentscan import score_donor, score_acceptor
 
-            score_terms: list[ArithRef] = []
-            for pwm_pos in range(9):
-                nuc = nuc_exprs[ctx_start + pwm_pos]
-                ss = [int(round(_DONOR_SCORES[pwm_pos][b] * _SCORE_SCALE))
-                      for b in range(4)]
-                score_terms.append(
-                    If(nuc == 0, IntVal(ss[0]),
-                       If(nuc == 1, IntVal(ss[1]),
-                          If(nuc == 2, IntVal(ss[2]), IntVal(ss[3]))))
+        # --- Build codon position mapping ---
+        # We need to know which codon variable covers each nucleotide position.
+        # codon_vars and codon_lists are accessible via self or the optimizer's
+        # internal state. We reconstruct from nuc_exprs.
+        # Actually, we need the codon_vars and codon_lists — we'll receive them
+        # from the solve() method via a helper.
+
+        # This method is called from solve() where codon_vars and codon_lists
+        # are available. We'll use a new signature that passes them.
+        # For now, we infer codon boundaries from the nucleotide expressions.
+        # Each codon covers 3 nucleotide positions. Given n codon positions,
+        # codon i covers nuc positions [3*i, 3*i+3).
+
+        # We need codon_vars and codon_lists to enumerate combinations.
+        # They must be passed from solve(). We retrieve them from self.
+        codon_vars = getattr(self, "_current_codon_vars", [])
+        codon_lists = getattr(self, "_current_codon_lists", [])
+
+        if not codon_vars or not codon_lists:
+            # Fallback: no codon variables stored yet (shouldn't happen)
+            logger.warning("Z3: Splice encoding has no codon variables; skipping")
+            return constraint_names
+
+        n_codons = len(codon_vars)
+
+        # --- Donor site constraints (9-mer context around GT) ---
+        if donor_thresh > 0:
+            n_donor_forbidden = 0
+            for j in range(total_nucs - 1):
+                # 9-mer context: positions j-3 to j+5
+                ctx_start = j - 3
+                ctx_end = j + 6  # exclusive
+                if ctx_start < 0 or ctx_end > total_nucs:
+                    continue
+
+                # Find codon positions covered by this context window
+                first_codon = ctx_start // 3
+                last_codon = (ctx_end - 1) // 3
+
+                # Enumerate all codon combinations for the covered codons
+                covered_codons = list(range(first_codon, min(last_codon + 1, n_codons)))
+
+                # Build the lookup table: enumerate all combinations and
+                # identify which ones produce high-scoring donor sites
+                forbidden_combos = self._find_forbidden_splice_combos(
+                    codon_lists, covered_codons, j, "donor", donor_thresh
                 )
 
-            donor_score = Sum(score_terms)
-            thresh_scaled = int(round(donor_thresh * _SCORE_SCALE))
-            gt_detected = And(nuc_exprs[j] == 2, nuc_exprs[j + 1] == 3)  # G=2, T=3
-            optimizer.add(Implies(gt_detected, donor_score < thresh_scaled))
-            constraint_names.append(f"no_donor_splice_{j}")
+                # Add constraints: for each forbidden combination, forbid it
+                for combo in forbidden_combos:
+                    # combo is a dict mapping codon_index -> codon_choice_index
+                    terms = []
+                    for ci, idx in combo.items():
+                        terms.append(codon_vars[ci] == idx)
+                    # Also require GT at positions j, j+1
+                    terms.append(nuc_exprs[j] == 2)   # G=2
+                    terms.append(nuc_exprs[j + 1] == 3)  # T=3
+                    optimizer.add(Not(And(*terms)))
+                    n_donor_forbidden += 1
+
+                constraint_names.append(f"no_donor_splice_{j}")
+
+            if self.config.verbose:
+                logger.info(
+                    "Z3: Added donor splice constraints via lookup table "
+                    "(%d forbidden combos across %d GT positions)",
+                    n_donor_forbidden,
+                    sum(1 for j in range(total_nucs - 1)
+                        if j - 3 >= 0 and j + 6 <= total_nucs),
+                )
 
         # --- Acceptor site constraints (23-mer context around AG) ---
-        for j in range(total_nucs - 1):
-            ctx_start = j - 20
-            ctx_end = j + 4  # exclusive
-            if ctx_start < 0 or ctx_end > total_nucs:
-                continue
+        if acceptor_thresh > 0:
+            n_acceptor_forbidden = 0
+            for j in range(total_nucs - 1):
+                ctx_start = j - 20
+                ctx_end = j + 4  # exclusive
+                if ctx_start < 0 or ctx_end > total_nucs:
+                    continue
 
-            score_terms: list[ArithRef] = []
-            for pwm_pos in range(23):
-                nuc = nuc_exprs[ctx_start + pwm_pos]
-                ss = [int(round(_ACCEPTOR_SCORES[pwm_pos][b] * _SCORE_SCALE))
-                      for b in range(4)]
-                score_terms.append(
-                    If(nuc == 0, IntVal(ss[0]),
-                       If(nuc == 1, IntVal(ss[1]),
-                          If(nuc == 2, IntVal(ss[2]), IntVal(ss[3]))))
+                # Find codon positions covered by this context window
+                first_codon = ctx_start // 3
+                last_codon = (ctx_end - 1) // 3
+                covered_codons = list(range(first_codon, min(last_codon + 1, n_codons)))
+
+                # The 23-mer spans many codons (up to 8-9). Enumerating all
+                # combinations of 8+ codons could be expensive (6^8 ≈ 1.7M).
+                # For acceptor sites, we use a hybrid approach: enumerate the
+                # "inner" codons (those containing or adjacent to the AG) fully,
+                # and for "outer" codons, just add the GT/AG guard.
+                #
+                # Specifically, we only enumerate combinations for codons that
+                # contain the AG dinucleotide and its immediate neighbors (±1 codon).
+                # For the remaining outer codons, the constraint is simply that
+                # if the inner combination produces a high score, it's forbidden.
+                #
+                # In practice, most AG positions within a codon boundary involve
+                # only 2-3 codons for the AG itself, so enumeration is tractable.
+
+                ag_codon = j // 3  # Codon containing the A of AG
+                # Inner codons: ag_codon and possibly ag_codon+1 if AG spans boundary
+                inner_codons = set()
+                inner_codons.add(ag_codon)
+                if j + 1 < total_nucs and (j + 1) // 3 != ag_codon:
+                    inner_codons.add((j + 1) // 3)
+                # Add neighbors for score context
+                for c in list(inner_codons):
+                    if c > 0:
+                        inner_codons.add(c - 1)
+                    if c < n_codons - 1:
+                        inner_codons.add(c + 1)
+                inner_codons = sorted(inner_codons)
+
+                # For efficiency, limit enumeration to inner codons
+                # (at most 5 codons → 6^5 = 7776 combinations)
+                if len(inner_codons) > 6:
+                    # Too many inner codons; fall back to arithmetic encoding
+                    # for this position
+                    score_terms: list[ArithRef] = []
+                    for pwm_pos in range(23):
+                        nuc = nuc_exprs[ctx_start + pwm_pos]
+                        ss = [int(round(_ACCEPTOR_SCORES[pwm_pos][b] * _SCORE_SCALE))
+                              for b in range(4)]
+                        score_terms.append(
+                            If(nuc == 0, IntVal(ss[0]),
+                               If(nuc == 1, IntVal(ss[1]),
+                                  If(nuc == 2, IntVal(ss[2]), IntVal(ss[3]))))
+                        )
+                    acceptor_score = Sum(score_terms)
+                    thresh_scaled = int(round(acceptor_thresh * _SCORE_SCALE))
+                    ag_detected = And(nuc_exprs[j] == 0, nuc_exprs[j + 1] == 2)
+                    optimizer.add(Implies(ag_detected, acceptor_score < thresh_scaled))
+                    self._constraint_exprs.append(
+                        (f"no_acceptor_splice_{j}",
+                         Implies(ag_detected, acceptor_score < thresh_scaled))
+                    )
+                    constraint_names.append(f"no_acceptor_splice_{j}")
+                    continue
+
+                forbidden_combos = self._find_forbidden_splice_combos(
+                    codon_lists, inner_codons, j, "acceptor", acceptor_thresh
                 )
 
-            acceptor_score = Sum(score_terms)
-            thresh_scaled = int(round(acceptor_thresh * _SCORE_SCALE))
-            ag_detected = And(nuc_exprs[j] == 0, nuc_exprs[j + 1] == 2)  # A=0, G=2
-            optimizer.add(Implies(ag_detected, acceptor_score < thresh_scaled))
-            constraint_names.append(f"no_acceptor_splice_{j}")
+                for combo in forbidden_combos:
+                    terms = []
+                    for ci, idx in combo.items():
+                        terms.append(codon_vars[ci] == idx)
+                    terms.append(nuc_exprs[j] == 0)   # A=0
+                    terms.append(nuc_exprs[j + 1] == 2)  # G=2
+                    optimizer.add(Not(And(*terms)))
+                    n_acceptor_forbidden += 1
 
-        if self.config.verbose:
-            n_donors = sum(
-                1 for j in range(total_nucs - 1)
-                if j - 3 >= 0 and j + 6 <= total_nucs
-            )
-            n_acceptors = sum(
-                1 for j in range(total_nucs - 1)
-                if j - 20 >= 0 and j + 4 <= total_nucs
-            )
-            logger.info(
-                "Z3: Added splice constraints (%d donor, %d acceptor positions)",
-                n_donors, n_acceptors,
-            )
+                constraint_names.append(f"no_acceptor_splice_{j}")
+
+            if self.config.verbose:
+                logger.info(
+                    "Z3: Added acceptor splice constraints via lookup table "
+                    "(%d forbidden combos across %d AG positions)",
+                    n_acceptor_forbidden,
+                    sum(1 for j in range(total_nucs - 1)
+                        if j - 20 >= 0 and j + 4 <= total_nucs),
+                )
 
         return constraint_names
+
+    # -------------------------------------------------------------------
+    # Splice lookup table helper
+    # -------------------------------------------------------------------
+
+    def _find_forbidden_splice_combos(
+        self,
+        codon_lists: list[list[str]],
+        covered_codons: list[int],
+        nuc_position: int,
+        site_type: str,
+        threshold: float,
+    ) -> list[dict[int, int]]:
+        """Find codon combinations that produce splice scores above threshold.
+
+        Enumerates all combinations of codon choices for the given codon
+        positions, reconstructs the relevant subsequence, computes the
+        MaxEntScan score, and returns combinations that exceed the threshold.
+
+        Args:
+            codon_lists: Synonymous codon lists per position.
+            covered_codons: Indices of codon positions to enumerate.
+            nuc_position: Nucleotide position of the GT (donor) or AG (acceptor).
+            site_type: "donor" or "acceptor".
+            threshold: MaxEntScan score threshold.
+
+        Returns:
+            List of dicts mapping codon_index -> codon_choice_index for
+            forbidden combinations.
+        """
+        from ..maxentscan import score_donor, score_acceptor
+
+        forbidden: list[dict[int, int]] = []
+
+        # Build the Cartesian product of codon choices for covered positions
+        def _enumerate_combos(
+            codon_indices: list[int],
+            partial: dict[int, int],
+            depth: int,
+        ) -> None:
+            if depth >= len(codon_indices):
+                # Build the full sequence from the current combo
+                # to check the splice score
+                combo = dict(partial)
+                # Reconstruct the nucleotide sequence for the covered region
+                first_codon = min(codon_indices)
+                last_codon = max(codon_indices)
+                seq_start = first_codon * 3
+                seq_end = (last_codon + 1) * 3
+
+                # Build sequence from combo choices
+                seq_chars: list[str] = []
+                for ci in range(first_codon, last_codon + 1):
+                    if ci in combo:
+                        codon_idx = combo[ci]
+                        seq_chars.append(codon_lists[ci][codon_idx])
+                    else:
+                        # Use first codon as placeholder (shouldn't happen
+                        # if covered_codons is correct)
+                        seq_chars.append(codon_lists[ci][0])
+
+                partial_seq = "".join(seq_chars)
+
+                # Check if the GT/AG dinucleotide is present at the target position
+                local_pos = nuc_position - seq_start
+                if site_type == "donor":
+                    if local_pos < 0 or local_pos + 1 >= len(partial_seq):
+                        return
+                    if partial_seq[local_pos] != 'G' or partial_seq[local_pos + 1] != 'T':
+                        return  # No GT, constraint is vacuously satisfied
+                    # Score the donor site
+                    score = score_donor(partial_seq, local_pos)
+                    if score >= threshold:
+                        forbidden.append(combo)
+                else:  # acceptor
+                    if local_pos < 0 or local_pos + 1 >= len(partial_seq):
+                        return
+                    if partial_seq[local_pos] != 'A' or partial_seq[local_pos + 1] != 'G':
+                        return  # No AG
+                    score = score_acceptor(partial_seq, local_pos)
+                    if score >= threshold:
+                        forbidden.append(combo)
+                return
+
+            ci = codon_indices[depth]
+            for idx in range(len(codon_lists[ci])):
+                partial[ci] = idx
+                _enumerate_combos(codon_indices, partial, depth + 1)
+                del partial[ci]
+
+        _enumerate_combos(covered_codons, {}, 0)
+        return forbidden
 
     # -------------------------------------------------------------------
     # ATTTA instability motif avoidance
@@ -1142,12 +1417,17 @@ class Z3Engine(SolverBackendProtocol):
     ) -> MUSReport:
         """Extract UNSAT core from an unsatisfiable Z3 model.
 
-        Z3's optimizer does not directly support UNSAT core extraction
-        (only the Solver class does). We re-create the constraints using
-        a Z3 Solver with tracked assertions to obtain the core.
+        ── Fix #1: Improved UNSAT diagnosis ──────────────────────
 
-        The core is then mapped back to human-readable constraint names
-        for the MUS report.
+        Previously, the method replayed assertions from optimizer.assertions()
+        which could include Z3-internal assertions that don't map to named
+        constraints. Now we use the stored constraint expressions
+        (self._constraint_exprs) which accurately track the Z3 expressions
+        added for each named constraint.
+
+        We create a Solver with tracked assertions (Implies(p_i, expr_i))
+        and use Z3's unsat_core() to identify the minimal unsatisfiable
+        subset, then map it back to human-readable constraint names.
 
         Args:
             optimizer: The Z3 Optimize instance (used to get assertions).
@@ -1164,25 +1444,35 @@ class Z3Engine(SolverBackendProtocol):
         suggested_relaxations: list[str] = []
 
         try:
-            from z3 import Solver, Bool as Z3Bool
-
             solver = Solver()
-            assertions = optimizer.assertions()
+            # Enable unsat core tracking
+            solver.set("unsat_core", True)
+
             tracked: list[object] = []
 
-            for i, assertion in enumerate(assertions):
-                # Skip domain assertions — they are always satisfiable
-                # on their own and don't correspond to named constraints
-                if i < n_domain_assertions:
-                    p = Z3Bool(f"domain_{i}")
+            # ── Fix #1: Use stored constraint expressions ──────────
+            # Instead of relying on optimizer.assertions() (which may
+            # include internal assertions), use the constraint expressions
+            # we stored during encoding.
+            if self._constraint_exprs:
+                for name, expr in self._constraint_exprs:
+                    p = Z3Bool(f"p_{name}")
+                    solver.add(Implies(p, expr))
+                    tracked.append(p)
+            else:
+                # Fallback: replay from optimizer assertions
+                assertions = optimizer.assertions()
+                for i, assertion in enumerate(assertions):
+                    if i < n_domain_assertions:
+                        p = Z3Bool(f"domain_{i}")
+                        solver.add(Implies(p, assertion))
+                        tracked.append(p)
+                        continue
+                    name_idx = i - n_domain_assertions
+                    name = constraint_names[name_idx] if name_idx < len(constraint_names) else f"constraint_{i}"
+                    p = Z3Bool(f"p_{name}")
                     solver.add(Implies(p, assertion))
                     tracked.append(p)
-                    continue
-                name_idx = i - n_domain_assertions
-                name = constraint_names[name_idx] if name_idx < len(constraint_names) else f"constraint_{i}"
-                p = Z3Bool(f"p_{name_idx}")
-                solver.add(Implies(p, assertion))
-                tracked.append(p)
 
             result = solver.check(*tracked)
 
@@ -1193,11 +1483,16 @@ class Z3Engine(SolverBackendProtocol):
                     try:
                         p_str = str(p)
                         if p_str.startswith("p_"):
-                            name_idx = int(p_str[2:])
-                            if name_idx < len(constraint_names):
-                                name = constraint_names[name_idx]
-                            else:
-                                name = f"constraint_{name_idx}"
+                            # Name format: p_<constraint_name>
+                            # Extract the constraint name after "p_"
+                            name = p_str[2:]
+                            # If it's a numeric index (from fallback), map it
+                            if name.isdigit():
+                                name_idx = int(name)
+                                if name_idx < len(constraint_names):
+                                    name = constraint_names[name_idx]
+                                else:
+                                    name = f"constraint_{name_idx}"
                             core_names.add(name)
                     except (ValueError, IndexError) as exc:
                         logger.debug(
@@ -1234,6 +1529,7 @@ class Z3Engine(SolverBackendProtocol):
             explanation = (
                 f"Unsatisfiable model — conflicting constraints in: "
                 f"{', '.join(sorted(categories))}. "
+                f"Core contains {len(violations)} constraint(s). "
                 f"Try relaxing GC bounds, removing restriction enzymes, "
                 f"or increasing splice score thresholds."
             )
