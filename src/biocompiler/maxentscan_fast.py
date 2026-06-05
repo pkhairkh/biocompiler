@@ -55,15 +55,34 @@ from .maxentscan import (
     CRYPTIC_SPLICE_THRESHOLD,
     score_donor as _score_donor_reference,
     score_acceptor as _score_acceptor_reference,
+    scan_splice_sites,
+    max_donor_score,
+    max_acceptor_score,
+    validate_against_published,
 )
 
+# Re-export reference scoring functions under their canonical names so that
+# both modules expose the same public API.
+score_donor = _score_donor_reference
+score_acceptor = _score_acceptor_reference
+
 __all__ = [
+    # Fast-module specific
     "HAS_NUMBA_MAXENT",
     "scan_splice_sites_fast",
     "scan_splice_sites_fast_str",
     "score_donor_fast",
     "score_acceptor_fast",
     "check_consistency",
+    # Re-exported from maxentscan for unified API
+    "score_donor",
+    "score_acceptor",
+    "scan_splice_sites",
+    "max_donor_score",
+    "max_acceptor_score",
+    "validate_against_published",
+    "CRYPTIC_SPLICE_THRESHOLD",
+    # Internal numpy tables
     "_DONOR_PWM_NP",
     "_ACCEPTOR_PWM_NP",
     "_BASE_IDX_NP",
@@ -146,7 +165,7 @@ if HAS_NUMBA_MAXENT:
         end = position + donor_downstream
         n = len(seq_bytes)
         if start < 0 or end > n:
-            return -20.0  # _EDGE_CASE_SCORE: moderate low for boundary sequences
+            return -5.0  # _EDGE_CASE_SCORE: moderate low for boundary sequences
 
         score = 0.0
         for pwm_idx in range(donor_log.shape[0]):
@@ -175,7 +194,7 @@ if HAS_NUMBA_MAXENT:
         end = position + acceptor_downstream
         n = len(seq_bytes)
         if start < 0 or end > n:
-            return -20.0  # _EDGE_CASE_SCORE: moderate low for boundary sequences
+            return -5.0  # _EDGE_CASE_SCORE: moderate low for boundary sequences
 
         score = 0.0
         for pwm_idx in range(acceptor_log.shape[0]):

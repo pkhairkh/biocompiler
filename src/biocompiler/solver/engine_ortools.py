@@ -109,6 +109,14 @@ _LONG_PROTEIN_CODON_THRESHOLD = 1000
 # Reduced CAI scaling factor for long proteins (avoids overflow)
 _CAI_SCALE_LONG = 1000
 
+# Threshold protein length (in codons) for very long proteins;
+# proteins beyond this use an even smaller CAI scale to prevent
+# integer overflow in the CP-SAT objective sum
+_VERY_LONG_PROTEIN_CODON_THRESHOLD = 2000
+
+# Very reduced CAI scaling factor for very long proteins (avoids overflow)
+_CAI_SCALE_VERY_LONG = 100
+
 # Chunk size (in nucleotides) for decomposed automaton encoding
 _AUTOMATON_CHUNK_SIZE = 600
 
@@ -370,6 +378,11 @@ class ORTOOLSEngine:
             gc_count_var = self._add_gc_constraint(
                 cp_model, codon_vars, codon_domains, n_codons
             )
+            if self.config.verbose:
+                logger.info(
+                    "VERBOSE: GC constraint active: gc_range=[%.2f, %.2f]",
+                    self.config.gc_lo, self.config.gc_hi,
+                )
 
             # ── 4. Add composite automaton constraint (restriction + ATTTA + T-run) ──
             # Combine all forbidden-nucleotide-pattern DFAs into ONE automaton
@@ -379,18 +392,38 @@ class ORTOOLSEngine:
             )
 
             # ── 5. Add splice site constraints ────────────────────────
-            num_constraints += self._add_splice_constraints(
+            n_splice = self._add_splice_constraints(
                 cp_model, codon_vars, codon_domains, protein
             )
+            num_constraints += n_splice
+            if self.config.verbose:
+                logger.info(
+                    "VERBOSE: Splice constraints: %d added "
+                    "(threshold=%.1f, is_eukaryotic=%s)",
+                    n_splice, self.config.cryptic_splice_threshold,
+                    self.config.is_eukaryotic,
+                )
 
             # ── 6. Add CpG avoidance constraints ──────────────────────
-            num_constraints += self._add_cpg_constraints(
+            n_cpg = self._add_cpg_constraints(
                 cp_model, codon_vars, codon_domains, protein
             )
+            num_constraints += n_cpg
+            if self.config.verbose:
+                logger.info(
+                    "VERBOSE: CpG constraints: %d added (avoid_cpg=%s)",
+                    n_cpg, self.config.avoid_cpg,
+                )
 
             # ── 9. Set CAI maximization objective ─────────────────────
-            # Use reduced CAI scale for long proteins to avoid integer overflow
-            cai_scale = _CAI_SCALE_LONG if n_codons > _LONG_PROTEIN_CODON_THRESHOLD else _CAI_SCALE
+            # Use progressively reduced CAI scale for long/very-long proteins
+            # to avoid integer overflow in the CP-SAT objective sum.
+            if n_codons > _VERY_LONG_PROTEIN_CODON_THRESHOLD:
+                cai_scale = _CAI_SCALE_VERY_LONG
+            elif n_codons > _LONG_PROTEIN_CODON_THRESHOLD:
+                cai_scale = _CAI_SCALE_LONG
+            else:
+                cai_scale = _CAI_SCALE
             if n_codons > _LONG_PROTEIN_CODON_THRESHOLD:
                 logger.info(
                     "Long protein (%d codons): using reduced CAI scale=%d "
@@ -557,7 +590,8 @@ class ORTOOLSEngine:
             # before timing out. Both OPTIMAL and FEASIBLE are already handled
             # above; UNKNOWN means the solver could not prove feasibility or
             # infeasibility within the time limit, but may still have a
-            # solution available.
+            # solution available.  Always attempt to return the best feasible
+            # solution even on timeout.
             try:
                 sequence = self._extract_solution(
                     solver, codon_vars, codon_domains, protein
@@ -565,6 +599,12 @@ class ORTOOLSEngine:
                 if sequence:
                     gc_val = self._compute_gc(sequence)
                     cai_val = self._compute_cai(sequence, protein, organism)
+                    # ObjectiveValue() may raise if no solution was found;
+                    # fall back to NaN if unavailable.
+                    try:
+                        obj_val = solver.ObjectiveValue() / cai_scale
+                    except Exception:
+                        obj_val = float("nan")
                     return SolverResult(
                         sequence=sequence,
                         solved=True,
@@ -572,7 +612,7 @@ class ORTOOLSEngine:
                         cai=cai_val,
                         gc_content=gc_val,
                         solve_time_seconds=solve_time,
-                        objective_value=solver.ObjectiveValue() / cai_scale,
+                        objective_value=obj_val,
                         num_constraints=num_constraints,
                         num_variables=n_codons,
                         fallback_used=True,
@@ -759,6 +799,15 @@ class ORTOOLSEngine:
         # handled as a post-processing step by the greedy optimizer, which
         # uses context-aware motif detection. Set avoid_attta=True to enable
         # the automaton approach (works well for short proteins < 50 AA).
+        if self.config.verbose:
+            logger.info(
+                "VERBOSE: ATTTA avoidance: avoid_attta=%s, "
+                "n_codons=%d, max_codons_for_attta=%d, "
+                "will_add_automaton=%s",
+                self.config.avoid_attta, n_codons,
+                _ATTTA_AUTOMATON_MAX_CODONS,
+                self.config.avoid_attta and n_codons <= _ATTTA_AUTOMATON_MAX_CODONS,
+            )
         if self.config.avoid_attta and n_codons <= _ATTTA_AUTOMATON_MAX_CODONS:
             all_patterns.append(INSTABILITY_MOTIF)
             rc_attta = reverse_complement(INSTABILITY_MOTIF)
@@ -767,6 +816,11 @@ class ORTOOLSEngine:
 
         # Build composite DFA for all substring patterns
         if all_patterns:
+            if self.config.verbose:
+                logger.info(
+                    "VERBOSE: Composite automaton: %d forbidden patterns: %s",
+                    len(all_patterns), all_patterns[:10],
+                )
             dfa_tuple = build_composite_dfa(all_patterns)
             transition_table, accepting_states = dfa_tuple
 
@@ -781,7 +835,13 @@ class ORTOOLSEngine:
                 use_decomposed = n_codons > _DECOMPOSED_AUTOMATON_CODON_THRESHOLD
                 if use_decomposed:
                     max_pat_len = max(len(p) for p in all_patterns)
-                    overlap = max_pat_len - 1
+                    # Overlap must be at least max_pattern_length to guarantee
+                    # that any forbidden pattern spanning a chunk boundary is
+                    # fully contained within at least one chunk. Using
+                    # max_pat_len - 1 can miss patterns that start in the
+                    # non-overlap tail of one chunk and extend exactly to the
+                    # first character of the next chunk.
+                    overlap = max_pat_len
                     logger.info(
                         "Using decomposed automaton encoding for long sequence "
                         "(%d codons > %d threshold): %d patterns, "
@@ -803,10 +863,19 @@ class ORTOOLSEngine:
                         logger.warning("Failed to add composite automaton: %s", e)
 
         # T-run constraint: add as separate automaton
+        if self.config.verbose:
+            logger.info(
+                "VERBOSE: T-run avoidance: avoid_t_runs=%s, "
+                "max_t_run=%d, will_add=%s",
+                self.config.avoid_t_runs, _MAX_T_RUN_LENGTH,
+                self.config.avoid_t_runs,
+            )
         # (This is a different type of constraint — it tracks consecutive
         # T count, not substring matching. It doesn't conflict with the
         # substring DFA.)
         if self.config.avoid_t_runs:
+            if self.config.verbose:
+                logger.info("VERBOSE: Adding T-run automaton constraint")
             trun_dfa = build_trun_dfa(max_t=_MAX_T_RUN_LENGTH)
             trun_trans, trun_accepting = trun_dfa
 
@@ -816,7 +885,10 @@ class ORTOOLSEngine:
                 )
                 use_decomposed = n_codons > _DECOMPOSED_AUTOMATON_CODON_THRESHOLD
                 if use_decomposed:
-                    overlap = _MAX_T_RUN_LENGTH  # T-run: forbid max_t+1 consecutive T's
+                    # T-run avoidance forbids max_t+1 consecutive T's,
+                    # so the effective pattern length is max_t+1.
+                    # Overlap must be at least that to catch boundary-spanning runs.
+                    overlap = _MAX_T_RUN_LENGTH + 1
                     num_constraints += self._add_automaton_constraint_decomposed(
                         cp_model, nucleotide_vars, init_state, final_states,
                         trans_list, overlap,

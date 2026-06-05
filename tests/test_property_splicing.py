@@ -641,26 +641,42 @@ class TestSpliceVerdictMonotonicity:
            seq=dna_with_gt)
     @settings(max_examples=30)
     def test_verdict_respects_thresholds(self, low_thresh, high_thresh, seq):
-        """When low < high, verdicts respect the dual-threshold scheme.
+        """When low < high, verdicts respect the dual-threshold scheme,
+        except that sites without a nearby AG acceptor are auto-PASS.
 
         score < low_thresh → PASS
-        low_thresh <= score < high_thresh → UNCERTAIN
-        score >= high_thresh → FAIL
+        low_thresh <= score < high_thresh → UNCERTAIN  (if nearby AG)
+        score >= high_thresh → FAIL  (if nearby AG)
+        Sites without a compatible AG downstream are always PASS.
         """
         assume(low_thresh < high_thresh)
         results = score_splice_sites(seq, low_thresh=low_thresh, high_thresh=high_thresh)
+        # Pre-compute AG positions for donor/acceptor context check
+        ag_positions = {
+            i for i in range(len(seq) - 1) if seq[i:i+2] == "AG"
+        }
         for pos, score, verdict in results:
+            has_nearby_ag = any(
+                ag_pos > pos and ag_pos - pos <= 500
+                for ag_pos in ag_positions
+            )
             if score < low_thresh:
                 assert verdict == SpliceVerdict.PASS, (
                     f"Score {score} < low_thresh {low_thresh} but verdict={verdict}"
                 )
             elif score < high_thresh:
-                assert verdict == SpliceVerdict.UNCERTAIN, (
-                    f"low_thresh <= score {score} < high_thresh but verdict={verdict}"
+                # Without a nearby AG acceptor, UNCERTAIN is downgraded to PASS
+                expected = SpliceVerdict.UNCERTAIN if has_nearby_ag else SpliceVerdict.PASS
+                assert verdict == expected, (
+                    f"low_thresh <= score {score} < high_thresh, "
+                    f"has_nearby_ag={has_nearby_ag}, expected={expected}, verdict={verdict}"
                 )
             else:
-                assert verdict == SpliceVerdict.FAIL, (
-                    f"Score {score} >= high_thresh {high_thresh} but verdict={verdict}"
+                # Without a nearby AG acceptor, FAIL is downgraded to PASS
+                expected = SpliceVerdict.FAIL if has_nearby_ag else SpliceVerdict.PASS
+                assert verdict == expected, (
+                    f"Score {score} >= high_thresh {high_thresh}, "
+                    f"has_nearby_ag={has_nearby_ag}, expected={expected}, verdict={verdict}"
                 )
 
 

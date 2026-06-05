@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..organisms import resolve_organism
 from ..scanner import gc_content
 from .metrics import compute_cai_validated
 
@@ -567,6 +568,9 @@ def run_comparison(
 
     enzymes = enzymes or _DEFAULT_ENZYMES
 
+    # Resolve organism name once for consistent alias handling
+    resolved_org = resolve_organism(organism)
+
     # ── BioCompiler ──
     bc_cai = 0.0
     bc_gc = 0.0
@@ -581,14 +585,15 @@ def run_comparison(
     try:
         bc_result = optimize_sequence(
             target_protein=protein,
-            organism=organism,
+            organism=resolved_org,
             gc_lo=gc_lo,
             gc_hi=gc_hi,
         )
         bc_seq = bc_result.sequence
         # Use validated CAI for fair comparison — do NOT trust optimizer's CAI
-        bc_cai = compute_cai_validated(bc_seq, organism)
-        bc_gc = bc_result.gc_content
+        bc_cai = compute_cai_validated(bc_seq, resolved_org)
+        # Use validated gc_content for fair comparison
+        bc_gc = gc_content(bc_seq)
         bc_rs = _count_restriction_sites_both_strands(bc_seq, enzymes)
     except Exception as exc:
         bc_success = False
@@ -599,7 +604,7 @@ def run_comparison(
     # Evaluate BioCompiler constraints
     if bc_success and bc_seq:
         bc_constraints = _evaluate_constraints(
-            bc_seq, protein, organism, enzymes, gc_lo, gc_hi,
+            bc_seq, protein, resolved_org, enzymes, gc_lo, gc_hi,
         )
     else:
         bc_constraints = {c: False for c in ALL_CONSTRAINTS}
@@ -622,7 +627,7 @@ def run_comparison(
             t1 = time.perf_counter()
             dc_result = adapter.optimize(
                 protein=protein,
-                organism=organism,
+                organism=resolved_org,
                 constraints=[
                     {"type": "gc_range", "gc_lo": gc_lo, "gc_hi": gc_hi},
                     {"type": "avoid_restriction", "enzymes": enzymes},
@@ -631,13 +636,17 @@ def run_comparison(
             dc_runtime = time.perf_counter() - t1
 
             if dc_result.success:
-                dc_cai = dc_result.cai
-                dc_gc = dc_result.gc_content
-                dc_rs = dc_result.restriction_site_count
                 dc_seq = dc_result.sequence
+                # Use BioCompiler's validated evaluators for fairness —
+                # do NOT trust DNAchisel's own CAI / GC / RS output.
+                # This matches the module design principle: both tools'
+                # outputs are evaluated with the same metrics.
+                dc_cai = compute_cai_validated(dc_seq, resolved_org)
+                dc_gc = gc_content(dc_seq)
+                dc_rs = _count_restriction_sites_both_strands(dc_seq, enzymes)
                 dc_success = True
                 dc_constraints = _evaluate_constraints(
-                    dc_seq, protein, organism, enzymes, gc_lo, gc_hi,
+                    dc_seq, protein, resolved_org, enzymes, gc_lo, gc_hi,
                 )
             else:
                 dc_success = False

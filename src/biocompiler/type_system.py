@@ -901,20 +901,143 @@ def check_valid_coding_seq(seq: str) -> PredicateResult:
     return PredicateResult("ValidCodingSeq", True, verdict=Verdict.PASS, details="All codons valid")
 
 
-def check_conservation_score(original_aa: str, new_aa: str, min_score: int = 0) -> PredicateResult:
-    """Predicate 7: BLOSUM62 conservation score for amino acid substitution."""
-    score = BLOSUM62.get((original_aa, new_aa), _BLOSUM62_MISSING_SCORE)
-    passed = score >= min_score
-    return PredicateResult("ConservationScore", passed, verdict=Verdict.PASS if passed else SpliceVerdict.FAIL,
-                           details=f"BLOSUM62({original_aa},{new_aa})={score}, min={min_score}")
+def check_conservation_score(dna, protein, min_score: int = 0) -> PredicateResult:
+    """Predicate 7: BLOSUM62 conservation score between DNA-derived and target protein.
+
+    Translates the DNA sequence to its amino-acid sequence, then compares each
+    position against the target protein using the BLOSUM62 substitution matrix.
+    After a correct optimization the two sequences are identical, so every
+    diagonal score is positive and the predicate should PASS.
+
+    Backward-compatible: if both *dna* and *protein* are single amino-acid
+    characters, the old two-AA substitution check is performed instead.
+
+    Args:
+        dna: Optimized DNA coding sequence (translated internally).
+            For backward compatibility, also accepts a single amino-acid
+            character (paired with *protein* as a single amino-acid).
+        protein: Target protein sequence (amino-acid string).
+            For backward compatibility, also accepts a single amino-acid
+            character (paired with *dna* as a single amino-acid).
+        min_score: Minimum BLOSUM62 score per position for PASS (default 0).
+    """
+    # Backward compatibility: old callers passed two single AA characters
+    # as (original_aa, new_aa). Detect this pattern and handle it.
+    if isinstance(dna, str) and isinstance(protein, str) and len(dna) == 1 and len(protein) == 1:
+        score = BLOSUM62.get((dna, protein), _BLOSUM62_MISSING_SCORE)
+        passed = score >= min_score
+        return PredicateResult(
+            "ConservationScore", passed,
+            verdict=Verdict.PASS if passed else Verdict.FAIL,
+            details=f"BLOSUM62({dna},{protein})={score}, min={min_score}",
+        )
+
+    # Translate DNA → protein
+    translated = ""
+    for i in range(0, len(dna) - 2, 3):
+        codon = dna[i:i + 3].upper()
+        aa = CODON_TABLE.get(codon)
+        if aa is None or aa == "*":
+            return PredicateResult(
+                "ConservationScore", False,
+                verdict=Verdict.FAIL,
+                details=f"Invalid/stop codon '{codon}' at DNA position {i}",
+            )
+        translated += aa
+
+    # Length mismatch is an automatic FAIL
+    if len(translated) != len(protein):
+        return PredicateResult(
+            "ConservationScore", False,
+            verdict=Verdict.FAIL,
+            details=f"Length mismatch: translated {len(translated)} AA vs target {len(protein)} AA",
+        )
+
+    # Score each position with BLOSUM62
+    total_score = 0
+    min_found = 0
+    for t_aa, p_aa in zip(translated, protein):
+        s = BLOSUM62.get((t_aa, p_aa), _BLOSUM62_MISSING_SCORE)
+        total_score += s
+        if s < min_found:
+            min_found = s
+
+    passed = min_found >= min_score
+    return PredicateResult(
+        "ConservationScore", passed,
+        verdict=Verdict.PASS if passed else Verdict.FAIL,
+        details=f"BLOSUM62 total={total_score}, min_pos={min_found}, min={min_score} (translated={translated}, target={protein})",
+    )
 
 
-def check_codon_optimality(codon: str, species_cai: Dict[str, float], min_cai: float = 0.0) -> PredicateResult:
-    """Predicate 8: Codon optimality (CAI score above threshold)."""
-    cai = species_cai.get(codon, 0.0)
+def check_codon_optimality(dna, organism, min_cai: float = 0.0) -> PredicateResult:
+    """Predicate 8: Codon optimality (CAI score above threshold).
+
+    Looks up the codon adaptiveness table for *organism* from
+    CODON_ADAPTIVENESS_TABLES and computes the geometric-mean CAI across
+    all codons in *dna*.
+
+    Backward-compatible: if *organism* is a ``dict`` (old-style
+    ``species_cai`` mapping), it is used directly as the CAI weight table
+    and *dna* is treated as a single codon string (old calling convention).
+
+    Args:
+        dna: DNA coding sequence to evaluate.
+            For backward compatibility, also accepts a single codon string
+            when *organism* is a dict.
+        organism: Target organism name (e.g. ``"e_coli"``, ``"Homo_sapiens"``).
+            For backward compatibility, also accepts a ``Dict[str, float]``
+            of codon→CAI weights (old ``species_cai`` parameter).
+        min_cai: Minimum acceptable CAI for PASS (default 0.0).
+    """
+    # Backward compatibility: old callers passed (codon, species_cai_dict, min_cai)
+    if isinstance(organism, dict):
+        species_cai = organism
+        cai = species_cai.get(dna, 0.0)
+        passed = cai >= min_cai
+        return PredicateResult(
+            "CodonOptimality", passed,
+            verdict=Verdict.PASS if passed else Verdict.FAIL,
+            details=f"CAI({dna})={cai:.4f}, min={min_cai}",
+        )
+
+    # New-style: (dna_sequence, organism_name, min_cai)
+    from .organisms import CODON_ADAPTIVENESS_TABLES, resolve_organism
+
+    # Resolve organism name to its canonical key
+    canonical = resolve_organism(organism)
+    species_cai: Dict[str, float] = CODON_ADAPTIVENESS_TABLES.get(canonical, {})
+    if not species_cai:
+        # Fallback to E. coli if organism not found
+        species_cai = CODON_ADAPTIVENESS_TABLES.get("Escherichia_coli", {})
+
+    dna = dna.upper()
+    num_codons = len(dna) // 3
+
+    if num_codons == 0:
+        return PredicateResult(
+            "CodonOptimality", True, verdict=Verdict.PASS,
+            details="Sequence too short for CAI computation",
+        )
+
+    # Compute geometric-mean CAI (Sharp & Li 1987)
+    import math
+    log_product = 0.0
+    for i in range(num_codons):
+        codon = dna[i * 3:(i + 1) * 3]
+        w = species_cai.get(codon, 0.0)
+        if w <= 0.0:
+            log_product += math.log(1e-4)  # clamp to avoid log(0)
+        else:
+            log_product += math.log(w)
+    cai = math.exp(log_product / num_codons)
+
     passed = cai >= min_cai
-    return PredicateResult("CodonOptimality", passed, verdict=Verdict.PASS if passed else SpliceVerdict.FAIL,
-                           details=f"CAI({codon})={cai:.4f}, min={min_cai}")
+    return PredicateResult(
+        "CodonOptimality", passed,
+        verdict=Verdict.PASS if passed else Verdict.FAIL,
+        details=f"CAI={cai:.4f}, min={min_cai}, organism={canonical}",
+    )
 
 
 def check_no_unexpected_tm_domain(
@@ -1821,6 +1944,8 @@ def evaluate_splice_correct(
     Args:
         seq: Full pre-mRNA sequence.
         boundaries: List of (start, end) tuples for each exon.
+            If ``None`` or an empty list, there are no splice boundaries to
+            check and the predicate returns PASS immediately.
         cellular_context: Cell type context (currently informational).
 
     Returns:
@@ -1828,7 +1953,8 @@ def evaluate_splice_correct(
     """
     seq = seq.upper()
 
-    if not boundaries or len(boundaries) < 2:
+    # Guard: no boundaries or empty boundaries → no splice correction needed
+    if boundaries is None or not boundaries or len(boundaries) < 2:
         # Single-exon gene or no boundaries provided — nothing to check
         return TypeCheckResult(
             predicate="SpliceCorrect",
@@ -1836,15 +1962,21 @@ def evaluate_splice_correct(
         )
 
     # Check canonical splice signals at each intron boundary
+    n = len(seq)
     for i in range(len(boundaries) - 1):
-        intron_start = boundaries[i][1]
-        intron_end = boundaries[i + 1][0]
+        try:
+            intron_start = boundaries[i][1]
+            intron_end = boundaries[i + 1][0]
+        except (IndexError, TypeError):
+            # Malformed boundary entry — skip
+            continue
 
         if intron_start >= intron_end:
             continue
 
+        # Bounds-check before indexing the sequence string
         # Check donor (GT) at intron start
-        if intron_start + 2 <= len(seq):
+        if intron_start + 2 <= n and intron_start >= 0:
             donor = seq[intron_start:intron_start + 2]
             if donor != "GT":
                 return TypeCheckResult(
@@ -1854,7 +1986,7 @@ def evaluate_splice_correct(
                 )
 
         # Check acceptor (AG) at intron end
-        if intron_end - 2 >= 0:
+        if intron_end - 2 >= 0 and intron_end <= n:
             acceptor = seq[intron_end - 2:intron_end]
             if acceptor != "AG":
                 return TypeCheckResult(
@@ -2584,6 +2716,13 @@ def evaluate_all_predicates(
     # Backward compatibility: accept known_exon_boundaries as alias for boundaries
     if boundaries is None and known_exon_boundaries is not None:
         boundaries = known_exon_boundaries
+
+    # Track whether the caller supplied real exon boundaries.
+    # If neither boundaries nor known_exon_boundaries was given, the
+    # sequence is treated as a single-exon gene and splice-correct
+    # checking is skipped (no intron boundaries → nothing to check).
+    has_real_boundaries = boundaries is not None and len(boundaries) >= 2
+
     if boundaries is None:
         boundaries = [(0, len(seq))]
 
@@ -2596,8 +2735,18 @@ def evaluate_all_predicates(
     from .slot_verification import is_slot_predicate, verify_slot_predicate
 
     # Core (non-SLOT) predicates: always evaluate normally
+    # SpliceCorrect is only evaluated when real exon boundaries were provided;
+    # otherwise we emit an auto-PASS (no introns → no splice correction needed).
+    if has_real_boundaries:
+        splice_result = evaluate_splice_correct(seq, boundaries)
+    else:
+        splice_result = TypeCheckResult(
+            predicate="SpliceCorrect",
+            verdict=Verdict.PASS,
+        )
+
     results: List[TypeCheckResult] = [
-        evaluate_splice_correct(seq, boundaries),
+        splice_result,
         evaluate_gc_in_range(seq, gc_lo, gc_hi),
         evaluate_no_restriction_site(seq, enzymes),
         evaluate_in_frame(seq, boundaries),

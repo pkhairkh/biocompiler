@@ -288,8 +288,11 @@ class MRNAStabilityScore:
     def __post_init__(self) -> None:
         # Clamp score
         self.overall_score = max(0.0, min(1.0, self.overall_score))
-        # Derive risk level
-        if self.overall_score >= 0.7:
+        # Derive risk level (consistent with predict_mrna_stability thresholds)
+        # score > 0.7 → low risk (STABLE)
+        # score 0.4–0.7 → medium risk (MODERATE)
+        # score < 0.4 → high risk (UNSTABLE)
+        if self.overall_score > 0.7:
             self.risk_level = "low"
         elif self.overall_score >= 0.4:
             self.risk_level = "medium"
@@ -473,6 +476,27 @@ def score_mrna_stability(dna: str, organism: str) -> MRNAStabilityScore:
     # Motif scores act as modifiers: destabilizing motifs reduce the score,
     # stabilizing motifs boost it slightly.
     score = cai_score - _BETA * destab_weighted_sum + _ALPHA * stab_weighted_sum
+
+    # ---- ATTTA one-level downgrade for consistency with predict_mrna_stability ----
+    # When ATTTA motifs are present for organisms that check them,
+    # ensure the score is downgraded by one category level so that:
+    #   score > 0.7 → STABLE, 0.4–0.7 → MODERATE, < 0.4 → UNSTABLE
+    # matches what predict_mrna_stability would return.
+    predict_thresholds = _ORGANISM_STABILITY_THRESHOLDS.get(
+        organism,
+        _ORGANISM_STABILITY_THRESHOLDS.get(
+            "Homo_sapiens", _DEFAULT_STABILITY_THRESHOLD
+        ),
+    )
+    check_motifs = predict_thresholds[2]
+
+    if check_motifs and _has_instability_motif(dna):
+        if score > 0.7:
+            # STABLE → MODERATE: shift score down by 0.3
+            score -= 0.3
+        elif score >= 0.4:
+            # MODERATE → UNSTABLE: shift score down by 0.4
+            score -= 0.4
 
     return MRNAStabilityScore(
         overall_score=score,
@@ -692,22 +716,23 @@ def predict_mrna_stability(
 ) -> StabilityCategory:
     """Predict mRNA stability category for a DNA sequence.
 
-    Uses the CAI-based half-life score combined with organism-specific
-    rules to classify the predicted mRNA stability into one of three
-    categories:
+    Uses the Codon Adaptation Index (CAI) directly to classify mRNA
+    stability into one of three categories, with an ATTTA motif
+    penalty that downgrades by at most one level:
 
-      - **STABLE**: High CAI, no destabilising motifs.  The mRNA is
-        expected to have a long half-life suitable for high expression.
-      - **MODERATE**: Intermediate CAI or minor motif concerns.
-      - **UNSTABLE**: Low CAI or presence of strong destabilising motifs
-        (e.g. ATTTA in eukaryotes, RNase E sites in E. coli).
+      - **STABLE**: CAI >= 0.8 and no ATTTA motifs (or organism
+        doesn't check them).  The mRNA is expected to have a long
+        half-life suitable for high expression.
+      - **MODERATE**: CAI 0.5–0.8, or CAI >= 0.8 with ATTTA motifs
+        (one-level downgrade from STABLE).
+      - **UNSTABLE**: CAI < 0.5, or CAI 0.5–0.8 with ATTTA motifs
+        (one-level downgrade from MODERATE).
 
     Organism-specific rules:
 
-      - *E. coli*: STABLE if half-life score > 0.7; UNSTABLE if < 0.5
-      - *Human*: STABLE if score > 0.7 **and** no ATTTA motifs;
-        UNSTABLE if score < 0.5 or ATTTA present with score < 0.7
-      - *Yeast*: Same thresholds as human
+      - *E. coli*: CAI-based only (no ATTTA check needed)
+      - *Human / mammalian / yeast*: ATTTA motif presence
+        downgrades the CAI-based category by one level
 
     Args:
         dna_sequence: DNA coding-strand sequence (5'->3').
@@ -717,34 +742,32 @@ def predict_mrna_stability(
         One of ``"STABLE"``, ``"MODERATE"``, or ``"UNSTABLE"``.
     """
     dna = dna_sequence.upper()
-    score = compute_mrna_half_life_score(dna, organism)
+    cai = _compute_cai(dna, organism)
 
+    # Step 1: Map CAI to stability category
+    if cai >= 0.8:
+        category: StabilityCategory = "STABLE"
+    elif cai >= 0.5:
+        category = "MODERATE"
+    else:
+        category = "UNSTABLE"
+
+    # Step 2: ATTTA penalty — downgrade by one level only
     thresholds = _ORGANISM_STABILITY_THRESHOLDS.get(
         organism,
         _ORGANISM_STABILITY_THRESHOLDS.get(
             "Homo_sapiens", _DEFAULT_STABILITY_THRESHOLD
         ),
     )
-    stable_threshold, unstable_threshold, check_motifs = thresholds
-
-    # --- Apply organism-specific rules ---
+    check_motifs = thresholds[2]
 
     if check_motifs and _has_instability_motif(dna):
-        # Eukaryotic organisms (human, mouse, yeast, CHO):
-        # ATTTA motif presence overrides a moderate CAI → UNSTABLE
-        # unless the CAI is very high (score > stable_threshold),
-        # in which case it's only downgraded to MODERATE
-        if score >= stable_threshold:
-            return "MODERATE"
-        return "UNSTABLE"
+        if category == "STABLE":
+            category = "MODERATE"
+        elif category == "MODERATE":
+            category = "UNSTABLE"
 
-    # No instability motifs (or organism doesn't check them)
-    if score >= stable_threshold:
-        return "STABLE"
-    elif score < unstable_threshold:
-        return "UNSTABLE"
-    else:
-        return "MODERATE"
+    return category
 
 
 # ────────────────────────────────────────────────────────────

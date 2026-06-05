@@ -26,8 +26,16 @@ v10.1.0: NUMBA-accelerated initial dinucleotide/GC scanning. When NUMBA
 is available, the __init__ scan uses JIT-compiled kernels for 5-20×
 faster initial position finding on long sequences.
 """
+import os
 from typing import Dict, List, Optional, Tuple, Set
 from .type_system import CODON_TABLE, AA_TO_CODONS
+
+# ── Debug gating ────────────────────────────────────────────────────
+# Consistency checks are gated on BIOMPILER_DEBUG env var, NOT __debug__,
+# because they are O(N) and far too slow for production use even when
+# Python is run without -O.
+def _biocompiler_debug() -> bool:
+    return os.environ.get('BIOMPILER_DEBUG', '').strip() not in ('', '0', 'false')
 
 # ── NUMBA integration ──────────────────────────────────────────────
 try:
@@ -334,8 +342,11 @@ class IncrementalSequenceState:
         if self._rs_site_pairs:
             self._update_rs_positions_around(start, start + 3)
         
-        # Debug: verify incremental state matches full recomputation
-        if __debug__:
+        # Debug: verify incremental state matches full recomputation.
+        # Gated on BIOMPILER_DEBUG env var — NOT __debug__ — because the
+        # full-scan consistency check is O(N) and far too slow for production
+        # even when Python is run without -O.
+        if _biocompiler_debug():
             self._assert_consistency()
         
         return old_codon
@@ -414,13 +425,17 @@ class IncrementalSequenceState:
         
         Recomputes GT, CG, AG positions and GC count from scratch and
         compares to the incremental values.  Raises AssertionError on
-        mismatch.  Only runs when __debug__ is True.
+        mismatch.  Only runs when the BIOMPILER_DEBUG env var is set.
         
         This catches bugs where the incremental update drifts from the
         true state — e.g. a missed cross-codon dinucleotide or an
         off-by-one in the affected-position window.
+        
+        NOTE: This is O(N) and far too slow for production.  It is gated
+        on the BIOMPILER_DEBUG environment variable rather than __debug__
+        so that it never runs in normal production builds.
         """
-        if not __debug__:
+        if not _biocompiler_debug():
             return
         
         seq = "".join(self._seq_list)
@@ -477,15 +492,21 @@ class IncrementalSequenceState:
         * Right boundary (pos start+2): spans end of codon i and
           start of codon i+1.
         
+        For the first codon (codon_idx == 0) there is no left boundary
+        to check; for the last codon (codon_idx == num_codons - 1) there
+        is no right boundary to check.  Both cases are guarded explicitly.
+        
         This is called after the main 4-position dinucleotide update
         inside swap_codon() as an explicit safety net.  It ensures
         cross-codon CpG and GT sites are never missed even if the
         generic position loop has a subtle bug.
         """
         start = codon_idx * 3
+        num_codons = self._n // 3
         
         # ── Left boundary with codon i-1 ────────────────────────
-        if start > 0:
+        # No left boundary for the first codon.
+        if codon_idx > 0 and start > 0:
             pos = start - 1
             b0 = self._seq_list[pos]
             b1 = self._seq_list[pos + 1]
@@ -506,7 +527,8 @@ class IncrementalSequenceState:
                 self._ag_positions.discard(pos)
         
         # ── Right boundary with codon i+1 ───────────────────────
-        if start + 2 < self._n - 1:
+        # No right boundary for the last codon.
+        if codon_idx < num_codons - 1 and start + 3 <= self._n - 1:
             pos = start + 2
             b0 = self._seq_list[pos]
             b1 = self._seq_list[pos + 1]
@@ -556,7 +578,13 @@ class IncrementalSequenceState:
         # Build local substring from _seq_list — O(max_site_len), NOT O(N).
         # self.sequence is not used because the cache has just been
         # invalidated, which would trigger an O(N) rebuild.
-        pad = max_len - 1
+        #
+        # The window extends at least max_len on each side of the changed
+        # region so that even the longest site can be matched starting from
+        # any overlapping position.  Using max_len (not max_len-1) guarantees
+        # the local substring is always long enough for a complete site match
+        # at the boundary positions.
+        pad = max_len
         local_start = max(0, region_start - pad)
         local_end = min(self._n, region_end + pad)
         local_seq = "".join(self._seq_list[local_start:local_end])
@@ -569,6 +597,12 @@ class IncrementalSequenceState:
             # overlaps with the changed region [region_start, region_end).
             # A site at position p overlaps iff p + site_len > region_start
             # and p < region_end.
+            #
+            # Removal and rescan MUST use the same window to avoid silently
+            # dropping valid entries.  The lower bound accounts for sites
+            # that start before the region but extend into it; the upper
+            # bound is exclusive so that sites starting AT region_end (which
+            # do not overlap) are excluded.
             remove_lo = max(0, region_start - site_len + 1)
             remove_hi = region_end  # exclusive upper bound; site must start before region_end
             

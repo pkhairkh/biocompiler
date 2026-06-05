@@ -713,39 +713,139 @@ _MHC_SUPERTYPES: dict[str, str] = {
     # A2 supertype
     "HLA-A*02:02": "A2", "HLA-A*02:03": "A2", "HLA-A*02:05": "A2",
     "HLA-A*02:06": "A2", "HLA-A*02:07": "A2", "HLA-A*02:09": "A2",
+    "HLA-A*02:10": "A2", "HLA-A*02:11": "A2", "HLA-A*02:14": "A2",
+    "HLA-A*02:16": "A2", "HLA-A*02:17": "A2", "HLA-A*02:19": "A2",
+    "HLA-A*02:20": "A2", "HLA-A*02:24": "A2",
+    "HLA-A*68:02": "A2",
     # A1 supertype
     "HLA-A*01:02": "A1", "HLA-A*01:03": "A1",
+    "HLA-A*01:04": "A1", "HLA-A*01:06": "A1",
+    "HLA-A*36:01": "A1", "HLA-A*80:01": "A1",
     # A3 supertype
     "HLA-A*03:02": "A3", "HLA-A*03:03": "A3",
-    "HLA-A*11:01": "A3", "HLA-A*11:02": "A3", "HLA-A*31:01": "A3",
-    "HLA-A*33:01": "A3", "HLA-A*68:01": "A3",
+    "HLA-A*03:04": "A3", "HLA-A*03:06": "A3",
+    "HLA-A*11:01": "A3", "HLA-A*11:02": "A3", "HLA-A*11:03": "A3",
+    "HLA-A*31:01": "A3", "HLA-A*31:02": "A3",
+    "HLA-A*33:01": "A3", "HLA-A*33:03": "A3",
+    "HLA-A*68:01": "A3",
+    "HLA-A*30:01": "A3", "HLA-A*30:02": "A3",
     # A24 supertype
     "HLA-A*24:03": "A24", "HLA-A*24:07": "A24",
-    "HLA-A*23:01": "A24",
+    "HLA-A*24:08": "A24", "HLA-A*24:10": "A24",
+    "HLA-A*23:01": "A24", "HLA-A*23:02": "A24",
+    "HLA-A*30:03": "A24",
     # B7 supertype
-    "HLA-B*07:03": "B7", "HLA-B*07:04": "B7",
-    "HLA-B*35:01": "B7", "HLA-B*35:03": "B7",
-    "HLA-B*51:01": "B7", "HLA-B*53:01": "B7",
-    "HLA-B*54:01": "B7", "HLA-B*55:01": "B7", "HLA-B*56:01": "B7",
+    "HLA-B*07:03": "B7", "HLA-B*07:04": "B7", "HLA-B*07:05": "B7",
+    "HLA-B*35:01": "B7", "HLA-B*35:03": "B7", "HLA-B*35:08": "B7",
+    "HLA-B*51:01": "B7", "HLA-B*51:02": "B7",
+    "HLA-B*53:01": "B7",
+    "HLA-B*54:01": "B7", "HLA-B*54:02": "B7",
+    "HLA-B*55:01": "B7", "HLA-B*55:02": "B7",
+    "HLA-B*56:01": "B7", "HLA-B*56:02": "B7",
     "HLA-B*67:01": "B7",
+    "HLA-B*78:01": "B7",
     # B8 supertype
-    "HLA-B*08:02": "B8",
+    "HLA-B*08:02": "B8", "HLA-B*08:03": "B8",
     # B44 supertype
     "HLA-B*44:02": "B44", "HLA-B*44:03": "B44",
-    "HLA-B*40:01": "B44", "HLA-B*40:02": "B44",
+    "HLA-B*40:01": "B44", "HLA-B*40:02": "B44", "HLA-B*40:06": "B44",
+    "HLA-B*45:01": "B44",
     # B58 supertype
-    "HLA-B*58:01": "B58", "HLA-B*57:01": "B58",
+    "HLA-B*58:01": "B58", "HLA-B*58:02": "B58",
+    "HLA-B*57:01": "B58", "HLA-B*57:02": "B58",
     # B62 supertype
-    "HLA-B*62:01": "B62", "HLA-B*15:01": "B62",
-    "HLA-B*46:01": "B62", "HLA-B*52:01": "B62",
+    "HLA-B*62:01": "B62", "HLA-B*62:02": "B62",
+    "HLA-B*15:01": "B62", "HLA-B*15:02": "B62", "HLA-B*15:03": "B62",
+    "HLA-B*46:01": "B62",
+    "HLA-B*52:01": "B62",
+    # B27 supertype
+    "HLA-B*27:02": "B27", "HLA-B*27:03": "B27", "HLA-B*27:04": "B27",
+    "HLA-B*27:05": "B27", "HLA-B*27:06": "B27", "HLA-B*27:07": "B27",
+    "HLA-B*38:01": "B27", "HLA-B*39:01": "B27",
     # DR supertypes
     "HLA-DRB1*01:02": "DR1", "HLA-DRB1*01:03": "DR1",
     "HLA-DRB1*04:02": "DR4", "HLA-DRB1*04:03": "DR4",
     "HLA-DRB1*04:04": "DR4", "HLA-DRB1*04:05": "DR4",
+    "HLA-DRB1*04:06": "DR4", "HLA-DRB1*04:07": "DR4", "HLA-DRB1*04:08": "DR4",
     "HLA-DRB1*07:02": "DR7", "HLA-DRB1*07:03": "DR7",
-    "HLA-DRB1*03:01": "DR3", "HLA-DRB1*03:02": "DR3",
-    "HLA-DRB1*11:01": "DR11", "HLA-DRB1*13:01": "DR11",
-    "HLA-DRB1*15:01": "DR15", "HLA-DRB1*16:01": "DR15",
+    "HLA-DRB1*03:01": "DR3", "HLA-DRB1*03:02": "DR3", "HLA-DRB1*03:03": "DR3",
+    "HLA-DRB1*11:01": "DR11", "HLA-DRB1*11:02": "DR11", "HLA-DRB1*11:03": "DR11",
+    "HLA-DRB1*11:04": "DR11",
+    "HLA-DRB1*13:01": "DR11", "HLA-DRB1*13:02": "DR11", "HLA-DRB1*13:03": "DR11",
+    "HLA-DRB1*15:01": "DR15", "HLA-DRB1*15:02": "DR15", "HLA-DRB1*15:03": "DR15",
+    "HLA-DRB1*16:01": "DR15", "HLA-DRB1*16:02": "DR15",
+    "HLA-DRB1*08:01": "DR8", "HLA-DRB1*08:02": "DR8",
+    "HLA-DRB1*09:01": "DR9",
+    "HLA-DRB1*10:01": "DR10",
+    "HLA-DRB1*12:01": "DR11", "HLA-DRB1*12:02": "DR11",
+    "HLA-DRB1*14:01": "DR11",
+    "HLA-DRB5*01:01": "DR11", "HLA-DRB5*02:02": "DR15",
+}
+
+#: Heuristic supertype mapping based on allele family prefixes.
+#: When an exact allele-to-supertype mapping is not found in
+#: :data:`_MHC_SUPERTYPES`, this table is consulted by extracting
+#: the gene-group prefix (e.g. ``"HLA-A*02"`` from ``"HLA-A*02:14"``)
+#: and looking it up here.
+_ALLELE_PREFIX_TO_SUPERTYPE: dict[str, str] = {
+    # MHC-I A locus
+    "HLA-A*01": "A1",
+    "HLA-A*02": "A2",
+    "HLA-A*03": "A3",
+    "HLA-A*11": "A3",
+    "HLA-A*23": "A24",
+    "HLA-A*24": "A24",
+    "HLA-A*30": "A3",
+    "HLA-A*31": "A3",
+    "HLA-A*33": "A3",
+    "HLA-A*36": "A1",
+    "HLA-A*68": "A2",  # A*68:01 is A3, A*68:02 is A2; majority rule: A2
+    "HLA-A*69": "A2",
+    "HLA-A*80": "A1",
+    # MHC-I B locus
+    "HLA-B*07": "B7",
+    "HLA-B*08": "B8",
+    "HLA-B*13": "B44",
+    "HLA-B*14": "B44",
+    "HLA-B*15": "B62",
+    "HLA-B*18": "B44",
+    "HLA-B*27": "B27",
+    "HLA-B*35": "B7",
+    "HLA-B*38": "B27",
+    "HLA-B*39": "B27",
+    "HLA-B*40": "B44",
+    "HLA-B*44": "B44",
+    "HLA-B*45": "B44",
+    "HLA-B*46": "B62",
+    "HLA-B*47": "B44",
+    "HLA-B*48": "B7",
+    "HLA-B*49": "B7",
+    "HLA-B*50": "B44",
+    "HLA-B*51": "B7",
+    "HLA-B*52": "B62",
+    "HLA-B*53": "B7",
+    "HLA-B*54": "B7",
+    "HLA-B*55": "B7",
+    "HLA-B*56": "B7",
+    "HLA-B*57": "B58",
+    "HLA-B*58": "B58",
+    "HLA-B*62": "B62",
+    "HLA-B*67": "B7",
+    "HLA-B*78": "B7",
+    # MHC-II DR locus
+    "HLA-DRB1*01": "DR1",
+    "HLA-DRB1*03": "DR3",
+    "HLA-DRB1*04": "DR4",
+    "HLA-DRB1*07": "DR7",
+    "HLA-DRB1*08": "DR8",
+    "HLA-DRB1*09": "DR9",
+    "HLA-DRB1*10": "DR10",
+    "HLA-DRB1*11": "DR11",
+    "HLA-DRB1*12": "DR11",
+    "HLA-DRB1*13": "DR11",
+    "HLA-DRB1*14": "DR11",
+    "HLA-DRB1*15": "DR15",
+    "HLA-DRB1*16": "DR15",
 }
 
 
@@ -1094,6 +1194,106 @@ def _build_supertype_pssms() -> dict[str, list[dict[str, float]]]:
         ),
     ]
 
+    # B27 supertype — arginine at P2, basic/tyrosine at P9
+    pssms["B27"] = [
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"R": 1.8, "K": 1.5, "Q": 1.3},
+            disfavored={"D": 0.4, "E": 0.4, "P": 0.5},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.5, "R": 1.4, "Y": 1.3, "F": 1.2},
+            disfavored={"D": 0.5, "E": 0.5},
+            default=0.85,
+        ),
+    ]
+
+    # DR8 supertype — similar to DR1 with broader P4 tolerance
+    pssms["DR8"] = [
+        _make_pssm_row(
+            preferred={"F": 1.4, "Y": 1.3, "L": 1.2, "V": 1.1},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.3, "S": 1.2, "N": 1.1},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.3, "I": 1.2, "V": 1.2},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.2, "R": 1.1, "N": 1.1},
+        ),
+    ]
+
+    # DR9 supertype — similar to DR4 with hydrophobic at P1
+    pssms["DR9"] = [
+        _make_pssm_row(
+            preferred={"F": 1.5, "Y": 1.4, "W": 1.3, "L": 1.2},
+            disfavored={"D": 0.5, "E": 0.5, "K": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"D": 1.5, "E": 1.3, "A": 1.2},
+            disfavored={"K": 0.5, "R": 0.5},
+            default=0.85,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.3, "S": 1.2, "G": 1.1},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.2, "I": 1.1, "V": 1.1},
+            default=0.9,
+        ),
+    ]
+
+    # DR10 supertype — similar to DR1 with broader P1 tolerance
+    pssms["DR10"] = [
+        _make_pssm_row(
+            preferred={"F": 1.4, "Y": 1.3, "L": 1.2, "I": 1.1, "V": 1.1},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"A": 1.3, "S": 1.2},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"L": 1.3, "I": 1.2, "V": 1.2},
+            disfavored={"D": 0.6, "E": 0.6},
+            default=0.9,
+        ),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(default=1.0),
+        _make_pssm_row(
+            preferred={"K": 1.2, "R": 1.1, "Q": 1.1},
+        ),
+    ]
+
     return pssms
 
 
@@ -1112,14 +1312,41 @@ def _ensure_supertype_pssms_built() -> None:
 def _get_supertype_pssm(allele: str) -> list[dict[str, float]] | None:
     """Get a supertype fallback PSSM for an allele.
 
-    Looks up the allele's supertype in :data:`_MHC_SUPERTYPES` and
-    returns the corresponding PSSM.  Returns None if no supertype
-    mapping exists.
+    Resolution strategy (in order):
+
+    1. **Exact lookup**: check :data:`_MHC_SUPERTYPES` for a direct
+       allele → supertype mapping.
+    2. **Prefix heuristic**: extract the gene-group prefix from the
+       allele name (e.g. ``"HLA-A*02"`` from ``"HLA-A*02:99"``)
+       and look it up in :data:`_ALLELE_PREFIX_TO_SUPERTYPE`.
+
+    Returns None if no supertype mapping can be found by either method.
     """
     _ensure_supertype_pssms_built()
+
+    # Strategy 1: exact allele match
     supertype = _MHC_SUPERTYPES.get(allele)
     if supertype is not None:
-        return _SUPERTYPE_PSSM.get(supertype)
+        pssm = _SUPERTYPE_PSSM.get(supertype)
+        if pssm is not None:
+            return pssm
+
+    # Strategy 2: prefix-based heuristic fallback
+    # Extract prefix like "HLA-A*02" from "HLA-A*02:99"
+    colon_idx = allele.find(":")
+    if colon_idx > 0:
+        prefix = allele[:colon_idx]
+        supertype = _ALLELE_PREFIX_TO_SUPERTYPE.get(prefix)
+        if supertype is not None:
+            pssm = _SUPERTYPE_PSSM.get(supertype)
+            if pssm is not None:
+                logger.debug(
+                    "Allele %s resolved to supertype %s via prefix %s",
+                    allele, supertype, prefix,
+                )
+                return pssm
+
+    logger.debug("No supertype PSSM fallback found for allele %s", allele)
     return None
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3300,6 +3527,7 @@ def compute_immunogenicity(
             mutations=[],
             success=True,
             error=None,
+            execution_time_s=0.0,
         )
 
     try:
@@ -3309,8 +3537,14 @@ def compute_immunogenicity(
             sequence=protein if protein else "",
             primary_score=0.0,
             classification="low",
+            t_cell_score=0.0,
+            b_cell_score=0.0,
+            t_cell_epitopes=[],
+            b_cell_epitopes=[],
+            mutations=[],
             success=False,
             error=str(exc),
+            execution_time_s=0.0,
         )
 
     with EngineTimer() as timer:
@@ -3383,9 +3617,11 @@ def compute_epitope_density(
     """Compute epitope density score based on clustering nearby epitopes.
 
     Epitopes within *cluster_distance* amino acids of each other are
-    clustered together.  The density score is based on the number of
-    epitopes in the largest cluster relative to the protein length,
-    with a bonus for clusters containing multiple strong binders.
+    clustered together.  The density score is scaled by the **total
+    number of clustered epitopes** across all clusters (not just the
+    largest cluster), providing a more granular assessment of
+    immunogenicity risk.  A bonus is applied for clusters containing
+    multiple strong binders.
 
     Parameters
     ----------
@@ -3437,17 +3673,29 @@ def compute_epitope_density(
     if not clusters:
         return 0.0
 
-    # Score: base density from cluster size, bonus for strong binders
+    # Total number of epitopes across all clusters (granular scaling)
+    total_clustered = sum(len(c) for c in clusters)
     max_cluster_size = max(len(c) for c in clusters)
     max_strong_in_cluster = max(
         sum(1 for e in c if e.get("binding_class") == "strong_binder")
         for c in clusters
     )
 
-    # Density score scales with cluster size (capped at 0.2) plus
-    # a strong-binder bonus (capped at 0.1)
-    density_score = min(0.2, max_cluster_size * 0.04)
-    strong_bonus = min(0.1, max_strong_in_cluster * 0.05)
+    # Density score scales with the total number of clustered epitopes,
+    # weighted by the largest cluster proportion.  This provides a more
+    # granular score than a flat bonus — e.g. 3 clusters of 2 epitopes
+    # each scores higher than 1 cluster of 2.
+    density_score = min(0.2, max_cluster_size * 0.04) * (1 + 0.05 * (total_clustered - max_cluster_size))
+    density_score = min(0.2, density_score)
+
+    # Strong-binder bonus also scales with the number of strong binders
+    # across all clusters
+    total_strong = sum(
+        sum(1 for e in c if e.get("binding_class") == "strong_binder")
+        for c in clusters
+    )
+    strong_bonus = min(0.1, max_strong_in_cluster * 0.05) * (1 + 0.05 * max(0, total_strong - max_strong_in_cluster))
+    strong_bonus = min(0.1, strong_bonus)
 
     return round(density_score + strong_bonus, 4)
 
@@ -3462,6 +3710,7 @@ def suggest_mutations(
     epitope_threshold: float = 0.5,
     blosum62_min: int = 1,
     max_suggestions: int = 20,
+    protected_positions: set[int] | None = None,
 ) -> list[MutationResult]:
     """Suggest conservative mutations to reduce immunogenicity.
 
@@ -3484,6 +3733,10 @@ def suggest_mutations(
         considered conservative (default 1, i.e. only similar AAs).
     max_suggestions : int
         Maximum number of mutation suggestions to return (default 20).
+    protected_positions : set[int] | None
+        Set of 0-based residue positions that should **not** be mutated
+        (e.g. catalytic residues, binding-site residues, disulfide
+        cysteines).  If ``None``, no positions are protected.
 
     Returns
     -------
@@ -3492,6 +3745,9 @@ def suggest_mutations(
         score reduction, then by highest BLOSUM62 score.
     """
     protein = _validate_protein(protein)
+
+    # Normalise protected_positions to an empty set when not provided
+    _protected: set[int] = protected_positions if protected_positions is not None else set()
 
     # Get T-cell epitopes
     t_epitopes = predict_t_cell_epitopes(protein)
@@ -3520,6 +3776,9 @@ def suggest_mutations(
 
         for pos in range(start, end):
             if pos >= len(protein):
+                continue
+            # Skip protected positions (active sites, catalytic residues, etc.)
+            if pos in _protected:
                 continue
             key = (pos, allele)
             if key in seen:

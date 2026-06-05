@@ -58,7 +58,7 @@ from typing import Dict, List, Tuple
 
 from ..translation import translate, compute_cai
 from ..scanner import gc_content
-from ..organisms import SUPPORTED_ORGANISMS, ORGANISM_GC_TARGETS
+from ..organisms import SUPPORTED_ORGANISMS, ORGANISM_GC_TARGETS, resolve_organism
 from ..restriction_sites import RESTRICTION_SITES as _REBASE_SITES
 from ..constants import CODON_TABLE, INSTABILITY_MOTIF
 
@@ -123,11 +123,16 @@ class GroundTruthEntry:
 
     def __post_init__(self) -> None:
         """Validate invariants of a ground-truth entry."""
-        if self.organism not in SUPPORTED_ORGANISMS:
+        # Resolve organism name to canonical form so that aliases
+        # (e.g. 'ecoli', 'human') are accepted alongside full binomials.
+        resolved = resolve_organism(self.organism, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
             raise ValueError(
-                f"Unsupported organism '{self.organism}'; "
-                f"expected one of {SUPPORTED_ORGANISMS}"
+                f"Unsupported organism '{self.organism}' (resolved to "
+                f"'{resolved}'); expected one of {SUPPORTED_ORGANISMS}"
             )
+        # Normalise to canonical name for consistent lookups
+        self.organism = resolved
         if not self.published_sequence:
             raise ValueError("published_sequence must be non-empty")
         if not all(b in "ACGT" for b in self.published_sequence.upper()):
@@ -489,6 +494,8 @@ def validate_against_ground_truth(
         )
         assert result.matches_expected
     """
+    # Resolve organism name to canonical form
+    organism = resolve_organism(organism, strict=False)
     if organism not in SUPPORTED_ORGANISMS:
         raise ValueError(
             f"Unsupported organism '{organism}'; "
@@ -646,6 +653,8 @@ def validate_optimization_result(
         )
         assert result.all_passed
     """
+    # Resolve organism name to canonical form
+    organism = resolve_organism(organism, strict=False)
     if organism not in SUPPORTED_ORGANISMS:
         raise ValueError(
             f"Unsupported organism '{organism}'; "

@@ -660,11 +660,14 @@ def run_foldx_stability(
 
     with EngineTimer() as timer:
         if not is_foldx_available():
-            result = _make_failed_result(
-                "foldx_cli", "FoldX CLI not available on PATH",
-                pdb_string=pdb_string, protein=protein,
-                execution_time_s=round(timer.elapsed, 4),
+            logger.info(
+                "FoldX CLI not available; falling back to empirical stability "
+                "for protein=%s", protein[:20]
             )
+            result = empirical_stability(
+                protein, pdb_string=pdb_string, timeout=timeout,
+            )
+            result.execution_time_s = round(timer.elapsed, 4)
             _cache.put(pdb_string, "foldx_stability", result)
             return result
 
@@ -784,10 +787,23 @@ def run_foldx_repair(
 
     with EngineTimer() as timer:
         if not is_foldx_available():
-            result = _make_failed_result(
-                "foldx_cli", "FoldX CLI not available on PATH",
-                pdb_string=pdb_string, execution_time_s=round(timer.elapsed, 4),
+            logger.info(
+                "FoldX CLI not available; falling back to empirical stability "
+                "for repair request"
             )
+            protein = _extract_protein_from_pdb(pdb_string)
+            try:
+                validate_protein_sequence(protein, "FoldX")
+            except ValueError as e:
+                result = _make_failed_result(
+                    "empirical", str(e), pdb_string=pdb_string,
+                    execution_time_s=round(timer.elapsed, 4),
+                )
+                return pdb_string, result
+            result = empirical_stability(
+                protein, pdb_string=pdb_string, timeout=timeout,
+            )
+            result.execution_time_s = round(timer.elapsed, 4)
             return pdb_string, result
 
         tmpdir = tempfile.mkdtemp(prefix="foldx_repair_")
@@ -928,12 +944,53 @@ def run_foldx_mutation(
     if timeout is None:
         timeout = DEFAULT_ENGINE_TIMEOUT
 
-    if not is_foldx_available():
-        logger.warning("FoldX CLI not available; cannot run mutation analysis")
-        return []
-
     if not mutations:
         return []
+
+    if not is_foldx_available():
+        logger.info(
+            "FoldX CLI not available; falling back to empirical mutation "
+            "scanning for %d mutations", len(mutations)
+        )
+        # Fall back to empirical ΔΔG estimation for each mutation
+        protein = _extract_protein_from_pdb(pdb_string)
+        results: list[MutationResult] = []
+        for mut_str in mutations:
+            parsed = _parse_mutation_string(mut_str)
+            if parsed is None:
+                continue
+            wt, pos_1idx, mt = parsed
+            pos_0idx = pos_1idx - 1
+            ddg = _estimate_ddg_statistical(wt, mt)
+            is_stabilizing = ddg < _STABILIZING_THRESHOLD
+            is_neutral = _STABILIZING_THRESHOLD <= ddg <= _DESTABILIZING_THRESHOLD
+            is_destabilizing = ddg > _DESTABILIZING_THRESHOLD
+            results.append(MutationResult(
+                position=pos_0idx,
+                original=wt,
+                mutant=mt,
+                delta_score=-ddg,
+                score_type="ddg",
+                engine="foldx",
+                recommendation=(
+                    "stabilizing" if is_stabilizing
+                    else "deimmunizing" if is_destabilizing
+                    else ""
+                ),
+                description=(
+                    "Stabilizing" if is_stabilizing
+                    else "Destabilizing" if is_destabilizing
+                    else "Neutral"
+                ) + " mutation (empirical)",
+                details={
+                    "ddg_kcal": ddg,
+                    "stabilizing": is_stabilizing,
+                    "neutral": is_neutral,
+                    "destabilizing": is_destabilizing,
+                    "method": "empirical",
+                },
+            ))
+        return results
 
     with EngineTimer() as timer:
         tmpdir = tempfile.mkdtemp(prefix="foldx_mutation_")

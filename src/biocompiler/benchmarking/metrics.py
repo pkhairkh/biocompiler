@@ -29,6 +29,7 @@ from scipy import stats
 
 from ..constants import AA_TO_CODONS, CODON_TABLE, reverse_complement
 from ..organisms import CODON_ADAPTIVENESS_TABLES, SUPPORTED_ORGANISMS
+from ..organisms import resolve_organism
 from ..restriction_sites import get_recognition_site
 from ..scanner import gc_content
 from ..translation import compute_cai
@@ -248,18 +249,9 @@ def compute_cai_validated(dna: str, organism: str) -> float:
     if not dna or len(dna) < _CODON_LENGTH:
         return 0.0
     dna = dna.upper()
-    # Normalise organism name
-    organism_key = organism
-    if organism_key not in CODON_ADAPTIVENESS_TABLES:
-        # Try common aliases
-        _ALIASES: dict[str, str] = {
-            "human": "Homo_sapiens",
-            "ecoli": "Escherichia_coli",
-            "mouse": "Mus_musculus",
-            "cho": "CHO_K1",
-            "yeast": "Saccharomyces_cerevisiae",
-        }
-        organism_key = _ALIASES.get(organism.lower(), organism)
+    # Normalise organism name using the centralised resolve_organism()
+    # which handles all aliases (ecoli, human, E. coli, etc.)
+    organism_key = resolve_organism(organism)
     if organism_key not in CODON_ADAPTIVENESS_TABLES:
         return 0.0
 
@@ -573,15 +565,8 @@ def compute_codon_pair_bias(dna: str, organism: str) -> float:
         Mean codon pair bias score.  Returns 0.0 if no organism-specific
         data is available.
     """
-    # Normalise organism name
-    _ALIASES: dict[str, str] = {
-        "human": "Homo_sapiens",
-        "ecoli": "Escherichia_coli",
-        "mouse": "Mus_musculus",
-        "cho": "CHO_K1",
-        "yeast": "Saccharomyces_cerevisiae",
-    }
-    org_key = _ALIASES.get(organism.lower(), organism)
+    # Normalise organism name using the centralised resolve_organism()
+    org_key = resolve_organism(organism)
 
     pair_table = _CODON_PAIR_BIAS.get(org_key)
     if not pair_table:

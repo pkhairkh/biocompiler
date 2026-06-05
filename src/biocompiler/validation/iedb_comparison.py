@@ -71,7 +71,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 __all__ = [
     "IEDBBenchmarkEntry",
@@ -80,6 +80,7 @@ __all__ = [
     "MHBenchmarkResult",
     "benchmark_mhc_predictions",
     "compare_with_iedb",
+    "compare_predicate_with_iedb",
     "get_available_alleles",
     "get_known_binders",
     "get_known_non_binders",
@@ -157,6 +158,14 @@ class IEDBComparisonResult:
         Estimated AUC-ROC computed as (sensitivity + specificity) / 2,
         a standard single-threshold approximation.  ``0.5`` when the metric
         is degenerate (no positives or no negatives in ground truth).
+    self_protein : bool
+        Whether the comparison was performed in self-protein context.
+        When ``True``, the IEDB comparison is informational — immunogenicity
+        is expected for self-proteins and is subject to immune tolerance.
+    notes : str or None
+        Additional context notes, e.g. ``"Auto-PASS: self-protein"`` when
+        ``self_protein=True``, or ``"EXPECTED_IMMUNOGENIC"`` for foreign
+        proteins.
     """
 
     allele: str
@@ -167,6 +176,8 @@ class IEDBComparisonResult:
     sensitivity: float
     specificity: float
     auc_estimate: float
+    self_protein: bool = False
+    notes: str | None = None
 
 
 @dataclass
@@ -561,12 +572,49 @@ def get_available_alleles() -> list[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Self-protein detection (mirrors immuno_predicates logic)
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Organisms that are considered "self" (host organisms used as targets).
+_SELF_ORGANISMS: frozenset[str] = frozenset({
+    "Homo_sapiens", "human", "Human",
+    "Mus_musculus", "mouse", "Mouse",
+    "Cricetulus_griseus", "CHO", "CHO-K1", "cho",
+})
+
+
+def _resolve_self_protein(
+    self_protein: bool | None,
+    source_organism: str | None,
+) -> bool:
+    """Resolve the self-protein status from explicit flag or auto-detection.
+
+    If *self_protein* is explicitly set (True/False), use that value.
+    Otherwise, auto-detect from *source_organism*: if the source organism
+    is a known host organism, the protein is classified as self.
+
+    This mirrors the logic in ``immuno_predicates._resolve_self_protein``
+    but is self-contained to avoid circular imports.
+    """
+    if self_protein is not None:
+        return self_protein
+    if source_organism is None:
+        # If no source organism is specified, assume self (safe default)
+        return True
+    src = source_organism.strip()
+    return src in _SELF_ORGANISMS
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Public comparison function
 # ═══════════════════════════════════════════════════════════════════════════
 
 def compare_with_iedb(
     allele: str,
     peptides: list[str],
+    *,
+    self_protein: bool | None = None,
+    source_organism: str | None = None,
 ) -> IEDBComparisonResult:
     """Compare BioCompiler's predicted binders against IEDB known epitopes.
 
@@ -580,6 +628,20 @@ def compare_with_iedb(
     positives (they are assumed to be non-binders because they lack
     experimental evidence of binding).
 
+    **Context-aware classification** (new in predicate API):
+
+      - **Self-protein** (``self_protein=True``): the IEDB comparison is
+        informational only.  Self-proteins are tolerated by the host immune
+        system (central tolerance), so MHC binding does not imply
+        immunogenicity.  The result is annotated with
+        ``notes="Auto-PASS: self-protein"``.
+      - **Foreign protein** (``self_protein=False``): MHC binding is
+        expected and not necessarily a concern for non-therapeutic use.
+        The result is annotated with ``notes="EXPECTED_IMMUNOGENIC"``.
+      - When ``self_protein`` is ``None`` (default), it is auto-detected
+        from *source_organism*: if the source organism is a known host
+        (human, mouse, CHO), the protein is classified as self.
+
     Parameters
     ----------
     allele : str
@@ -587,6 +649,12 @@ def compare_with_iedb(
     peptides : list[str]
         Peptide sequences that our model predicts as binders for *allele*.
         An empty list means our model predicts no binders.
+    self_protein : bool or None
+        Whether the protein is from the host (self) organism.  If ``None``
+        (default), auto-detected from *source_organism*.
+    source_organism : str or None
+        The organism the protein originates from.  Used for auto-detection
+        of self-protein status when ``self_protein`` is ``None``.
 
     Returns
     -------
@@ -617,6 +685,10 @@ def compare_with_iedb(
     1
     >>> result.false_positives  # UNKNOWNPEP is not in IEDB
     1
+    >>> # Self-protein: auto-PASS, informational only
+    >>> result = compare_with_iedb("HLA-A*02:01", ["GILGFVFTL"], self_protein=True)
+    >>> result.notes
+    'Auto-PASS: self-protein'
     """
     # ── Input validation ────────────────────────────────────────────────
     if not isinstance(allele, str) or not allele.strip():
@@ -630,6 +702,9 @@ def compare_with_iedb(
             raise ValueError(
                 f"peptides[{i}] must be a string, got {type(pep).__name__}"
             )
+
+    # ── Resolve self-protein status ──────────────────────────────────
+    is_self = _resolve_self_protein(self_protein, source_organism)
 
     # ── Resolve IEDB ground truth for this allele ──────────────────────
     iedb_binders = get_known_binders(allele)
@@ -653,6 +728,8 @@ def compare_with_iedb(
             sensitivity=0.0,
             specificity=0.0,
             auc_estimate=0.5,
+            self_protein=is_self,
+            notes="Auto-PASS: self-protein" if is_self else None,
         )
 
     # ── Compute confusion matrix ──────────────────────────────────────
@@ -681,6 +758,13 @@ def compare_with_iedb(
     else:
         auc_estimate = 0.5
 
+    # ── Context-aware annotation ──────────────────────────────────────
+    notes: str | None = None
+    if is_self:
+        notes = "Auto-PASS: self-protein"
+    elif true_positives > 0 or false_positives > 0:
+        notes = "EXPECTED_IMMUNOGENIC"
+
     result = IEDBComparisonResult(
         allele=allele,
         true_positives=true_positives,
@@ -690,14 +774,16 @@ def compare_with_iedb(
         sensitivity=round(sensitivity, 6),
         specificity=round(specificity, 6),
         auc_estimate=round(auc_estimate, 6),
+        self_protein=is_self,
+        notes=notes,
     )
 
     logger.info(
         "IEDB comparison for %s: TP=%d, FP=%d, TN=%d, FN=%d, "
-        "sens=%.3f, spec=%.3f, AUC≈%.3f",
+        "sens=%.3f, spec=%.3f, AUC≈%.3f, self_protein=%s",
         allele,
         true_positives, false_positives, true_negatives, false_negatives,
-        sensitivity, specificity, auc_estimate,
+        sensitivity, specificity, auc_estimate, is_self,
     )
 
     return result
@@ -710,11 +796,25 @@ def compare_with_iedb(
 def benchmark_mhc_predictions(
     predictor_fn: Callable[[str, str], float],
     entries: list[IEDBBenchmarkEntry],
+    *,
+    self_protein: bool | None = None,
+    source_organism: str | None = None,
 ) -> MHBenchmarkResult:
     """Benchmark an MHC-I binding predictor against IEDB data.
 
     Evaluates *predictor_fn* on each entry in *entries*, comparing its
     predicted IC50 (nM) against the experimentally measured IC50.
+
+    **Context-aware classification** (new in predicate API):
+
+      - **Self-protein** (``self_protein=True``): the benchmark is
+        informational — self-proteins are tolerated by the host immune
+        system.  Each entry detail includes ``"self_protein": True``.
+      - **Foreign protein** (``self_protein=False``): MHC binding is
+        expected for foreign proteins; mismatches are annotated with
+        ``"classification": "EXPECTED_IMMUNOGENIC"``.
+      - When ``self_protein`` is ``None`` (default), it is auto-detected
+        from *source_organism*.
 
     Parameters
     ----------
@@ -724,6 +824,12 @@ def benchmark_mhc_predictions(
         binding.
     entries : list[IEDBBenchmarkEntry]
         Curated benchmark entries with experimentally measured IC50 values.
+    self_protein : bool or None
+        Whether the protein is from the host (self) organism.  If ``None``
+        (default), auto-detected from *source_organism*.
+    source_organism : str or None
+        The organism the protein originates from.  Used for auto-detection
+        of self-protein status when ``self_protein`` is ``None``.
 
     Returns
     -------
@@ -761,6 +867,9 @@ def benchmark_mhc_predictions(
             details=[],
         )
 
+    # Resolve self-protein status
+    is_self = _resolve_self_protein(self_protein, source_organism)
+
     measured_ic50s: list[float] = []
     predicted_ic50s: list[float] = []
     details: list[dict] = []
@@ -792,7 +901,7 @@ def benchmark_mhc_predictions(
         measured_ic50s.append(entry.measured_ic50)
         predicted_ic50s.append(pred_ic50)
 
-        details.append({
+        detail_entry: dict[str, Any] = {
             "peptide": entry.peptide,
             "allele": entry.allele,
             "measured_ic50": entry.measured_ic50,
@@ -800,7 +909,14 @@ def benchmark_mhc_predictions(
             "measured_binder": measured_binder,
             "predicted_binder": predicted_binder,
             "correct": correct,
-        })
+            "self_protein": is_self,
+        }
+
+        # Annotate with context-aware classification
+        if not is_self and not correct:
+            detail_entry["classification"] = "EXPECTED_IMMUNOGENIC"
+
+        details.append(detail_entry)
 
     # Compute AUC-ROC
     auc_roc = _compute_auc_roc(measured_ic50s, predicted_ic50s)
@@ -819,12 +935,103 @@ def benchmark_mhc_predictions(
     )
 
     logger.info(
-        "IEDB benchmark: %d/%d correct (%.1f%%), AUC-ROC=%.3f, Pearson r=%.3f",
+        "IEDB benchmark: %d/%d correct (%.1f%%), AUC-ROC=%.3f, Pearson r=%.3f, "
+        "self_protein=%s",
         correct_predictions,
         len(entries),
         (correct_predictions / len(entries) * 100) if entries else 0.0,
         auc_roc,
         pearson_r if not math.isnan(pearson_r) else 0.0,
+        is_self,
     )
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Predicate integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compare_predicate_with_iedb(
+    predicate_result: Any,
+    allele: str,
+    *,
+    self_protein: bool | None = None,
+    source_organism: str | None = None,
+) -> IEDBComparisonResult:
+    """Compare an immunogenicity predicate result against IEDB data.
+
+    This function bridges the new immunogenicity predicate API with the
+    IEDB benchmarking system.  It extracts predicted binder peptides
+    from a :class:`~biocompiler.immuno_predicates.PredicateResult`
+    (or any object with a ``derivation`` attribute) and compares them
+    against the built-in IEDB dataset.
+
+    If *predicate_result* has a ``self_protein`` field in its derivation,
+    it is used to determine the self-protein context; otherwise the
+    explicit *self_protein* / *source_organism* parameters are used.
+
+    Parameters
+    ----------
+    predicate_result : PredicateResult or similar
+        The result from an immunogenicity predicate evaluation (e.g.
+        ``evaluate_no_strong_t_cell_epitope``).  Must have a
+        ``derivation`` attribute (a list of dicts).
+    allele : str
+        MHC-I allele name (e.g. ``"HLA-A*02:01"``).
+    self_protein : bool or None
+        Override self-protein status.  If ``None``, auto-detected from
+        the predicate derivation or *source_organism*.
+    source_organism : str or None
+        The organism the protein originates from.
+
+    Returns
+    -------
+    IEDBComparisonResult
+        Comparison result with context-aware annotation.
+
+    Examples
+    --------
+    >>> from biocompiler.immuno_predicates import evaluate_no_strong_t_cell_epitope
+    >>> pred = evaluate_no_strong_t_cell_epitope("MVSKGEELFTG...")
+    >>> cmp = compare_predicate_with_iedb(pred, "HLA-A*02:01")
+    >>> cmp.self_protein
+    True
+    """
+    # Extract predicted binder peptides from the predicate derivation.
+    # The derivation is a list of dicts; look for 'strong' and 'total'
+    # keys (from evaluate_no_strong_t_cell_epitope) or fall back to
+    # using compare_with_iedb with an empty list.
+    peptides: list[str] = []
+
+    if hasattr(predicate_result, "derivation") and predicate_result.derivation:
+        for step in predicate_result.derivation:
+            if isinstance(step, dict):
+                # Try to extract peptides from step data
+                if "peptides" in step:
+                    peptides.extend(step["peptides"])
+                # Also check for strong_epitope_details
+                if "strong_epitope_details" in step:
+                    for det in step["strong_epitope_details"]:
+                        if isinstance(det, dict) and "peptide" in det:
+                            peptides.append(det["peptide"])
+
+    # Try to detect self_protein from predicate derivation
+    if self_protein is None and hasattr(predicate_result, "derivation"):
+        for step in predicate_result.derivation:
+            if isinstance(step, dict) and "self_protein" in step:
+                self_protein = step["self_protein"]
+                break
+
+    # Also check the predicate result itself for a details field
+    if self_protein is None and hasattr(predicate_result, "details"):
+        details_str = str(predicate_result.details or "")
+        if "self-protein" in details_str.lower():
+            self_protein = True
+
+    return compare_with_iedb(
+        allele,
+        peptides,
+        self_protein=self_protein,
+        source_organism=source_organism,
+    )

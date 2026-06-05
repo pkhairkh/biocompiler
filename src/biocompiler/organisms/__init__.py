@@ -187,29 +187,41 @@ YEAST_PREFERRED_CODONS: dict[str, str]  # type: ignore[no-redef]
 # Registry: organism name -> codon data
 CODON_USAGE_TABLES: dict[str, dict[str, tuple[str, float, float, int]]] = {
     "Homo_sapiens": HUMAN_CODON_USAGE,
+    "human": HUMAN_CODON_USAGE,  # alias for resolve_organism convenience
     "Escherichia_coli": E_COLI_CODON_USAGE,
     "e_coli": E_COLI_CODON_USAGE,  # alias for resolve_organism convenience
     "Mus_musculus": MOUSE_CODON_USAGE,
+    "mouse": MOUSE_CODON_USAGE,  # alias for resolve_organism convenience
     "CHO_K1": CHO_CODON_USAGE,
+    "cho": CHO_CODON_USAGE,  # alias for resolve_organism convenience
     "Saccharomyces_cerevisiae": YEAST_CODON_USAGE,
+    "yeast": YEAST_CODON_USAGE,  # alias for resolve_organism convenience
 }
 
 CODON_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {
     "Homo_sapiens": HUMAN_CODON_ADAPTIVENESS,
+    "human": HUMAN_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
     "Escherichia_coli": E_COLI_CODON_ADAPTIVENESS,
     "e_coli": E_COLI_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
     "Mus_musculus": MOUSE_CODON_ADAPTIVENESS,
+    "mouse": MOUSE_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
     "CHO_K1": CHO_CODON_ADAPTIVENESS,
+    "cho": CHO_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
     "Saccharomyces_cerevisiae": YEAST_CODON_ADAPTIVENESS,
+    "yeast": YEAST_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
 }
 
 PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
     "Homo_sapiens": HUMAN_PREFERRED_CODONS,
+    "human": HUMAN_PREFERRED_CODONS,  # alias for resolve_organism convenience
     "Escherichia_coli": E_COLI_PREFERRED_CODONS,
     "e_coli": E_COLI_PREFERRED_CODONS,  # alias for resolve_organism convenience
     "Mus_musculus": MOUSE_PREFERRED_CODONS,
+    "mouse": MOUSE_PREFERRED_CODONS,  # alias for resolve_organism convenience
     "CHO_K1": CHO_PREFERRED_CODONS,
+    "cho": CHO_PREFERRED_CODONS,  # alias for resolve_organism convenience
     "Saccharomyces_cerevisiae": YEAST_PREFERRED_CODONS,
+    "yeast": YEAST_PREFERRED_CODONS,  # alias for resolve_organism convenience
 }
 
 SUPPORTED_ORGANISMS: list[str] = list(CODON_USAGE_TABLES.keys())
@@ -282,17 +294,13 @@ def get_sharp_li_adaptiveness_tables() -> dict[str, dict[str, float]]:
                 adaptiveness[codon] = max(w, 0.01)
         tables[organism] = adaptiveness
 
-    # Add short-name aliases to match CODON_ADAPTIVENESS_TABLES keys
-    _ALIASES = {
-        "Escherichia_coli": "e_coli",
-        "Homo_sapiens": "human",
-        "Mus_musculus": "mouse",
-        "Saccharomyces_cerevisiae": "yeast",
-        "CHO_K1": "cho",
-    }
-    for full_name, alias in _ALIASES.items():
-        if full_name in tables and alias not in tables:
-            tables[alias] = tables[full_name]
+    # Add ALL aliases from ORGANISM_ALIASES to ensure consistency
+    # with CODON_ADAPTIVENESS_TABLES.  This replaces the old
+    # hard-coded _ALIASES dict so that every name recognised by
+    # resolve_organism() also works as a key here.
+    for alias, canonical in ORGANISM_ALIASES.items():
+        if canonical in tables and alias not in tables:
+            tables[alias] = tables[canonical]
 
     SHARP_LI_ADAPTIVENESS_TABLES = tables
     return tables
@@ -368,6 +376,24 @@ ORGANISM_ALIASES: dict[str, str] = {
     "Saccharomyces_cerevisiae": "Saccharomyces_cerevisiae",
     "Saccharomyces cerevisiae": "Saccharomyces_cerevisiae",
 }
+
+# ────────────────────────────────────────────────────────────
+# Post-construction: ensure ALL aliases from ORGANISM_ALIASES
+# are available as keys in the three registry tables.
+#
+# The dict literals above include the 5 primary short-name aliases
+# (human, e_coli, mouse, cho, yeast) for discoverability, but
+# ORGANISM_ALIASES defines many more (ecoli, E_coli, H_sapiens,
+# E. coli, etc.).  This loop adds any remaining aliases so that
+# every name in ORGANISM_ALIASES works as a direct lookup key.
+# ────────────────────────────────────────────────────────────
+for _alias, _canonical in ORGANISM_ALIASES.items():
+    if _alias not in CODON_ADAPTIVENESS_TABLES and _canonical in CODON_ADAPTIVENESS_TABLES:
+        CODON_ADAPTIVENESS_TABLES[_alias] = CODON_ADAPTIVENESS_TABLES[_canonical]
+    if _alias not in CODON_USAGE_TABLES and _canonical in CODON_USAGE_TABLES:
+        CODON_USAGE_TABLES[_alias] = CODON_USAGE_TABLES[_canonical]
+    if _alias not in PREFERRED_CODON_TABLES and _canonical in PREFERRED_CODON_TABLES:
+        PREFERRED_CODON_TABLES[_alias] = PREFERRED_CODON_TABLES[_canonical]
 
 # Reverse mapping: canonical organism name → primary short species key.
 # Used to map from organism names back to the SPECIES dict keys.

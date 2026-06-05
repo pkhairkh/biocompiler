@@ -252,16 +252,23 @@ def estimate_cpb_from_codon_freq(
     codons for the same amino acid (i.e., the relative adaptiveness).
 
     Because the true observed pair frequency is not available from
-    per-codon data alone, this function computes the **expected**
-    CPB under the assumption that codon pair usage is independent
-    (i.e., no pair bias).  The resulting scores represent the
-    *direction* and *magnitude* of bias that would arise if pair
-    usage deviated proportionally to individual codon rarity.
+    per-codon data alone, this function computes a degeneracy-aware
+    estimate.  For each codon pair, the score is::
+
+        score = log2(f1 * n1) + log2(f2 * n2)
+
+    where ``f1``, ``f2`` are the within-AA fractions and ``n1``, ``n2``
+    are the number of synonymous codons for the respective amino acids.
+    This normalises by amino acid degeneracy so that uniformly-used
+    codons score 0 regardless of whether the AA has 2-fold, 4-fold,
+    or 6-fold degeneracy.
 
     In practice, this means:
-    - Pairs of common codons get small positive scores
-    - Pairs of rare codons get small negative scores
+    - Pairs of common codons (high within-AA fraction) get positive scores
+    - Pairs of rare codons (low within-AA fraction) get negative scores
     - Mixed common/rare pairs get near-zero scores
+    - The scoring is consistent across ALL organisms and amino acid
+      families, not biased toward 4-fold degenerate codons
 
     This is a conservative estimate — published CPB data should be
     preferred when available.
@@ -274,62 +281,61 @@ def estimate_cpb_from_codon_freq(
     Returns:
         Dict mapping ``"{codon1}-{codon2}"`` to estimated CPB score.
         Only pairs where both codons encode non-stop amino acids are
-        included.
+        included.  Returns an empty dict for empty codon usage input.
     """
     # Step 1: Compute relative codon frequencies (fraction within
-    # each amino acid group).  The 'fraction' field in the usage
-    # table already represents this — it's the proportion of that
-    # codon among all synonymous codons for the same AA.
+    # each amino acid group) and the number of synonymous codons
+    # per amino acid.  The 'fraction' field in the usage table
+    # already represents the proportion of that codon among all
+    # synonymous codons for the same AA.
     codon_freq: dict[str, float] = {}
+    aa_synonym_count: dict[str, int] = {}  # AA → number of synonymous codons
+    codon_to_aa: dict[str, str] = {}
+
     for codon, (aa, frac, _per_thousand, _count) in codon_usage.items():
         if aa == "*":
             continue  # Skip stop codons
         codon_freq[codon] = frac
+        codon_to_aa[codon] = aa
+        aa_synonym_count[aa] = aa_synonym_count.get(aa, 0) + 1
 
-    # Step 2: Estimate CPB for each pair.
-    # Since we only have individual codon frequencies (not actual
-    # pair frequencies), we compute a simplified score based on
-    # codon rarity: rare-codon pairs are penalized, common-codon
-    # pairs are favoured.
+    if not codon_freq:
+        return {}
+
+    # Step 2: Estimate CPB for each pair using degeneracy-aware scoring.
     #
-    # Score = log(freq(codon1) * freq(codon2)) / log(1.0) = not useful
-    # Instead, use the standard CPB formula with an assumption:
-    # observed ≈ expected when no bias exists, so score ≈ 0.
-    # But for rare pairs, expected is very low, making the ratio
-    # sensitive. We use a simplified rarity-based scoring:
+    # The score for a pair (codon1, codon2) is:
+    #   score = log2(f1 * n1) + log2(f2 * n2)
     #
-    # CPB_est = log2(freq1 * freq2 / 0.25) — centred around 0
-    # where 0.25 = expected for two independent uniform codons
-    # within a 4-fold degenerate family.
+    # where f1, f2 are within-AA fractions and n1, n2 are the
+    # synonym counts for the respective amino acids.
     #
-    # A more biologically meaningful approach: score = log2 of
-    # the product of individual codon fractions, rescaled.
-    # Pairs where both codons are common (freq → 1.0) get positive
-    # scores; pairs where both are rare get negative scores.
+    # Under uniform usage (f = 1/n), each term is log2(1) = 0,
+    # so unbiased pairs score 0 regardless of degeneracy.
+    # For preferred codons (f > 1/n), the term is positive;
+    # for rare codons (f < 1/n), the term is negative.
+    #
+    # This corrects the previous approach which used a fixed
+    # reference of log2(product) + 4.0 — a bias that assumed
+    # 4-fold degeneracy and produced wrong values for 2-fold,
+    # 3-fold, and 6-fold degenerate amino acids.
 
     cpb_estimates: dict[str, float] = {}
     non_stop_codons = [c for c in codon_freq if codon_freq[c] > 0]
 
-    for i, codon1 in enumerate(non_stop_codons):
+    for codon1 in non_stop_codons:
         for codon2 in non_stop_codons:
             f1 = codon_freq[codon1]
             f2 = codon_freq[codon2]
+            n1 = aa_synonym_count[codon_to_aa[codon1]]
+            n2 = aa_synonym_count[codon_to_aa[codon2]]
 
-            # Expected frequency under independence: f1 * f2
-            # We compute log2(f1 * f2) shifted so that a pair of
-            # uniformly-distributed codons (f1=f2=1/n_codons_for_aa)
-            # would score ~0.  In practice, we use:
-            # score = log2(f1 * f2) - log2(0.25)
-            # This gives: common pairs → positive, rare pairs → negative
-            product = f1 * f2
-            if product <= 0:
-                continue
-
-            # Standard reference: for a 4-fold degenerate AA with
-            # equal codon usage, each codon has f=0.25, so
-            # log2(0.25 * 0.25) = -4.  We shift by +4 so that
-            # unbiased pairs score 0 and bias is measured as deviation.
-            score = math.log2(product) + 4.0
+            # Degeneracy-aware score: normalise by expected uniform
+            # frequency (1/n) so that unbiased usage gives score 0.
+            # f * n > 1 → codon is over-represented (positive)
+            # f * n < 1 → codon is under-represented (negative)
+            # f * n = 1 → codon used at expected frequency (zero)
+            score = math.log2(f1 * n1) + math.log2(f2 * n2)
 
             # Clamp to a reasonable range — published CPB scores
             # rarely exceed ±0.5 in log-odds units
@@ -390,6 +396,10 @@ def compute_cpb(dna: str, organism: str) -> float:
     """
     dna = dna.upper().strip()
 
+    # Handle empty / whitespace-only sequences gracefully
+    if not dna:
+        return 0.0
+
     if len(dna) % 3 != 0:
         raise ValueError(
             f"DNA sequence length ({len(dna)}) is not a multiple of 3"
@@ -438,11 +448,12 @@ def compute_cpb_score(dna: str, organism: str) -> float:
             recognised by :func:`~biocompiler.organisms.resolve_organism`.
 
     Returns:
-        Mean codon pair bias score.  Returns 0.0 for sequences
-        shorter than two codons.
+        Mean codon pair bias score.  Returns 0.0 for empty sequences,
+        whitespace-only sequences, or sequences shorter than two codons.
 
     Raises:
-        ValueError: If the DNA length is not a multiple of 3.
+        ValueError: If the DNA length is not a multiple of 3 (and is
+            non-empty).
     """
     # Delegate to compute_cpb which already implements the full logic
     return compute_cpb(dna, organism)

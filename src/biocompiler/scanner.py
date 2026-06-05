@@ -4,6 +4,9 @@ BioCompiler Scanner — Multi-DFA Motif Detection
 Production-grade scanner with:
 - Start/stop codons scanned in ALL 3 reading frames (not just frame 0)
 - Restriction sites checked on BOTH strands (forward + reverse complement)
+- Aho-Corasick multi-pattern matching for O(L+M) restriction site scanning
+- IUPAC ambiguity expansion for degenerate recognition sites (both strands)
+- Only sites >= 6 bp are checked for restriction site elimination
 - MaxEntScan-based splice site scoring via scan_splice_sites() (not constant 5.0 for donors)
 - Kozak consensus scoring with position weights (not exact string match)
 - Logging instead of print
@@ -20,6 +23,13 @@ from .constants import (
     START_CODON,
     STOP_CODONS,
 )
+from .restriction_sites import (
+    MIN_SITE_LENGTH,
+    get_recognition_site,
+    expand_iupac_site,
+    get_eliminable_sites,
+)
+from .aho_corasick import AhoCorasickScanner
 from .types import Token
 from .exceptions import InvalidSequenceError
 from .maxentscan import score_donor, score_acceptor, scan_splice_sites
@@ -210,6 +220,89 @@ def _score_kozak(seq: str, atg_pos: int) -> float:
     return round(score / total_weight, SCORE_ROUND_DIGITS) if total_weight > 0 else 0.0
 
 
+def _build_and_scan_restriction_sites(
+    seq: str,
+    restriction_enzymes: list[str],
+    tokens: list[Token],
+) -> None:
+    """Build an Aho-Corasick automaton from requested enzyme sites and scan.
+
+    Only sites >= ``MIN_SITE_LENGTH`` (6 bp) are included for elimination.
+    IUPAC degenerate sites are expanded into concrete ACGT sequences so they
+    can be fed into the Aho-Corasick automaton.  Reverse complements are
+    included for **all** patterns (including expanded IUPAC sites), ensuring
+    detection on both strands.
+
+    Results are appended to *tokens* in-place.
+
+    Args:
+        seq: Validated (uppercased) DNA sequence.
+        restriction_enzymes: Enzyme names to scan for.
+        tokens: List to append Token objects to.
+    """
+    # --- Phase 1: Resolve enzyme names to recognition sites, filter >=6 bp ---
+    # Track which concrete sequence maps to which enzyme and strand direction.
+    # patterns: concrete_acgt_seq -> (enzyme_name, original_site, strand)
+    patterns: dict[str, tuple[str, str, str]] = {}
+
+    for enz_name in restriction_enzymes:
+        # Try the curated restriction_sites DB first, fall back to constants
+        site = get_recognition_site(enz_name)
+        if site is None:
+            site = RESTRICTION_ENZYMES.get(enz_name)
+        if site is None:
+            logger.debug("Unknown restriction enzyme skipped: %r", enz_name)
+            continue
+
+        # Only check sites >= MIN_SITE_LENGTH for elimination
+        if len(site) < MIN_SITE_LENGTH:
+            logger.debug(
+                "Skipping %s (%d bp < %d bp minimum for elimination)",
+                enz_name, len(site), MIN_SITE_LENGTH,
+            )
+            continue
+
+        # --- Phase 2: Expand IUPAC ambiguity codes into concrete sequences ---
+        expanded: list[str] = expand_iupac_site(site)
+
+        # --- Phase 3: Add forward-strand patterns ---
+        for concrete in expanded:
+            if concrete not in patterns:
+                patterns[concrete] = (enz_name, site, "+")
+
+        # --- Phase 4: Add reverse-complement patterns (both strands) ---
+        for concrete in expanded:
+            rc = reverse_complement(concrete)
+            # Palindromic sites: RC == forward; don't double-count
+            if rc == concrete:
+                continue
+            if rc not in patterns:
+                patterns[rc] = (enz_name, site, "-")
+
+    if not patterns:
+        return
+
+    # --- Phase 5: Build Aho-Corasick automaton and scan O(L + M) ---
+    # The AhoCorasickScanner expects patterns as {pattern_str: label}.
+    # We use enzyme_name as the label for quick identification.
+    ac_patterns: dict[str, str] = {
+        concrete: info[0]  # enzyme_name
+        for concrete, info in patterns.items()
+    }
+    scanner = AhoCorasickScanner(ac_patterns)
+
+    # Scan the sequence in a single pass
+    for pos, site_str, enz_label in scanner.scan(seq):
+        info = patterns.get(site_str)
+        if info is None:
+            # Should not happen, but be defensive
+            continue
+        enz_name, original_site, strand = info
+        tokens.append(
+            Token(pos, "restriction_site", site_str, DEFAULT_MOTIF_SCORE, strand=strand)
+        )
+
+
 def scan_sequence(
     seq: str,
     restriction_enzymes: list[str] | None = None,
@@ -332,28 +425,9 @@ def scan_sequence(
         if seq[i:i + len(INSTABILITY_MOTIF)] == INSTABILITY_MOTIF:
             tokens.append(Token(i, "instability_motif", seq[i:i + len(INSTABILITY_MOTIF)], DEFAULT_MOTIF_SCORE))
 
-    # --- Restriction enzyme sites (BOTH strands, IUPAC-aware) ---
+    # --- Restriction enzyme sites (BOTH strands, IUPAC-aware, Aho-Corasick) ---
     if restriction_enzymes:
-        for enz_name in restriction_enzymes:
-            if enz_name in RESTRICTION_ENZYMES:
-                site: str = RESTRICTION_ENZYMES[enz_name]
-                has_iupac: bool = any(b not in "ACGT" for b in site.upper())
-                # Forward strand
-                for i in range(len(seq) - len(site) + 1):
-                    window: str = seq[i:i + len(site)]
-                    if has_iupac:
-                        if _iupac_match(window, site):
-                            tokens.append(Token(i, "restriction_site", window, DEFAULT_MOTIF_SCORE, strand="+"))
-                    else:
-                        if window == site:
-                            tokens.append(Token(i, "restriction_site", site, DEFAULT_MOTIF_SCORE, strand="+"))
-                # Reverse complement strand (only for non-IUPAC sites; IUPAC RC is complex)
-                if not has_iupac:
-                    site_rc: str = reverse_complement(site)
-                    if site_rc != site:  # Avoid double-counting palindromes
-                        for i in range(len(seq) - len(site_rc) + 1):
-                            if seq[i:i + len(site_rc)] == site_rc:
-                                tokens.append(Token(i, "restriction_site", site_rc, DEFAULT_MOTIF_SCORE, strand="-"))
+        _build_and_scan_restriction_sites(seq, restriction_enzymes, tokens)
 
     tokens.sort(key=lambda t: (t.position, t.element_type))
     logger.debug("Scanned %d nt sequence, found %d tokens", len(seq), len(tokens))

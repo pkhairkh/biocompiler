@@ -125,6 +125,16 @@ class AhoCorasickScanner:
         self._longest_pattern: int = 0
         self._num_nodes: int = 0
 
+        # Graceful handling of empty pattern sets: build a trivial automaton
+        # that always returns "no match" without any overhead.
+        if not self._patterns:
+            self._delta: list[int] = [0] * _ALPHABET_SIZE  # single root state
+            self._output_table: list[list[tuple[str, str]] | None] = [None]
+            self._is_empty: bool = True
+            return
+
+        self._is_empty = False
+
         # Build the automaton using node-based construction
         nodes: list[AhoCorasickNode] = []
         self._build_trie(nodes)
@@ -132,9 +142,9 @@ class AhoCorasickScanner:
 
         # Flatten the transition table into a list for fast scanning.
         # delta[state * ALPHABET_SIZE + char_idx] = next_state
-        self._delta: list[int] = [0] * (self._num_nodes * _ALPHABET_SIZE)
+        self._delta = [0] * (self._num_nodes * _ALPHABET_SIZE)
         # output_table[state] = list of (site_string, enzyme_name) or None
-        self._output_table: list[list[tuple[str, str]] | None] = [None] * self._num_nodes
+        self._output_table = [None] * self._num_nodes
 
         for state in range(self._num_nodes):
             for ch, child_idx in nodes[state].children.items():
@@ -254,6 +264,8 @@ class AhoCorasickScanner:
             position. If multiple patterns match at the same position, they
             are all included.
         """
+        if self._is_empty:
+            return []
         results: list[tuple[int, str, str]] = []
         state = 0
         delta = self._delta
@@ -287,6 +299,8 @@ class AhoCorasickScanner:
         Returns:
             True if any pattern is found, False otherwise.
         """
+        if self._is_empty:
+            return False
         state = 0
         delta = self._delta
         output_table = self._output_table
@@ -319,6 +333,8 @@ class AhoCorasickScanner:
         Returns:
             True if any pattern is found in the region, False otherwise.
         """
+        if self._is_empty:
+            return False
         # Extend the region to catch patterns that overlap boundaries
         region_start = max(0, start - self._longest_pattern + 1)
         region_end = min(len(sequence), end + self._longest_pattern - 1)
@@ -358,6 +374,8 @@ class AhoCorasickScanner:
             List of (position, site_string, enzyme_name) tuples where
             position is within [start, end).
         """
+        if self._is_empty:
+            return []
         results: list[tuple[int, str, str]] = []
         state = 0
         delta = self._delta
@@ -409,6 +427,8 @@ class AhoCorasickScanner:
             Dictionary mapping enzyme_name to sorted list of positions
             where the site was found.
         """
+        if self._is_empty:
+            return {}
         results: dict[str, list[int]] = {}
         for pos, site, enzyme in self.scan(sequence):
             results.setdefault(enzyme, []).append(pos)
@@ -428,6 +448,8 @@ class AhoCorasickScanner:
         Returns:
             Total number of pattern matches.
         """
+        if self._is_empty:
+            return 0
         count = 0
         state = 0
         delta = self._delta

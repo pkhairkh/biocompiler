@@ -510,25 +510,60 @@ class TestCSPIntegration:
         if result.solved:
             assert result.cai >= 0.5, f"CAI {result.cai:.3f} is unreasonably low"
 
-    def test_infeasibility_detected(self, simple_protein, tight_config):
-        """Impossibly narrow GC bounds should produce violations or infeasibility.
+    def test_infeasibility_detected(self):
+        """Truly infeasible GC target should produce violations or infeasibility.
 
-        Note: the CSP solver may actually find a solution within tight GC bounds
-        if the protein's codon usage allows it. In that case, the solution is
-        valid and no violations are expected. The test simply checks that the
-        solver doesn't crash or return garbage for tight constraints.
+        Uses a protein of all Lysines (codons AAA/AAG, max GC = 1/3) with a
+        GC target of [0.90, 0.95], which is mathematically impossible.
+
+        The solver should either:
+        - Report infeasibility (solved=False), or
+        - Return a solution with violations indicating the GC constraint
+          could not be satisfied (e.g. greedy fallback), or
+        - If a real CSP solver finds a valid solution, verify GC is within bounds.
         """
         mod_types = _import_solver_types()
         mod_dispatch = _import_solver_dispatch()
-        result = mod_dispatch.solve_with_csp(simple_protein, config=tight_config)
-        # The solver may find a valid solution within tight GC bounds.
-        # If solved, verify the GC is actually within range.
-        if result.solved:
-            # Verify GC content is within the tight bounds
-            assert tight_config.gc_lo <= result.gc_content <= tight_config.gc_hi, (
-                f"GC content {result.gc_content:.3f} outside "
-                f"[{tight_config.gc_lo}, {tight_config.gc_hi}]"
+
+        # Lysine (K) codons: AAA, AAG — max GC = 1/3 ≈ 0.333
+        # GC target [0.90, 0.95] is mathematically impossible for this protein.
+        protein = "KKKKKKKKKK"
+        cfg = mod_types.SolverConfig(gc_lo=0.90, gc_hi=0.95)
+        result = mod_dispatch.solve_with_csp(protein, config=cfg)
+
+        if not result.solved:
+            # Infeasible — the expected outcome for a truly impossible constraint
+            return
+
+        # If solved by greedy fallback, GC may not be within bounds but
+        # violations should be reported indicating the constraint couldn't be met.
+        if getattr(result, "fallback_used", False):
+            # Greedy fallback found a best-effort solution; verify it either
+            # reports GC violations or that GC is at least close to the target.
+            has_gc_violation = any(
+                "GC" in getattr(v, "constraint_name", "")
+                for v in getattr(result, "violations", [])
             )
+            # GC should be far below the target since it's impossible
+            assert result.gc_content < 0.50, (
+                f"Greedy fallback GC {result.gc_content:.3f} unexpectedly high "
+                f"for all-Lysine protein"
+            )
+            # Either violations are reported or warnings mention GC failure
+            has_gc_warning = any(
+                "GC" in w for w in getattr(result, "warnings", [])
+            )
+            assert has_gc_violation or has_gc_warning, (
+                "Greedy fallback should report GC violations or warnings "
+                "for impossible GC target"
+            )
+            return
+
+        # If a real CSP solver found a valid solution, GC must be in bounds
+        assert cfg.gc_lo <= result.gc_content <= cfg.gc_hi, (
+            f"GC content {result.gc_content:.3f} outside "
+            f"[{cfg.gc_lo}, {cfg.gc_hi}]"
+        )
 
     def test_egfp_solve(self, eGFP_protein):
         """Full eGFP protein should be solvable with default bounds."""

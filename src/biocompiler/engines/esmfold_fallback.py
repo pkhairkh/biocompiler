@@ -914,6 +914,14 @@ def estimate_fold_quality(protein: str) -> FoldQualityEstimate:
        where the smoothed hydrophobicity exceeds a threshold, indicating
        a potential buried core.
 
+    **Length-aware adjustments**: Small proteins (10–50 residues) may not
+    have a traditional hydrophobic core with clear interior/termini
+    distinctions, yet they can still be well-folded (e.g., zinc fingers,
+    mini-proteins, peptide hormones).  For these proteins, the burial
+    score is de-emphasised in favour of overall hydrophobicity and
+    secondary-structure content, which are stronger indicators of
+    compact folding at short lengths.
+
     Returns a :class:`FoldQualityEstimate` with scores in 0–1 range.
     Higher scores indicate a hydrophobicity pattern more consistent with
     a well-folded globular protein.
@@ -939,6 +947,13 @@ def estimate_fold_quality(protein: str) -> FoldQualityEstimate:
     hydro_profile = compute_hydrophobicity_profile(protein)
     mean_hydro = sum(hydro_profile) / len(hydro_profile)
 
+    # --- Determine protein size category ---
+    # Small proteins (10-50 aa) may lack a traditional hydrophobic core;
+    # the interior/termini distinction is less meaningful.  We apply
+    # length-aware weighting to the burial and surface scores.
+    _SMALL_PROTEIN_THRESHOLD: int = 50
+    is_small = n < _SMALL_PROTEIN_THRESHOLD
+
     # --- 1. Hydrophobic burial score ---
     # In a well-folded globular protein, the interior of the sequence
     # (middle 60%) should be more hydrophobic than the terminal regions
@@ -959,6 +974,34 @@ def estimate_fold_quality(protein: str) -> FoldQualityEstimate:
     # Normalize: typical difference is 0.5–2.0 on the KD scale for well-folded
     hydro_diff = inner_hydro - outer_hydro
     burial_score = max(0.0, min(1.0, (hydro_diff + 1.0) / 3.0))
+
+    # --- 1b. Small-protein hydrophobicity score ---
+    # For short proteins, the burial score is unreliable because there is
+    # little distinction between "interior" and "surface" in the sequence.
+    # Instead, we assess overall hydrophobicity balance: a mix of
+    # hydrophobic and polar residues is consistent with a compact fold,
+    # even in the absence of a classic core.
+    if is_small:
+        hydrophobic_count = sum(1 for aa in protein if aa in HYDROPHOBIC_AAS)
+        hydro_frac = hydrophobic_count / n
+        # Optimal hydrophobic fraction for small folded proteins: 0.25–0.50
+        if 0.25 <= hydro_frac <= 0.50:
+            small_hydro_score = 0.7
+        elif 0.15 <= hydro_frac < 0.25 or 0.50 < hydro_frac <= 0.60:
+            small_hydro_score = 0.5
+        else:
+            small_hydro_score = 0.2
+
+        # Also consider overall mean hydrophobicity: positive values
+        # suggest a hydrophobic tendency consistent with folding.
+        if mean_hydro > 0:
+            small_hydro_score = min(1.0, small_hydro_score + 0.1)
+
+        # Blend the burial score with the small-protein score, giving
+        # more weight to the small-protein heuristic for short sequences.
+        # The shorter the protein, the more we trust the heuristic.
+        small_weight = max(0.0, min(0.7, (_SMALL_PROTEIN_THRESHOLD - n) / _SMALL_PROTEIN_THRESHOLD))
+        burial_score = (1.0 - small_weight) * burial_score + small_weight * small_hydro_score
 
     # --- 2. Polar surface score ---
     # Terminal regions should be more polar (lower KD score) than interior
@@ -982,36 +1025,67 @@ def estimate_fold_quality(protein: str) -> FoldQualityEstimate:
         0.5 * min(1.0, actual_terminal_charged_frac)
     ))
 
+    # For small proteins, the terminal enrichment signal is weak because
+    # the "terminal" and "interior" regions overlap.  We supplement the
+    # surface score with overall charge balance — balanced charges are
+    # consistent with a well-folded small protein.
+    if is_small:
+        charge_prof = compute_charge_profile(protein)
+        # Blend: replace part of surface_score with charge balance
+        small_surface_weight = max(0.0, min(0.5, (_SMALL_PROTEIN_THRESHOLD - n) / _SMALL_PROTEIN_THRESHOLD))
+        surface_score = (1.0 - small_surface_weight) * surface_score + small_surface_weight * charge_prof.charge_balance
+
     # --- 3. Hydrophobic core detection ---
-    # Scan for windows with above-average hydrophobicity
+    # Scan for windows with above-average hydrophobicity.
+    # For small proteins, use a proportionally smaller window.
     hydro_core_detected = False
-    if n >= _HYDRO_CORE_WINDOW:
-        half_w = _HYDRO_CORE_WINDOW // 2
+    effective_core_window = min(_HYDRO_CORE_WINDOW, max(5, n // 2))
+    if n >= effective_core_window:
+        half_w = effective_core_window // 2
         for i in range(half_w, n - half_w):
-            window_avg = sum(hydro_profile[i - half_w:i + half_w + 1]) / _HYDRO_CORE_WINDOW
+            window_avg = sum(hydro_profile[i - half_w:i + half_w + 1]) / effective_core_window
             if window_avg > _HYDRO_CORE_THRESHOLD:
                 hydro_core_detected = True
                 break
     else:
-        # For short sequences, just check if overall hydrophobicity is positive
+        # For very short sequences, just check if overall hydrophobicity is positive
         hydro_core_detected = mean_hydro > _HYDRO_CORE_THRESHOLD
 
     # --- 4. Overall quality ---
-    overall = _BURIAL_WEIGHT * burial_score + _SURFACE_WEIGHT * surface_score
+    # For small proteins, reduce the burial weight and increase the surface
+    # weight, since the burial score is less reliable.
+    if is_small:
+        burial_weight = 0.4
+        surface_weight = 0.6
+    else:
+        burial_weight = _BURIAL_WEIGHT
+        surface_weight = _SURFACE_WEIGHT
+
+    overall = burial_weight * burial_score + surface_weight * surface_score
 
     # Bonus for detected hydrophobic core
     if hydro_core_detected:
         overall = min(1.0, overall + 0.05)
 
-    # --- 5. Interpretation ---
-    if overall >= 0.7:
-        interpretation = "Good: hydrophobic burial pattern consistent with folded globular protein"
-    elif overall >= 0.5:
-        interpretation = "Moderate: partial hydrophobic core, some polar surface enrichment"
-    elif overall >= 0.3:
-        interpretation = "Weak: limited hydrophobic burial, may be partially disordered"
+    # --- 5. Interpretation (length-aware) ---
+    if is_small:
+        if overall >= 0.6:
+            interpretation = "Good (small protein): hydrophobicity balance consistent with compact fold"
+        elif overall >= 0.4:
+            interpretation = "Moderate (small protein): partial hydrophobic character, may fold or be partially structured"
+        elif overall >= 0.2:
+            interpretation = "Weak (small protein): limited hydrophobic content, may be disordered or peptide-like"
+        else:
+            interpretation = "Poor (small protein): hydrophobicity pattern inconsistent with compact folding"
     else:
-        interpretation = "Poor: hydrophobicity pattern inconsistent with compact folding"
+        if overall >= 0.7:
+            interpretation = "Good: hydrophobic burial pattern consistent with folded globular protein"
+        elif overall >= 0.5:
+            interpretation = "Moderate: partial hydrophobic core, some polar surface enrichment"
+        elif overall >= 0.3:
+            interpretation = "Weak: limited hydrophobic burial, may be partially disordered"
+        else:
+            interpretation = "Poor: hydrophobicity pattern inconsistent with compact folding"
 
     return FoldQualityEstimate(
         hydro_burial_score=round(burial_score, 4),

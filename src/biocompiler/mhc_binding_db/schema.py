@@ -44,6 +44,8 @@ __all__ = [
     "MHCBindingDatabase",
     "generate_fallback_database",
     "get_default_alleles_for_organism",
+    "get_allele_supertype",
+    "ALLELE_SUPERTYPES",
     "is_mhc_class2",
 ]
 
@@ -385,6 +387,58 @@ class MHCBindingDatabase:
     def __init__(self) -> None:
         self._records: dict[tuple[str, str], MHCBindingRecord] = {}
 
+    # ── Class factories ─────────────────────────────────────────────────
+
+    @classmethod
+    def from_precomputed_binders(
+        cls,
+        binders: Optional[dict[tuple[str, str], float]] = None,
+    ) -> MHCBindingDatabase:
+        """Create a database pre-loaded with IEDB-verified binding data.
+
+        This provides fast access to experimentally verified MHC-peptide
+        binding affinities for the immunogenicity predicate API, without
+        requiring MHCflurry or NetMHCpan at runtime.
+
+        Parameters
+        ----------
+        binders : dict or None
+            Mapping of ``(allele, peptide)`` → IC50 (nM).  When ``None``
+            (default), uses :data:`PRECOMPUTED_BINDERS` from this module.
+
+        Returns
+        -------
+        MHCBindingDatabase
+            Database populated with IEDB-verified records.
+
+        Examples
+        --------
+        >>> db = MHCBindingDatabase.from_precomputed_binders()
+        >>> rec = db.lookup("HLA-A*02:01", "GILGFVFTL")
+        >>> rec.ic50_nm
+        5.0
+        >>> rec.source
+        'iedb_verified'
+        """
+        if binders is None:
+            binders = PRECOMPUTED_BINDERS
+
+        db = cls()
+        now = datetime.now(timezone.utc).isoformat()
+        for (allele, peptide), ic50 in binders.items():
+            binding_class = _classify_binding_fallback(ic50)
+            db.add(MHCBindingRecord(
+                allele=allele,
+                peptide=peptide,
+                ic50_nm=round(ic50, 1),
+                rank=None,
+                binding_class=binding_class,
+                source="iedb_verified",
+                method="iedb Literature",
+                timestamp=now,
+            ))
+        return db
+
     # ── Mutation ────────────────────────────────────────────────────────
 
     def add(self, record: MHCBindingRecord) -> None:
@@ -421,6 +475,56 @@ class MHCBindingDatabase:
         is the :class:`MHCBindingRecord` or ``None`` if not found.
         """
         return [self._records.get((allele, p)) for p in peptides]
+
+    # ── Supertype queries ──────────────────────────────────────────────
+
+    def query_by_supertype(
+        self,
+        supertype: str,
+        threshold_ic50: float = 500.0,
+    ) -> list[MHCBindingRecord]:
+        """Return all binding records for alleles in the given supertype.
+
+        Alleles within a supertype share similar peptide-binding motifs.
+        This method finds all records where the allele belongs to the
+        specified supertype and the IC50 is below *threshold_ic50*.
+
+        Parameters
+        ----------
+        supertype : str
+            MHC supertype name (e.g. ``"A2"``, ``"B7"``, ``"DR4"``).
+        threshold_ic50 : float
+            IC50 threshold in nM (default 500.0).
+
+        Returns
+        -------
+        list[MHCBindingRecord]
+            Matching records, sorted by IC50 ascending.
+        """
+        results: list[MHCBindingRecord] = []
+        for (allele, _), rec in self._records.items():
+            if ALLELE_SUPERTYPES.get(allele) == supertype:
+                if rec.ic50_nm < threshold_ic50:
+                    results.append(rec)
+        return sorted(results, key=lambda r: r.ic50_nm)
+
+    def alleles_by_supertype(self, supertype: str) -> list[str]:
+        """Return all alleles in the database that belong to a supertype.
+
+        Parameters
+        ----------
+        supertype : str
+            MHC supertype name (e.g. ``"A2"``, ``"B7"``, ``"DR4"``).
+
+        Returns
+        -------
+        list[str]
+            Sorted list of allele names in the database matching the
+            supertype.
+        """
+        return sorted({
+            a for a in self.alleles if ALLELE_SUPERTYPES.get(a) == supertype
+        })
 
     # ── Filtering ───────────────────────────────────────────────────────
 
@@ -710,6 +814,385 @@ _PSSM_ANCHOR_POSITIONS: dict[str, set[int]] = {
     "HLA-DRB1*04:01": {0, 3, 5, 8},
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Allele supertype mapping
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Mapping of HLA allele names to their MHC supertype.  Alleles within the
+#: same supertype share similar peptide-binding motifs, enabling PSSM
+#: fallback when an allele lacks a dedicated PSSM.
+#: Reference: Sette & Sidney (1999) J Immunol 163:791–796.
+ALLELE_SUPERTYPES: dict[str, str] = {
+    # Canonical alleles (self-mapped for convenience)
+    "HLA-A*02:01": "A2",
+    "HLA-A*01:01": "A1",
+    "HLA-A*03:01": "A3",
+    "HLA-A*24:02": "A24",
+    "HLA-B*07:02": "B7",
+    "HLA-B*08:01": "B8",
+    "HLA-DRB1*01:01": "DR1",
+    "HLA-DRB1*04:01": "DR4",
+    # A2 supertype
+    "HLA-A*02:02": "A2", "HLA-A*02:03": "A2", "HLA-A*02:05": "A2",
+    "HLA-A*02:06": "A2", "HLA-A*02:07": "A2", "HLA-A*02:09": "A2",
+    # A1 supertype
+    "HLA-A*01:02": "A1", "HLA-A*01:03": "A1",
+    # A3 supertype
+    "HLA-A*03:02": "A3", "HLA-A*03:03": "A3",
+    "HLA-A*11:01": "A3", "HLA-A*11:02": "A3", "HLA-A*31:01": "A3",
+    "HLA-A*33:01": "A3", "HLA-A*68:01": "A3",
+    # A24 supertype
+    "HLA-A*24:03": "A24", "HLA-A*24:07": "A24",
+    "HLA-A*23:01": "A24",
+    # B7 supertype
+    "HLA-B*07:03": "B7", "HLA-B*07:04": "B7",
+    "HLA-B*35:01": "B7", "HLA-B*35:03": "B7",
+    "HLA-B*51:01": "B7", "HLA-B*53:01": "B7",
+    "HLA-B*54:01": "B7", "HLA-B*55:01": "B7", "HLA-B*56:01": "B7",
+    "HLA-B*67:01": "B7",
+    # B8 supertype
+    "HLA-B*08:02": "B8",
+    # B44 supertype
+    "HLA-B*44:02": "B44", "HLA-B*44:03": "B44",
+    "HLA-B*40:01": "B44", "HLA-B*40:02": "B44",
+    # B58 supertype
+    "HLA-B*58:01": "B58", "HLA-B*57:01": "B58",
+    # B62 supertype
+    "HLA-B*62:01": "B62", "HLA-B*15:01": "B62",
+    "HLA-B*46:01": "B62", "HLA-B*52:01": "B62",
+    # DR supertypes
+    "HLA-DRB1*01:02": "DR1", "HLA-DRB1*01:03": "DR1",
+    "HLA-DRB1*04:02": "DR4", "HLA-DRB1*04:03": "DR4",
+    "HLA-DRB1*04:04": "DR4", "HLA-DRB1*04:05": "DR4",
+    "HLA-DRB1*07:01": "DR7", "HLA-DRB1*07:02": "DR7", "HLA-DRB1*07:03": "DR7",
+    "HLA-DRB1*03:01": "DR3", "HLA-DRB1*03:02": "DR3",
+    "HLA-DRB1*11:01": "DR11", "HLA-DRB1*13:01": "DR11",
+    "HLA-DRB1*15:01": "DR15", "HLA-DRB1*16:01": "DR15",
+}
+
+
+def get_allele_supertype(allele: str) -> Optional[str]:
+    """Return the MHC supertype for the given allele.
+
+    Alleles within the same supertype share similar peptide-binding
+    motifs (anchor residue preferences at key positions), allowing
+    PSSM-based fallback prediction when a dedicated PSSM is not
+    available for a specific allele.
+
+    Parameters
+    ----------
+    allele : str
+        HLA allele name (e.g. ``"HLA-A*02:03"``).
+
+    Returns
+    -------
+    str or None
+        The supertype name (e.g. ``"A2"``) if the allele is mapped,
+        else ``None``.
+
+    Examples
+    --------
+    >>> get_allele_supertype("HLA-A*02:03")
+    'A2'
+    >>> get_allele_supertype("HLA-A*02:01")
+    'A2'
+    >>> get_allele_supertype("H-2Kb") is None
+    True
+    """
+    return ALLELE_SUPERTYPES.get(allele)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Supertype PSSM fallback data
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Simplified PSSM data for MHC supertypes.  These are used when an allele
+#: lacks a dedicated PSSM but belongs to a known supertype family.
+_SUPERTYPE_PSSM: dict[str, list[dict[str, float]]] = {
+    "A2": [
+        {"L": 1.1, "M": 1.1, "I": 1.1, "V": 1.1, "A": 1.05},  # pos 0
+        {"L": 1.8, "M": 1.8, "I": 1.6, "V": 1.6},              # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"V": 1.4, "L": 1.4, "I": 1.2, "A": 1.1},               # pos 8 anchor
+    ],
+    "A1": [
+        {"A": 1.05, "S": 1.05},
+        {"T": 1.6, "S": 1.4, "D": 1.3, "E": 1.3},              # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"Y": 1.6, "F": 1.4},                                      # pos 8 anchor
+    ],
+    "A3": [
+        {"A": 1.05, "S": 1.05},
+        {"V": 1.6, "I": 1.6, "L": 1.4, "M": 1.4},               # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"K": 1.8, "R": 1.6, "H": 1.3},                           # pos 8 anchor
+    ],
+    "A24": [
+        {"Y": 1.1, "F": 1.05},
+        {"Y": 1.8, "F": 1.8, "W": 1.5},                           # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"F": 1.4, "L": 1.4, "I": 1.2},                           # pos 8 anchor
+    ],
+    "B7": [
+        {"A": 1.05, "P": 1.05},
+        {"P": 1.8, "A": 1.6},                                      # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"L": 1.4, "I": 1.4, "V": 1.2},                            # pos 8 anchor
+    ],
+    "B8": [
+        {},
+        {"K": 1.6, "R": 1.6},                                      # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"L": 1.4, "I": 1.2, "V": 1.2},                            # pos 8 anchor
+    ],
+    "B44": [
+        {},
+        {"E": 1.8, "D": 1.5},                                      # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"Y": 1.5, "F": 1.4, "L": 1.3, "I": 1.2},                 # pos 8 anchor
+    ],
+    "B58": [
+        {},
+        {"S": 1.5, "A": 1.4, "T": 1.3},                            # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"W": 1.6, "F": 1.4, "Y": 1.4, "L": 1.2},                 # pos 8 anchor
+    ],
+    "B62": [
+        {},
+        {"Q": 1.6, "N": 1.3},                                      # pos 1 anchor
+        {}, {}, {}, {}, {}, {},
+        {"L": 1.4, "I": 1.3, "V": 1.2, "F": 1.3},                 # pos 8 anchor
+    ],
+    "DR1": [
+        {"F": 1.6, "Y": 1.5, "W": 1.4, "L": 1.3, "I": 1.2, "V": 1.2},
+        {},
+        {},
+        {"A": 1.4, "S": 1.3, "T": 1.3, "N": 1.2},                 # P4 anchor
+        {},
+        {"L": 1.4, "I": 1.3, "V": 1.3, "M": 1.2},                 # P6 anchor
+        {},
+        {},
+        {"K": 1.2, "R": 1.2, "N": 1.1, "Q": 1.1},                 # P9 anchor
+    ],
+    "DR4": [
+        {"F": 1.6, "Y": 1.5, "W": 1.4, "L": 1.2},
+        {},
+        {},
+        {"D": 1.6, "E": 1.4},                                      # P4 anchor
+        {},
+        {"A": 1.4, "S": 1.3, "G": 1.2},                             # P6 anchor
+        {},
+        {},
+        {"L": 1.3, "I": 1.2, "V": 1.2},                            # P9 anchor
+    ],
+    "DR7": [
+        {"F": 1.5, "Y": 1.4, "L": 1.3, "I": 1.2, "V": 1.2},
+        {},
+        {},
+        {"A": 1.3, "S": 1.2, "T": 1.2},
+        {},
+        {"L": 1.3, "I": 1.2, "V": 1.2, "F": 1.2},
+        {},
+        {},
+        {"K": 1.2, "R": 1.2, "N": 1.1, "Q": 1.1},
+    ],
+    "DR3": [
+        {"F": 1.6, "Y": 1.5, "W": 1.4, "L": 1.3, "I": 1.2, "V": 1.2},
+        {},
+        {},
+        {"A": 1.4, "S": 1.3, "T": 1.3, "N": 1.2},
+        {},
+        {"L": 1.4, "I": 1.3, "V": 1.3, "M": 1.2},
+        {},
+        {},
+        {"K": 1.2, "R": 1.2, "N": 1.1, "Q": 1.1},
+    ],
+    "DR11": [
+        {"F": 1.5, "Y": 1.4, "W": 1.3, "L": 1.2, "I": 1.1},
+        {},
+        {},
+        {"A": 1.3, "S": 1.2, "N": 1.2, "G": 1.1},
+        {},
+        {"L": 1.3, "I": 1.2, "V": 1.2},
+        {},
+        {},
+        {},
+    ],
+    "DR15": [
+        {"F": 1.4, "Y": 1.3, "L": 1.2, "V": 1.1},
+        {},
+        {},
+        {"A": 1.3, "S": 1.2},
+        {},
+        {"A": 1.3, "S": 1.2, "G": 1.2},
+        {},
+        {},
+        {"L": 1.2, "I": 1.2, "V": 1.1},
+    ],
+}
+
+#: Disfavored residues for supertype PSSMs (coarse).
+_SUPERTYPE_DISFAVORED: dict[str, list[dict[str, float]]] = {
+    "A2": [
+        {"D": 0.6, "E": 0.6, "K": 0.6, "R": 0.6},
+        {"D": 0.4, "E": 0.4, "K": 0.4, "R": 0.4},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.5, "E": 0.5, "K": 0.5, "R": 0.5},
+    ],
+    "A1": [
+        {"W": 0.6, "R": 0.6},
+        {"L": 0.5, "I": 0.5, "V": 0.6},
+        {}, {}, {}, {}, {}, {},
+        {"K": 0.5, "R": 0.5, "D": 0.6},
+    ],
+    "A3": [
+        {},
+        {"D": 0.5, "E": 0.5},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.4, "E": 0.4},
+    ],
+    "A24": [
+        {},
+        {"D": 0.4, "E": 0.4, "K": 0.4},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.5, "E": 0.5, "K": 0.5},
+    ],
+    "B7": [
+        {},
+        {"D": 0.4, "E": 0.4, "K": 0.4},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.5, "E": 0.5},
+    ],
+    "B8": [
+        {},
+        {"D": 0.4, "E": 0.4, "P": 0.5},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.5, "E": 0.5},
+    ],
+    "B44": [
+        {},
+        {"K": 0.4, "R": 0.4},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.5, "E": 0.5},
+    ],
+    "B58": [
+        {},
+        {"W": 0.5, "F": 0.6},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.5, "E": 0.5},
+    ],
+    "B62": [
+        {},
+        {"D": 0.5, "E": 0.5},
+        {}, {}, {}, {}, {}, {},
+        {"D": 0.5, "E": 0.5},
+    ],
+    "DR1": [
+        {"D": 0.5, "E": 0.5, "K": 0.6},
+        {},
+        {},
+        {"W": 0.6, "F": 0.7},
+        {},
+        {"D": 0.6, "E": 0.6},
+        {},
+        {},
+        {},
+    ],
+    "DR4": [
+        {"D": 0.5, "E": 0.5, "K": 0.6},
+        {},
+        {},
+        {"K": 0.5, "R": 0.5},
+        {},
+        {"W": 0.6, "F": 0.7},
+        {},
+        {},
+        {"D": 0.6, "E": 0.6},
+    ],
+    "DR7": [
+        {"D": 0.5, "E": 0.5, "K": 0.6},
+        {},
+        {},
+        {},
+        {},
+        {"D": 0.6, "E": 0.6},
+        {},
+        {},
+        {},
+    ],
+    "DR3": [
+        {"D": 0.5, "E": 0.5, "K": 0.6},
+        {},
+        {},
+        {"W": 0.6, "F": 0.7},
+        {},
+        {"D": 0.6, "E": 0.6},
+        {},
+        {},
+        {},
+    ],
+    "DR11": [
+        {"D": 0.6, "E": 0.6},
+        {},
+        {},
+        {},
+        {},
+        {"D": 0.6, "E": 0.6},
+        {},
+        {},
+        {},
+    ],
+    "DR15": [
+        {"D": 0.6, "E": 0.6},
+        {},
+        {},
+        {},
+        {},
+        {"W": 0.6, "F": 0.7},
+        {},
+        {},
+        {},
+    ],
+}
+
+#: Anchor positions for supertype PSSMs.
+_SUPERTYPE_ANCHOR_POSITIONS: dict[str, set[int]] = {
+    "A2": {1, 8}, "A1": {1, 8}, "A3": {1, 8}, "A24": {1, 8},
+    "B7": {1, 8}, "B8": {1, 8}, "B44": {1, 8}, "B58": {1, 8}, "B62": {1, 8},
+    "DR1": {0, 3, 5, 8}, "DR4": {0, 3, 5, 8}, "DR7": {0, 3, 5, 8},
+    "DR3": {0, 3, 5, 8}, "DR11": {0, 3, 5, 8}, "DR15": {0, 3, 5, 8},
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Precomputed binders from IEDB (accessible for predicate API)
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Precomputed MHC-peptide binding affinities (IC50 nM) from IEDB.
+#: This data is shared with the immunogenicity module and can be loaded
+#: into an :class:`MHCBindingDatabase` via
+#: :meth:`MHCBindingDatabase.from_precomputed_binders`.
+PRECOMPUTED_BINDERS: dict[tuple[str, str], float] = {
+    ("HLA-A*02:01", "GILGFVFTL"): 5.0,
+    ("HLA-A*02:01", "LLFGYPVYV"): 12.0,
+    ("HLA-A*02:01", "YLDVGIVLTL"): 35.0,
+    ("HLA-A*02:01", "ELAGIGILTV"): 20.0,
+    ("HLA-A*02:01", "IMDQVPFSV"): 45.0,
+    ("HLA-A*02:01", "FLPSDFFPSV"): 50.0,
+    ("HLA-A*01:01", "EADPTGHSY"): 30.0,
+    ("HLA-A*01:01", "YLDVGIVLTL"): 55.0,
+    ("HLA-A*03:01", "GILGFVFTL"): 200.0,
+    ("HLA-A*03:01", "RLRAEAQVK"): 25.0,
+    ("HLA-A*03:01", "KVLEYVIKV"): 40.0,
+    ("HLA-B*07:02", "RPPIFIRRL"): 15.0,
+    ("HLA-B*07:02", "IPFVSLLKP"): 60.0,
+    ("HLA-B*08:01", "RAKFKQLL"): 80.0,
+    ("HLA-B*08:01", "FLRGRAYGL"): 25.0,
+    ("HLA-DRB1*01:01", "PKYVKQNTLKLAT"): 50.0,
+    ("HLA-DRB1*04:01", "PKYVKQNTLKLAT"): 80.0,
+    ("HLA-DRB1*07:01", "PKYVKQNTLKLAT"): 120.0,
+}
+
 
 def generate_fallback_database(
     alleles: list[str],
@@ -753,6 +1236,18 @@ def generate_fallback_database(
         anchor_positions = _PSSM_ANCHOR_POSITIONS.get(allele, set())
         is_class2 = is_mhc_class2(allele)
 
+        # If no dedicated PSSM for this allele, try supertype PSSM fallback
+        method_suffix = ""
+        if not preferred:
+            supertype = ALLELE_SUPERTYPES.get(allele)
+            if supertype and supertype in _SUPERTYPE_PSSM:
+                preferred = _SUPERTYPE_PSSM[supertype]
+                disfavored = _SUPERTYPE_DISFAVORED.get(supertype, [])
+                anchor_positions = _SUPERTYPE_ANCHOR_POSITIONS.get(
+                    supertype, set(),
+                )
+                method_suffix = f"_supertype_{supertype}"
+
         # Determine peptide lengths for this allele
         if peptide_lengths is not None:
             lengths = peptide_lengths
@@ -770,6 +1265,7 @@ def generate_fallback_database(
                     db, allele, pep_len, pssm_core_len,
                     preferred, disfavored, anchor_positions,
                     rng, now, is_class2,
+                    method_suffix=method_suffix,
                 )
             else:
                 # No PSSM data for this allele — use generic
@@ -792,6 +1288,7 @@ def _generate_pssm_peptides(
     timestamp: str,
     is_class2: bool,
     num_samples: int = 200,
+    method_suffix: str = "",
 ) -> None:
     """Generate peptides scored against a PSSM.
 
@@ -872,7 +1369,7 @@ def _generate_pssm_peptides(
             rank=None,
             binding_class=binding_class,
             source="pssm_fallback",
-            method="pssm_anchor_scoring",
+            method="pssm_anchor_scoring" + method_suffix,
             timestamp=timestamp,
         ))
 

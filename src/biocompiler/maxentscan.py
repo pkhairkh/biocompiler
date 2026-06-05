@@ -71,6 +71,7 @@ __all__ = [
     "max_donor_score",
     "max_acceptor_score",
     "validate_against_published",
+    "check_consistency",
     "CRYPTIC_SPLICE_THRESHOLD",
     "_EDGE_CASE_SCORE",
 ]
@@ -149,7 +150,7 @@ _IMPOSSIBLE_SCORE: float = -50.0
 # full context window is unavailable.  This is a low but moderate value
 # (unlike _IMPOSSIBLE_SCORE which is extremely punitive) so that boundary
 # sites are correctly flagged as weak without distorting score statistics.
-_EDGE_CASE_SCORE: float = -20.0
+_EDGE_CASE_SCORE: float = -5.0
 
 # Number of decimal places for score rounding
 _SCORE_DECIMAL_PLACES: int = 4
@@ -200,7 +201,7 @@ def score_donor(seq: str, position: int) -> float:
         - Strong canonical donors: 8-12
         - Weak/cryptic donors: 0-5
         - Non-donors: <0
-        - Edge cases (insufficient context at gene boundary): -20.0
+        - Edge cases (insufficient context at gene boundary): -5.0
     """
     seq = seq.upper()
     start = position - _DONOR_UPSTREAM
@@ -243,7 +244,7 @@ def score_acceptor(seq: str, position: int) -> float:
         - Strong canonical acceptors: 8-14
         - Weak/cryptic acceptors: 0-5
         - Non-acceptors: <0
-        - Edge cases (insufficient context at gene boundary): -20.0
+        - Edge cases (insufficient context at gene boundary): -5.0
     """
     seq = seq.upper()
     start = position - _ACCEPTOR_UPSTREAM
@@ -452,3 +453,26 @@ def validate_against_published(tolerance: float = 0.01) -> List[str]:
         )
 
     return errors
+
+
+# ==============================================================================
+# Lazy re-export of the fast module's consistency check
+# ==============================================================================
+
+def check_consistency(tolerance: float = 0.01) -> List[str]:
+    """Verify that the fast (NUMBA) implementation matches this reference.
+
+    This is a convenience re-export of
+    :func:`biocompiler.maxentscan_fast.check_consistency` so that tests can
+    import it from either module.
+
+    Args:
+        tolerance: maximum allowed absolute difference between fast and
+            reference scores (default 0.01).
+
+    Returns:
+        List of error messages.  An empty list means all scores are
+        consistent within the specified tolerance.
+    """
+    from .maxentscan_fast import check_consistency as _fast_check
+    return _fast_check(tolerance)

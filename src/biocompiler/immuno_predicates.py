@@ -3,7 +3,7 @@ BioCompiler Immunogenicity Predicates
 =======================================
 
 Type-check predicates for immunogenicity assessment.
-Each predicate returns a TypeCheckResult with a Verdict.
+Each predicate returns a PredicateResult with a Verdict.
 
 All predicates work fully offline - they never require MHCflurry or
 NetMHCpan.  They use the precomputed database + PSSM fallback via
@@ -26,7 +26,8 @@ the protein is intended for therapeutic use.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from .types import Verdict, TypeCheckResult
 from .immunogenicity import compute_immunogenicity
@@ -42,11 +43,34 @@ from .immunogenicity import (
 )
 
 __all__ = [
+    "PredicateResult",
     "evaluate_low_immunogenicity",
     "evaluate_no_strong_t_cell_epitope",
     "evaluate_no_dominant_b_cell_epitope",
     "evaluate_population_coverage_safe",
 ]
+
+# ────────────────────────────────────────────────────────────
+# Consistent result type for all immuno predicates
+# ────────────────────────────────────────────────────────────
+
+@dataclass
+class PredicateResult(TypeCheckResult):
+    """Extended TypeCheckResult with a ``details`` field for immuno predicates.
+
+    All four immuno predicate functions return this type so that callers
+    can rely on a consistent interface with ``verdict``, ``derivation``,
+    and ``details`` fields.
+
+    Attributes
+    ----------
+    details : str or None
+        Human-readable explanation of the verdict.  For self-protein
+        auto-PASS results this is always set to
+        ``"Auto-PASS: protein is from host organism"``.
+    """
+    details: str | None = None
+
 
 # ────────────────────────────────────────────────────────────
 # Verdict threshold constants
@@ -121,12 +145,27 @@ def _is_self_protein(organism: str, source_organism: str | None = None) -> bool:
     return src in _SELF_ORGANISMS and tgt in _SELF_ORGANISMS
 
 
+def _resolve_self_protein(
+    self_protein: bool | None,
+    organism: str,
+    source_organism: str | None,
+) -> bool:
+    """Resolve the self-protein status from explicit flag or auto-detection.
+
+    If *self_protein* is explicitly set (True/False), use that value.
+    Otherwise, auto-detect from *organism* and *source_organism*.
+    """
+    if self_protein is not None:
+        return self_protein
+    return _is_self_protein(organism, source_organism)
+
+
 def evaluate_low_immunogenicity(
     protein: str,
     sequence: str | None = None,
     organism: str = "Homo_sapiens",
     **kwargs: Any,
-) -> TypeCheckResult:
+) -> PredicateResult:
     """Evaluate whether a protein has low overall immunogenicity.
 
     Context-aware classification:
@@ -162,7 +201,7 @@ def evaluate_low_immunogenicity(
                 use (stricter thresholds).  Default False.
 
     Returns:
-        TypeCheckResult with immunogenicity verdict.
+        PredicateResult with immunogenicity verdict and details.
     """
     threshold = kwargs.get('threshold', 0.3)
     self_protein = kwargs.get('self_protein', None)
@@ -170,14 +209,15 @@ def evaluate_low_immunogenicity(
     therapeutic = kwargs.get('therapeutic', False)
 
     if not protein:
-        return TypeCheckResult(
+        return PredicateResult(
             predicate="LowImmunogenicity",
             verdict=Verdict.UNCERTAIN,
             violation="Empty protein sequence",
+            details="Empty protein sequence",
         )
 
     # Determine self-protein status
-    is_self = self_protein if self_protein is not None else _is_self_protein(organism, source_organism)
+    is_self = _resolve_self_protein(self_protein, organism, source_organism)
 
     result = compute_immunogenicity(protein)
     score = result.overall_score
@@ -194,12 +234,13 @@ def evaluate_low_immunogenicity(
 
     # ── Self-protein auto-PASS ───────────────────────────────
     if is_self:
-        return TypeCheckResult(
+        return PredicateResult(
             predicate="LowImmunogenicity",
             verdict=Verdict.PASS,
             derivation=derivation,
             violation=None,
             knowledge_gap="Self-protein assumed tolerated; actual tolerance depends on expression context",
+            details="Auto-PASS: protein is from host organism",
         )
 
     # ── Score-based classification ───────────────────────────
@@ -219,6 +260,8 @@ def evaluate_low_immunogenicity(
         verdict = Verdict.FAIL
         violation = f"Immunogenicity score {score:.3f} is high (>{_IMMO_LIKELY_FAIL_THRESHOLD})"
 
+    details: str | None = None
+
     # ── Context-aware overrides for non-self proteins ─────────
     if therapeutic:
         # Therapeutic: only FAIL if score > 2.0 (very high immunogenicity)
@@ -230,6 +273,7 @@ def evaluate_low_immunogenicity(
                 f"Immunogenicity score {score:.3f} is very high "
                 f"(>{_THERAPEUTIC_IMMO_FAIL_THRESHOLD}) for therapeutic protein"
             )
+            details = "Therapeutic protein: very high immunogenicity score"
         # If score-based verdict was already FAIL but < 2.0, downgrade to LIKELY_FAIL
         elif verdict == Verdict.FAIL:
             verdict = Verdict.LIKELY_FAIL
@@ -237,6 +281,7 @@ def evaluate_low_immunogenicity(
                 f"Immunogenicity score {score:.3f} is elevated for therapeutic protein "
                 f"(threshold for FAIL: {_THERAPEUTIC_IMMO_FAIL_THRESHOLD})"
             )
+            details = "Therapeutic protein: elevated immunogenicity score (downgraded from FAIL)"
     else:
         # Non-therapeutic foreign protein: immunogenicity is expected,
         # so downgrade hard FAIL/LIKELY_FAIL to informational
@@ -248,6 +293,7 @@ def evaluate_low_immunogenicity(
                 f"Not a concern unless used therapeutically."
             )
             derivation[-1]["classification"] = "EXPECTED_IMMUNOGENIC"
+            details = "Foreign protein: immunogenicity expected (not therapeutic)"
         elif verdict == Verdict.LIKELY_FAIL:
             verdict = Verdict.LIKELY_PASS
             violation = (
@@ -255,12 +301,14 @@ def evaluate_low_immunogenicity(
                 f"which is expected for a foreign (non-self) protein."
             )
             derivation[-1]["classification"] = "EXPECTED_IMMUNOGENIC"
+            details = "Foreign protein: immunogenicity expected (not therapeutic)"
 
-    return TypeCheckResult(
+    return PredicateResult(
         predicate="LowImmunogenicity",
         verdict=verdict,
         derivation=derivation,
         violation=violation,
+        details=details,
     )
 
 
@@ -269,7 +317,7 @@ def evaluate_no_strong_t_cell_epitope(
     sequence: str | None = None,
     organism: str = "Homo_sapiens",
     **kwargs: Any,
-) -> TypeCheckResult:
+) -> PredicateResult:
     """Evaluate whether the protein lacks strong T-cell epitopes.
 
     Uses the offline scan_peptides API to scan all default MHC-I and
@@ -284,6 +332,7 @@ def evaluate_no_strong_t_cell_epitope(
       - **IC50 threshold**: Only epitopes with IC50 < 50 nM are
         classified as "strong" (stricter than the general 500 nM
         moderate threshold used in the immunogenicity module).
+        Callers may override via the ``ic50_threshold`` kwarg.
 
     Args:
         protein: Amino acid sequence (primary argument).
@@ -291,29 +340,44 @@ def evaluate_no_strong_t_cell_epitope(
         organism: Target host organism (e.g. ``"Homo_sapiens"``).
         **kwargs: Optional keyword arguments:
             max_strong: Maximum allowed strong T-cell epitopes (default 0).
+            ic50_threshold: IC50 threshold (nM) for "strong" binder
+                classification.  Defaults to None, which uses the
+                module-level ``_T_CELL_STRONG_IC50_THRESHOLD`` (50 nM).
+                Pass a float to override.
+            self_protein: If True, the protein is from the host organism
+                (auto-PASS).  Defaults to None (auto-detected from
+                source_organism).
             source_organism: Organism the protein originates from.
                 If None, defaults to *organism* (assumed self).
             therapeutic: If True, the protein is intended for therapeutic
                 use (stricter FAIL threshold).  Default False.
 
     Returns:
-        TypeCheckResult with T-cell epitope verdict.
+        PredicateResult with T-cell epitope verdict and details.
     """
     max_strong = kwargs.get('max_strong', 0)
+    ic50_threshold = kwargs.get('ic50_threshold', None)
+    self_protein = kwargs.get('self_protein', None)
     source_organism = kwargs.get('source_organism', None)
     therapeutic = kwargs.get('therapeutic', False)
 
+    # Backward-compatible IC50 threshold: use the module-level default
+    # only when no explicit threshold is provided by the caller.
+    if ic50_threshold is None:
+        ic50_threshold = _T_CELL_STRONG_IC50_THRESHOLD
+
     if not protein:
-        return TypeCheckResult(
+        return PredicateResult(
             predicate="NoStrongTCellEpitope",
             verdict=Verdict.UNCERTAIN,
             violation="Empty protein sequence",
+            details="Empty protein sequence",
         )
 
     # Determine self-protein status
-    is_self = _is_self_protein(organism, source_organism)
+    is_self = _resolve_self_protein(self_protein, organism, source_organism)
 
-    # Count strong epitopes using the stricter IC50 < 50 nM threshold
+    # Count strong epitopes using the IC50 threshold
     # (not the broader binding_class which includes moderate_binders at < 500 nM)
     strong_count = 0
     total_epitopes = 0
@@ -323,8 +387,8 @@ def evaluate_no_strong_t_cell_epitope(
         results = scan_peptides(protein, allele, peptide_length=9)
         for r in results:
             total_epitopes += 1
-            # Only flag as "strong" if IC50 < 50 nM (the predicate-level threshold)
-            if r.ic50_nm < _T_CELL_STRONG_IC50_THRESHOLD:
+            # Only flag as "strong" if IC50 < threshold nM
+            if r.ic50_nm < ic50_threshold:
                 strong_count += 1
                 strong_epitope_details.append({
                     "allele": allele, "peptide": r.peptide,
@@ -335,7 +399,7 @@ def evaluate_no_strong_t_cell_epitope(
         results = scan_peptides(protein, allele, peptide_length=15)
         for r in results:
             total_epitopes += 1
-            if r.ic50_nm < _T_CELL_STRONG_IC50_THRESHOLD:
+            if r.ic50_nm < ic50_threshold:
                 strong_count += 1
                 strong_epitope_details.append({
                     "allele": allele, "peptide": r.peptide,
@@ -345,7 +409,7 @@ def evaluate_no_strong_t_cell_epitope(
     derivation = [
         {"step": "scan_peptides_offline", "total": total_epitopes,
          "strong": strong_count,
-         "strong_ic50_threshold_nM": _T_CELL_STRONG_IC50_THRESHOLD,
+         "strong_ic50_threshold_nM": ic50_threshold,
          "self_protein": is_self,
          "therapeutic": therapeutic,
          "source_organism": source_organism},
@@ -353,15 +417,18 @@ def evaluate_no_strong_t_cell_epitope(
 
     # ── Self-protein auto-PASS ───────────────────────────────
     if is_self:
-        return TypeCheckResult(
+        return PredicateResult(
             predicate="NoStrongTCellEpitope",
             verdict=Verdict.PASS,
             derivation=derivation,
             violation=None,
             knowledge_gap="Self-protein assumed tolerated; T-cell epitopes may be subject to central tolerance",
+            details="Auto-PASS: protein is from host organism",
         )
 
     # ── Tiered classification ────────────────────────────────
+    details: str | None = None
+
     if strong_count <= max_strong:
         verdict = Verdict.PASS
         violation = None
@@ -369,32 +436,37 @@ def evaluate_no_strong_t_cell_epitope(
         # WARN tier: 1 strong epitope
         verdict = Verdict.LIKELY_PASS
         violation = None
+        details = f"1 strong T-cell epitope found (IC50 < {ic50_threshold} nM)"
     elif strong_count <= 2:
         # WARN tier: 2 strong epitopes
         verdict = Verdict.UNCERTAIN
-        violation = f"{strong_count} strong T-cell epitope(s) found (IC50 < {_T_CELL_STRONG_IC50_THRESHOLD} nM)"
+        violation = f"{strong_count} strong T-cell epitope(s) found (IC50 < {ic50_threshold} nM)"
+        details = f"{strong_count} strong T-cell epitope(s) found (IC50 < {ic50_threshold} nM)"
     else:
         # >2 strong epitopes: FAIL for therapeutic, WARN for non-therapeutic
         if therapeutic:
             verdict = Verdict.FAIL
             violation = (
-                f"{strong_count} strong T-cell epitopes found (IC50 < {_T_CELL_STRONG_IC50_THRESHOLD} nM) "
+                f"{strong_count} strong T-cell epitopes found (IC50 < {ic50_threshold} nM) "
                 f"— high immunogenicity risk for therapeutic protein"
             )
+            details = f"Therapeutic protein: {strong_count} strong T-cell epitopes found"
         else:
             verdict = Verdict.UNCERTAIN
             violation = (
                 f"EXPECTED_IMMUNOGENIC: {strong_count} strong T-cell epitopes found "
-                f"(IC50 < {_T_CELL_STRONG_IC50_THRESHOLD} nM). Expected for foreign protein; "
+                f"(IC50 < {ic50_threshold} nM). Expected for foreign protein; "
                 f"would FAIL if used therapeutically."
             )
             derivation[-1]["classification"] = "EXPECTED_IMMUNOGENIC"
+            details = f"Foreign protein: {strong_count} strong T-cell epitopes expected"
 
-    return TypeCheckResult(
+    return PredicateResult(
         predicate="NoStrongTCellEpitope",
         verdict=verdict,
         derivation=derivation,
         violation=violation,
+        details=details,
     )
 
 
@@ -403,7 +475,7 @@ def evaluate_no_dominant_b_cell_epitope(
     sequence: str | None = None,
     organism: str = "Homo_sapiens",
     **kwargs: Any,
-) -> TypeCheckResult:
+) -> PredicateResult:
     """Evaluate whether the protein lacks dominant B-cell epitopes.
 
     Context-aware classification:
@@ -423,27 +495,32 @@ def evaluate_no_dominant_b_cell_epitope(
         **kwargs: Optional keyword arguments:
             score_threshold: Score threshold for "dominant" epitopes
                 (default 0.7).
+            self_protein: If True, the protein is from the host organism
+                (auto-PASS).  Defaults to None (auto-detected from
+                source_organism).
             source_organism: Organism the protein originates from.
                 If None, defaults to *organism* (assumed self).
             therapeutic: If True, the protein is intended for therapeutic
                 use (stricter FAIL threshold).  Default False.
 
     Returns:
-        TypeCheckResult with B-cell epitope verdict.
+        PredicateResult with B-cell epitope verdict and details.
     """
     score_threshold = kwargs.get('score_threshold', _B_CELL_DOMINANT_SCORE)
+    self_protein = kwargs.get('self_protein', None)
     source_organism = kwargs.get('source_organism', None)
     therapeutic = kwargs.get('therapeutic', False)
 
     if not protein:
-        return TypeCheckResult(
+        return PredicateResult(
             predicate="NoDominantBCellEpitope",
             verdict=Verdict.UNCERTAIN,
             violation="Empty protein sequence",
+            details="Empty protein sequence",
         )
 
     # Determine self-protein status
-    is_self = _is_self_protein(organism, source_organism)
+    is_self = _resolve_self_protein(self_protein, organism, source_organism)
 
     result = predict_epitopes(protein)
     b_epitopes = result.linear_epitopes
@@ -471,15 +548,18 @@ def evaluate_no_dominant_b_cell_epitope(
 
     # ── Self-protein auto-PASS ───────────────────────────────
     if is_self:
-        return TypeCheckResult(
+        return PredicateResult(
             predicate="NoDominantBCellEpitope",
             verdict=Verdict.PASS,
             derivation=derivation,
             violation=None,
             knowledge_gap="Self-protein assumed tolerated; B-cell epitopes subject to peripheral tolerance",
+            details="Auto-PASS: protein is from host organism",
         )
 
     # ── Non-self protein classification ──────────────────────
+    details: str | None = None
+
     if therapeutic:
         # Therapeutic: FAIL only if dominant score > 1.5
         if dominant_score > _THERAPEUTIC_B_CELL_FAIL_SCORE:
@@ -489,21 +569,25 @@ def evaluate_no_dominant_b_cell_epitope(
                 f"threshold ({_THERAPEUTIC_B_CELL_FAIL_SCORE}) — "
                 f"{dominant_count} dominant epitope(s) found"
             )
+            details = f"Therapeutic protein: B-cell epitope score {dominant_score:.3f} exceeds threshold"
         elif dominant_count == 0:
             verdict = Verdict.PASS
             violation = None
         elif dominant_count == 1:
             verdict = Verdict.LIKELY_PASS
             violation = None
+            details = "Therapeutic protein: 1 dominant B-cell epitope found"
         elif dominant_count == 2:
             verdict = Verdict.UNCERTAIN
             violation = f"{dominant_count} dominant B-cell epitope(s) found (therapeutic context)"
+            details = f"Therapeutic protein: {dominant_count} dominant B-cell epitope(s) found"
         else:
             verdict = Verdict.LIKELY_FAIL
             violation = (
                 f"{dominant_count} dominant B-cell epitopes found — "
                 f"elevated risk for therapeutic protein"
             )
+            details = f"Therapeutic protein: {dominant_count} dominant B-cell epitopes found (elevated risk)"
     else:
         # Non-therapeutic: PASS with informational note
         if dominant_count == 0:
@@ -517,12 +601,14 @@ def evaluate_no_dominant_b_cell_epitope(
                 f"not a concern for non-therapeutic use."
             )
             derivation[-1]["classification"] = "EXPECTED_IMMUNOGENIC"
+            details = f"Foreign protein: {dominant_count} dominant B-cell epitope(s) expected (non-therapeutic)"
 
-    return TypeCheckResult(
+    return PredicateResult(
         predicate="NoDominantBCellEpitope",
         verdict=verdict,
         derivation=derivation,
         violation=violation,
+        details=details,
     )
 
 
@@ -531,7 +617,7 @@ def evaluate_population_coverage_safe(
     sequence: str | None = None,
     organism: str = "Homo_sapiens",
     **kwargs: Any,
-) -> TypeCheckResult:
+) -> PredicateResult:
     """Evaluate whether the protein MHC binding profile is safe for
     population coverage.
 
@@ -551,14 +637,15 @@ def evaluate_population_coverage_safe(
             coverage_threshold: Maximum allowed binding rate (default 0.5).
 
     Returns:
-        TypeCheckResult with population coverage safety verdict.
+        PredicateResult with population coverage safety verdict and details.
     """
     coverage_threshold = kwargs.get('coverage_threshold', 0.5)
     if not protein:
-        return TypeCheckResult(
+        return PredicateResult(
             predicate="PopulationCoverageSafe",
             verdict=Verdict.UNCERTAIN,
             violation="Empty protein sequence",
+            details="Empty protein sequence",
         )
 
     result = predict_mhc_all(protein)
@@ -566,21 +653,27 @@ def evaluate_population_coverage_safe(
     num_binders = len(result.binders)
     num_strong = result.strong_binders
 
+    details: str | None = None
+
     if binding_rate < _POP_COVERAGE_PASS_THRESHOLD:
         verdict = Verdict.PASS
         violation = None
     elif binding_rate < _POP_COVERAGE_LIKELY_PASS_THRESHOLD:
         verdict = Verdict.LIKELY_PASS
         violation = None
+        details = f"MHC binding rate {binding_rate:.3f} is slightly elevated"
     elif binding_rate < coverage_threshold:
         verdict = Verdict.UNCERTAIN
         violation = f"MHC binding rate {binding_rate:.3f} is moderate"
+        details = f"MHC binding rate {binding_rate:.3f} is moderate"
     elif binding_rate < _POP_COVERAGE_LIKELY_FAIL_THRESHOLD:
         verdict = Verdict.LIKELY_FAIL
         violation = f"MHC binding rate {binding_rate:.3f} is elevated"
+        details = f"MHC binding rate {binding_rate:.3f} is elevated"
     else:
         verdict = Verdict.FAIL
         violation = f"MHC binding rate {binding_rate:.3f} is high (broad population coverage of binders)"
+        details = f"MHC binding rate {binding_rate:.3f} is high (broad population coverage of binders)"
 
     derivation = [
         {"step": "compute_population_coverage", "binding_rate": binding_rate,
@@ -588,9 +681,10 @@ def evaluate_population_coverage_safe(
          "total_predictions": len(result.predictions)},
     ]
 
-    return TypeCheckResult(
+    return PredicateResult(
         predicate="PopulationCoverageSafe",
         verdict=verdict,
         derivation=derivation,
         violation=violation,
+        details=details,
     )

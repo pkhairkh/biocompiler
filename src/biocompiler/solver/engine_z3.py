@@ -100,6 +100,27 @@ _CAI_SCALE: int = 10000  # 4 decimal places of precision
 _SCORE_SCALE: int = 100  # 2 decimal places
 # Default Z3 timeout in seconds (overridden by config.timeout_seconds if set)
 _Z3_DEFAULT_TIMEOUT: float = 30.0
+# Timeout for large protein instances (> _LARGE_PROTEIN_THRESHOLD aa)
+_Z3_LARGE_INSTANCE_TIMEOUT: float = 60.0
+# Protein length threshold above which we increase the Z3 timeout
+_LARGE_PROTEIN_THRESHOLD: int = 500
+
+
+def _sanitize_z3_name(name: str) -> str:
+    """Sanitize a constraint name for use as a Z3 Boolean variable name.
+
+    Z3 Boolean names must be valid SMT-LIB identifiers: alphanumeric
+    characters and underscores only.  Dots, hyphens, spaces, etc. are
+    replaced with underscores.
+
+    Args:
+        name: Raw constraint name (e.g. ``"gc_lo_0.4"``).
+
+    Returns:
+        Sanitized name (e.g. ``"gc_lo_0_4"``).
+    """
+    import re
+    return re.sub(r'[^a-zA-Z0-9_]', '_', name)
 
 
 def _precompute_donor_scores() -> list[list[float]]:
@@ -208,6 +229,8 @@ class Z3Engine(SolverBackendProtocol):
         self._constraint_exprs: list[tuple[str, object]] = []
         # Whether any soft constraints were detected in the model
         self._has_soft_constraints: bool = False
+        # Set of ConstraintType values marked as soft (populated during solve)
+        self._soft_constraint_types: set = set()
         logger.debug(
             "Z3Engine initialized: organism=%s, seed=%d, "
             "z3_available=%s, timeout=%.1fs",
@@ -346,29 +369,50 @@ class Z3Engine(SolverBackendProtocol):
         # ── Fix #2: Detect soft constraints in the model ─────────────
         # If any constraint in the model is marked SOFT, we should use
         # add_soft() for those constraints so the optimizer can relax
-        # them if needed.
+        # them if needed.  We also collect the soft constraint types so
+        # that the encoding methods can use add_soft() instead of add()
+        # for constraints that correspond to soft model constraints.
         model_constraints = getattr(model, "constraints", [])
         self._has_soft_constraints = any(
             getattr(c, "strictness", ConstraintStrictness.HARD) == ConstraintStrictness.SOFT
             for c in model_constraints
         )
+        # Collect which ConstraintType values are soft so encoding methods
+        # can decide add() vs add_soft().
+        self._soft_constraint_types: set = set()
+        for c in model_constraints:
+            if getattr(c, "strictness", ConstraintStrictness.HARD) == ConstraintStrictness.SOFT:
+                ctype = getattr(c, "ctype", None)
+                if ctype is not None:
+                    self._soft_constraint_types.add(ctype)
 
-        # ── Fix #3: Default timeout of 30 seconds for Z3 ────────────
-        # Z3 can be very slow for large instances; cap the timeout to a
-        # reasonable default unless the user explicitly requests more.
+        # ── Fix #3: Adaptive timeout for Z3 ────────────────────────
+        # Default is 30s; auto-increase to 60s for very large proteins
+        # (>500 aa) where Z3 tends to time out.  Cap unreasonably large
+        # values but respect explicit user choices within reason.
         effective_timeout = config.timeout_seconds
-        if effective_timeout <= 0 or effective_timeout > _Z3_DEFAULT_TIMEOUT * 3:
-            # If timeout is the default (60s) or unreasonably large for Z3,
-            # cap it at the Z3 default. Users can still set a higher value
-            # if they know what they're doing.
-            effective_timeout = min(effective_timeout, _Z3_DEFAULT_TIMEOUT)
+        if effective_timeout <= 0:
+            effective_timeout = _Z3_DEFAULT_TIMEOUT
+        # Auto-increase for large instances
+        if n > _LARGE_PROTEIN_THRESHOLD:
+            effective_timeout = max(effective_timeout, _Z3_LARGE_INSTANCE_TIMEOUT)
             logger.info(
-                "Z3: Capping timeout to %.1fs (from config %.1fs) "
-                "for better interactive behaviour",
-                effective_timeout, config.timeout_seconds,
+                "Z3: Large protein (%d aa > %d threshold), "
+                "auto-increasing timeout to %.1fs",
+                n, _LARGE_PROTEIN_THRESHOLD, effective_timeout,
             )
+        # Cap unreasonably large timeouts (but allow up to 4x default)
+        if effective_timeout > _Z3_DEFAULT_TIMEOUT * 4:
+            logger.info(
+                "Z3: Capping timeout from %.1fs to %.1fs",
+                effective_timeout, _Z3_DEFAULT_TIMEOUT * 4,
+            )
+            effective_timeout = _Z3_DEFAULT_TIMEOUT * 4
 
-        # Create optimizer
+        # ── Fix #2: Always use Optimize (supports both hard and soft) ──
+        # Optimize handles add() for hard constraints and add_soft() for
+        # soft constraints with weighted relaxation.  When no soft
+        # constraints exist, Optimize behaves like Solver with an objective.
         optimizer = Optimize()
         optimizer.set("timeout", int(effective_timeout * 1000))
         # Note: Z3's Optimize does not support 'random_seed' (only Solver does).
@@ -651,12 +695,14 @@ class Z3Engine(SolverBackendProtocol):
         optimizer.add(gc_lo_expr)
         optimizer.add(gc_hi_expr)
 
-        # ── Fix #1: Store constraint expressions for UNSAT core ──
-        self._constraint_exprs.append((f"gc_lo_{config.gc_lo}", gc_lo_expr))
-        self._constraint_exprs.append((f"gc_hi_{config.gc_hi}", gc_hi_expr))
+        # Store constraint expressions for UNSAT core with sanitized names
+        lo_name = _sanitize_z3_name(f"gc_lo_{config.gc_lo}")
+        hi_name = _sanitize_z3_name(f"gc_hi_{config.gc_hi}")
+        self._constraint_exprs.append((lo_name, gc_lo_expr))
+        self._constraint_exprs.append((hi_name, gc_hi_expr))
 
-        constraint_names.append(f"gc_lo_{config.gc_lo}")
-        constraint_names.append(f"gc_hi_{config.gc_hi}")
+        constraint_names.append(lo_name)
+        constraint_names.append(hi_name)
 
         if config.verbose:
             logger.info(
@@ -733,14 +779,14 @@ class Z3Engine(SolverBackendProtocol):
                         )
                 optimizer.add(Not(And(*base_eqs)))
 
-            # ── Fix #1: Store one representative expression per pattern ──
-            # We store the last window constraint as representative; the
-            # UNSAT core will identify the pattern name.
+            # Store one representative expression per pattern for UNSAT core
+            # (using sanitized name so Z3Bool creation doesn't fail)
             if base_eqs:
+                pat_name = _sanitize_z3_name(f"no_{pattern}")
                 self._constraint_exprs.append(
-                    (f"no_{pattern}", Not(And(*base_eqs)))
+                    (pat_name, Not(And(*base_eqs)))
                 )
-            constraint_names.append(f"no_{pattern}")
+            constraint_names.append(_sanitize_z3_name(f"no_{pattern}"))
 
             if self.config.verbose:
                 logger.info(
@@ -845,7 +891,38 @@ class Z3Engine(SolverBackendProtocol):
                 # 9-mer context: positions j-3 to j+5
                 ctx_start = j - 3
                 ctx_end = j + 6  # exclusive
+
+                # ── Fix #4: Handle edge cases (near start/end) ─────
+                # When the full 9-mer context doesn't fit, fall back to
+                # arithmetic encoding using only available positions.
+                # Missing positions contribute a neutral score of 0,
+                # making the constraint slightly more permissive at edges
+                # (biologically justified: splice sites near CDS boundaries
+                # are less likely to be functional).
                 if ctx_start < 0 or ctx_end > total_nucs:
+                    # Fall back to arithmetic encoding for edge positions
+                    score_terms = []
+                    for pwm_pos in range(9):
+                        nuc_idx = j - 3 + pwm_pos
+                        if nuc_idx < 0 or nuc_idx >= total_nucs:
+                            continue  # Skip missing positions (neutral contribution)
+                        nuc = nuc_exprs[nuc_idx]
+                        ss = [int(round(_DONOR_SCORES[pwm_pos][b] * _SCORE_SCALE))
+                              for b in range(4)]
+                        score_terms.append(
+                            If(nuc == 0, IntVal(ss[0]),
+                               If(nuc == 1, IntVal(ss[1]),
+                                  If(nuc == 2, IntVal(ss[2]), IntVal(ss[3]))))
+                        )
+                    if score_terms:
+                        donor_score = Sum(score_terms)
+                        thresh_scaled = int(round(donor_thresh * _SCORE_SCALE))
+                        gt_detected = And(nuc_exprs[j] == 2, nuc_exprs[j + 1] == 3)
+                        edge_expr = Implies(gt_detected, donor_score < thresh_scaled)
+                        optimizer.add(edge_expr)
+                        edge_name = _sanitize_z3_name(f"no_donor_splice_{j}")
+                        self._constraint_exprs.append((edge_name, edge_expr))
+                        constraint_names.append(edge_name)
                     continue
 
                 # Find codon positions covered by this context window
@@ -862,6 +939,8 @@ class Z3Engine(SolverBackendProtocol):
                 )
 
                 # Add constraints: for each forbidden combination, forbid it
+                # Store a representative expression for UNSAT core tracking
+                rep_expr = None
                 for combo in forbidden_combos:
                     # combo is a dict mapping codon_index -> codon_choice_index
                     terms = []
@@ -870,10 +949,16 @@ class Z3Engine(SolverBackendProtocol):
                     # Also require GT at positions j, j+1
                     terms.append(nuc_exprs[j] == 2)   # G=2
                     terms.append(nuc_exprs[j + 1] == 3)  # T=3
-                    optimizer.add(Not(And(*terms)))
+                    constraint_expr = Not(And(*terms))
+                    optimizer.add(constraint_expr)
                     n_donor_forbidden += 1
+                    if rep_expr is None:
+                        rep_expr = constraint_expr
 
-                constraint_names.append(f"no_donor_splice_{j}")
+                donor_name = _sanitize_z3_name(f"no_donor_splice_{j}")
+                if rep_expr is not None:
+                    self._constraint_exprs.append((donor_name, rep_expr))
+                constraint_names.append(donor_name)
 
             if self.config.verbose:
                 logger.info(
@@ -890,7 +975,33 @@ class Z3Engine(SolverBackendProtocol):
             for j in range(total_nucs - 1):
                 ctx_start = j - 20
                 ctx_end = j + 4  # exclusive
+
+                # ── Fix #4: Handle edge cases (near start/end) ─────
+                # When the full 23-mer context doesn't fit, fall back to
+                # arithmetic encoding using only available positions.
                 if ctx_start < 0 or ctx_end > total_nucs:
+                    score_terms = []
+                    for pwm_pos in range(23):
+                        nuc_idx = j - 20 + pwm_pos
+                        if nuc_idx < 0 or nuc_idx >= total_nucs:
+                            continue  # Skip missing positions
+                        nuc = nuc_exprs[nuc_idx]
+                        ss = [int(round(_ACCEPTOR_SCORES[pwm_pos][b] * _SCORE_SCALE))
+                              for b in range(4)]
+                        score_terms.append(
+                            If(nuc == 0, IntVal(ss[0]),
+                               If(nuc == 1, IntVal(ss[1]),
+                                  If(nuc == 2, IntVal(ss[2]), IntVal(ss[3]))))
+                        )
+                    if score_terms:
+                        acceptor_score = Sum(score_terms)
+                        thresh_scaled = int(round(acceptor_thresh * _SCORE_SCALE))
+                        ag_detected = And(nuc_exprs[j] == 0, nuc_exprs[j + 1] == 2)
+                        edge_expr = Implies(ag_detected, acceptor_score < thresh_scaled)
+                        optimizer.add(edge_expr)
+                        edge_name = _sanitize_z3_name(f"no_acceptor_splice_{j}")
+                        self._constraint_exprs.append((edge_name, edge_expr))
+                        constraint_names.append(edge_name)
                     continue
 
                 # Find codon positions covered by this context window
@@ -956,16 +1067,24 @@ class Z3Engine(SolverBackendProtocol):
                     codon_lists, inner_codons, j, "acceptor", acceptor_thresh
                 )
 
+                # Store a representative expression for UNSAT core tracking
+                rep_expr = None
                 for combo in forbidden_combos:
                     terms = []
                     for ci, idx in combo.items():
                         terms.append(codon_vars[ci] == idx)
                     terms.append(nuc_exprs[j] == 0)   # A=0
                     terms.append(nuc_exprs[j + 1] == 2)  # G=2
-                    optimizer.add(Not(And(*terms)))
+                    constraint_expr = Not(And(*terms))
+                    optimizer.add(constraint_expr)
                     n_acceptor_forbidden += 1
+                    if rep_expr is None:
+                        rep_expr = constraint_expr
 
-                constraint_names.append(f"no_acceptor_splice_{j}")
+                acc_name = _sanitize_z3_name(f"no_acceptor_splice_{j}")
+                if rep_expr is not None:
+                    self._constraint_exprs.append((acc_name, rep_expr))
+                constraint_names.append(acc_name)
 
             if self.config.verbose:
                 logger.info(
@@ -1096,26 +1215,52 @@ class Z3Engine(SolverBackendProtocol):
         total_nucs = len(nuc_exprs)
 
         # ATTTA: A=0, T=3, T=3, T=3, A=0
+        # Check if instability motif constraint should be soft
+        from .types import ConstraintType
+        is_soft = ConstraintType.NO_INSTABILITY_MOTIF in self._soft_constraint_types
+        soft_weight = 100  # Default soft constraint weight for ATTTA
+
+        # Build a representative expression for UNSAT core tracking
+        first_attta_expr = None
         for j in range(total_nucs - 4):
-            optimizer.add(Not(And(
+            attta_expr = Not(And(
                 nuc_exprs[j] == 0,       # A
                 nuc_exprs[j + 1] == 3,   # T
                 nuc_exprs[j + 2] == 3,   # T
                 nuc_exprs[j + 3] == 3,   # T
                 nuc_exprs[j + 4] == 0,   # A
-            )))
-        constraint_names.append("no_ATTTA")
+            ))
+            if is_soft:
+                optimizer.add_soft(attta_expr, soft_weight)
+            else:
+                optimizer.add(attta_expr)
+            if first_attta_expr is None:
+                first_attta_expr = attta_expr
+        attta_name = _sanitize_z3_name("no_ATTTA")
+        if first_attta_expr is not None:
+            self._constraint_exprs.append((attta_name, first_attta_expr))
+        constraint_names.append(attta_name)
 
         # TAAAT (reverse complement of ATTTA): T=3, A=0, A=0, A=0, T=3
+        first_taaat_expr = None
         for j in range(total_nucs - 4):
-            optimizer.add(Not(And(
+            taaat_expr = Not(And(
                 nuc_exprs[j] == 3,       # T
                 nuc_exprs[j + 1] == 0,   # A
                 nuc_exprs[j + 2] == 0,   # A
                 nuc_exprs[j + 3] == 0,   # A
                 nuc_exprs[j + 4] == 3,   # T
-            )))
-        constraint_names.append("no_TAAAT")
+            ))
+            if is_soft:
+                optimizer.add_soft(taaat_expr, soft_weight)
+            else:
+                optimizer.add(taaat_expr)
+            if first_taaat_expr is None:
+                first_taaat_expr = taaat_expr
+        taaat_name = _sanitize_z3_name("no_TAAAT")
+        if first_taaat_expr is not None:
+            self._constraint_exprs.append((taaat_name, first_taaat_expr))
+        constraint_names.append(taaat_name)
 
         if self.config.verbose:
             logger.info(
@@ -1152,12 +1297,27 @@ class Z3Engine(SolverBackendProtocol):
         total_nucs = len(nuc_exprs)
         run_len = max_run + 1  # Forbidden run length
 
+        # Check if mRNA stability constraint should be soft
+        from .types import ConstraintType
+        is_soft = ConstraintType.MRNA_STABILITY in self._soft_constraint_types
+        soft_weight = 100  # Default soft constraint weight for T-runs
+
+        first_trun_expr = None
         for j in range(total_nucs - run_len + 1):
             # Forbid all bases in window [j, j+run_len) being T (==3)
             all_t = And(*[nuc_exprs[j + k] == 3 for k in range(run_len)])
-            optimizer.add(Not(all_t))
+            trun_expr = Not(all_t)
+            if is_soft:
+                optimizer.add_soft(trun_expr, soft_weight)
+            else:
+                optimizer.add(trun_expr)
+            if first_trun_expr is None:
+                first_trun_expr = trun_expr
 
-        constraint_names.append(f"no_trun_{run_len}")
+        trun_name = _sanitize_z3_name(f"no_trun_{run_len}")
+        if first_trun_expr is not None:
+            self._constraint_exprs.append((trun_name, first_trun_expr))
+        constraint_names.append(trun_name)
 
         if self.config.verbose:
             logger.info(
@@ -1198,6 +1358,11 @@ class Z3Engine(SolverBackendProtocol):
         """
         constraint_names: list[str] = []
 
+        # Check if CpG constraint should be soft
+        from .types import ConstraintType
+        is_soft = ConstraintType.NO_CPG in self._soft_constraint_types
+        soft_weight = 50  # CpG is less critical than restriction sites
+
         # Within-codon: forbid codons containing CG
         for i, (c_var, codons_for_aa) in enumerate(zip(codon_vars, codon_lists)):
             cg_free = [c for c in codons_for_aa if "CG" not in c]
@@ -1205,10 +1370,14 @@ class Z3Engine(SolverBackendProtocol):
                 # Some codons contain CG — restrict to CG-free alternatives
                 cg_free_indices = [codons_for_aa.index(c) for c in cg_free]
                 # At least one CG-free codon must be selected
-                optimizer.add(
-                    Or(*[c_var == idx for idx in cg_free_indices])
-                )
-                constraint_names.append(f"no_within_cpg_{i}")
+                cpg_expr = Or(*[c_var == idx for idx in cg_free_indices])
+                if is_soft:
+                    optimizer.add_soft(cpg_expr, soft_weight)
+                else:
+                    optimizer.add(cpg_expr)
+                cpg_name = _sanitize_z3_name(f"no_within_cpg_{i}")
+                self._constraint_exprs.append((cpg_name, cpg_expr))
+                constraint_names.append(cpg_name)
 
         # Cross-codon: forbid (C-ending codon, G-starting codon) pairs
         for i in range(len(codon_vars) - 1):
@@ -1227,10 +1396,20 @@ class Z3Engine(SolverBackendProtocol):
                 # At least one of the two positions must avoid the CG boundary
                 if non_c_ending or non_g_starting:
                     # If current codon ends with C, next codon must NOT start with G
+                    rep_expr = None
                     for ci in c_ending:
                         for gi in g_starting:
-                            optimizer.add(Not(And(codon_vars[i] == ci, codon_vars[i + 1] == gi)))
-                    constraint_names.append(f"no_cross_cpg_{i}")
+                            cross_expr = Not(And(codon_vars[i] == ci, codon_vars[i + 1] == gi))
+                            if is_soft:
+                                optimizer.add_soft(cross_expr, soft_weight)
+                            else:
+                                optimizer.add(cross_expr)
+                            if rep_expr is None:
+                                rep_expr = cross_expr
+                    cross_name = _sanitize_z3_name(f"no_cross_cpg_{i}")
+                    if rep_expr is not None:
+                        self._constraint_exprs.append((cross_name, rep_expr))
+                    constraint_names.append(cross_name)
 
         if self.config.verbose:
             n_within = sum(1 for name in constraint_names if name.startswith("no_within"))
@@ -1450,12 +1629,11 @@ class Z3Engine(SolverBackendProtocol):
 
             tracked: list[object] = []
 
-            # ── Fix #1: Use stored constraint expressions ──────────
-            # Instead of relying on optimizer.assertions() (which may
-            # include internal assertions), use the constraint expressions
-            # we stored during encoding.
+            # Use stored constraint expressions for UNSAT core tracking.
+            # The constraint names are already sanitized (safe for Z3Bool).
             if self._constraint_exprs:
                 for name, expr in self._constraint_exprs:
+                    # Names are pre-sanitized by _sanitize_z3_name()
                     p = Z3Bool(f"p_{name}")
                     solver.add(Implies(p, expr))
                     tracked.append(p)
@@ -1470,7 +1648,9 @@ class Z3Engine(SolverBackendProtocol):
                         continue
                     name_idx = i - n_domain_assertions
                     name = constraint_names[name_idx] if name_idx < len(constraint_names) else f"constraint_{i}"
-                    p = Z3Bool(f"p_{name}")
+                    # Sanitize for Z3Bool safety
+                    safe_name = _sanitize_z3_name(name)
+                    p = Z3Bool(f"p_{safe_name}")
                     solver.add(Implies(p, assertion))
                     tracked.append(p)
 
@@ -1505,14 +1685,16 @@ class Z3Engine(SolverBackendProtocol):
                     violations.append(violation)
                     conflicting_names.append(name)
 
-                # Suggest relaxations: splice constraints first, then
-                # restriction sites, then GC (GC is usually hardest to relax)
-                priority_order = {"splice_donor": 1, "splice_acceptor": 2,
-                                  "restriction_site": 3, "gc": 4, "unknown": 5}
+                # Suggest relaxations: soft preferences first, then splice,
+                # then restriction sites, then GC (GC is hardest to relax)
+                priority_order = {"instability_motif": 1, "mrna_stability": 2,
+                                  "cpg": 3,
+                                  "splice_donor": 4, "splice_acceptor": 5,
+                                  "restriction_site": 6, "gc": 7, "unknown": 8}
                 sorted_violations = sorted(
                     violations,
                     key=lambda v: priority_order.get(
-                        self._constraint_category(v.constraint_name), 5
+                        self._constraint_category(v.constraint_name), 8
                     ),
                     reverse=True,
                 )
@@ -1554,12 +1736,15 @@ class Z3Engine(SolverBackendProtocol):
     def _constraint_category(name: str) -> str:
         """Extract the constraint category from a constraint name.
 
+        Handles both sanitized names (underscores for dots) and raw names.
+
         Args:
-            name: Constraint name string.
+            name: Constraint name string (may be sanitized).
 
         Returns:
             Category string: 'gc', 'restriction_site', 'splice_donor',
-            'splice_acceptor', or 'unknown'.
+            'splice_acceptor', 'instability_motif', 'mrna_stability',
+            'cpg', or 'unknown'.
         """
         if name.startswith("gc_lo") or name.startswith("gc_hi"):
             return "gc"
@@ -1567,6 +1752,12 @@ class Z3Engine(SolverBackendProtocol):
             return "splice_donor"
         elif name.startswith("no_acceptor_splice"):
             return "splice_acceptor"
+        elif "ATTTA" in name or "TAAAT" in name or "attta" in name or "taaata" in name:
+            return "instability_motif"
+        elif name.startswith("no_trun"):
+            return "mrna_stability"
+        elif "cpg" in name.lower():
+            return "cpg"
         elif name.startswith("no_"):
             return "restriction_site"
         return "unknown"

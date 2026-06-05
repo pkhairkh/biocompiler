@@ -179,7 +179,9 @@ _HYDROPHOBIC_CORE_AAS: set[str] = {"A", "C", "F", "I", "L", "M", "V"}
 _STRUCTURE_WINDOW = 3
 
 # Minimum number of helix-favoring neighbors to classify as helical region
-_HELIX_NEIGHBOR_THRESHOLD = 3
+# Task 27 Fix 3: raised from 3 to 4 so that proline introduction is only
+# flagged when ≥4 consecutive helix-favoring neighbors are present.
+_HELIX_NEIGHBOR_THRESHOLD = 4
 
 # Minimum number of hydrophobic neighbors to classify as hydrophobic core
 _HYDROPHOBIC_NEIGHBOR_THRESHOLD = 3
@@ -796,6 +798,25 @@ def find_epitope_disrupting_mutations(
         if wildtype not in BLOSUM62:
             continue
 
+        # Determine if this position is an anchor in any overlapping 9-mer
+        # Task 27 Fix 1: detect anchor status early so we can relax the
+        # BLOSUM62 threshold for anchor positions where epitope disruption
+        # is critical (allow BLOSUM62 >= 0 instead of > 0).
+        is_anchor = False
+        for pep_start in range(
+            max(0, pos - _MHC_I_PEPTIDE_LENGTH + 1),
+            min(len(protein) - _MHC_I_PEPTIDE_LENGTH + 1, pos + 1)
+        ):
+            if not (pep_start <= pos < pep_start + _MHC_I_PEPTIDE_LENGTH):
+                continue
+            if _is_anchor_position(pos, pep_start, dominant_mhc_class):
+                is_anchor = True
+                break
+
+        # For anchor positions, relax BLOSUM62 threshold to >= 0 so that
+        # neutral substitutions (score == 0) are not rejected.
+        effective_blosum_min = 0 if is_anchor else blosum62_min
+
         # Fix 1: Sort candidate substitutions by BLOSUM62 score descending
         # so that conservative (BLOSUM62 > 0) substitutions are tried first.
         candidates = []
@@ -805,7 +826,7 @@ def find_epitope_disrupting_mutations(
             if mutant not in BLOSUM62:
                 continue
             blosum = BLOSUM62[wildtype][mutant]
-            if blosum < blosum62_min:
+            if blosum < effective_blosum_min:
                 continue
             candidates.append((mutant, blosum))
         # Sort by BLOSUM62 descending – conservative substitutions first
@@ -831,18 +852,6 @@ def find_epitope_disrupting_mutations(
                 continue
 
             # Fix 2: Apply anchor position weight
-            # Determine if this position is an anchor in any overlapping 9-mer
-            is_anchor = False
-            for pep_start in range(
-                max(0, pos - _MHC_I_PEPTIDE_LENGTH + 1),
-                min(len(protein) - _MHC_I_PEPTIDE_LENGTH + 1, pos + 1)
-            ):
-                if not (pep_start <= pos < pep_start + _MHC_I_PEPTIDE_LENGTH):
-                    continue
-                if _is_anchor_position(pos, pep_start, dominant_mhc_class):
-                    is_anchor = True
-                    break
-
             if is_anchor:
                 binding_reduction *= _ANCHOR_POSITION_WEIGHT
 
@@ -1098,6 +1107,7 @@ def deimmunize(
     max_ddg: float = 2.0,
     preserve_positions: list[int] | None = None,
     mhc_alleles: dict | None = None,
+    max_iterations: int = 10,
 ) -> DeimmunizationResult:
     """Iteratively reduce protein immunogenicity by disrupting T-cell epitopes.
 
@@ -1126,9 +1136,14 @@ def deimmunize(
             (e.g., active site residues).
         mhc_alleles: Optional dict mapping allele names to their details
             (overrides organism-based defaults).
+        max_iterations: Maximum number of iteration rounds (Task 27 Fix 2).
+            Prevents infinite loops for proteins with many epitopes.
+            Default is 10.
 
     Returns:
         DeimmunizationResult with optimized protein and detailed metrics.
+        Best-effort: always returns a result even if not all epitopes
+        could be removed.
 
     Raises:
         ImmunogenicityError: If the protein sequence is invalid.
@@ -1160,7 +1175,9 @@ def deimmunize(
         # Fix 4: Iterative loop continues until no strong epitopes remain
         # OR max_mutations reached.  We re-scan for epitopes (including
         # any newly created ones) after every single mutation.
-        while iteration < max_mutations:
+        # Task 27 Fix 2: also capped by max_iterations to prevent infinite
+        # loops for proteins with many epitopes.
+        while iteration < max_mutations and iteration < max_iterations:
             # Re-check immunogenicity score on the current protein
             current_score = _compute_immunogenicity_score(
                 current_protein, organism, allele_list
@@ -1286,18 +1303,35 @@ def deimmunize(
                 best_mutation.details.get("is_anchor", False),
             )
 
-        # Compute final metrics
-        optimized_immunogenicity = _compute_immunogenicity_score(
-            current_protein, organism, allele_list
-        )
-        optimized_epitope_count = _count_t_cell_epitopes(
-            current_protein, organism, allele_list
-        )
+        if iteration >= max_iterations:
+            logger.info(
+                "Reached max_iterations (%d), stopping deimmunization loop",
+                max_iterations,
+            )
+
+        # Compute final metrics (always, even if loop exited early – best-effort)
+        try:
+            optimized_immunogenicity = _compute_immunogenicity_score(
+                current_protein, organism, allele_list
+            )
+        except Exception:
+            logger.warning("Failed to compute final immunogenicity; using original score")
+            optimized_immunogenicity = original_immunogenicity
+
+        try:
+            optimized_epitope_count = _count_t_cell_epitopes(
+                current_protein, organism, allele_list
+            )
+        except Exception:
+            logger.warning("Failed to count final epitopes; using original count")
+            optimized_epitope_count = original_epitope_count
 
         # Check stability: all ΔΔG values summed < max_ddg * len(mutations)
         stability_threshold = max_ddg * max(len(mutations_applied), 1)
         stability_preserved = total_ddg < stability_threshold
 
+        # Best-effort: success if immunogenicity is at or below target;
+        # even if not fully achieved, we still return the best result obtained.
         success = optimized_immunogenicity <= target_score
 
     result = DeimmunizationResult(

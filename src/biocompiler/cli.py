@@ -262,6 +262,23 @@ def _resolve_organism_arg(args: argparse.Namespace) -> str:
         return raw
 
 
+def _resolve_source_organism_arg(args: argparse.Namespace) -> str | None:
+    """Resolve the source organism from --source-organism.
+
+    The value is normalised through ``resolve_organism`` so that
+    shorthand names like 'ecoli' or 'human' are accepted.
+    Returns None if --source-organism is not specified.
+    """
+    raw = getattr(args, "source_organism", None)
+    if raw is None:
+        return None
+    from .organisms import resolve_organism as _resolve
+    try:
+        return _resolve(raw)
+    except Exception:
+        return raw
+
+
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Handle the 'optimize' command — v10.0.0 unified interface.
 
@@ -286,6 +303,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     # Resolve organism (supports --organism and --species alias)
     organism = _resolve_organism_arg(args)
     no_splice_check = getattr(args, "no_splice_check", False)
+
+    # Resolve immunogenicity predicate parameters
+    source_organism = _resolve_source_organism_arg(args)
+    therapeutic = getattr(args, "therapeutic", False)
 
     # Clear engine caches for a fresh optimization run
     try:
@@ -403,6 +424,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                     protein, organism=organism,
                     gc_lo=gc_lo, gc_hi=gc_hi,
                     consider_codon_pair_bias=use_codon_pair_bias,
+                    source_organism=source_organism,
+                    therapeutic=therapeutic,
                 )
             optimized = opt_result.sequence
             pred_results = opt_result.predicate_results
@@ -439,6 +462,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                     protein, organism=organism,
                     gc_lo=gc_lo, gc_hi=gc_hi,
                     consider_codon_pair_bias=use_codon_pair_bias,
+                    source_organism=source_organism,
+                    therapeutic=therapeutic,
                 )
             optimized = opt_result.sequence
             pred_results = opt_result.predicate_results
@@ -481,6 +506,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             "sequence": optimized,
             "no_splice_check": no_splice_check,
             "codon_pair_bias": cpb_score,
+            "source_organism": source_organism,
+            "therapeutic": therapeutic,
         }
         if pred_results:
             result_dict["predicate_results"] = [
@@ -556,6 +583,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print(f"  GC content     : {gc_val:.4f}")
         if no_splice_check:
             print(f"  Splice check   : DISABLED")
+        if source_organism:
+            print(f"  Source organism : {source_organism}")
+        if therapeutic:
+            print(f"  Therapeutic    : YES")
         if cpb_score is not None:
             print(f"  Codon-pair bias: {cpb_score:.4f}")
 
@@ -599,6 +630,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
     gc_hi = getattr(args, "gc_hi", 0.70)
     no_splice_check = getattr(args, "no_splice_check", False)
     use_codon_pair_bias = getattr(args, "codon_pair_bias", False)
+    source_organism = _resolve_source_organism_arg(args)
+    therapeutic = getattr(args, "therapeutic", False)
 
     if not os.path.isfile(proteins_file):
         print(_error_msg(f"Error: File not found: {proteins_file}"), file=sys.stderr)
@@ -637,6 +670,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
                     prot_seq, organism=organism,
                     gc_lo=gc_lo, gc_hi=gc_hi,
                     consider_codon_pair_bias=use_codon_pair_bias,
+                    source_organism=source_organism,
+                    therapeutic=therapeutic,
                 )
                 results.append({
                     "name": name,
@@ -661,6 +696,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
             "strategy": strategy,
             "no_splice_check": no_splice_check,
             "total_proteins": len(proteins),
+            "source_organism": source_organism,
+            "therapeutic": therapeutic,
             "results": results,
         }
         print(json.dumps(output_dict, indent=2))
@@ -674,6 +711,10 @@ def cmd_batch(args: argparse.Namespace) -> None:
     print(f"  Organism : {organism}")
     print(f"  Strategy : {strategy}")
     print(f"  Total    : {len(proteins)} proteins")
+    if source_organism:
+        print(f"  Source organism : {source_organism}")
+    if therapeutic:
+        print(f"  Therapeutic    : YES")
     print()
 
     for r in results:
@@ -1137,6 +1178,8 @@ def cmd_immunogenicity(args: argparse.Namespace) -> None:
     """Analyze and reduce immunogenicity."""
     protein = _resolve_protein(args)
     organism = _get_organism(args)
+    source_organism = _resolve_source_organism_arg(args)
+    therapeutic = getattr(args, "therapeutic", False)
 
     from .immunogenicity import compute_immunogenicity
     from .deimmunization import deimmunize
@@ -1152,6 +1195,10 @@ def cmd_immunogenicity(args: argparse.Namespace) -> None:
     print(_section_header("═" * 60))
     print(f"  Protein length : {len(protein)} aa")
     print(f"  Organism       : {organism}")
+    if source_organism:
+        print(f"  Source organism : {source_organism}")
+    if therapeutic:
+        print(f"  Therapeutic    : YES")
     if mhc_alleles:
         print(f"  MHC alleles    : {', '.join(mhc_alleles)}")
     print()
@@ -1679,6 +1726,28 @@ def build_parser() -> argparse.ArgumentParser:
             "'prokaryote' skips eukaryote-specific constraints."
         ),
     )
+    opt_parser.add_argument(
+        "--source-organism",
+        dest="source_organism",
+        default=None,
+        metavar="ORGANISM",
+        help=(
+            "Organism the protein originates from (e.g., ecoli, human, Homo_sapiens). "
+            "Used by immunogenicity predicates to determine self-protein status. "
+            "If not specified, the protein is assumed to be from the host organism (self). "
+            "Accepts the same aliases as --organism."
+        ),
+    )
+    opt_parser.add_argument(
+        "--therapeutic",
+        action="store_true",
+        default=False,
+        help=(
+            "Mark the protein as intended for therapeutic use. "
+            "This enables stricter immunogenicity thresholds because "
+            "immune responses can compromise drug efficacy."
+        ),
+    )
 
     # ── batch ── (v10.0.0)
     batch_parser = subparsers.add_parser(
@@ -1733,6 +1802,23 @@ def build_parser() -> argparse.ArgumentParser:
     batch_parser.add_argument(
         "--output", "-o", default=None,
         help="Output multi-FASTA file path for batch results",
+    )
+    batch_parser.add_argument(
+        "--source-organism",
+        dest="source_organism",
+        default=None,
+        metavar="ORGANISM",
+        help=(
+            "Organism the proteins originate from (e.g., ecoli, human, Homo_sapiens). "
+            "Used by immunogenicity predicates to determine self-protein status. "
+            "Accepts the same aliases as --organism."
+        ),
+    )
+    batch_parser.add_argument(
+        "--therapeutic",
+        action="store_true",
+        default=False,
+        help="Mark proteins as intended for therapeutic use (stricter immunogenicity thresholds).",
     )
 
     # ── check ──
@@ -1946,6 +2032,23 @@ def build_parser() -> argparse.ArgumentParser:
     imm_parser.add_argument(
         "--mhc-alleles", nargs="+", metavar="TEXT",
         help="Specific MHC alleles to check (e.g. HLA-A*02:01)",
+    )
+    imm_parser.add_argument(
+        "--source-organism",
+        dest="source_organism",
+        default=None,
+        metavar="ORGANISM",
+        help=(
+            "Organism the protein originates from (e.g., ecoli, human, Homo_sapiens). "
+            "Used by immunogenicity predicates to determine self-protein status. "
+            "Accepts the same aliases as --organism."
+        ),
+    )
+    imm_parser.add_argument(
+        "--therapeutic",
+        action="store_true",
+        default=False,
+        help="Mark the protein as intended for therapeutic use (stricter immunogenicity thresholds).",
     )
     imm_parser.add_argument(
         "-v", "--verbose", action="store_true",

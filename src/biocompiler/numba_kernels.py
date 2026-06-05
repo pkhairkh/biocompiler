@@ -306,19 +306,23 @@ if HAS_NUMBA:
         Returns:
             Updated CAI value (float64). Returns 0.0 if n_codons == 0.
         """
-        if n_codons == 0:
+        # Edge cases: empty sequence or invalid codon count
+        if n_codons <= 0:
             return 0.0
 
         epsilon = 1e-10
 
         w_old = old_adaptiveness
-        if w_old <= 0.0:
+        if w_old <= 0.0 or w_old != w_old:  # w_old != w_old catches NaN
             w_old = epsilon
 
         w_new = new_adaptiveness
-        if w_new <= 0.0:
+        if w_new <= 0.0 or w_new != w_new:  # w_new != w_new catches NaN
             w_new = epsilon
 
+        # Single codon: CAI is simply the adaptiveness of that codon
+        # (after the swap).  The general formula still works for n_codons==1
+        # but we make it explicit for clarity.
         new_log_sum = current_log_sum - math.log(w_old) + math.log(w_new)
         return math.exp(new_log_sum / n_codons)
 
@@ -356,10 +360,14 @@ if HAS_NUMBA:
             numpy float64 array of CAI scores, one per candidate.
             Length equals n_candidates.
         """
+        # No alternative codons (e.g. Met/Trp): return empty scores array
+        if n_candidates == 0:
+            return np.empty(0, dtype=np.float64)
+
         scores = np.empty(n_candidates, dtype=np.float64)
         epsilon = 1e-10
 
-        if n_codons == 0:
+        if n_codons <= 0:
             for k in range(n_candidates):
                 scores[k] = 0.0
             return scores
@@ -367,13 +375,13 @@ if HAS_NUMBA:
         # Get old codon's adaptiveness
         old_idx = codon_indices[swap_position]
         w_old = adaptiveness_array[old_idx]
-        if w_old <= 0.0:
+        if w_old <= 0.0 or w_old != w_old:  # catch NaN
             w_old = epsilon
         log_w_old = math.log(w_old)
 
         for k in range(n_candidates):
             w_new = adaptiveness_array[candidate_indices[k]]
-            if w_new <= 0.0:
+            if w_new <= 0.0 or w_new != w_new:  # catch NaN
                 w_new = epsilon
             new_log_sum = current_log_sum - log_w_old + math.log(w_new)
             scores[k] = math.exp(new_log_sum / n_codons)
@@ -471,6 +479,10 @@ if HAS_NUMBA:
         """
         counts = np.zeros(n_dinucs, dtype=np.int64)
         n = len(seq_bytes)
+
+        # Sequence shorter than 2 bases cannot contain any dinucleotide
+        if n < 2:
+            return counts
 
         for i in range(n - 1):
             b0 = seq_bytes[i]
@@ -633,6 +645,18 @@ else:
     # ════════════════════════════════════════════════════════════════
     import array
 
+    # numpy may still be available even if numba is not
+    try:
+        import numpy as _np
+    except ImportError:
+        _np = None  # type: ignore[assignment]
+
+    def _as_array(data, dtype=None):
+        """Return a numpy array if numpy is available, otherwise the raw list."""
+        if _np is not None:
+            return _np.array(data, dtype=dtype)
+        return data
+
     def count_gc(seq_bytes) -> int:  # type: ignore[misc]
         """Pure-Python fallback: Count G and C characters."""
         count = 0
@@ -666,12 +690,12 @@ else:
             log_sum += math.log(w)
         return math.exp(log_sum / n_codons)
 
-    def scan_restriction_sites(seq_bytes, pattern_bytes, pattern_len) -> list:  # type: ignore[misc]
+    def scan_restriction_sites(seq_bytes, pattern_bytes, pattern_len):  # type: ignore[misc]
         """Pure-Python fallback: Find all positions of a pattern."""
         n = len(seq_bytes)
         results = []
         if pattern_len > n:
-            return results
+            return _as_array(results, dtype=_np.int64 if _np is not None else None)
         for i in range(n - pattern_len + 1):
             match = True
             for j in range(pattern_len):
@@ -680,9 +704,9 @@ else:
                     break
             if match:
                 results.append(i)
-        return results
+        return _as_array(results, dtype=_np.int64 if _np is not None else None)
 
-    def find_all_dinucleotide_positions(seq_bytes, dinuc_bytes) -> list:  # type: ignore[misc]
+    def find_all_dinucleotide_positions(seq_bytes, dinuc_bytes):  # type: ignore[misc]
         """Pure-Python fallback: Find all dinucleotide positions."""
         n = len(seq_bytes)
         results = []
@@ -691,10 +715,12 @@ else:
         for i in range(n - 1):
             if seq_bytes[i] == b0 and seq_bytes[i + 1] == b1:
                 results.append(i)
-        return results
+        return _as_array(results, dtype=_np.int64 if _np is not None else None)
 
     def seq_to_bytes(seq: str):  # type: ignore[misc]
         """Pure-Python fallback: Convert DNA string to byte array."""
+        if _np is not None:
+            return _np.frombuffer(seq.encode('ascii'), dtype=_np.uint8)
         return array.array('B', seq.encode('ascii'))
 
     # ── New v2 kernel fallbacks ─────────────────────────────────────
@@ -710,11 +736,16 @@ else:
         Instead of recomputing the entire log-sum, adjust by subtracting
         the old codon's log-adaptiveness and adding the new one.
         """
-        if n_codons == 0:
+        # Edge cases: empty sequence or invalid codon count
+        if n_codons <= 0:
             return 0.0
         epsilon = 1e-10
-        w_old = old_adaptiveness if old_adaptiveness > 0.0 else epsilon
-        w_new = new_adaptiveness if new_adaptiveness > 0.0 else epsilon
+        w_old = old_adaptiveness
+        if w_old <= 0.0 or w_old != w_old:  # catch NaN
+            w_old = epsilon
+        w_new = new_adaptiveness
+        if w_new <= 0.0 or w_new != w_new:  # catch NaN
+            w_new = epsilon
         new_log_sum = current_log_sum - math.log(w_old) + math.log(w_new)
         return math.exp(new_log_sum / n_codons)
 
@@ -726,31 +757,34 @@ else:
         candidate_indices,
         n_candidates: int,
         current_log_sum: float,
-    ) -> list:
+    ):
         """Pure-Python fallback: Score all candidate codon swaps at a position."""
+        # No alternative codons (e.g. Met/Trp): return empty array
+        if n_candidates == 0:
+            return _as_array([], dtype=_np.float64 if _np is not None else None)
         scores = []
-        if n_codons == 0:
-            return [0.0] * n_candidates
+        if n_codons <= 0:
+            return _as_array([0.0] * n_candidates, dtype=_np.float64 if _np is not None else None)
         epsilon = 1e-10
         old_idx = codon_indices[swap_position]
         w_old = adaptiveness_array[old_idx]
-        if w_old <= 0.0:
+        if w_old <= 0.0 or w_old != w_old:  # catch NaN
             w_old = epsilon
         log_w_old = math.log(w_old)
         for k in range(n_candidates):
             w_new = adaptiveness_array[candidate_indices[k]]
-            if w_new <= 0.0:
+            if w_new <= 0.0 or w_new != w_new:  # catch NaN
                 w_new = epsilon
             new_log_sum = current_log_sum - log_w_old + math.log(w_new)
             scores.append(math.exp(new_log_sum / n_codons))
-        return scores
+        return _as_array(scores, dtype=_np.float64 if _np is not None else None)
 
-    def fast_gc_window(seq_bytes, window_size: int) -> list:
+    def fast_gc_window(seq_bytes, window_size: int):
         """Pure-Python fallback: Sliding-window GC% with incremental updates."""
         n = len(seq_bytes)
         n_windows = n - window_size + 1
         if n_windows <= 0:
-            return []
+            return _as_array([], dtype=_np.float64 if _np is not None else None)
         results = []
         gc_count = 0
         for i in range(window_size):
@@ -766,19 +800,22 @@ else:
             if incoming == _G_BYTE or incoming == _C_BYTE:
                 gc_count += 1
             results.append(gc_count / window_size)
-        return results
+        return _as_array(results, dtype=_np.float64 if _np is not None else None)
 
-    def fast_dinucleotide_count(seq_bytes, dinuc_keys, n_dinucs: int) -> list:
+    def fast_dinucleotide_count(seq_bytes, dinuc_keys, n_dinucs: int):
         """Pure-Python fallback: Count multiple dinucleotides in one pass."""
         counts = [0] * n_dinucs
         n = len(seq_bytes)
+        # Sequence shorter than 2 bases cannot contain any dinucleotide
+        if n < 2:
+            return _as_array(counts, dtype=_np.int64 if _np is not None else None)
         for i in range(n - 1):
             b0 = seq_bytes[i]
             b1 = seq_bytes[i + 1]
             for d in range(n_dinucs):
                 if b0 == dinuc_keys[d][0] and b1 == dinuc_keys[d][1]:
                     counts[d] += 1
-        return counts
+        return _as_array(counts, dtype=_np.int64 if _np is not None else None)
 
     # ── Additional utility fallbacks ────────────────────────────────
 
@@ -788,7 +825,7 @@ else:
 
     def scan_restriction_sites_multi(
         seq_bytes, pattern_bytes, pattern_offsets, pattern_lens, n_patterns: int
-    ) -> list:
+    ):
         """Pure-Python fallback: Find positions of multiple patterns."""
         results = []
         for p in range(n_patterns):
@@ -802,4 +839,4 @@ else:
                         break
                 if match:
                     results.append((i << 16) | p)
-        return results
+        return _as_array(results, dtype=_np.int64 if _np is not None else None)

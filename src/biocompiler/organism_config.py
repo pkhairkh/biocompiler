@@ -158,18 +158,21 @@ CONSTRAINT_PROFILES: dict[str, dict[str, bool]] = {
         "atttta_motifs": True,
         "splice_avoidance": False,
         "cpg_avoidance": False,
-        "mrna_stability": False,
+        "mrna_stability": True,
+        "codon_pair_bias": True,
     },
     # ── Human (mammalian) ──────────────────────────────────────────
     "human": {
         "cai": True,
         "gc_content": True,
         "restriction_sites": True,
+        "atttta_motifs": True,
         "splice_avoidance": True,
         "cpg_avoidance": True,
         "mrna_stability": True,
+        "codon_pair_bias": True,
     },
-    # ── Yeast (S. cerevisiae — intron-poor genome) ────────────────
+    # ── Yeast (S. cerevisiae — intron-poor genome, CpG less relevant)
     "yeast": {
         "cai": True,
         "gc_content": True,
@@ -177,34 +180,43 @@ CONSTRAINT_PROFILES: dict[str, dict[str, bool]] = {
         "atttta_motifs": True,
         "splice_avoidance": False,
         "cpg_avoidance": False,
-        "mrna_stability": False,
+        "mrna_stability": True,
+        "codon_pair_bias": False,
     },
-    # ── Mouse (similar to human) ─────────────────────────────────
+    # ── Mouse (mammalian) ─────────────────────────────────────────
     "mouse": {
         "cai": True,
         "gc_content": True,
         "restriction_sites": True,
+        "atttta_motifs": True,
         "splice_avoidance": True,
         "cpg_avoidance": True,
         "mrna_stability": True,
+        "codon_pair_bias": True,
     },
     # ── CHO (mammalian expression — similar to human) ────────────
     "cho": {
         "cai": True,
         "gc_content": True,
         "restriction_sites": True,
+        "atttta_motifs": True,
         "splice_avoidance": True,
         "cpg_avoidance": True,
         "mrna_stability": True,
+        "codon_pair_bias": True,
     },
     # ── Generic eukaryote (most conservative eukaryotic set) ─────
+    # CpG avoidance enabled — most eukaryotic expression hosts are
+    # CpG-methylating.  Yeast-specific profiles override this to False.
     "generic_eukaryote": {
         "cai": True,
         "gc_content": True,
         "restriction_sites": True,
+        "atttta_motifs": True,
         "splice_avoidance": True,
         "cpg_avoidance": True,
         "mrna_stability": True,
+        "codon_pair_bias": True,
     },
     # ── Generic prokaryote (most conservative prokaryotic set) ───
     "generic_prokaryote": {
@@ -214,7 +226,8 @@ CONSTRAINT_PROFILES: dict[str, dict[str, bool]] = {
         "atttta_motifs": True,
         "splice_avoidance": False,
         "cpg_avoidance": False,
-        "mrna_stability": False,
+        "mrna_stability": True,
+        "codon_pair_bias": True,
     },
 }
 
@@ -327,26 +340,42 @@ _KNOWN_PROKARYOTES: set[str] = {
     "Escherichia_coli", "Escherichia_coli_K12",
     "Escherichia_coli_BL21",
     # Other common bacteria
-    "Bacillus_subtilis", "Pseudomonas_aeruginosa",
-    "Staphylococcus_aureus", "Streptomyces_coelicolor",
-    "Corynebacterium_glutamicum",
+    "Bacillus_subtilis", "B_subtilis",
+    "Pseudomonas_aeruginosa", "P_aeruginosa",
+    "Staphylococcus_aureus", "S_aureus",
+    "Streptomyces_coelicolor", "S_coelicolor",
+    "Corynebacterium_glutamicum", "C_glutamicum",
+    # Additional common prokaryotes used in the codebase
+    "Clostridium_difficile",
+    "Mycobacterium_tuberculosis",
+    "Vibrio_cholerae",
+    "Salmonella_typhimurium",
+    "Lactobacillus_plantarum",
+    "Thermus_thermophilus",
+    "Halomonas_sp",
+    "Pseudomonas_putida",
 }
 
 _KNOWN_EUKARYOTES: set[str] = {
     # Mammals
-    "Homo_sapiens", "human", "Mus_musculus", "mouse",
-    "CHO_K1", "cho", "Rattus_norvegicus",
+    "Homo_sapiens", "human", "H_sapiens",
+    "Mus_musculus", "mouse", "M_musculus",
+    "CHO_K1", "cho", "Cricetulus_griseus",
+    "Rattus_norvegicus", "R_norvegicus", "rat",
     # Yeasts
-    "Saccharomyces_cerevisiae", "yeast",
-    "Pichia_pastoris", "Komagataella_phaffii",
+    "Saccharomyces_cerevisiae", "yeast", "S_cerevisiae",
+    "Schizosaccharomyces_pombe", "S_pombe",
+    "Pichia_pastoris", "Komagataella_phaffii", "P_pastoris",
     # Insects
-    "Drosophila_melanogaster",
+    "Drosophila_melanogaster", "D_melanogaster",
     # Worms
-    "Caenorhabditis_elegans",
+    "Caenorhabditis_elegans", "C_elegans",
     # Plants
-    "Arabidopsis_thaliana",
+    "Arabidopsis_thaliana", "A_thaliana",
     # Fish
-    "Danio_rerio",
+    "Danio_rerio", "D_rerio", "zebrafish",
+    # Other eukaryotes referenced in codebase
+    "Aequorea_victoria",
 }
 
 
@@ -521,14 +550,20 @@ def get_constraint_profile(organism: str) -> dict[str, bool]:
     :class:`OrganismConfig` and returns the corresponding entry from
     :data:`CONSTRAINT_PROFILES`.
 
+    For unknown organisms, the function determines the domain
+    (prokaryote vs eukaryote) using :func:`get_organism_config` and
+    returns the appropriate generic profile (``"generic_prokaryote"``
+    or ``"generic_eukaryote"``).
+
     Args:
         organism: Organism key or legacy alias accepted by
             :func:`get_organism_config`.
 
     Returns:
         Dict mapping constraint names (e.g. ``"cai"``, ``"gc_content"``,
-        ``"splice_avoidance"``) to ``True``/``False`` indicating whether
-        that constraint should be applied.
+        ``"splice_avoidance"``, ``"mrna_stability"``, ``"codon_pair_bias"``)
+        to ``True``/``False`` indicating whether that constraint should
+        be applied.
 
     Examples::
 
@@ -540,16 +575,28 @@ def get_constraint_profile(organism: str) -> dict[str, bool]:
         >>> profile = get_constraint_profile("Homo_sapiens")
         >>> profile["cpg_avoidance"]
         True
+        >>> profile = get_constraint_profile("Some_unknown_bacterium")
+        >>> profile["cpg_avoidance"]
+        False
     """
     config = get_organism_config(organism)
     profile_key = config.constraint_profile
     profile = CONSTRAINT_PROFILES.get(profile_key)
+
     if profile is None:
+        # Profile key not found in CONSTRAINT_PROFILES — select the
+        # appropriate generic profile based on the organism's domain.
+        if config.domain == "prokaryote":
+            fallback_key = "generic_prokaryote"
+        else:
+            fallback_key = "generic_eukaryote"
         logger.warning(
             "No constraint profile %r for organism %r; "
-            "falling back to generic_%s profile",
-            profile_key, organism, config.domain,
+            "falling back to %s profile",
+            profile_key, organism, fallback_key,
         )
-        fallback_key = f"generic_{config.domain}"
-        profile = CONSTRAINT_PROFILES.get(fallback_key, CONSTRAINT_PROFILES["generic_eukaryote"])
+        profile = CONSTRAINT_PROFILES.get(
+            fallback_key, CONSTRAINT_PROFILES["generic_eukaryote"]
+        )
+
     return profile

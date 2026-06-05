@@ -56,6 +56,7 @@ __all__ = [
     "KAZUSA_ORGANISM_IDS",
     "ORGANISM_NAME_ALIASES",
     "OrganismDatabase",
+    "resolve_organism_name",
     "get_codon_table",
 ]
 
@@ -115,17 +116,23 @@ ORGANISM_NAME_ALIASES: dict[str, str] = {
     # E. coli variants
     "ecoli": "E_coli",
     "e_coli": "E_coli",
+    "e. coli": "E_coli",
+    "e.coli": "E_coli",
     "E_coli_K12": "E_coli",
     "E_coli_BL21": "E_coli",
     "Escherichia_coli": "E_coli",
     "Escherichia_coli_K12": "E_coli",
     "Escherichia_coli_BL21": "E_coli",
+    "escherichia coli": "E_coli",
     # Human
     "human": "Homo_sapiens",
     "homo_sapiens": "Homo_sapiens",
+    "homo sapiens": "Homo_sapiens",
+    "h. sapiens": "Homo_sapiens",
     # Mouse
     "mouse": "Mus_musculus",
     "mus_musculus": "Mus_musculus",
+    "mus musculus": "Mus_musculus",
     # CHO
     "cho": "CHO_K1",
     "cho_k1": "CHO_K1",
@@ -133,11 +140,15 @@ ORGANISM_NAME_ALIASES: dict[str, str] = {
     # Yeast
     "yeast": "Saccharomyces_cerevisiae",
     "s_cerevisiae": "Saccharomyces_cerevisiae",
+    "s. cerevisiae": "Saccharomyces_cerevisiae",
+    "saccharomyces cerevisiae": "Saccharomyces_cerevisiae",
     # Other organisms
     "drosophila": "Drosophila_melanogaster",
     "d_melanogaster": "Drosophila_melanogaster",
+    "d. melanogaster": "Drosophila_melanogaster",
     "celegans": "Caenorhabditis_elegans",
     "c_elegans": "Caenorhabditis_elegans",
+    "c. elegans": "Caenorhabditis_elegans",
     "zebrafish": "Danio_rerio",
     "d_rerio": "Danio_rerio",
     "arabidopsis": "Arabidopsis_thaliana",
@@ -1168,6 +1179,13 @@ def resolve_organism_name(organism: str) -> str:
     legacy identifiers, and case-insensitive lookups.  If no alias is
     found the original name is returned unchanged.
 
+    .. note::
+       This function should be used consistently throughout the codebase
+       whenever an organism name needs to be mapped to a canonical key.
+       All public APIs that accept organism names (e.g. :func:`get_codon_table`,
+       :class:`OrganismDatabase` methods) should call this function to
+       normalize inputs before performing lookups.
+
     Args:
         organism: An organism name, alias, or shorthand.
 
@@ -1182,21 +1200,24 @@ def resolve_organism_name(organism: str) -> str:
         'Homo_sapiens'
         >>> resolve_organism_name("Homo_sapiens")
         'Homo_sapiens'
+        >>> resolve_organism_name("E. coli")
+        'E_coli'
+        >>> resolve_organism_name("homo sapiens")
+        'Homo_sapiens'
     """
-    # Direct hit on alias map
-    if organism in ORGANISM_NAME_ALIASES:
-        return ORGANISM_NAME_ALIASES[organism]
+    # Normalize: lowercase and strip whitespace for robust matching
+    org_normalized = organism.strip().lower()
+
+    # Direct hit on alias map (case-insensitive via normalization)
+    for key, canonical in ORGANISM_NAME_ALIASES.items():
+        if key.lower() == org_normalized:
+            return canonical
+
     # Already a canonical name (e.g. in KAZUSA_ORGANISM_IDS keys)
-    if organism in KAZUSA_ORGANISM_IDS:
-        return organism
-    # Case-insensitive fallback: try lowercased match against all known keys
-    org_lower = organism.lower()
-    for key in ORGANISM_NAME_ALIASES:
-        if key.lower() == org_lower:
-            return ORGANISM_NAME_ALIASES[key]
     for key in KAZUSA_ORGANISM_IDS:
-        if key.lower() == org_lower:
+        if key.lower() == org_normalized:
             return key
+
     # No match found — return as-is (let downstream code handle the error)
     return organism
 

@@ -35,13 +35,20 @@ from typing import Literal, TypedDict
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    # Data classes
     "StemLoop", "MFEResult", "AccessibilityResult", "MRNAStructureResult",
+    # Core prediction functions
     "is_viennarna_available", "predict_mfe", "predict_accessibility",
     "find_stable_structures", "compute_5prime_dg",
     "check_mrna_structure_viennarna", "predict_mfe_batch",
     "predict_accessibility_batch",
+    # Organism / heuristic helpers (Issue 1 & 3)
     "get_organism_dg_threshold", "estimate_dg_from_gc",
     "find_most_stable_region",
+    # Public constants needed by callers
+    "DEFAULT_DG_THRESHOLD", "CDS_DG_THRESHOLD", "ORGANISM_DG_THRESHOLDS",
+    "REGION_FULL", "REGION_5UTR", "REGION_START_CODON", "REGION_CDS",
+    "SLIDING_WINDOW_SIZE", "SLIDING_WINDOW_STEP",
 ]
 
 # ── Constants ──────────────────────────────────────────────
@@ -725,6 +732,14 @@ def estimate_dg_from_gc(
 ) -> float:
     """Estimate ΔG from GC content when ViennaRNA is unavailable.
 
+    .. warning::
+       **APPROXIMATE** — This is a rough heuristic, NOT a thermodynamic
+       calculation.  It assumes a simple linear relationship between GC
+       content and folding free energy, which is a major simplification.
+       Actual ΔG depends on nearest-neighbour stacking, loop entropy,
+       and other factors that GC content alone cannot capture.  Use only
+       as a last resort when ViennaRNA is not installed.
+
     Issue 3: Fallback heuristic.  Instead of returning UNCERTAIN when
     ViennaRNA is not installed, estimate ΔG from the GC content and
     sequence length:
@@ -734,6 +749,8 @@ def estimate_dg_from_gc(
 
     The estimate uses a linear interpolation between AT-rich and
     GC-rich per-nucleotide ΔG contributions, scaled by sequence length.
+    This is approximate and should not be relied upon for precise
+    thermodynamic predictions.
 
     Args:
         dna_sequence: DNA sequence (T, not U).
@@ -741,6 +758,8 @@ def estimate_dg_from_gc(
 
     Returns:
         Estimated ΔG in kcal/mol.  More negative = more stable.
+        **This value is approximate and may differ significantly from
+        the true thermodynamic ΔG.**
     """
     dna = _extract_region(dna_sequence.upper(), region)
     if not dna:
@@ -791,6 +810,10 @@ def find_most_stable_region(
     50nt windows with 10nt step to find the most stable region,
     and only reports that.
 
+    For sequences shorter than *window_size* (default 50 nt), the
+    full sequence is folded as a single window rather than applying
+    a sliding window.
+
     Args:
         dna_sequence: DNA sequence (T, not U).
         window_size: Sliding window size in nt (default 50).
@@ -811,21 +834,27 @@ def find_most_stable_region(
     best_dg = 0.0
     best_method = "trivial"
 
-    # Determine effective window size
-    effective_window = min(window_size, n)
-
-    # If sequence fits in one window, just fold it
-    if n <= effective_window:
+    # If sequence is shorter than the sliding window, fold the full
+    # sequence as a single window (Issue 2: handle sequences < 50nt).
+    if n < window_size:
         result = _fold_mfe(rna)
         if result.success:
             return (0, result.mfe, result.method)
-        # ViennaRNA unavailable — use GC heuristic
+        # ViennaRNA unavailable — use GC heuristic on full sequence
         est = estimate_dg_from_gc(dna_sequence)
         return (0, est, "gc_heuristic_fallback")
 
-    # Slide the window across the sequence
-    for start in range(0, n - effective_window + 1, step):
-        sub_rna = rna[start:start + effective_window]
+    # Sequence fits in exactly one window — fold it
+    if n == window_size:
+        result = _fold_mfe(rna)
+        if result.success:
+            return (0, result.mfe, result.method)
+        est = estimate_dg_from_gc(dna_sequence)
+        return (0, est, "gc_heuristic_fallback")
+
+    # Slide the window across the sequence (n > window_size guaranteed here)
+    for start in range(0, n - window_size + 1, step):
+        sub_rna = rna[start:start + window_size]
         result = _fold_mfe(sub_rna)
         if result.success:
             if result.mfe < best_dg:
@@ -834,7 +863,7 @@ def find_most_stable_region(
                 best_method = result.method
         else:
             # ViennaRNA unavailable for this window — use GC heuristic
-            est = estimate_dg_from_gc(dna_sequence[start:start + effective_window])
+            est = estimate_dg_from_gc(dna_sequence[start:start + window_size])
             if est < best_dg:
                 best_dg = est
                 best_start = start
@@ -902,17 +931,24 @@ def check_mrna_structure_viennarna(
     # ── Issue 2: Region awareness ────────────────────────────
     # Determine which region to check based on organism
     check_region = region
+    check_window = window_end - window_start  # caller-specified window size
     if not check_region and organism:
-        check_region, _ = _determine_check_region(organism)
+        check_region, check_window = _determine_check_region(organism)
     elif not check_region:
         check_region = REGION_START_CODON  # backward-compatible default
 
     # ── Issue 1: Organism-specific ΔG threshold ──────────────
-    # Use organism-specific threshold if organism is provided
+    # Use organism-specific threshold if organism is provided.
+    # When the caller supplied default window bounds (0, 50) and an
+    # organism is specified, also apply the organism-specific check
+    # window size so the correct subsequence is analysed.
     effective_threshold = dg_threshold
     if organism:
         org_threshold = get_organism_dg_threshold(organism, check_region)
         effective_threshold = org_threshold
+        # Apply organism-specific check window when caller uses defaults
+        if window_start == 0 and window_end == 50:
+            window_end = check_window
 
     # Determine the effective window to check
     # For CDS regions, we still scan but with a much more relaxed threshold
@@ -931,9 +967,11 @@ def check_mrna_structure_viennarna(
                 "most_stable_window_start": None}
 
     # ── Issue 4: Sliding window batch prediction ─────────────
-    # For long sequences, use sliding window to find most stable region
+    # For long sequences, use sliding window to find most stable region.
+    # Issue 2: For sequences shorter than SLIDING_WINDOW_SIZE, fold the
+    # full sequence directly instead of applying a sliding window.
     most_stable_start: int | None = None
-    if len(rna) > SLIDING_WINDOW_SIZE * 2:
+    if len(rna) > SLIDING_WINDOW_SIZE:
         best_start, best_dg, best_method = find_most_stable_region(
             dna_sequence[window_start:window_end],
             window_size=SLIDING_WINDOW_SIZE,
@@ -941,8 +979,11 @@ def check_mrna_structure_viennarna(
         )
         most_stable_start = best_start
 
-        # Re-fold the most stable window to get full details
-        best_rna = rna[best_start:best_start + SLIDING_WINDOW_SIZE]
+        # Re-fold the most stable window to get full details.
+        # Use min() to handle sequences where the best window is at the
+        # end and is shorter than SLIDING_WINDOW_SIZE.
+        best_end = min(best_start + SLIDING_WINDOW_SIZE, len(rna))
+        best_rna = rna[best_start:best_end]
         if len(best_rna) >= 4:
             result = _fold_mfe(best_rna)
             if result.success:

@@ -709,11 +709,21 @@ class TestConservationScoreMonotonicity:
            min_score=st.integers(min_value=-5, max_value=10))
     @settings(max_examples=200)
     def test_conservation_result_matches_blosum(self, aa1, aa2, min_score):
-        """ConservationScore result.passed == (BLOSUM62 score >= min_score)."""
+        """ConservationScore result.passed matches the effective minimum BLOSUM62 score.
+
+        check_conservation_score translates DNA → protein, then computes
+        BLOSUM62 at each position.  The internal `min_found` is initialised
+        to 0 and only decreases when a negative score is encountered, so
+        the effective minimum is min(0, per_position_scores).  For a single
+        position the predicate passes iff min(0, score) >= min_score.
+        """
+        codon = AA_TO_CODONS[aa1][0]
         score = BLOSUM62.get((aa1, aa2), -10)
-        result = check_conservation_score(aa1, aa2, min_score)
-        assert result.passed == (score >= min_score), (
-            f"Result mismatch: BLOSUM62({aa1},{aa2})={score}, min={min_score}, "
+        effective_min = min(0, score)
+        result = check_conservation_score(codon, aa2, min_score)
+        assert result.passed == (effective_min >= min_score), (
+            f"Result mismatch: BLOSUM62({aa1},{aa2})={score}, "
+            f"effective_min={effective_min}, min={min_score}, "
             f"passed={result.passed}"
         )
 
@@ -1037,11 +1047,12 @@ class TestEdgeCases:
 
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_maxent_score_short_context(self):
-        """score_donor handles very short contexts (returns -50 for insufficient context)."""
-        # score_donor needs 3 upstream + 6 downstream context
-        assert _score_donor_mes("", 0) == -50.0
-        assert _score_donor_mes("G", 0) == -50.0
-        assert _score_donor_mes("GT", 0) == -50.0
+        """score_donor handles very short contexts (returns edge-case score for insufficient context)."""
+        # score_donor needs 3 upstream + 6 downstream context;
+        # insufficient context returns _EDGE_CASE_SCORE = -5.0 (not _IMPOSSIBLE_SCORE)
+        assert _score_donor_mes("", 0) == -5.0
+        assert _score_donor_mes("G", 0) == -5.0
+        assert _score_donor_mes("GT", 0) == -5.0
         score = _score_donor_mes("AAACAGGTAAGTAAAA", 5)
         assert isinstance(score, float)
 

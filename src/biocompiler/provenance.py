@@ -93,12 +93,44 @@ __all__ = [
     "OptimizationProvenance",
     "OptimizationRecord",
     "generate_provenance_report",
+    # Decision category constants
+    "DECISION_CATEGORY_CAI",
+    "DECISION_CATEGORY_GT_AVOIDANCE",
+    "DECISION_CATEGORY_GC_CONTENT",
+    "DECISION_CATEGORY_RESTRICTION_SITE",
+    "DECISION_CATEGORY_SPLICE_PREVENTION",
+    "DECISION_CATEGORY_MUTATION",
+    "DECISION_CATEGORY_CONSTRAINT_RELAXATION",
+    "DECISION_CATEGORY_OTHER",
+    "ALL_DECISION_CATEGORIES",
 ]
 
 
 # ---------------------------------------------------------------------------
 # DecisionRecord
 # ---------------------------------------------------------------------------
+
+# Standard decision categories
+DECISION_CATEGORY_CAI = "cai_optimization"
+DECISION_CATEGORY_GT_AVOIDANCE = "gt_avoidance"
+DECISION_CATEGORY_GC_CONTENT = "gc_content"
+DECISION_CATEGORY_RESTRICTION_SITE = "restriction_site"
+DECISION_CATEGORY_SPLICE_PREVENTION = "splice_prevention"
+DECISION_CATEGORY_MUTATION = "mutation"
+DECISION_CATEGORY_CONSTRAINT_RELAXATION = "constraint_relaxation"
+DECISION_CATEGORY_OTHER = "other"
+
+ALL_DECISION_CATEGORIES: list[str] = [
+    DECISION_CATEGORY_CAI,
+    DECISION_CATEGORY_GT_AVOIDANCE,
+    DECISION_CATEGORY_GC_CONTENT,
+    DECISION_CATEGORY_RESTRICTION_SITE,
+    DECISION_CATEGORY_SPLICE_PREVENTION,
+    DECISION_CATEGORY_MUTATION,
+    DECISION_CATEGORY_CONSTRAINT_RELAXATION,
+    DECISION_CATEGORY_OTHER,
+]
+
 
 @dataclass
 class DecisionRecord:
@@ -128,6 +160,16 @@ class DecisionRecord:
         codon_after: The codon at this position *after* the decision was
             applied (typically same as ``chosen_value`` for codon decisions).
             Empty string if not applicable.
+        decision_category: High-level category for this decision, used to
+            separate GT avoidance decisions from CAI decisions for eukaryotes.
+            One of the ``DECISION_CATEGORY_*`` constants.  Defaults to
+            ``DECISION_CATEGORY_OTHER`` for backward compatibility.
+        gt_avoidance_impact: For eukaryotic organisms, records whether this
+            decision was influenced by GT dinucleotide avoidance (splice donor
+            prevention).  Non-zero when a codon was chosen specifically to
+            avoid creating a GT at a splice-relevant position; zero otherwise.
+            This is separate from ``cai_impact`` — a decision may sacrifice
+            CAI for GT avoidance, and both impacts should be recorded.
     """
 
     timestamp: str
@@ -141,6 +183,9 @@ class DecisionRecord:
     cai_impact: float = 0.0
     codon_before: str = ""
     codon_after: str = ""
+    # Category and GT-avoidance fields (eukaryote-aware provenance)
+    decision_category: str = DECISION_CATEGORY_OTHER
+    gt_avoidance_impact: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize this record to a JSON-compatible dict."""
@@ -155,6 +200,8 @@ class DecisionRecord:
             "cai_impact": self.cai_impact,
             "codon_before": self.codon_before,
             "codon_after": self.codon_after,
+            "decision_category": self.decision_category,
+            "gt_avoidance_impact": self.gt_avoidance_impact,
         }
 
     @classmethod
@@ -189,6 +236,8 @@ class DecisionRecord:
             cai_impact=float(data.get("cai_impact", 0.0)),
             codon_before=str(data.get("codon_before", "")),
             codon_after=str(data.get("codon_after", "")),
+            decision_category=str(data.get("decision_category", DECISION_CATEGORY_OTHER)),
+            gt_avoidance_impact=float(data.get("gt_avoidance_impact", 0.0)),
         )
 
 
@@ -280,6 +329,46 @@ class ProvenanceTracker:
             Chronologically ordered list of all DecisionRecords.
         """
         return list(self._decisions)
+
+    def get_decisions_by_category(self, category: str) -> list[DecisionRecord]:
+        """Return all decisions matching the given decision category.
+
+        This is the primary way to separate GT avoidance decisions from CAI
+        decisions for eukaryotic organisms.
+
+        Args:
+            category: One of the ``DECISION_CATEGORY_*`` constants, e.g.
+                ``DECISION_CATEGORY_GT_AVOIDANCE`` or
+                ``DECISION_CATEGORY_CAI``.
+
+        Returns:
+            List of DecisionRecords whose ``decision_category`` matches
+            *category*, in chronological order.
+        """
+        return [d for d in self._decisions if d.decision_category == category]
+
+    def get_gt_avoidance_decisions(self) -> list[DecisionRecord]:
+        """Return all GT avoidance decisions (convenience method for eukaryotes).
+
+        For eukaryotic organisms, GT dinucleotide avoidance is a distinct
+        concern from CAI optimization.  This method returns only the decisions
+        that were driven by GT avoidance, allowing separate analysis of CAI
+        vs. splice-donor-prevention tradeoffs.
+
+        Returns:
+            List of DecisionRecords with
+            ``decision_category == DECISION_CATEGORY_GT_AVOIDANCE``.
+        """
+        return self.get_decisions_by_category(DECISION_CATEGORY_GT_AVOIDANCE)
+
+    def get_cai_decisions(self) -> list[DecisionRecord]:
+        """Return all CAI optimization decisions (convenience method).
+
+        Returns:
+            List of DecisionRecords with
+            ``decision_category == DECISION_CATEGORY_CAI``.
+        """
+        return self.get_decisions_by_category(DECISION_CATEGORY_CAI)
 
     # -- Optimization records ------------------------------------------------
 
@@ -709,6 +798,11 @@ def generate_provenance_report(records: list[OptimizationRecord]) -> str:
                 imp_val = _coerce_stability_score(rec.stability_improvement)
                 if imp_val is not None:
                     lines.append(f"  Stability improvement: {imp_val:+.4f}")
+        # Report GT avoidance vs CAI decision breakdown for eukaryotes
+        gt_predicates = {"NoGTDinucleotide", "NoCrypticSplice", "SpliceCorrect"}
+        has_gt_constraint = bool(gt_predicates & set(rec.constraints_applied))
+        if has_gt_constraint:
+            lines.append("  GT avoidance:         active (eukaryote splice-donor prevention)")
         lines.append("")
 
     # Summary statistics

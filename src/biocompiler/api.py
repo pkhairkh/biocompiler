@@ -137,13 +137,10 @@ __all__ = [
     "DeimmunizeResponse",
     "FullAssessmentResponse",
     # Benchmark / Validation / WhatIf
-    "BenchmarkInput",
-    "BenchmarkResponse",
-    "ValidateCAIInput",
-    "ValidateCAIResponse",
-    "ValidateMaxEntScanResponse",
-    "WhatIfInput",
-    "WhatIfResponse",
+    # (Removed BenchmarkInput, BenchmarkResponse, ValidateCAIInput,
+    #  ValidateCAIResponse, ValidateMaxEntScanResponse, WhatIfInput,
+    #  WhatIfResponse — not yet implemented; remove from __all__ to
+    #  prevent AttributeError on `from biocompiler.api import *`)
     # Organism domain resolution
     "resolve_organism_domain",
     # Provenance
@@ -331,6 +328,32 @@ class ProteinInput(BaseModel):
             "'prokaryote' skips eukaryote-specific constraints."
         ),
     )
+    source_organism: Optional[str] = Field(
+        None,
+        description=(
+            "Organism the protein originates from. Used by immunogenicity predicates "
+            "to determine whether the protein is 'self' (source matches host) or "
+            "foreign. Accepts the same aliases as organism (e.g. 'e_coli', 'human'). "
+            "If None, the protein is assumed to be from the host organism (self)."
+        ),
+    )
+    therapeutic: bool = Field(
+        False,
+        description=(
+            "Whether the protein is intended for therapeutic use. "
+            "Therapeutic proteins have stricter immunogenicity thresholds "
+            "because immune responses can compromise drug efficacy."
+        ),
+    )
+    self_protein: Optional[bool] = Field(
+        None,
+        description=(
+            "Explicit override for self-protein status. If True, the protein is "
+            "treated as a self-protein (auto-PASS for immunogenicity). If False, "
+            "it is treated as foreign. If None (default), self-status is "
+            "auto-detected from source_organism vs organism."
+        ),
+    )
 
     @field_validator("organism_domain")
     @classmethod
@@ -374,6 +397,19 @@ class ProteinInput(BaseModel):
                     f"Unsupported species: {v} (resolved to {resolved!r}). "
                     f"Supported: {list(ORGANISM_ALIASES.keys())}"
                 )
+        return v
+
+    @field_validator("source_organism")
+    @classmethod
+    def validate_source_organism(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            resolved = resolve_organism(v, strict=False)
+            if resolved not in SUPPORTED_ORGANISMS:
+                raise ValueError(
+                    f"Unsupported source_organism: {v} (resolved to {resolved!r}). "
+                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                )
+            return resolved
         return v
 
 
@@ -434,6 +470,18 @@ class OptimizeResponse(BaseModel):
             "Resolved organism domain used for constraint selection. "
             "Either 'eukaryote' or 'prokaryote'."
         ),
+    )
+    source_organism: Optional[str] = Field(
+        None,
+        description="Resolved source organism (None = assumed self-protein).",
+    )
+    therapeutic: bool = Field(
+        False,
+        description="Whether therapeutic-mode immunogenicity thresholds were applied.",
+    )
+    self_protein: Optional[bool] = Field(
+        None,
+        description="Self-protein status used for immunogenicity predicates (None = auto-detected).",
     )
 
 
@@ -560,6 +608,21 @@ class BatchOptimizeItem(BaseModel):
             "'prokaryote' skips eukaryote-specific constraints."
         ),
     )
+    source_organism: Optional[str] = Field(
+        None,
+        description=(
+            "Organism the protein originates from. Accepts the same aliases as organism. "
+            "If None, the protein is assumed to be from the host organism (self)."
+        ),
+    )
+    therapeutic: bool = Field(
+        False,
+        description="Whether the protein is intended for therapeutic use (stricter immunogenicity thresholds).",
+    )
+    self_protein: Optional[bool] = Field(
+        None,
+        description="Explicit override for self-protein status. None = auto-detect from source_organism.",
+    )
 
     @field_validator("organism_domain")
     @classmethod
@@ -592,6 +655,19 @@ class BatchOptimizeItem(BaseModel):
                 f"Supported: {SUPPORTED_ORGANISMS}"
             )
         return resolved
+
+    @field_validator("source_organism")
+    @classmethod
+    def validate_source_organism(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            resolved = resolve_organism(v, strict=False)
+            if resolved not in SUPPORTED_ORGANISMS:
+                raise ValueError(
+                    f"Unsupported source_organism: {v} (resolved to {resolved!r}). "
+                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                )
+            return resolved
+        return v
 
 
 class BatchOptimizeInput(BaseModel):
@@ -646,6 +722,21 @@ class FastBatchOptimizeInput(BaseModel):
             "'prokaryote' skips eukaryote-specific constraints."
         ),
     )
+    source_organism: Optional[str] = Field(
+        None,
+        description=(
+            "Organism the proteins originate from. Accepts the same aliases as organism. "
+            "If None, proteins are assumed to be from the host organism (self)."
+        ),
+    )
+    therapeutic: bool = Field(
+        False,
+        description="Whether the proteins are intended for therapeutic use (stricter immunogenicity thresholds).",
+    )
+    self_protein: Optional[bool] = Field(
+        None,
+        description="Explicit override for self-protein status. None = auto-detect from source_organism.",
+    )
 
     @field_validator("organism_domain")
     @classmethod
@@ -668,6 +759,19 @@ class FastBatchOptimizeInput(BaseModel):
                 f"Supported: {SUPPORTED_ORGANISMS}"
             )
         return resolved
+
+    @field_validator("source_organism")
+    @classmethod
+    def validate_source_organism(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            resolved = resolve_organism(v, strict=False)
+            if resolved not in SUPPORTED_ORGANISMS:
+                raise ValueError(
+                    f"Unsupported source_organism: {v} (resolved to {resolved!r}). "
+                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                )
+            return resolved
+        return v
 
     @field_validator("proteins")
     @classmethod
@@ -856,6 +960,9 @@ def _optimize_single(item: BatchOptimizeItem) -> dict[str, Any]:
         restriction_sites=item.enzymes,
         cryptic_splice_threshold=item.cryptic_splice_threshold,
         organism_domain=resolved_domain,
+        source_organism=item.source_organism,
+        therapeutic=item.therapeutic,
+        self_protein=item.self_protein,
     )
 
     return {
@@ -867,6 +974,9 @@ def _optimize_single(item: BatchOptimizeItem) -> dict[str, Any]:
         "failed_predicates": result.failed_predicates,
         "fallback_used": result.fallback_used,
         "organism_domain": resolved_domain,
+        "source_organism": item.source_organism,
+        "therapeutic": item.therapeutic,
+        "self_protein": item.self_protein,
     }
 
 
@@ -1128,6 +1238,21 @@ class ImmunogenicityInput(BaseModel):
     mhc_alleles: list[str] | None = Field(
         None, description="Specific MHC alleles to test. None = common alleles for organism."
     )
+    source_organism: Optional[str] = Field(
+        None,
+        description=(
+            "Organism the protein originates from. Accepts the same aliases as organism. "
+            "If None, the protein is assumed to be from the host organism (self)."
+        ),
+    )
+    therapeutic: bool = Field(
+        False,
+        description="Whether the protein is intended for therapeutic use (stricter thresholds).",
+    )
+    self_protein: Optional[bool] = Field(
+        None,
+        description="Explicit override for self-protein status. None = auto-detect from source_organism.",
+    )
 
     @field_validator("protein")
     @classmethod
@@ -1143,6 +1268,19 @@ class ImmunogenicityInput(BaseModel):
         err = validate_organism_input(v)
         if err:
             raise ValueError(err)
+        return v
+
+    @field_validator("source_organism")
+    @classmethod
+    def validate_source_organism(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            resolved = resolve_organism(v, strict=False)
+            if resolved not in SUPPORTED_ORGANISMS:
+                raise ValueError(
+                    f"Unsupported source_organism: {v} (resolved to {resolved!r}). "
+                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                )
+            return resolved
         return v
 
 
@@ -1162,6 +1300,17 @@ class DeimmunizeInput(BaseModel):
     )
     blosum62_min: int = Field(
         0, description="Minimum BLOSUM62 score for allowed substitutions", ge=-4, le=4
+    )
+    source_organism: Optional[str] = Field(
+        None,
+        description=(
+            "Organism the protein originates from. Accepts the same aliases as organism. "
+            "If None, the protein is assumed to be from the host organism (self)."
+        ),
+    )
+    therapeutic: bool = Field(
+        False,
+        description="Whether the protein is intended for therapeutic use (stricter thresholds).",
     )
 
     @field_validator("protein")
@@ -1185,6 +1334,19 @@ class DeimmunizeInput(BaseModel):
     def validate_target_score(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
             raise ValueError("target_score must be between 0.0 and 1.0.")
+        return v
+
+    @field_validator("source_organism")
+    @classmethod
+    def validate_source_organism(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            resolved = resolve_organism(v, strict=False)
+            if resolved not in SUPPORTED_ORGANISMS:
+                raise ValueError(
+                    f"Unsupported source_organism: {v} (resolved to {resolved!r}). "
+                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                )
+            return resolved
         return v
 
 
@@ -2837,6 +2999,12 @@ def create_app() -> FastAPI:
         When set to ``"auto"`` (default), the domain is detected from
         the organism name.  Set to ``"eukaryote"`` or ``"prokaryote"``
         to override auto-detection.
+
+        Immunogenicity predicates (LowImmunogenicity, NoStrongTCellEpitope,
+        NoDominantBCellEpitope, PopulationCoverageSafe) are context-aware:
+        they consider ``source_organism``, ``therapeutic``, and
+        ``self_protein`` to determine self-protein status and apply
+        appropriate thresholds.
         """
         try:
             resolved_domain = resolve_organism_domain(
@@ -2852,6 +3020,9 @@ def create_app() -> FastAPI:
                 restriction_sites=input_data.enzymes,
                 cryptic_splice_threshold=input_data.cryptic_splice_threshold,
                 organism_domain=resolved_domain,
+                source_organism=input_data.source_organism,
+                therapeutic=input_data.therapeutic,
+                self_protein=input_data.self_protein,
             )
 
             return OptimizeResponse(
@@ -2863,6 +3034,9 @@ def create_app() -> FastAPI:
                 failed_predicates=result.failed_predicates,
                 fallback_used=result.fallback_used,
                 organism_domain=resolved_domain,
+                source_organism=input_data.source_organism,
+                therapeutic=input_data.therapeutic,
+                self_protein=input_data.self_protein,
             )
         except (InvalidProteinError, UnsupportedOrganismError) as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -3162,6 +3336,9 @@ def create_app() -> FastAPI:
                 cai_threshold=input_data.cai_threshold,
                 enzymes=input_data.enzymes,
                 organism_domain=input_data.organism_domain,
+                source_organism=input_data.source_organism,
+                therapeutic=input_data.therapeutic,
+                self_protein=input_data.self_protein,
             )
         except Exception as e:
             logger.warning("Fast batch optimize failed: %s", e)

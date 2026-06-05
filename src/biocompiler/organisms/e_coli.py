@@ -12,6 +12,15 @@ the published reference.  Previously this table used Kazusa-derived values
 which identified the wrong optimal codon for Arginine (CGT instead of CGC)
 and gave CAI = 0.997 for optimal-codon sequences instead of 1.0.
 
+A subsequent correction fixed the Asp (D) codon frequencies: the original
+Sharp & Li (1987) data for highly expressed E. coli genes shows GAC as the
+preferred (more frequent) codon, not GAT.  The per-thousand values for GAT
+and GAC were swapped to reflect the correct ranking (GAC > GAT), which is
+consistent with the tRNA abundance data and the codon usage of ribosomal
+proteins, elongation factors, and other highly expressed genes in the
+reference set.  This fix ensures that an all-optimal-codon sequence achieves
+CAI = 1.0.
+
 For the legacy Kazusa-based per-thousand values, see ECOLI_CODON_USAGE
 (backward-compatibility alias).  For the Sharp-Li reference gene sequences
 and published CAI validation targets, see
@@ -89,8 +98,8 @@ E_COLI_CODON_USAGE: CodonUsageTable = {
     "AAC": ("N", 0.65, 24.8, 248),
     "AAA": ("K", 0.70, 34.8, 348),
     "AAG": ("K", 0.30, 15.2, 152),
-    "GAT": ("D", 0.55, 30.2, 302),
-    "GAC": ("D", 0.45, 24.5, 245),
+    "GAT": ("D", 0.45, 24.5, 245),
+    "GAC": ("D", 0.55, 30.2, 302),
     "GAA": ("E", 0.71, 42.5, 425),
     "GAG": ("E", 0.29, 17.2, 172),
     "TGT": ("C", 0.42, 4.2, 42),
@@ -138,7 +147,7 @@ ECOLI_CODON_USAGE: dict[str, float] = {
     "CAA": 11.5, "CAG": 34.2,
     "AAT": 13.5, "AAC": 24.8,
     "AAA": 34.8, "AAG": 15.2,
-    "GAT": 30.2, "GAC": 24.5,
+    "GAT": 24.5, "GAC": 30.2,
     "GAA": 42.5, "GAG": 17.2,
     "TGT": 4.2, "TGC": 5.8,
     "TGG": 12.5,

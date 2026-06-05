@@ -31,6 +31,30 @@ from .organisms import (
 )
 from .exceptions import UnsupportedOrganismError
 
+
+class PartialCodonError(ValueError):
+    """Raised when a DNA sequence length is not a multiple of 3.
+
+    This is a specific, catchable exception for partial codons at the
+    end of a sequence, raised by :func:`translate_with_confidence`.
+    It subclasses :class:`ValueError` so that existing ``except ValueError``
+    handlers continue to work, but allows callers to distinguish partial-codon
+    errors from other value errors.
+
+    Attributes:
+        sequence_length: Length of the input sequence.
+        remainder: Number of trailing bases that do not form a complete codon.
+    """
+
+    def __init__(self, sequence_length: int, remainder: int):
+        self.sequence_length = sequence_length
+        self.remainder = remainder
+        super().__init__(
+            f"Sequence length {sequence_length} is not a multiple of 3; "
+            f"{remainder} trailing base(s) do not form a complete codon. "
+            f"Trim or pad the sequence before calling translate_with_confidence()."
+        )
+
 # ── NUMBA integration ──────────────────────────────────────────────
 try:
     from .numba_kernels import (
@@ -52,6 +76,7 @@ __all__ = [
     "DEFAULT_MIN_ORF_LENGTH_AA",
     "BACTERIAL_START_CODONS",
     "STANDARD_START_CODON",
+    "PartialCodonError",
 ]
 
 logger = logging.getLogger(__name__)
@@ -75,10 +100,25 @@ _ZERO_ADAPTIVENESS_EPSILON: float = 1e-10
 STANDARD_START_CODON: str = "ATG"
 
 # Bacterial start codons per NCBI translation table 1:
-#   ATG — canonical start (Met)
-#   GTG — alternative start (codes Val internally, Met at initiation)
-#   TTG — alternative start (codes Leu internally, Met at initiation)
-# Source: NCBI Genetic Codes Table 1; Blattner et al. (1997) Science 277:1453
+#   ATG — canonical start (Met), used by ~83% of E. coli genes
+#   GTG — alternative start (codes Val internally, Met at initiation),
+#         used by ~14% of E. coli genes
+#   TTG — alternative start (codes Leu internally, Met at initiation),
+#         used by ~3% of E. coli genes
+#
+# At the ribosomal initiation site, the initiator fMet-tRNA recognises
+# all three codons and inserts formyl-methionine (fMet).  Internally
+# (i.e., not at position 1), GTG codes for Val and TTG codes for Leu
+# per the standard genetic code.
+#
+# Usage:
+#   - translate() and translate_with_confidence() use the standard
+#     genetic code only — they do NOT perform start-codon recognition.
+#   - find_orfs(start_codons=BACTERIAL_START_CODONS) recognises all
+#     three as starts and translates the first codon as 'M'.
+#
+# Source: NCBI Genetic Codes Table 1; Blattner et al. (1997) Science 277:1453;
+#   RCSB PDB summary of initiation codon usage in E. coli K-12.
 BACTERIAL_START_CODONS: frozenset[str] = frozenset({"ATG", "GTG", "TTG"})
 
 
@@ -135,15 +175,35 @@ def translate_with_confidence(sequence: str, to_stop: bool = True) -> str:
     """Translate a DNA sequence, raising an error for unknown codons.
 
     This is the strict variant of :func:`translate`.  Unlike
-    :func:`translate`, which silently maps unknown codons to ``'X'``,
-    this function raises a :class:`ValueError` whenever a codon is
-    not found in the standard genetic code (NCBI translation table 1).
+    :func:`translate`, which silently maps unknown codons to ``'X'``
+    and logs a warning for partial codons, this function **raises**
+    errors in both cases:
 
-    Use this function when silent fallback to ``'X'`` is undesirable,
-    e.g., in optimisation pipelines where every codon must be valid.
+    - **Partial codons** at the end of the sequence raise
+      :class:`PartialCodonError` (a specific subclass of
+      :class:`ValueError`).  This prevents silent data loss from
+      truncated sequences.
+    - **Unknown codons** raise :class:`ValueError` with a descriptive
+      message.
+
+    Use this function when silent fallback is undesirable,
+    e.g., in optimisation pipelines where every codon must be valid
+    and the sequence must be complete.
+
+    Bacterial start codon handling
+        This function translates codons strictly according to the
+        standard genetic code (NCBI table 1).  At the **initiation**
+        position, bacteria may use GTG or TTG as alternative start
+        codons, both translated as **M** (methionine) by the initiator
+        fMet-tRNA.  However, this low-level translation function does
+        **not** perform ORF detection or start-codon recognition —
+        it maps each codon to its standard internal translation.
+        For ORF-aware translation with bacterial start codon support,
+        use :func:`find_orfs` with
+        ``start_codons=BACTERIAL_START_CODONS``.
 
     Args:
-        sequence: DNA coding sequence.
+        sequence: DNA coding sequence.  Length must be a multiple of 3.
         to_stop: If True, stop at first stop codon; if False, include
             stops as ``'*'``.
 
@@ -151,6 +211,8 @@ def translate_with_confidence(sequence: str, to_stop: bool = True) -> str:
         Protein sequence as single-letter amino acid codes.
 
     Raises:
+        PartialCodonError: If the sequence length is not a multiple of 3
+            (i.e., trailing bases do not form a complete codon).
         ValueError: If the sequence contains a codon that is not in the
             standard genetic code (NCBI table 1).
     """
@@ -158,12 +220,10 @@ def translate_with_confidence(sequence: str, to_stop: bool = True) -> str:
     if not sequence:
         return ""
 
-    # Warn about partial codons
-    if len(sequence) % _CODON_LENGTH != 0:
-        logger.warning(
-            "Sequence length %d is not a multiple of %d; last %d base(s) will be ignored",
-            len(sequence), _CODON_LENGTH, len(sequence) % _CODON_LENGTH,
-        )
+    # Raise specific error for partial codons
+    remainder = len(sequence) % _CODON_LENGTH
+    if remainder != 0:
+        raise PartialCodonError(len(sequence), remainder)
 
     protein: list[str] = []
     for i in range(0, len(sequence) - (_CODON_LENGTH - 1), _CODON_LENGTH):

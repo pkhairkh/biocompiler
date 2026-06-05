@@ -46,7 +46,9 @@ except ImportError:
 try:
     from .slot_verification import is_slot_predicate
 except ImportError:
-    is_slot_predicate = lambda name: False  # type: ignore[assignment]
+    def is_slot_predicate(name: str) -> bool:  # type: ignore[misc]
+        """Fallback when slot_verification is not available."""
+        return False
     logger.debug("slot_verification.is_slot_predicate not available; using no-op fallback")
 
 __all__ = [
@@ -225,8 +227,17 @@ def _validate_cert_structure(cert_dict: dict[str, Any]) -> list[str]:
     return issues
 
 
-# Mapping from predicate name pattern to registry name and required kwargs
+def _empty_kwargs(params: dict[str, Any]) -> dict[str, Any]:
+    """Return empty kwargs (for predicates needing only seq)."""
+    return {}
+
+
+# Mapping from predicate name pattern to registry name and required kwargs.
+# Each entry extracts the relevant verification parameters from the
+# certificate's parameter dict so that re-evaluation can reproduce
+# the original result.
 _PREDICATE_KWARGS_MAP: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    # DNA-level predicates
     "NoCrypticSplice": lambda params: {
         "known_exon_boundaries": params.get("exon_boundaries", []),
     },
@@ -248,8 +259,70 @@ _PREDICATE_KWARGS_MAP: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "InFrame": lambda params: {
         "exon_boundaries": params.get("exon_boundaries", [(0, 0)]),
     },
-    "NoInstabilityMotif": lambda params: {},
-    "NoCpGIsland": lambda params: {},
+    "NoInstabilityMotif": _empty_kwargs,
+    "NoCpGIsland": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoGTDinucleotide": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoCrypticPromoter": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+        "threshold": params.get("promoter_threshold", 0.7),
+    },
+    "NoUnexpectedTMDomain": lambda params: {
+        "is_cytosolic": params.get("is_cytosolic", True),
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "mRNASecondaryStructure": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "CoTranslationalFolding": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+        "domain_boundaries": params.get("domain_boundaries", []),
+    },
+    # Structure predicates
+    "StructureConfidence": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoMisfoldingRisk": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "CorrectFoldTopology": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoUnexpectedInteraction": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    # Stability predicates
+    "StableFolding": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoDestabilizingMutation": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "DisulfideBondIntegrity": _empty_kwargs,
+    "HydrophobicCoreQuality": _empty_kwargs,
+    # Solubility predicates
+    "SolubleExpression": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoAggregationProneRegion": _empty_kwargs,
+    "ChargeComposition": _empty_kwargs,
+    "NoLongHydrophobicStretch": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    # Immunogenicity predicates
+    "LowImmunogenicity": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoStrongTCellEpitope": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    "NoDominantBCellEpitope": _empty_kwargs,
+    "PopulationCoverageSafe": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
 }
 
 
@@ -407,8 +480,18 @@ def format_certificate(
     results: list[PredicateResult], seq: str, species: str,
     slot_mode: SLOTMode = SLOTMode.CONSERVATIVE,
 ) -> str:
-    """Format a human-readable certificate report."""
+    """Format a human-readable certificate report.
+
+    The report includes:
+    - Overall certificate level (GOLD / SILVER / BRONZE)
+    - Per-predicate results with pass/fail status, verdict, and reason
+    - Summary of which predicates passed and which failed with explanations
+    - SLOT mode description
+    """
     cert = compute_certificate(results, slot_mode)
+    n_pass = sum(1 for r in results if r.passed)
+    n_fail = len(results) - n_pass
+
     lines = [
         "=" * _CERT_FORMAT_WIDTH,
         f"  BioCompiler v{VERSION} — Optimization Certificate",
@@ -417,6 +500,7 @@ def format_certificate(
         f"  Species:         {species}",
         f"  Certificate:     {cert.value}",
         f"  SLOT Mode:       {slot_mode.value}",
+        f"  Predicates:      {n_pass} passed / {n_fail} failed / {len(results)} total",
         "-" * _CERT_FORMAT_WIDTH,
         "  Predicate Results:",
     ]
@@ -432,6 +516,28 @@ def format_certificate(
         # Mark SLOT predicates
         slot_marker = " [SLOT]" if is_slot_predicate(r.predicate) else ""
         lines.append(f"    [{status}{verdict_str}{mutagenesis_marker}{slot_marker}] {r.predicate}: {r.details}")
+
+    # Summary: which predicates passed/failed and why
+    lines.append("-" * _CERT_FORMAT_WIDTH)
+    if n_pass > 0:
+        passed_preds = [r for r in results if r.passed]
+        lines.append(f"  Passed ({n_pass}):")
+        for r in passed_preds:
+            reason = r.details if r.details else "(no details)"
+            # Truncate long reasons for readability
+            if len(reason) > 80:
+                reason = reason[:77] + "..."
+            lines.append(f"    + {r.predicate}: {reason}")
+
+    if n_fail > 0:
+        failed_preds = [r for r in results if not r.passed]
+        lines.append(f"  Failed ({n_fail}):")
+        for r in failed_preds:
+            reason = r.details if r.details else "(no details)"
+            if len(reason) > 80:
+                reason = reason[:77] + "..."
+            lines.append(f"    - {r.predicate}: {reason}")
+
     lines.append("=" * _CERT_FORMAT_WIDTH)
     lines.append("")
     lines.append("  Certificate Levels:")

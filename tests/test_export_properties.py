@@ -68,48 +68,63 @@ locus_name = st.text(
 # Property 1: FASTA export starts with ">"
 # ────────────────────────────────────────────────────────────
 
+def _find_fasta_header_line(fasta_output: str) -> str:
+    """Find the header line (starting with '>') in FASTA output.
+
+    The output may contain comment lines (starting with ';') before the header.
+    """
+    for line in fasta_output.split("\n"):
+        if line.startswith(">"):
+            return line
+    raise ValueError(f"No '>' header line found in FASTA output: {fasta_output!r}")
+
+
 class TestFastaStartsWithGreaterThan:
-    """Property: export_fasta output always starts with '>'."""
+    """Property: export_fasta output always contains a '>' header line."""
 
     @given(seq=dna_seq)
     @settings(max_examples=50, deadline=5000)
-    def test_basic_sequence_starts_with_gt(self, seq):
-        """Any non-empty ACGT sequence produces a FASTA record starting with '>'."""
+    def test_basic_sequence_has_gt_header(self, seq):
+        """Any non-empty ACGT sequence produces a FASTA record with a '>' header."""
         result = export_fasta(seq)
-        assert result.startswith(">"), (
-            f"FASTA output does not start with '>' for sequence of length {len(seq)}"
+        header = _find_fasta_header_line(result)
+        assert header.startswith(">"), (
+            f"FASTA output has no '>' header for sequence of length {len(seq)}"
         )
 
     @given(seq=dna_seq, ident=identifier)
     @settings(max_examples=40, deadline=5000)
-    def test_custom_identifier_starts_with_gt(self, seq, ident):
-        """FASTA output starts with '>' even with a custom identifier."""
+    def test_custom_identifier_has_gt_header(self, seq, ident):
+        """FASTA output has a '>' header even with a custom identifier."""
         result = export_fasta(seq, identifier=ident)
-        assert result.startswith(">")
+        header = _find_fasta_header_line(result)
+        assert header.startswith(">")
 
     @given(seq=dna_seq, ident=identifier, desc=description)
     @settings(max_examples=30, deadline=5000)
-    def test_with_description_starts_with_gt(self, seq, ident, desc):
-        """FASTA output starts with '>' when a description is provided."""
+    def test_with_description_has_gt_header(self, seq, ident, desc):
+        """FASTA output has a '>' header when a description is provided."""
         result = export_fasta(seq, identifier=ident, description=desc)
-        assert result.startswith(">")
+        header = _find_fasta_header_line(result)
+        assert header.startswith(">")
 
     @given(seq=dna_seq, org=organism)
     @settings(max_examples=30, deadline=5000)
-    def test_various_organisms_starts_with_gt(self, seq, org):
-        """FASTA output starts with '>' for all supported organisms."""
+    def test_various_organisms_has_gt_header(self, seq, org):
+        """FASTA output has a '>' header for all supported organisms."""
         result = export_fasta(seq, organism=org)
-        assert result.startswith(">")
+        header = _find_fasta_header_line(result)
+        assert header.startswith(">")
 
     @given(seq=dna_seq)
     @settings(max_examples=30, deadline=5000)
-    def test_first_line_is_header_line(self, seq):
-        """The first line of FASTA output is the header line starting with '>'."""
+    def test_header_line_is_present_and_well_formed(self, seq):
+        """The FASTA output contains a header line starting with '>'."""
         result = export_fasta(seq)
-        first_line = result.split("\n")[0]
-        assert first_line.startswith(">")
+        header = _find_fasta_header_line(result)
+        assert header.startswith(">")
         # Header should contain no newline characters
-        assert "\n" not in first_line
+        assert "\n" not in header
 
 
 # ────────────────────────────────────────────────────────────
@@ -183,8 +198,8 @@ class TestGenBankEndsWithTerminator:
 def _extract_fasta_sequence(fasta_output: str) -> str:
     """Extract the raw sequence portion from a FASTA string (no spaces, no newlines)."""
     lines = fasta_output.strip().split("\n")
-    # Skip the header line (starts with >)
-    seq_lines = [line for line in lines if not line.startswith(">")]
+    # Skip the header line (starts with >) and comment lines (starts with ;)
+    seq_lines = [line for line in lines if not line.startswith(">") and not line.startswith(";")]
     return "".join(seq_lines)
 
 
@@ -289,7 +304,7 @@ class TestExportedSequenceUppercaseACGT:
 
 def _extract_fasta_gc(fasta_output: str) -> float:
     """Extract the gc= value from the FASTA header."""
-    header = fasta_output.split("\n")[0]
+    header = _find_fasta_header_line(fasta_output)
     for part in header.lstrip(">").split("|"):
         if part.startswith("gc="):
             return float(part.split("=")[1])

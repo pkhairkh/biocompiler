@@ -1,5 +1,5 @@
 """
-BioCompiler — Machine-Verified Gene Design  (v10.0.0)
+BioCompiler — Machine-Verified Gene Design  (v11.1.0)
 
 A compiler framework for human protein synthesis using intermediate
 representations. Pipeline:
@@ -29,9 +29,21 @@ v10.0.0 highlights (BREAKING — CAI table unification):
   - E. coli GFP benchmark: CAI 0.67→0.999, Time 20ms→2ms (10× faster)
 """
 
-__version__ = "10.0.0"
+__version__ = "11.1.0"
 
 import logging
+import warnings
+
+# Suppress camsol.SolubilityResult deprecation warning on import;
+# the new canonical name is CamSolResult, but SolubilityResult is
+# kept as a backward-compatible alias (see below).
+warnings.filterwarnings(
+    "ignore",
+    message="camsol.SolubilityResult is deprecated",
+    category=DeprecationWarning,
+    module=r"biocompiler\.camsol",
+)
+
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 _logger = logging.getLogger(__name__)
 
@@ -355,10 +367,12 @@ try:
         generate_solubility_recommendations,
         compute_solubility_batch,
         clear_cache as camsol_clear_cache,
-        SolubilityResult,
+        CamSolResult,
         CAMSOL_HYDROPATHY, CAMSOL_CHARGE, CAMSOL_ALPHA_HELIX,
         CAMSOL_BETA_STRAND,
     )
+    # Backward-compatible alias (SolubilityResult was the old name)
+    SolubilityResult = CamSolResult
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
     compute_intrinsic_solubility = None
@@ -369,6 +383,7 @@ except ImportError:
     generate_solubility_recommendations = None
     compute_solubility_batch = None
     camsol_clear_cache = None
+    CamSolResult = None
     SolubilityResult = None
     CAMSOL_HYDROPATHY = None
     CAMSOL_CHARGE = None
@@ -821,21 +836,6 @@ except ImportError:
     MHCBindingRecord = None
 
 # ═══════════════════════════════════════════════════════════════════════
-# UTR Models
-# ═══════════════════════════════════════════════════════════════════════
-
-try:
-    from .utr_models import UTRConfig, ORGANISM_UTR_CONFIGS, suggest_5utr, suggest_3utr, score_5utr, score_3utr
-except ImportError:
-    _logger.debug("Could not import optional module, using None fallbacks")
-    UTRConfig = None
-    ORGANISM_UTR_CONFIGS = None
-    suggest_5utr = None
-    suggest_3utr = None
-    score_5utr = None
-    score_3utr = None
-
-# ═══════════════════════════════════════════════════════════════════════
 # mRNA Stability
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -1017,7 +1017,7 @@ __all__ = [
     "classify_solubility", "find_solubility_mutations",
     "generate_solubility_recommendations",
     "compute_solubility_batch", "camsol_clear_cache",
-    "SolubilityResult",
+    "CamSolResult", "SolubilityResult",
     "CAMSOL_HYDROPATHY", "CAMSOL_CHARGE", "CAMSOL_ALPHA_HELIX",
     "CAMSOL_BETA_STRAND",
     "evaluate_soluble_expression", "evaluate_no_aggregation_prone_region",
@@ -1132,10 +1132,6 @@ __all__ = [
 
     # ── MHC Binding Database ────────────────────────────────
     "MHCBindingDatabase", "MHCBindingRecord",
-
-    # ── UTR Models ──────────────────────────────────────────
-    "UTRConfig", "ORGANISM_UTR_CONFIGS",
-    "suggest_5utr", "suggest_3utr", "score_5utr", "score_3utr",
 
     # ── mRNA Stability ──────────────────────────────────────
     "score_mrna_stability", "MRNAStabilityScore",

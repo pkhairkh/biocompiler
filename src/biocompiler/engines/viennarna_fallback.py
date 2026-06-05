@@ -73,6 +73,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "StemLoop",
+    "MFEResult",
+    "AccessibilityResult",
     "nussinov_fold",
     "compute_approx_dg",
     "compute_gc_dg_estimate",
@@ -379,6 +382,11 @@ def compute_nntm_dg(
     rna = _transcribe_to_rna(dna_sequence)
     n = len(rna)
     if n == 0:
+        return 0.0
+
+    # Very short sequences cannot form stable structures;
+    # NNTM parameters are undefined for < 4 nt, so return 0.
+    if n < 4:
         return 0.0
 
     # If no structure provided, predict one

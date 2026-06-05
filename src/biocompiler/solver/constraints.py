@@ -68,6 +68,7 @@ __all__ = [
     "DEFAULT_EUKARYOTIC_SPLICE_THRESHOLD",
     "CAI_DG_SCALE",
     "HIGH_GC_THRESHOLD",
+    "MIN_DG_SEQUENCE_LENGTH",
     # Helper functions
     "codon_gc_count",
     "codon_contains_gt",
@@ -113,6 +114,7 @@ NEAREST_NEIGHBOR_GU = -0.3
 DEFAULT_EUKARYOTIC_SPLICE_THRESHOLD = 8.0
 CAI_DG_SCALE = 10.0
 HIGH_GC_THRESHOLD = 0.6
+MIN_DG_SEQUENCE_LENGTH = 6  # Minimum bases (2 codons) for CAI-based ΔG estimation
 
 
 # ==============================================================================
@@ -241,6 +243,28 @@ def _sequence_from_codons(codons: Sequence[str]) -> str:
         Concatenated DNA string.
     """
     return "".join(codons)
+
+
+def _normalize_organism_name(organism: str) -> str:
+    """Normalize an organism name for consistent lookup.
+
+    Strips leading/trailing whitespace, replaces internal spaces with
+    underscores, and collapses multiple underscores.  This ensures
+    that variant formats like ``"  Escherichia coli  "`` or
+    ``"ESCHERICHIA_COLI"`` resolve correctly via
+    :func:`~biocompiler.organism_config.is_eukaryotic_organism`.
+
+    Args:
+        organism: Raw organism name string.
+
+    Returns:
+        Normalized organism name (stripped, spaces→underscores).
+    """
+    import re
+    name = organism.strip().replace(" ", "_")
+    # Collapse multiple underscores (e.g. "E__coli" → "E_coli")
+    name = re.sub(r"_+", "_", name)
+    return name
 
 
 # ==============================================================================
@@ -622,10 +646,16 @@ class NoCrypticSpliceConstraint(HardConstraint):
         return self._organism
 
     def _is_prokaryotic(self) -> bool:
-        """Return True if the configured organism is prokaryotic."""
+        """Return True if the configured organism is prokaryotic.
+
+        Normalizes the organism name (strip, spaces→underscores) before
+        checking so that variant formats like ``"  Escherichia coli  "`` are
+        correctly resolved.
+        """
         if not self._organism:
             return False
-        return not is_eukaryotic_organism(self._organism)
+        normalized = _normalize_organism_name(self._organism)
+        return not is_eukaryotic_organism(normalized)
 
     def _unavoidable_gt_positions(self, sequence: str) -> set[int]:
         """Compute nucleotide positions where GT is unavoidable (Valine codons).
@@ -817,6 +847,14 @@ class NoCpGIslandConstraint(HardConstraint):
         density.  The effective threshold is increased proportionally to
         the excess GC content.
 
+        Importantly, for synthetic gene design the observed/expected CpG
+        ratio in a randomly assembled sequence is approximately 1.0
+        (by definition — CpG is only suppressed in native genomes by
+        methylation-driven mutation).  We therefore floor the effective
+        threshold at 1.0 for high-GC targets so that the constraint
+        remains feasible; only sequences with CpG clustering *above* the
+        random baseline are flagged.
+
         Returns:
             Effective Obs/Exp CG ratio threshold.
         """
@@ -829,14 +867,24 @@ class NoCpGIslandConstraint(HardConstraint):
             # random sequence scales as GC^2, so a modest relaxation
             # factor accounts for the biological constraint.
             relaxation = (expected_gc - HIGH_GC_THRESHOLD) / (1.0 - HIGH_GC_THRESHOLD)
-            return self._threshold + relaxation * (1.0 - self._threshold)
+            effective = self._threshold + relaxation * (1.0 - self._threshold)
+            # In a randomly assembled synthetic gene, Obs/Exp ≈ 1.0
+            # (CpG suppression is a genomic evolution phenomenon, not a
+            # property of the codon table).  Floor at 1.0 so that the
+            # model stays feasible for high-GC targets.
+            return max(effective, 1.0)
         return self._threshold
 
     def _is_prokaryotic(self) -> bool:
-        """Return True if the configured organism is prokaryotic."""
+        """Return True if the configured organism is prokaryotic.
+
+        Normalizes the organism name (strip, spaces→underscores) before
+        checking so that variant formats are correctly resolved.
+        """
         if not self._organism:
             return False
-        return not is_eukaryotic_organism(self._organism)
+        normalized = _normalize_organism_name(self._organism)
+        return not is_eukaryotic_organism(normalized)
 
     def _scan_cpg(self, sequence: str, window: int, threshold: float) -> list[int]:
         """Scan for CpG islands in sliding windows.
@@ -1156,10 +1204,15 @@ class MinimizeCpG(SoftConstraint):
         return gc_frac * gc_frac
 
     def _is_prokaryotic(self) -> bool:
-        """Return True if the configured organism is prokaryotic."""
+        """Return True if the configured organism is prokaryotic.
+
+        Normalizes the organism name (strip, spaces→underscores) before
+        checking so that variant formats are correctly resolved.
+        """
         if not self._organism:
             return False
-        return not is_eukaryotic_organism(self._organism)
+        normalized = _normalize_organism_name(self._organism)
+        return not is_eukaryotic_organism(normalized)
 
     def check(self, sequence: str) -> bool:
         """Always True — CpG count is an optimization objective."""
@@ -1457,9 +1510,19 @@ class MinimizeMRNADG(SoftConstraint):
         The estimated \u0394G is: ``CAI_DG_SCALE * mean(log(w_i))`` where w_i
         is the relative adaptiveness of each codon in the 5' window.
 
+        For sequences shorter than ``MIN_DG_SEQUENCE_LENGTH`` bases (2
+        codons), the CAI-based estimate is unreliable (partial codons,
+        division by near-zero counts) and may produce NaN.  In that case
+        the method returns 0.0 and ``compute_dg`` will fall through to a
+        simpler fallback.
+
         Returns:
             Estimated \u0394G in kcal/mol. More negative = more stable structure.
+            Returns 0.0 if the sequence is too short for reliable estimation.
         """
+        if len(sequence) < MIN_DG_SEQUENCE_LENGTH:
+            return 0.0
+
         effective_end = min(self._window_end, len(sequence))
 
         log_cai_sum = 0.0
@@ -1526,9 +1589,15 @@ class MinimizeMRNADG(SoftConstraint):
         Falls back to ViennaRNA when available for accurate MFE computation,
         and to a simplified nearest-neighbor approximation when neither
         CAI data nor ViennaRNA is available.
+
+        For very short sequences (fewer than ``MIN_DG_SEQUENCE_LENGTH``
+        bases), the CAI-based estimation is skipped because partial codons
+        can lead to unreliable or NaN results.  The method falls through
+        to ViennaRNA or the nearest-neighbor approximation instead.
         """
         # --- Primary: codon-based CAI estimation ---
-        if self._adaptiveness and self._protein:
+        # Skip for very short sequences to avoid NaN from partial codons
+        if self._adaptiveness and self._protein and len(sequence) >= MIN_DG_SEQUENCE_LENGTH:
             return self._estimate_dg_from_cai(sequence)
 
         # --- Fallback 1: ViennaRNA (optional) ---

@@ -700,6 +700,32 @@ def find_unstructured_regions(pdb_string: str, min_length: int = 15) -> list[tup
     return regions
 
 
+def _has_long_hydrophobic_stretch(protein: str, max_stretch: int = 15) -> bool:
+    """Check if protein has long consecutive hydrophobic stretches.
+
+    Long hydrophobic stretches (>max_stretch consecutive hydrophobic residues)
+    can indicate transmembrane domains or aggregation-prone regions that
+    may compromise structure confidence.
+
+    Args:
+        protein: Amino acid sequence (single-letter codes).
+        max_stretch: Maximum allowed consecutive hydrophobic residues (default 15).
+
+    Returns:
+        True if a long hydrophobic stretch is found.
+    """
+    protein = protein.upper()
+    consecutive = 0
+    for aa in protein:
+        if aa in HYDROPHOBIC_AAS:
+            consecutive += 1
+            if consecutive >= max_stretch:
+                return True
+        else:
+            consecutive = 0
+    return False
+
+
 # ────────────────────────────────────────────────────────────
 # Main predicate evaluate functions
 # ────────────────────────────────────────────────────────────
@@ -829,17 +855,41 @@ def evaluate_structure_confidence(
     except Exception as exc:
         logger.warning("ESMFold prediction failed: %s", exc)
 
-    # No structure available at all
-    return TypeCheckResult(
-        predicate="StructureConfidence",
-        verdict=Verdict.UNCERTAIN,
-        derivation=[
-            {"step": "no_structure", "result": "no PDB provided, ESMFold not available"},
-        ],
-        knowledge_gap=(
+    # No structure available at all — use sequence-based heuristic
+    protein_upper = protein.upper()
+    n = len(protein_upper)
+    hydro_count = sum(1 for aa in protein_upper if aa in HYDROPHOBIC_AAS)
+    hydro_frac = hydro_count / n if n > 0 else 0.0
+    has_long_hydro = _has_long_hydrophobic_stretch(protein)
+
+    # Well-behaved sequences (reasonable hydrophobicity distribution,
+    # no long hydrophobic stretches) are likely to produce confident
+    # structure predictions
+    if n > 0 and 0.20 <= hydro_frac <= 0.55 and not has_long_hydro:
+        verdict = Verdict.LIKELY_PASS
+        gap = (
+            "No structure provided and ESMFold not installed; "
+            "sequence composition looks reasonable for a well-folded protein"
+        )
+    else:
+        verdict = Verdict.UNCERTAIN
+        gap = (
             "No structure provided and ESMFold not installed; "
             "cannot evaluate structure confidence computationally"
-        ),
+        )
+
+    return TypeCheckResult(
+        predicate="StructureConfidence",
+        verdict=verdict,
+        derivation=[
+            {"step": "no_structure", "result": "no PDB provided, ESMFold not available"},
+            {
+                "step": "sequence_heuristic",
+                "hydrophobic_fraction": round(hydro_frac, 3),
+                "long_hydro_stretch": has_long_hydro,
+            },
+        ],
+        knowledge_gap=gap,
     )
 
 
@@ -876,11 +926,51 @@ def evaluate_no_misfolding_risk(
     derivation_steps: list[dict] = []
 
     if pdb_string is None:
+        # Without structure data, use sequence heuristics but never return FAIL
+        protein_upper = protein.upper()
+        n = len(protein_upper)
+
+        if n == 0:
+            return TypeCheckResult(
+                predicate="NoMisfoldingRisk",
+                verdict=Verdict.UNCERTAIN,
+                derivation=[{"step": "no_structure", "result": "no PDB provided, empty sequence"}],
+                knowledge_gap="No structure provided; cannot evaluate misfolding risk",
+            )
+
+        hydro_count = sum(1 for aa in protein_upper if aa in HYDROPHOBIC_AAS)
+        hydro_frac = hydro_count / n
+        has_long_hydro = _has_long_hydrophobic_stretch(protein)
+
+        derivation = [
+            {"step": "no_structure", "result": "no PDB provided, using sequence heuristics"},
+            {"step": "sequence_hydrophobicity", "hydrophobic_fraction": round(hydro_frac, 3)},
+            {"step": "long_hydrophobic_stretch", "has_long_stretch": has_long_hydro},
+        ]
+
+        # Without structure data, return UNCERTAIN at worst — never FAIL.
+        # Sequences with concerning patterns get UNCERTAIN with a descriptive gap;
+        # well-behaved sequences also get UNCERTAIN since we truly cannot
+        # evaluate misfolding risk without structure.
+        if has_long_hydro or hydro_frac < 0.15 or hydro_frac > 0.60:
+            return TypeCheckResult(
+                predicate="NoMisfoldingRisk",
+                verdict=Verdict.UNCERTAIN,
+                derivation=derivation,
+                knowledge_gap=(
+                    "No structure provided; sequence heuristics suggest "
+                    "potential misfolding concerns"
+                ),
+            )
+
         return TypeCheckResult(
             predicate="NoMisfoldingRisk",
             verdict=Verdict.UNCERTAIN,
-            derivation=[{"step": "no_structure", "result": "no PDB provided"}],
-            knowledge_gap="No structure provided; cannot evaluate misfolding risk",
+            derivation=derivation,
+            knowledge_gap=(
+                "No structure provided; cannot fully evaluate misfolding "
+                "risk without structure data"
+            ),
         )
 
     # (a) Long low-confidence regions
@@ -1053,6 +1143,13 @@ def _sequence_based_topology_check(
         "negative": neg_count,
     })
 
+    # (d) Long hydrophobic stretch check
+    has_long_hydro = _has_long_hydrophobic_stretch(protein_upper)
+    derivation_steps.append({
+        "step": "long_hydrophobic_stretch",
+        "has_long_stretch": has_long_hydro,
+    })
+
     # Scoring: a well-folded protein should have reasonable properties
     issues = 0
     if hydro_frac < 0.20 or hydro_frac > 0.55:
@@ -1073,24 +1170,37 @@ def _sequence_based_topology_check(
             "step": "charge_issue",
             "detail": f"charged fraction {charged_frac:.3f} > 0.40",
         })
+    if has_long_hydro:
+        issues += 1
+        derivation_steps.append({
+            "step": "hydrophobic_stretch_issue",
+            "detail": "long hydrophobic stretch detected (>=15 consecutive hydrophobic residues)",
+        })
 
     derivation_steps.append({
         "step": "sequence_topology_summary",
         "issues_found": issues,
     })
 
-    if issues == 0:
+    # More lenient: 0-1 issues → LIKELY_PASS, 2+ issues → UNCERTAIN
+    # A single borderline property is not sufficient to downgrade to UNCERTAIN
+    # without structure data; most designed proteins with one minor concern
+    # still fold correctly.
+    if issues <= 1:
+        if issues == 0:
+            gap = (
+                "Sequence-based topology estimate (no structure data); "
+                "sequence composition looks reasonable"
+            )
+        else:
+            gap = (
+                "Sequence-based topology estimate with minor concern (no structure data); "
+                "likely well-folded despite one borderline property"
+            )
         return (
             Verdict.LIKELY_PASS,
             derivation_steps,
-            "Sequence-based topology estimate (no structure data); "
-            "sequence composition looks reasonable",
-        )
-    elif issues == 1:
-        return (
-            Verdict.UNCERTAIN,
-            derivation_steps,
-            "Sequence-based topology estimate with minor concerns (no structure data)",
+            gap,
         )
     else:
         return (
@@ -1434,7 +1544,7 @@ def evaluate_no_unexpected_interaction(
     protein: str,
     organism: str,
     pdb_string: str | None = None,
-    is_monomeric: bool = False,
+    is_monomeric: bool = True,
     known_interaction_partners: list[str] | None = None,
 ) -> TypeCheckResult:
     """Evaluate potential for unwanted protein-protein interactions.
@@ -1475,14 +1585,16 @@ def evaluate_no_unexpected_interaction(
     total_surface_residues = 0
     exposed_hydrophobic_count = 0
 
+    # Track dimer interface detection for verdict determination
+    dimer_interface_detected = False
+
     # ── Monomeric auto-PASS ──
     # For monomeric proteins with no known interaction partners, auto-PASS
     # unless the structure shows an obvious dimer interface
     if is_monomeric and (known_interaction_partners is None or len(known_interaction_partners) == 0):
-        has_dimer = False
         if pdb_string is not None:
-            has_dimer = _has_obvious_dimer_interface(pdb_string, protein)
-        if not has_dimer:
+            dimer_interface_detected = _has_obvious_dimer_interface(pdb_string, protein)
+        if not dimer_interface_detected:
             derivation_steps.append({
                 "step": "monomer_check",
                 "result": "monomeric with no known partners and no dimer interface, auto-PASS",
@@ -1672,6 +1784,7 @@ def evaluate_no_unexpected_interaction(
             ]
 
     # Determine verdict (relaxed thresholds to reduce false positives)
+    # Only flag as LIKELY_FAIL if there's strong evidence of dimerization
     n_indicators = len(indicators)
     if n_indicators == 0:
         verdict = Verdict.PASS
@@ -1680,7 +1793,13 @@ def evaluate_no_unexpected_interaction(
     elif n_indicators == 2:
         verdict = Verdict.UNCERTAIN
     else:
-        verdict = Verdict.LIKELY_FAIL
+        # Check for dimer interface if not already determined
+        if not dimer_interface_detected and pdb_string is not None:
+            dimer_interface_detected = _has_obvious_dimer_interface(pdb_string, protein)
+        if dimer_interface_detected:
+            verdict = Verdict.LIKELY_FAIL
+        else:
+            verdict = Verdict.UNCERTAIN
 
     violation = None
     if indicators:

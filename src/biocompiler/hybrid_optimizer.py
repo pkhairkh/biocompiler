@@ -511,6 +511,82 @@ class HybridOptimizer:
                 )
             )
 
+        # ── Phase 5: CAI recovery for eukaryotes ──
+        # After all constraint satisfaction phases, check if any CAI was
+        # lost due to GT avoidance.  For eukaryotes, GT avoidance is SOFT,
+        # so we can recover CAI by swapping back to higher-CAI codons even
+        # if they contain GT dinucleotides.  Only hard constraints (GC,
+        # restriction sites) block the recovery.
+        if effective_avoid_gt:
+            pre_recovery_cai = self._compute_cai(seq)
+            seq_chars = list(seq)
+            n_codons = len(seq) // 3
+            cai_recovery_improvements = 0
+
+            for _recovery_round in range(3):
+                any_recovered = False
+                for ci in range(n_codons):
+                    if ci >= len(protein):
+                        break
+                    aa = protein[ci]
+                    if aa == "*":
+                        continue
+                    current = "".join(seq_chars[ci*3:ci*3+3])
+                    current_cai = self.species_cai.get(current, 0.0)
+
+                    # Try higher-CAI alternatives (even if they have GT)
+                    for alt in self.sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        alt_cai = self.species_cai.get(alt, 0.0)
+                        if alt_cai <= current_cai:
+                            break  # sorted_codons is CAI-descending
+
+                        # Apply swap
+                        old_start = ci * 3
+                        old_chars = seq_chars[old_start:old_start+3]
+                        seq_chars[old_start] = alt[0]
+                        seq_chars[old_start+1] = alt[1]
+                        seq_chars[old_start+2] = alt[2]
+                        new_seq = "".join(seq_chars)
+
+                        # Only check HARD constraints (GC, restriction sites)
+                        # GT avoidance is soft — do NOT block CAI recovery
+                        # for eukaryotes just because a codon contains GT.
+                        gc = (new_seq.count("G") + new_seq.count("C")) / max(len(new_seq), 1)
+                        gc_ok = self.gc_lo <= gc <= self.gc_hi
+
+                        rs_ok = True
+                        if self._rs_sites:
+                            for site, site_rc in self._rs_sites:
+                                if site in new_seq or (site_rc and site_rc in new_seq):
+                                    rs_ok = False
+                                    break
+
+                        if gc_ok and rs_ok:
+                            cai_recovery_improvements += 1
+                            any_recovered = True
+                            break  # Accept first valid CAI upgrade
+                        else:
+                            # Rollback
+                            seq_chars[old_start] = old_chars[0]
+                            seq_chars[old_start+1] = old_chars[1]
+                            seq_chars[old_start+2] = old_chars[2]
+
+                if not any_recovered:
+                    break
+
+            if cai_recovery_improvements > 0:
+                seq = "".join(seq_chars)
+                logger.info(
+                    "CAI recovery for eukaryote: %d codon(s) upgraded, "
+                    "CAI %.4f → %.4f",
+                    cai_recovery_improvements,
+                    pre_recovery_cai,
+                    self._compute_cai(seq),
+                )
+                hill_climb_improvements += cai_recovery_improvements
+
         # Compute final metrics
         gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
         final_cai = self._compute_cai(seq)
@@ -1176,7 +1252,10 @@ class HybridOptimizer:
         The repair strategy is:
         1. For each codon position, try upgrading to a higher-CAI synonym
         2. Only accept the upgrade if it doesn't violate any hard constraint
-        3. Continue until no more upgrades are possible
+        3. For eukaryotes, GT avoidance is SOFT: do NOT sacrifice CAI to
+           eliminate GTs.  Only eliminate GTs that can be removed without
+           reducing CAI.
+        4. Continue until no more upgrades are possible
 
         Args:
             seq: DNA sequence from CSP solver.
@@ -1229,7 +1308,17 @@ class HybridOptimizer:
                                 rs_ok = False
                                 break
 
-                    if gc_ok and rs_ok:
+                    # For eukaryotes (avoid_gt=True), GT avoidance is SOFT:
+                    # do NOT reject a CAI upgrade just because it introduces
+                    # GT dinucleotides.  CAI takes priority over GT avoidance.
+                    # GT elimination is only attempted below for CAI-neutral swaps.
+                    gt_ok = True
+                    if not avoid_gt:
+                        # Prokaryotic path: GT is irrelevant, always OK
+                        pass
+                    # else: eukaryotic — GT is soft, don't block CAI upgrades
+
+                    if gc_ok and rs_ok and gt_ok:
                         improvements += 1
                         any_improved = True
                         break  # Accept first valid upgrade
@@ -1241,6 +1330,82 @@ class HybridOptimizer:
 
             if not any_improved:
                 break
+
+        # ── Eukaryotic GT soft-cleanup ──
+        # For eukaryotes, attempt to remove GT dinucleotides ONLY when the
+        # swap does NOT reduce CAI.  This ensures we never sacrifice CAI for
+        # GT avoidance — GT is a soft constraint for eukaryotes.
+        if avoid_gt:
+            for _gt_round in range(3):
+                any_gt_fixed = False
+                current_seq = "".join(seq_chars)
+                gt_pos = current_seq.find("GT")
+                while gt_pos != -1:
+                    ci = gt_pos // 3
+                    # Determine which codon(s) to try swapping
+                    for target_ci in [ci, ci + 1]:
+                        if target_ci >= n_codons or target_ci < 0:
+                            continue
+                        if target_ci >= len(protein):
+                            continue
+                        aa = protein[target_ci]
+                        if aa == "*":
+                            continue
+                        cur = "".join(seq_chars[target_ci*3:target_ci*3+3])
+                        cur_cai = self.species_cai.get(cur, 0.0)
+
+                        # Try GT-free alternatives with CAI >= current
+                        gt_fixed_here = False
+                        for alt in self.gt_free.get(aa, []):
+                            if alt == cur:
+                                continue
+                            alt_cai = self.species_cai.get(alt, 0.0)
+                            # Only accept if CAI does not decrease
+                            if alt_cai < cur_cai:
+                                continue
+
+                            old_start = target_ci * 3
+                            old_chars = seq_chars[old_start:old_start+3]
+                            seq_chars[old_start] = alt[0]
+                            seq_chars[old_start+1] = alt[1]
+                            seq_chars[old_start+2] = alt[2]
+                            new_seq = "".join(seq_chars)
+
+                            # Verify hard constraints still hold
+                            gc = (new_seq.count("G") + new_seq.count("C")) / max(len(new_seq), 1)
+                            gc_ok = self.gc_lo <= gc <= self.gc_hi
+                            rs_ok = True
+                            if self._rs_sites:
+                                for site, site_rc in self._rs_sites:
+                                    if site in new_seq or (site_rc and site_rc in new_seq):
+                                        rs_ok = False
+                                        break
+
+                            # Check local GT elimination
+                            local_start = max(0, target_ci * 3 - 2)
+                            local_end = min(len(new_seq), target_ci * 3 + 5)
+                            local_gt_gone = "GT" not in new_seq[local_start:local_end]
+
+                            if gc_ok and rs_ok and local_gt_gone:
+                                any_gt_fixed = True
+                                gt_fixed_here = True
+                                improvements += 1
+                                break
+                            else:
+                                # Rollback
+                                seq_chars[old_start] = old_chars[0]
+                                seq_chars[old_start+1] = old_chars[1]
+                                seq_chars[old_start+2] = old_chars[2]
+
+                        if gt_fixed_here:
+                            break
+
+                    # Find next GT
+                    current_seq = "".join(seq_chars)
+                    gt_pos = current_seq.find("GT", gt_pos + 1)
+
+                if not any_gt_fixed:
+                    break
 
         return "".join(seq_chars), improvements
 
@@ -1307,6 +1472,12 @@ class HybridOptimizer:
         Returns:
             HybridResult with the optimized DNA sequence and metrics.
         """
+        # NOTE: Prokaryotes skip GT avoidance entirely.  Prokaryotes have no
+        # spliceosome, so GT dinucleotide avoidance is biologically irrelevant.
+        # This is enforced by self.avoid_gt=False (set in __init__ for
+        # prokaryotes) and by the is_prokaryote flag.  The GT-related code
+        # paths (gt_free, ag_free, _fix_avoidable_gt, etc.) are never
+        # reached on this fast path.
         species_cai = self.species_cai
         max_adapt = self._max_adapt
         optimal_codon = self.optimal_codon
@@ -3557,6 +3728,18 @@ class HybridOptimizer:
             if not violations:
                 break
 
+            # ── Eukaryotic GT softening ──
+            # For eukaryotic organisms, GT avoidance is a SOFT constraint.
+            # Lower the severity of avoidable_gt violations so they are
+            # treated as WARNINGS rather than hard failures.  GT violations
+            # should not block CAI recovery or force suboptimal codon choices.
+            if avoid_gt:
+                for v in violations:
+                    if v.violation_type == "avoidable_gt":
+                        # Reduce severity below all hard constraints so GT
+                        # fixes are attempted only after everything else
+                        v.severity = SEVERITY_WEIGHTS["avoidable_gt"] * 0.1
+
             total_iterations = iteration + 1
 
             # ── Stale detection ──
@@ -3729,6 +3912,19 @@ class HybridOptimizer:
                         used_codon_indices.update(v_codons)
                 if not any_fixed:
                     break
+
+        # ── Eukaryotic GT warning collection ──
+        # After constraint satisfaction, any remaining GT violations for
+        # eukaryotes should be reported as warnings rather than treated as
+        # hard failures.  GT avoidance is soft for eukaryotes.
+        if avoid_gt:
+            remaining_gt = self._detect_cheap_violations(state, avoid_gt)
+            for v in remaining_gt:
+                if v.violation_type == "avoidable_gt":
+                    warnings.append(
+                        f"Soft GT warning: {v.details} "
+                        f"(eukaryotic GT avoidance is soft, not a hard constraint)"
+                    )
 
         cai = self._compute_cai(state.sequence)
         return state.sequence, cai, violations_fixed, total_iterations, warnings

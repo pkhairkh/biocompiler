@@ -374,13 +374,21 @@ class ESMFoldResult(BaseEngineResult):
 
         For failed predictions (``success=False``), returns 0.0.
 
+        Robustness: if ``primary_score`` is NaN or infinite, the property
+        returns 0.0 instead of propagating the invalid value.
+
         Returns:
             Float in the range [0.0, 1.0].
         """
         if not self.success:
             return 0.0
-        # pLDDT is on a 0-100 scale; normalize to 0-1
-        raw = self.primary_score / 100.0
+        # Guard against NaN / infinite primary_score
+        try:
+            raw = self.primary_score / 100.0
+            if not math.isfinite(raw):
+                return 0.0
+        except (TypeError, ZeroDivisionError):
+            return 0.0
         # Clamp to [0, 1] for safety
         normalized = max(0.0, min(1.0, raw))
         # Cap heuristic fallback at 0.5
@@ -401,7 +409,7 @@ class ESMFoldCache:
     least-recently-used entry is evicted first.
     """
 
-    def __init__(self, cache_dir: Optional[str] = None, max_size: int = 1000):
+    def __init__(self, cache_dir: Optional[str] = None, max_size: int = 256):
         """Initialize the cache.
 
         Args:
@@ -1275,26 +1283,58 @@ def predict_pair(
         api_url=api_url,
         timeout=timeout,
     )
-    wt_result = batch.results[0]
-    mt_result = batch.results[1]
 
-    # Compute delta metrics
-    plddt_delta = mt_result.primary_score - wt_result.primary_score
-    confidence_delta = mt_result.normalized_confidence - wt_result.normalized_confidence
+    # Handle the case where batch results are incomplete or predictions failed.
+    # Each prediction always returns an ESMFoldResult (even on failure), but
+    # we guard against edge cases where the batch might return fewer entries.
+    if len(batch.results) < 2:
+        # If we got zero or one result, create a failure placeholder for
+        # whichever prediction is missing so the comparison can still be
+        # constructed (callers can check .success on each result).
+        wt_result = batch.results[0] if len(batch.results) >= 1 else ESMFoldResult(
+            protein=wildtype, success=False,
+            error="Prediction unavailable: batch returned insufficient results",
+        )
+        mt_result = batch.results[1] if len(batch.results) >= 2 else ESMFoldResult(
+            protein=mutant, success=False,
+            error="Prediction unavailable: batch returned insufficient results",
+        )
+    else:
+        wt_result = batch.results[0]
+        mt_result = batch.results[1]
 
-    # Per-residue delta
-    wt_scores = wt_result.plddt_scores
-    mt_scores = mt_result.plddt_scores
-    min_len = min(len(wt_scores), len(mt_scores))
-    max_len = max(len(wt_scores), len(mt_scores))
-    per_residue_delta: list[float | None] = []
-    for i in range(max_len):
-        if i < min_len:
-            per_residue_delta.append(round(mt_scores[i] - wt_scores[i], 2))
-        else:
-            per_residue_delta.append(None)
+    # Compute delta metrics — use 0.0 for failed predictions so that
+    # the delta reflects the asymmetric outcome (e.g. if only the mutant
+    # failed, plddt_delta will be negative).
+    wt_score = wt_result.primary_score if wt_result.success else 0.0
+    mt_score = mt_result.primary_score if mt_result.success else 0.0
+    wt_conf = wt_result.normalized_confidence if wt_result.success else 0.0
+    mt_conf = mt_result.normalized_confidence if mt_result.success else 0.0
 
-    improved = plddt_delta >= 0
+    plddt_delta = mt_score - wt_score
+    confidence_delta = mt_conf - wt_conf
+
+    # Per-residue delta — only meaningful when both predictions succeeded
+    # and have per-residue scores.
+    if wt_result.success and mt_result.success:
+        wt_scores = wt_result.plddt_scores
+        mt_scores = mt_result.plddt_scores
+        min_len = min(len(wt_scores), len(mt_scores))
+        max_len = max(len(wt_scores), len(mt_scores))
+        per_residue_delta: list[float | None] = []
+        for i in range(max_len):
+            if i < min_len:
+                per_residue_delta.append(round(mt_scores[i] - wt_scores[i], 2))
+            else:
+                per_residue_delta.append(None)
+    else:
+        # Cannot compute meaningful per-residue deltas when a prediction failed
+        per_residue_delta = []
+
+    # A comparison is "improved" only when both predictions succeeded and
+    # the mutant has equal or higher pLDDT.  If either prediction failed,
+    # we conservatively report not improved.
+    improved = wt_result.success and mt_result.success and plddt_delta >= 0
 
     return StructureComparison(
         wildtype_result=wt_result,

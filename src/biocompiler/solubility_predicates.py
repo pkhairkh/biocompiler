@@ -39,13 +39,13 @@ __all__ = [
 PKA_VALUES: dict[str, float] = {
     "N_term": 9.69,   # N-terminal amino group
     "C_term": 2.34,   # C-terminal carboxyl group
-    "K": 10.5,        # Lysine side chain
-    "R": 12.5,        # Arginine side chain
-    "H": 6.0,         # Histidine side chain
-    "D": 3.9,         # Aspartic acid side chain
-    "E": 4.1,         # Glutamic acid side chain
-    "C": 8.3,         # Cysteine side chain
-    "Y": 10.1,        # Tyrosine side chain
+    "K": 10.54,       # Lysine side chain
+    "R": 12.48,       # Arginine side chain
+    "H": 6.04,        # Histidine side chain
+    "D": 3.90,        # Aspartic acid side chain
+    "E": 4.07,        # Glutamic acid side chain
+    "C": 8.28,        # Cysteine side chain
+    "Y": 10.07,       # Tyrosine side chain
 }
 
 # ────────────────────────────────────────────────────────────
@@ -84,8 +84,8 @@ _AGG_FAIL_SCORE_CUTOFF: float = 1.5
 _AGG_NTERM_PENALTY: float = 1.5
 
 # Hydrophobic fraction thresholds for solubility
-_HYDROPHOBIC_FRACTION_PASS: float = 0.45
-_HYDROPHOBIC_FRACTION_WARN: float = 0.55
+_HYDROPHOBIC_FRACTION_UNCERTAIN_LO: float = 0.35  # > this → UNCERTAIN zone
+_HYDROPHOBIC_FRACTION_FAIL: float = 0.55           # > this → FAIL zone
 
 # Net charge thresholds at pH 7
 _NET_CHARGE_PASS: float = 2.0
@@ -101,13 +101,11 @@ _ORGANISM_THRESHOLDS: dict[str, dict] = {
         "net_charge_min_offset": 1.0,    # E. coli needs more positive charge
         "charge_ratio_lo": -0.20,        # E. coli prefers slightly negative
         "charge_ratio_hi": 0.10,
-        "hydrophobic_fraction_pass": 0.43,
     },
     "mammalian": {
         "net_charge_min_offset": -0.5,    # Mammalian needs less positive charge
         "charge_ratio_lo": -0.10,         # Mammalian prefers more neutral
         "charge_ratio_hi": 0.15,
-        "hydrophobic_fraction_pass": 0.47,
     },
 }
 
@@ -405,6 +403,40 @@ def _is_likely_membrane_protein(protein: str) -> bool:
     return len(long_stretches) >= 2
 
 
+# Signal peptide detection constants
+_SIGNAL_PEPTIDE_MAX_LENGTH: int = 30   # Typical signal peptide: 15-30 residues
+_SIGNAL_PEPTIDE_MIN_HYDRO: int = 7     # Minimum hydrophobic residues in core
+_SIGNAL_PEPTIDE_NTERM_WINDOW: int = 30 # Only look in first 30 residues
+
+def _detect_signal_peptide(protein: str) -> tuple[int, int] | None:
+    """Detect a predicted N-terminal signal peptide.
+
+    Signal peptides are short (15-30 residue) N-terminal sequences with a
+    hydrophobic core.  This heuristic checks for a hydrophobic stretch of
+    ≥7 residues starting within the first 30 residues of the protein.
+
+    Returns:
+        (start, end) of the predicted signal peptide (end exclusive),
+        or None if no signal peptide is detected.
+    """
+    if not protein:
+        return None
+
+    # Only examine the N-terminal region
+    nterm = protein[:_SIGNAL_PEPTIDE_NTERM_WINDOW]
+    stretches = find_hydrophobic_stretches(nterm, hydrophobic=_DEFAULT_HYDROPHOBIC)
+
+    for start, end in stretches:
+        length = end - start
+        if length >= _SIGNAL_PEPTIDE_MIN_HYDRO and start < _SIGNAL_PEPTIDE_MAX_LENGTH:
+            # Extend to typical signal peptide boundaries (include charged n-region)
+            sp_start = max(0, start - 3)
+            sp_end = min(end + 5, _SIGNAL_PEPTIDE_MAX_LENGTH, len(protein))
+            return (sp_start, sp_end)
+
+    return None
+
+
 # ────────────────────────────────────────────────────────────
 # Predicate 1: Soluble Expression
 # ────────────────────────────────────────────────────────────
@@ -427,10 +459,10 @@ def evaluate_soluble_expression(
        - Score -1.0–0.0 → UNCERTAIN (moderate / WARN zone)
        - Score < -1.0   → LIKELY_FAIL
 
-    2. **Hydrophobic fraction** (PASS if < organism-specific threshold ~0.45):
-       - < pass_threshold  → no penalty
-       - pass_threshold to warn_threshold (~0.55) → WARN (UNCERTAIN)
-       - > warn_threshold  → additional FAIL signal
+    2. **Hydrophobic fraction** (PASS if ≤ 0.35):
+       - ≤ 0.35            → no penalty
+       - 0.35 to 0.55      → UNCERTAIN (downgrade to UNCERTAIN at most)
+       - > 0.55            → additional FAIL signal
 
     3. **Net charge at pH 7** (PASS if |net_charge| > 2):
        - |net_charge| > 2   → no penalty
@@ -438,10 +470,8 @@ def evaluate_soluble_expression(
        - |net_charge| ≤ 1    → additional FAIL signal
 
     Organism-specific adjustments:
-       - E. coli: needs more positive charge (offset +1.0), tighter
-         hydrophobic fraction (0.43)
-       - Mammalian: less positive charge needed (offset -0.5), looser
-         hydrophobic fraction (0.47)
+       - E. coli: needs more positive charge (offset +1.0)
+       - Mammalian: less positive charge needed (offset -0.5)
 
     Args:
         sequence: DNA coding sequence.
@@ -476,7 +506,6 @@ def evaluate_soluble_expression(
     abs_net_charge = abs(net_charge)
 
     # --- Organism-specific thresholds ---
-    org_hydro_pass = _get_org_threshold(organism, "hydrophobic_fraction_pass", _HYDROPHOBIC_FRACTION_PASS)
     org_charge_offset = _get_org_threshold(organism, "net_charge_min_offset", 0.0)
     effective_net_charge_min = _NET_CHARGE_PASS + org_charge_offset
 
@@ -499,27 +528,27 @@ def evaluate_soluble_expression(
             f"Insoluble protein: CamSol score {camsol_score:.3f} < {_CAMSOL_MARGINAL}"
         )
 
-    # --- Hydrophobic fraction adjustments (WARN / FAIL zones) ---
+    # --- Hydrophobic fraction adjustments ---
     hydro_warnings: list[str] = []
-    if hydrophobic_fraction > _HYDROPHOBIC_FRACTION_WARN:
-        # Strong failure signal — downgrade by up to 2 levels
+    if hydrophobic_fraction > _HYDROPHOBIC_FRACTION_FAIL:
+        # Strong failure signal (hydrophobic_fraction > 0.55) — downgrade by up to 2 levels
         if verdict == Verdict.PASS:
             verdict = Verdict.UNCERTAIN
         elif verdict == Verdict.LIKELY_PASS:
             verdict = Verdict.LIKELY_FAIL
         hydro_warnings.append(
             f"High hydrophobic fraction ({hydrophobic_fraction:.1%} > "
-            f"{_HYDROPHOBIC_FRACTION_WARN:.0%})"
+            f"{_HYDROPHOBIC_FRACTION_FAIL:.0%})"
         )
-    elif hydrophobic_fraction > org_hydro_pass:
-        # Moderate zone — downgrade by 1 level
+    elif hydrophobic_fraction > _HYDROPHOBIC_FRACTION_UNCERTAIN_LO:
+        # Uncertain zone (0.35 < hydrophobic_fraction <= 0.55) — downgrade to UNCERTAIN at most
         if verdict == Verdict.PASS:
-            verdict = Verdict.LIKELY_PASS
+            verdict = Verdict.UNCERTAIN
         elif verdict == Verdict.LIKELY_PASS:
             verdict = Verdict.UNCERTAIN
         hydro_warnings.append(
             f"Elevated hydrophobic fraction ({hydrophobic_fraction:.1%} > "
-            f"{org_hydro_pass:.0%})"
+            f"{_HYDROPHOBIC_FRACTION_UNCERTAIN_LO:.0%})"
         )
 
     # --- Net charge adjustments ---
@@ -672,22 +701,45 @@ def evaluate_no_aggregation_prone_region(
             ],
         )
 
+    # --- Signal peptide detection ---
+    # If a signal peptide is predicted, exclude it from aggregation scoring
+    # since membrane-associated proteins naturally have N-terminal hydrophobic
+    # stretches that are not aggregation-prone in vivo.
+    signal_peptide = _detect_signal_peptide(protein)
+    sp_info: dict | None = None
+    if signal_peptide is not None:
+        sp_start, sp_end = signal_peptide
+        sp_info = {"start": sp_start, "end": sp_end, "length": sp_end - sp_start}
+
     agg_regions = _find_aggregation_regions(
         protein,
         score_threshold=score_threshold,
         min_consecutive=_AGG_MIN_CONSECUTIVE_HYDROPHOBIC,
     )
 
+    # Filter out aggregation regions that overlap with the predicted signal peptide
+    if signal_peptide is not None:
+        sp_start, sp_end = signal_peptide
+        filtered_regions: list[tuple[int, int, float]] = []
+        for start, end, avg_score in agg_regions:
+            # Keep region only if it does NOT overlap with the signal peptide
+            if end <= sp_start or start >= sp_end:
+                filtered_regions.append((start, end, avg_score))
+        agg_regions = filtered_regions
+
     if not agg_regions:
+        derivation_base: list[dict] = [
+            {"step": "aggregation_prone_regions", "value": []},
+            {"step": "longest_region", "value": 0},
+            {"step": "membrane_protein_detected", "value": False},
+        ]
+        if sp_info is not None:
+            derivation_base.append({"step": "signal_peptide_excluded", "value": sp_info})
         return TypeCheckResult(
             predicate=f"NoAggregationProneRegion(max={max_region_length}, "
                       f"threshold={score_threshold})",
             verdict=Verdict.PASS,
-            derivation=[
-                {"step": "aggregation_prone_regions", "value": []},
-                {"step": "longest_region", "value": 0},
-                {"step": "membrane_protein_detected", "value": False},
-            ],
+            derivation=derivation_base,
         )
 
     # --- Position-weighted aggregation scores ---
@@ -769,6 +821,8 @@ def evaluate_no_aggregation_prone_region(
         {"step": "min_consecutive_hydrophobic", "value": _AGG_MIN_CONSECUTIVE_HYDROPHOBIC},
         {"step": "membrane_protein_detected", "value": False},
     ]
+    if sp_info is not None:
+        derivation.append({"step": "signal_peptide_excluded", "value": sp_info})
 
     knowledge_gap: str | None = None
     if pdb_string is None:
@@ -818,8 +872,8 @@ def evaluate_charge_composition(
        - Mammalian: prefers more neutral ratio
          (narrower negative bound: -0.10)
 
-    Uses standard pKa values: Asp=3.9, Glu=4.1, His=6.0, Cys=8.3,
-    Tyr=10.1, Lys=10.5, Arg=12.5.
+    Uses standard pKa values: Asp=3.90, Glu=4.07, His=6.04, Cys=8.28,
+    Tyr=10.07, Lys=10.54, Arg=12.48.
 
     Both OK → PASS.
 

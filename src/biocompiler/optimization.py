@@ -388,6 +388,246 @@ def _remove_site_multicodon(
 
 
 # ==============================================================================
+# Eukaryotic CAI Recovery
+# ==============================================================================
+
+# Threshold for CAI-vs-GT tradeoff: for eukaryotes, only avoid GT if the
+# per-codon CAI cost (difference in adaptiveness weight) is below this value.
+# If the optimal codon contains GT and using a GT-free alternative would
+# drop the adaptiveness by more than this threshold, keep the optimal codon.
+EUKARYOTE_CAI_GT_COST_THRESHOLD: float = 0.05
+
+
+def _is_in_codon_gt(seq: str, pos: int) -> bool:
+    """Check whether a GT dinucleotide at position *pos* is entirely within
+    a single codon (in-codon) rather than spanning a codon boundary (cross-codon).
+
+    Pre-conditions:
+    - seq is a valid uppercase DNA string
+    - 0 <= pos < len(seq) - 1
+    - seq[pos:pos+2] == "GT"
+
+    Post-conditions:
+    - Returns True if both the G and T are in the same codon
+    - Returns False if the GT spans a codon boundary (G at end of one codon,
+      T at start of the next)
+    """
+    codon_of_g = pos // 3
+    codon_of_t = (pos + 1) // 3
+    return codon_of_g == codon_of_t
+
+
+def _eukaryote_cai_recovery(
+    sequence: str,
+    protein: str,
+    usage: dict[str, float],
+    enzymes: list[str] | None = None,
+    cai_cost_threshold: float = EUKARYOTE_CAI_GT_COST_THRESHOLD,
+) -> tuple[str, int]:
+    """Recover CAI by swapping suboptimal codons to optimal ones for eukaryotes.
+
+    For eukaryotes, GT avoidance should be a SOFT preference, not a hard
+    constraint.  When the optimizer has replaced an optimal codon with a
+    suboptimal alternative (typically to avoid GT dinucleotides), this
+    function swaps back if the CAI cost exceeds the threshold.
+
+    Key rules for eukaryotes:
+    - In-codon GTs from optimal codons (GGT, TGT, GTT, etc.) are acceptable
+    - Cross-codon GTs are acceptable when the CAI cost of avoiding them
+      exceeds the threshold
+    - Only avoid GT if the per-codon CAI cost is < threshold
+
+    Pre-conditions:
+    - sequence translates to protein
+    - len(sequence) == len(protein) * 3
+    - usage maps codon strings to adaptiveness values (0.0–1.0)
+
+    Post-conditions:
+    - returned sequence translates to the same protein
+    - CAI of returned sequence >= CAI of input sequence
+    - no new restriction sites are introduced
+
+    Args:
+        sequence: Current optimized DNA sequence.
+        protein: Amino acid sequence (no stop).
+        usage: Codon adaptiveness table (codon → w value).
+        enzymes: List of restriction enzyme names to avoid creating sites for.
+        cai_cost_threshold: Maximum acceptable CAI cost for GT avoidance.
+            If using a GT-free codon would drop CAI by more than this,
+            keep the GT-containing optimal codon.
+
+    Returns:
+        Tuple of (recovered sequence, number of codons upgraded).
+    """
+    # Precompute optimal codons per amino acid
+    optimal_codons: dict[str, str] = {}
+    for aa in set(protein):
+        if aa == "*":
+            continue
+        codons = AA_TO_CODONS.get(aa, [])
+        if not codons:
+            continue
+        best = max(codons, key=lambda c: usage.get(c, 0.0))
+        optimal_codons[aa] = best
+
+    # Precompute restriction site sequences to check
+    rs_sites: list[tuple[str, str]] = []
+    max_site_len = 0
+    if enzymes:
+        from .restriction_sites import get_recognition_site as _get_site
+        for enz in enzymes:
+            site = _get_site(enz)
+            if site is not None:
+                site_rc = reverse_complement(site)
+                rs_sites.append((site, site_rc))
+                max_site_len = max(max_site_len, len(site))
+
+    seq_list = list(sequence)
+    n_codons = len(protein)
+    upgrades = 0
+
+    # ── Pass 1: Single-codon swaps ──
+    # For each position where the current codon is suboptimal with a CAI
+    # cost > threshold, try swapping to the optimal codon.
+    blocked_positions: list[int] = []  # Positions blocked by restriction sites
+
+    for ci in range(n_codons):
+        aa = protein[ci]
+        if aa == "*":
+            continue
+        current = "".join(seq_list[ci * 3:ci * 3 + 3])
+        optimal = optimal_codons.get(aa)
+        if optimal is None or current == optimal:
+            continue
+
+        # Check CAI cost of using the suboptimal codon
+        current_w = usage.get(current, 0.0)
+        optimal_w = usage.get(optimal, 0.0)
+        cai_cost = optimal_w - current_w
+
+        if cai_cost > cai_cost_threshold:
+            # Swap to optimal codon
+            old_codon = current
+            seq_list[ci * 3] = optimal[0]
+            seq_list[ci * 3 + 1] = optimal[1]
+            seq_list[ci * 3 + 2] = optimal[2]
+
+            # Check for new restriction sites in local region
+            if rs_sites and max_site_len > 0:
+                test_seq = "".join(seq_list)
+                check_start = max(0, ci * 3 - max_site_len + 1)
+                check_end = min(len(test_seq), ci * 3 + 3 + max_site_len - 1)
+                local_region = test_seq[check_start:check_end]
+                site_found = False
+                for site, site_rc in rs_sites:
+                    if site in local_region or (site_rc and site_rc in local_region):
+                        site_found = True
+                        break
+                if site_found:
+                    # Undo swap — restriction site would be created
+                    seq_list[ci * 3] = old_codon[0]
+                    seq_list[ci * 3 + 1] = old_codon[1]
+                    seq_list[ci * 3 + 2] = old_codon[2]
+                    blocked_positions.append(ci)
+                    continue
+
+            upgrades += 1
+
+    # ── Pass 2: Coordinated swaps for positions blocked by restriction sites ──
+    # When a single-codon swap is blocked because it would create a restriction
+    # site that spans a codon boundary, we can sometimes resolve it by also
+    # changing an adjacent codon to break the restriction site.  This is only
+    # done when the combined CAI improvement outweighs the CAI cost of the
+    # adjacent codon change.
+    if blocked_positions and rs_sites:
+        # Precompute sorted codons per amino acid (by CAI descending)
+        sorted_codons_map: dict[str, list[str]] = {}
+        for aa in set(protein):
+            if aa == "*":
+                continue
+            codons = AA_TO_CODONS.get(aa, [])
+            sorted_codons_map[aa] = sorted(
+                codons, key=lambda c: usage.get(c, 0.0), reverse=True
+            )
+
+        for ci in blocked_positions:
+            aa = protein[ci]
+            current = "".join(seq_list[ci * 3:ci * 3 + 3])
+            optimal = optimal_codons.get(aa)
+            if optimal is None or current == optimal:
+                continue
+            current_w = usage.get(current, 0.0)
+            optimal_w = usage.get(optimal, 0.0)
+            benefit = optimal_w - current_w
+            if benefit <= cai_cost_threshold:
+                continue
+
+            # Try adjacent codons to break the restriction site
+            best_combo: tuple[int, str, float] | None = None  # (adj_ci, adj_codon, net_cai)
+            for adj_offset in [-2, -1, 1, 2]:
+                adj_ci = ci + adj_offset
+                if adj_ci < 0 or adj_ci >= n_codons:
+                    continue
+                adj_aa = protein[adj_ci]
+                if adj_aa == "*":
+                    continue
+                adj_current = "".join(seq_list[adj_ci * 3:adj_ci * 3 + 3])
+                adj_current_w = usage.get(adj_current, 0.0)
+                for adj_alt in sorted_codons_map.get(adj_aa, []):
+                    if adj_alt == adj_current:
+                        continue
+                    # Apply both swaps and check for restriction sites
+                    adj_old = adj_current
+                    seq_list[ci * 3] = optimal[0]
+                    seq_list[ci * 3 + 1] = optimal[1]
+                    seq_list[ci * 3 + 2] = optimal[2]
+                    seq_list[adj_ci * 3] = adj_alt[0]
+                    seq_list[adj_ci * 3 + 1] = adj_alt[1]
+                    seq_list[adj_ci * 3 + 2] = adj_alt[2]
+
+                    test_seq = "".join(seq_list)
+                    check_start = max(0, min(ci, adj_ci) * 3 - max_site_len + 1)
+                    check_end = min(len(test_seq), max(ci, adj_ci) * 3 + 3 + max_site_len - 1)
+                    local_region = test_seq[check_start:check_end]
+                    site_found = False
+                    for site, site_rc in rs_sites:
+                        if site in local_region or (site_rc and site_rc in local_region):
+                            site_found = True
+                            break
+
+                    # Undo both swaps
+                    seq_list[ci * 3] = current[0]
+                    seq_list[ci * 3 + 1] = current[1]
+                    seq_list[ci * 3 + 2] = current[2]
+                    seq_list[adj_ci * 3] = adj_old[0]
+                    seq_list[adj_ci * 3 + 1] = adj_old[1]
+                    seq_list[adj_ci * 3 + 2] = adj_old[2]
+
+                    if not site_found:
+                        # Check net CAI: benefit of optimal at ci minus cost of adj_alt
+                        adj_alt_w = usage.get(adj_alt, 0.0)
+                        adj_cost = adj_current_w - adj_alt_w  # positive = CAI loss
+                        net_cai = benefit - adj_cost
+                        # Only accept if net CAI is positive AND the coordinated
+                        # swap is better than keeping the status quo
+                        if net_cai > 0 and (best_combo is None or net_cai > best_combo[2]):
+                            best_combo = (adj_ci, adj_alt, net_cai)
+
+            if best_combo is not None:
+                adj_ci, adj_codon, _net = best_combo
+                # Apply both swaps
+                seq_list[ci * 3] = optimal[0]
+                seq_list[ci * 3 + 1] = optimal[1]
+                seq_list[ci * 3 + 2] = optimal[2]
+                seq_list[adj_ci * 3] = adj_codon[0]
+                seq_list[adj_ci * 3 + 1] = adj_codon[1]
+                seq_list[adj_ci * 3 + 2] = adj_codon[2]
+                upgrades += 2  # Count both the optimal swap and the adjacent change
+
+    return "".join(seq_list), upgrades
+
+
+# ==============================================================================
 # Greedy Optimizer
 # ==============================================================================
 
@@ -1016,6 +1256,13 @@ def _greedy_optimize(
     # EUKARYOTE-ONLY: Prokaryotes have no spliceosome, so cryptic splice
     # sites are biologically irrelevant. Skipping this step recovers
     # significant CAI on prokaryotic targets.
+    #
+    # IMPORTANT for eukaryotes: GT avoidance is a SOFT preference, not a
+    # hard constraint. In-codon GTs from optimal codons (GGT, TGT, GTT,
+    # etc.) are acceptable because they are unavoidable for high CAI.
+    # Cross-codon GTs are only eliminated when the CAI cost of doing so
+    # is < EUKARYOTE_CAI_GT_COST_THRESHOLD (default 0.05). This ensures
+    # that CAI is prioritized over GT avoidance for eukaryotes.
     if not is_prokaryote:
         for iteration in range(MAX_SPLICE_ELIMINATION_ITERATIONS):
             max_d = max_donor_score(sequence)
@@ -1041,6 +1288,68 @@ def _greedy_optimize(
                     if codon_idx >= len(aas):
                         continue
                     aa = aas[codon_idx]
+
+                    # ── Eukaryotic GT-vs-CAI tradeoff ──
+                    # For eukaryotes, in-codon GTs from optimal codons are
+                    # acceptable (biologically common in high-expression genes).
+                    # Only eliminate GT if the CAI cost is < threshold.
+                    is_in_codon = _is_in_codon_gt(sequence, gt_pos)
+                    current_codon = sequence[codon_idx*3:codon_idx*3+3]
+                    optimal_codon = sorted_codons[aa][0]
+
+                    if is_in_codon:
+                        # In-codon GT: acceptable if the current codon is optimal
+                        # or if swapping to a GT-free codon would cost too much CAI
+                        if current_codon == optimal_codon:
+                            # In-codon GT from optimal codon (e.g., GGT for Gly,
+                            # TGT for Cys, GTT for Val) — acceptable for eukaryotes
+                            continue
+                        # Check CAI cost of best GT-free alternative
+                        current_w = usage.get(current_codon, 0.0)
+                        gt_free = _find_gt_free_codons(aa)
+                        if gt_free:
+                            best_gt_free_w = max(usage.get(c, 0.0) for c in gt_free)
+                            if current_w - best_gt_free_w > EUKARYOTE_CAI_GT_COST_THRESHOLD:
+                                # CAI cost too high — keep the GT-containing codon
+                                continue
+                        else:
+                            # No GT-free alternative (e.g., Valine) — must accept
+                            continue
+                    else:
+                        # Cross-codon GT: for eukaryotes, only eliminate if the
+                        # CAI cost of the best fix is < threshold. Check the CAI
+                        # cost of changing the codon at gt_pos to a non-T-starting
+                        # alternative (for the T-side) or non-G-ending alternative
+                        # (for the G-side).
+                        # The G is at the end of codon_idx, the T is at the start
+                        # of codon_idx+1.
+                        next_codon_idx = (gt_pos + 1) // 3
+                        # Check CAI cost of changing either codon
+                        _cross_cai_cost_ok = False
+                        # Try changing the G-ending codon
+                        if codon_idx < len(aas):
+                            _g_aa = aas[codon_idx]
+                            _g_current = sequence[codon_idx*3:codon_idx*3+3]
+                            _g_current_w = usage.get(_g_current, 0.0)
+                            _g_non_g_end = [c for c in sorted_codons[_g_aa] if c[-1] != "G"]
+                            if _g_non_g_end:
+                                _best_non_g_end_w = usage.get(_g_non_g_end[0], 0.0)
+                                if _g_current_w - _best_non_g_end_w < EUKARYOTE_CAI_GT_COST_THRESHOLD:
+                                    _cross_cai_cost_ok = True
+                        # Try changing the T-starting codon
+                        if not _cross_cai_cost_ok and next_codon_idx < len(aas):
+                            _t_aa = aas[next_codon_idx]
+                            _t_current = sequence[next_codon_idx*3:next_codon_idx*3+3]
+                            _t_current_w = usage.get(_t_current, 0.0)
+                            _t_non_t_start = [c for c in sorted_codons[_t_aa] if c[0] != "T"]
+                            if _t_non_t_start:
+                                _best_non_t_start_w = usage.get(_t_non_t_start[0], 0.0)
+                                if _t_current_w - _best_non_t_start_w < EUKARYOTE_CAI_GT_COST_THRESHOLD:
+                                    _cross_cai_cost_ok = True
+                        if not _cross_cai_cost_ok:
+                            # CAI cost too high for both possible fixes — accept
+                            # the cross-codon GT for eukaryotes
+                            continue
 
                     # Strategy 1: GT-free codon swap (guaranteed to eliminate GT)
                     gt_free = _find_gt_free_codons(aa)
@@ -2611,6 +2920,36 @@ def optimize_sequence(
         )
         optimized_seq = hybrid_result.sequence
 
+        # ── Eukaryotic CAI recovery pass ──
+        # For eukaryotes, the HybridOptimizer aggressively avoids GT
+        # dinucleotides, which can replace optimal CAI codons with
+        # suboptimal GT-free alternatives (e.g., yeast Leu: TTG→TTA,
+        # Gly: GGT→GGA, Cys: TGT→TGC).  For eukaryotes, GT avoidance
+        # in CDS is MUCH less important than CAI — GT dinucleotides
+        # only matter when they form strong cryptic splice donor sites
+        # (MaxEntScan score >= threshold), and in-codon GTs from
+        # optimal codons are biologically acceptable.
+        #
+        # This recovery pass swaps suboptimal codons back to optimal
+        # ones when the CAI cost exceeds 0.05, accepting in-codon GTs
+        # and cross-codon GTs as a tradeoff for higher CAI.
+        _cai_recovery_upgrades = 0
+        if not is_prokaryote and effective_avoid_gt:
+            _usage = CODON_ADAPTIVENESS_TABLES.get(organism)
+            if _usage is not None:
+                optimized_seq, _cai_recovery_upgrades = _eukaryote_cai_recovery(
+                    optimized_seq,
+                    target_protein,
+                    _usage,
+                    enzymes=enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"],
+                )
+                if _cai_recovery_upgrades > 0:
+                    logger.info(
+                        "Eukaryotic CAI recovery: upgraded %d codon(s) to "
+                        "optimal (GT accepted as soft preference)",
+                        _cai_recovery_upgrades,
+                    )
+
         # ── Ultra-fast prokaryote predicate evaluation ──
         # For prokaryotes, skip the heavyweight BioOptimizer predicate
         # evaluation and use a streamlined version that only checks
@@ -2780,12 +3119,27 @@ def optimize_sequence(
             optimized_seq, enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
         ))
 
-        # 5. NoGTDinucleotide (soft — only check if avoid_gt is set)
+        # 5. NoGTDinucleotide (soft — for eukaryotes, in-codon GTs from
+        # optimal codons and cross-codon GTs with high CAI cost are acceptable)
         if effective_avoid_gt:
             gt_count = optimized_seq.count("GT")
+            # Count in-codon vs cross-codon GTs for better reporting
+            in_codon_gt = sum(
+                1 for i in range(len(optimized_seq) - 1)
+                if optimized_seq[i:i+2] == "GT" and _is_in_codon_gt(optimized_seq, i)
+            )
+            cross_codon_gt = gt_count - in_codon_gt
+            # For eukaryotes: GT is a soft preference.  In-codon GTs from
+            # optimal codons are acceptable.  Only flag if there are avoidable
+            # cross-codon GTs that don't have a high CAI justification.
             pred_results.append(PredicateResult(
                 "NoGTDinucleotide", gt_count == 0,
-                details=f"GT dinucleotides: {gt_count}"
+                details=(
+                    f"GT dinucleotides: {gt_count} "
+                    f"(in-codon: {in_codon_gt}, cross-codon: {cross_codon_gt}). "
+                    f"For eukaryotes, in-codon GTs from optimal codons are "
+                    f"acceptable (CAI > GT avoidance)."
+                ),
             ))
         else:
             pred_results.append(PredicateResult(
@@ -2803,7 +3157,13 @@ def optimize_sequence(
         ))
 
         # 8. CodonOptimality
-        cai_val = hybrid_result.cai
+        # Recompute CAI after eukaryotic recovery pass (which may have
+        # upgraded suboptimal GT-avoiding codons to optimal ones)
+        from .translation import compute_cai as _compute_cai_hybrid
+        if _cai_recovery_upgrades > 0:
+            cai_val = _compute_cai_hybrid(optimized_seq, organism)
+        else:
+            cai_val = hybrid_result.cai
         all_optimal = cai_val >= cai_threshold
         pred_results.append(PredicateResult(
             "CodonOptimality", all_optimal,
@@ -2811,7 +3171,11 @@ def optimize_sequence(
         ))
 
         # 9. GCInRange
-        _gc_val = hybrid_result.gc_content
+        # Recompute GC after CAI recovery pass may have changed the sequence
+        if _cai_recovery_upgrades > 0:
+            _gc_val = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
+        else:
+            _gc_val = hybrid_result.gc_content
         gc_ok = gc_lo <= _gc_val <= gc_hi
         pred_results.append(PredicateResult(
             "GCInRange", gc_ok,
@@ -2866,10 +3230,17 @@ def optimize_sequence(
 
     # Compute metrics — use hybrid optimizer values when available to avoid recomputation
     if strategy == "hybrid" and not use_csp_solver:
-        # Hybrid optimizer already computed GC and CAI accurately
-        gc = hybrid_result.gc_content if 'hybrid_result' in dir() else (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
-        cai_val = hybrid_result.cai if 'hybrid_result' in dir() else None
-        gc = round(gc, 4)
+        # Hybrid optimizer already computed GC and CAI accurately.
+        # However, if the eukaryotic CAI recovery pass was applied, the
+        # sequence has changed and we must recompute both metrics.
+        if _cai_recovery_upgrades > 0:
+            gc = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
+            gc = round(gc, 4)
+            # cai_val was already recomputed in the predicate evaluation block above
+        else:
+            gc = hybrid_result.gc_content if 'hybrid_result' in dir() else (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
+            cai_val = hybrid_result.cai if 'hybrid_result' in dir() else None
+            gc = round(gc, 4)
     else:
         gc = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
         gc = round(gc, 4)
@@ -5322,11 +5693,30 @@ class BioOptimizer:
 
         Uses IncrementalSequenceState for O(1) GT tracking and
         CodonCache for pre-sorted codon lists.
+
+        For eukaryotes: in-codon GTs from optimal codons are acceptable.
+        Only fix if the CAI cost of the GT-free alternative is < threshold.
         """
         codon = state.get_codon(codon_idx)
         aa = state.get_aa(codon_idx)
         if aa is None or aa == "*":
             return False
+
+        # ── Eukaryotic GT-vs-CAI tradeoff ──
+        # For eukaryotes, in-codon GTs from optimal codons (GGT, TGT, GTT,
+        # etc.) are biologically acceptable and should not be eliminated at
+        # the cost of significant CAI loss.
+        if not self.is_prokaryote:
+            current_w = self.species_cai.get(codon, 0.0)
+            gt_free_codons = codon_cache.get_gt_free_codons(aa)
+            if gt_free_codons:
+                best_gt_free_w = self.species_cai.get(gt_free_codons[0], 0.0)
+                if current_w - best_gt_free_w > EUKARYOTE_CAI_GT_COST_THRESHOLD:
+                    # CAI cost too high — keep the GT-containing codon
+                    return False
+            else:
+                # No GT-free alternative (e.g., Valine) — must accept
+                return False
 
         old_gt_count = state.gt_count
 
@@ -5352,7 +5742,44 @@ class BioOptimizer:
 
         Uses IncrementalSequenceState for O(1) GT tracking and
         CodonCache for pre-sorted codon lists.
+
+        For eukaryotes: cross-codon GTs are only eliminated if the CAI cost
+        of the fix is < EUKARYOTE_CAI_GT_COST_THRESHOLD. When the optimal
+        codons at either side of the boundary would create a GT, and both
+        alternatives have high CAI cost, the cross-codon GT is accepted.
         """
+        # ── Eukaryotic GT-vs-CAI tradeoff for cross-codon GTs ──
+        # For eukaryotes, check if the CAI cost of fixing this cross-codon GT
+        # is acceptable before attempting to fix it.
+        if not self.is_prokaryote:
+            # The G is at the end of codon_idx, the T is at the start of the next codon
+            next_ci = codon_idx + 1
+            if next_ci < state.num_codons:
+                g_aa = state.get_aa(codon_idx)
+                t_aa = state.get_aa(next_ci)
+                if g_aa and t_aa and g_aa != "*" and t_aa != "*":
+                    g_current = state.get_codon(codon_idx)
+                    t_current = state.get_codon(next_ci)
+                    g_current_w = self.species_cai.get(g_current, 0.0)
+                    t_current_w = self.species_cai.get(t_current, 0.0)
+                    # Check if there's a cheap fix (CAI cost < threshold)
+                    # for either the G-ending codon or the T-starting codon
+                    _cross_cai_cost_ok = False
+                    g_non_g_end = [c for c in codon_cache.get_sorted_codons(g_aa) if c[-1] != "G"]
+                    if g_non_g_end:
+                        best_non_g_end_w = self.species_cai.get(g_non_g_end[0], 0.0)
+                        if g_current_w - best_non_g_end_w < EUKARYOTE_CAI_GT_COST_THRESHOLD:
+                            _cross_cai_cost_ok = True
+                    if not _cross_cai_cost_ok:
+                        t_non_t_start = [c for c in codon_cache.get_sorted_codons(t_aa) if c[0] != "T"]
+                        if t_non_t_start:
+                            best_non_t_start_w = self.species_cai.get(t_non_t_start[0], 0.0)
+                            if t_current_w - best_non_t_start_w < EUKARYOTE_CAI_GT_COST_THRESHOLD:
+                                _cross_cai_cost_ok = True
+                    if not _cross_cai_cost_ok:
+                        # CAI cost too high — accept the cross-codon GT
+                        return False
+
         old_gt_count = state.gt_count
 
         # Try resolving by modifying the codon pair

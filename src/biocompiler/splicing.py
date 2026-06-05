@@ -101,14 +101,47 @@ def _is_eukaryote(organism: str) -> bool:
         from .organism_config import is_eukaryotic_organism
         return is_eukaryotic_organism(organism)
     except Exception:
-        # Fallback: common prokaryotic identifiers
+        # Fallback: common prokaryotic identifiers (expanded set)
         prokaryotic_names = {
-            "E_coli", "E_coli_K12", "E_coli_BL21",
-            "Escherichia_coli", "ecoli",
-            "Bacillus_subtilis", "bsub",
-            "Pseudomonas_aeruginosa",
+            # E. coli variants
+            "E_coli", "E_coli_K12", "E_coli_BL21", "e_coli",
+            "Escherichia_coli", "Escherichia_coli_K12",
+            "Escherichia_coli_BL21", "ecoli", "E. coli",
+            # Bacillus species
+            "Bacillus_subtilis", "B_subtilis", "bsub",
+            "Bacillus_megaterium", "Bacillus_cereus",
+            # Salmonella species
+            "Salmonella_typhimurium", "Salmonella_enterica",
+            # Pseudomonas species
+            "Pseudomonas_aeruginosa", "Pseudomonas_putida",
+            # Other common bacteria
+            "Staphylococcus_aureus", "S_aureus",
+            "Streptomyces_coelicolor", "S_coelicolor",
+            "Corynebacterium_glutamicum", "C_glutamicum",
+            "Clostridium_difficile",
+            "Mycobacterium_tuberculosis",
+            "Vibrio_cholerae",
+            "Lactobacillus_plantarum",
+            "Thermus_thermophilus",
+            "Halomonas_sp",
         }
-        return organism not in prokaryotic_names
+        # Direct match
+        if organism in prokaryotic_names:
+            return False
+        # Heuristic: common bacterial name patterns (case-insensitive)
+        org_lower = organism.lower()
+        bacterial_indicators = (
+            "coli", "bacter", "coccus", "bacillus",
+            "streptomyces", "pseudomonas", "clostrid",
+            "mycobacter", "vibrio", "salmonella", "lactobac",
+            "corynebacter", "staphylococcus",
+        )
+        if any(ind in org_lower for ind in bacterial_indicators):
+            return False
+        # Also handle dot-separated names like "E. coli"
+        if ". coli" in org_lower or ". coli" in organism:
+            return False
+        return True  # default: assume eukaryote
 
 
 def _compute_pwm_score(context: str) -> float:
@@ -208,6 +241,7 @@ def score_splice_sites(
     high_thresh: float = _DEFAULT_HIGH_THRESH,
     organism: str = "",
     known_splice_sites: list[int] | None = None,
+    is_cds_only: bool = False,
 ) -> list[tuple[int, float, "SpliceVerdict"]]:
     """Score all potential splice sites in a sequence using simplified PWM.
 
@@ -232,6 +266,10 @@ def score_splice_sites(
     are preserved and never flagged as FAIL — they represent the gene's
     natural splicing pattern and must not be eliminated.
 
+    CDS-only sequences: If *is_cds_only* is True (the sequence has no
+    intron/exon boundaries), all sites auto-PASS because splicing is
+    not biologically relevant for a single-exon coding sequence.
+
     Args:
         seq: DNA sequence to scan
         low_thresh: Below this score → PASS (default 3.0)
@@ -239,6 +277,9 @@ def score_splice_sites(
         organism: Organism name. If prokaryotic, all sites auto-PASS.
         known_splice_sites: Positions of known/essential splice sites
             (from gene annotation) that should be preserved.
+        is_cds_only: If True, the sequence is a CDS-only construct with
+            no intron/exon boundaries. All sites auto-PASS because
+            splicing is not biologically relevant.
 
     Returns:
         List of (position, score, SpliceVerdict) tuples for each GT site found.
@@ -259,6 +300,14 @@ def score_splice_sites(
             "Splice site scoring skipped for prokaryotic organism '%s'; "
             "all sites auto-PASS",
             organism,
+        )
+        return []
+
+    # ── CDS-only sequences: no intron/exon boundaries ──
+    if is_cds_only:
+        logger.info(
+            "Splice site scoring skipped for CDS-only sequence (no introns); "
+            "all sites auto-PASS",
         )
         return []
 

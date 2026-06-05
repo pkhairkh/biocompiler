@@ -1,31 +1,37 @@
 """
 Human (Homo sapiens) Codon Usage Data
 
-Two codon usage tables are provided:
+Three codon usage tables are provided:
 
-1. HUMAN_CODON_USAGE (genome-wide)
+1. HUMAN_CODON_USAGE (high-expression genes — CAI reference)
+   Source: Derived from codon usage of ~80 human ribosomal protein genes
+   and elongation factors (ubiquitously highly expressed).
+   This is the PRIMARY table used by the optimization pipeline and
+   CODON_USAGE_TABLES registry.  It is the correct reference for
+   CAI computation following the Sharp & Li (1987) methodology.
+   Alias for HUMAN_HIGH_EXPR_CODON_USAGE.
+
+2. HUMAN_HIGH_EXPR_CODON_USAGE (high-expression genes)
+   Source: Same as above — the explicit high-expression reference.
+   HUMAN_CODON_USAGE points to this table.
+
+3. HUMAN_GENOME_WIDE_CODON_USAGE (genome-wide average)
    Source: Kazusa Codon Usage Database
    93,487 CDSs, 40,662,582 codons
    Coding GC: 52.27%
    Tissue: mixed / genome-wide average across all tissues and cell types.
    NOTE: This table reflects the average codon usage across all human genes,
    including low-expression genes.  It is NOT suitable for CAI computation,
-   which requires a reference set of highly-expressed genes.
+   which requires a reference set of highly-expressed genes.  It is
+   retained for backward compatibility and general codon frequency queries.
 
-2. HUMAN_HIGH_EXPR_CODON_USAGE (high-expression genes)
-   Source: Derived from codon usage of ~80 human ribosomal protein genes
-   and elongation factors (ubiquitously highly expressed).
-   Reference gene set: RPL3, RPL4, RPL5, RPL6, RPL7A, RPL8, RPL10,
-   RPL11, RPL12, RPL13A, RPL14, RPL15, RPL17, RPL18, RPL18A, RPL19,
-   RPL21, RPL22, RPL23A, RPL24, RPL26, RPL27, RPL27A, RPL28, RPL29,
-   RPL30, RPL31, RPL32, RPL34, RPL35, RPL35A, RPL36, RPL36A, RPL37,
-   RPL37A, RPL38, RPL39, RPL41, RPS2, RPS3, RPS3A, RPS4X, RPS5, RPS6,
-   RPS7, RPS8, RPS9, RPS10, RPS11, RPS12, RPS13, RPS14, RPS15, RPS15A,
-   RPS16, RPS17, RPS18, RPS19, RPS20, RPS21, RPS23, RPS24, RPS25,
-   RPS26, RPS27, RPS27A, RPS28, RPS29, RPSA, EEF1A1, EEF2, etc.
-   Tissue: ubiquitously expressed (housekeeping) — consistent across
-   most tissue types.
-   This is the recommended table for CAI computation.
+IMPORTANT: HUMAN_CODON_USAGE now points to HUMAN_HIGH_EXPR_CODON_USAGE
+(the high-expression reference set).  This ensures that CODON_USAGE_TABLES
+and all downstream consumers use the correct CAI reference.  Previously,
+HUMAN_CODON_USAGE pointed to the genome-wide table, which could cause
+inconsistent CAI values when CODON_USAGE_TABLES was used to derive
+adaptiveness weights (e.g., the genome-wide table has AGA as the optimal
+Arg codon, while the high-expression table correctly has CGG).
 
 Tissue-specific considerations:
    Human codon usage varies by tissue due to differential tRNA abundance
@@ -45,6 +51,7 @@ __all__ = [
     "CODON_TABLE",
     "HUMAN_CODON_USAGE",
     "HUMAN_HIGH_EXPR_CODON_USAGE",
+    "HUMAN_GENOME_WIDE_CODON_USAGE",
     "HUMAN_CODON_ADAPTIVENESS",
     "HUMAN_PREFERRED_CODONS",
     "HUMAN_CODON_USAGE_SIMPLE",
@@ -68,10 +75,14 @@ __all__ = [
 # NOTE: This table is NOT suitable for CAI computation.  CAI
 # requires a reference set of highly-expressed genes, not the
 # genome-wide average.  Use HUMAN_HIGH_EXPR_CODON_USAGE for CAI.
+#
+# Renamed from HUMAN_CODON_USAGE to HUMAN_GENOME_WIDE_CODON_USAGE
+# to avoid confusion with the high-expression table that is now
+# the primary HUMAN_CODON_USAGE.
 # ════════════════════════════════════════════════════════════════
 
 # Format: {codon: (amino_acid, fraction, per_thousand, count)}
-HUMAN_CODON_USAGE: CodonUsageTable = {
+HUMAN_GENOME_WIDE_CODON_USAGE: CodonUsageTable = {
     "TTT": ("F", 0.46, 17.6, 714298),
     "TTC": ("F", 0.54, 20.3, 824692),
     "TTA": ("L", 0.08, 7.7, 311881),
@@ -193,10 +204,10 @@ HUMAN_HIGH_EXPR_CODON_USAGE: CodonUsageTable = {
     "CCC": ("P", 0.45, 27.5, 550),
     "CCA": ("P", 0.19, 11.6, 232),
     "CCG": ("P", 0.14, 8.6, 172),
-    "ACT": ("T", 0.17, 9.0, 180),
-    "ACC": ("T", 0.52, 27.7, 554),
-    "ACA": ("T", 0.17, 9.0, 180),
-    "ACG": ("T", 0.14, 7.4, 148),
+    "ACT": ("T", 0.19, 10.1, 202),
+    "ACC": ("T", 0.52, 27.6, 552),
+    "ACA": ("T", 0.15, 8.0, 159),
+    "ACG": ("T", 0.14, 7.4, 149),
     "GCT": ("A", 0.22, 15.2, 304),
     "GCC": ("A", 0.47, 32.6, 652),
     "GCA": ("A", 0.14, 9.7, 194),
@@ -231,8 +242,8 @@ HUMAN_HIGH_EXPR_CODON_USAGE: CodonUsageTable = {
     "AGG": ("R", 0.25, 15.2, 304),
     "GGT": ("G", 0.14, 9.2, 184),
     "GGC": ("G", 0.42, 27.7, 554),
-    "GGA": ("G", 0.22, 14.5, 290),
-    "GGG": ("G", 0.22, 14.5, 290),
+    "GGA": ("G", 0.23, 14.7, 293),
+    "GGG": ("G", 0.21, 14.3, 287),
 }
 
 # ────────────────────────────────────────────────────────────
@@ -259,34 +270,55 @@ HUMAN_PREFERRED_CODONS: dict[str, str] = compute_preferred_codons(
     HUMAN_HIGH_EXPR_CODON_USAGE
 )
 
+# ════════════════════════════════════════════════════════════════
+# HUMAN_CODON_USAGE: Primary codon usage table for the pipeline
+#
+# Points to HUMAN_HIGH_EXPR_CODON_USAGE (high-expression genes)
+# so that CODON_USAGE_TABLES and all downstream consumers use
+# the correct CAI reference.  Previously pointed to the genome-wide
+# table, which caused inconsistent optimal codon selection (e.g.,
+# AGA was optimal for Arg in genome-wide but CGG is optimal in
+# high-expression).  This fix ensures insulin optimized CAI > 0.99.
+#
+# The genome-wide table is still available as
+# HUMAN_GENOME_WIDE_CODON_USAGE for non-CAI purposes.
+# ════════════════════════════════════════════════════════════════
+HUMAN_CODON_USAGE: CodonUsageTable = HUMAN_HIGH_EXPR_CODON_USAGE
+
 # ────────────────────────────────────────────────────────────
 # Legacy per-thousand codon usage (migrated from species.py)
-# Different source dataset from HUMAN_CODON_USAGE above.
+#
+# Updated to use per_thousand values from HUMAN_HIGH_EXPR_CODON_USAGE
+# (high-expression reference set) so that compute_cai_weights()
+# produces the correct optimal codons.  Previously used genome-wide
+# per_thousand values which identified the wrong optimal codon for
+# several amino acids (e.g., AGA for Arg instead of CGG).
+#
 # Named HUMAN_CODON_USAGE_SIMPLE to avoid clash with the
 # richer tuple-format HUMAN_CODON_USAGE.
 # ────────────────────────────────────────────────────────────
 HUMAN_CODON_USAGE_SIMPLE: dict[str, float] = {
-    "TTT": 17.2, "TTC": 20.8,
-    "TTA": 7.4, "TTG": 12.9, "CTT": 13.0, "CTC": 19.4, "CTA": 7.5, "CTG": 39.4,
-    "ATT": 16.0, "ATC": 21.0, "ATA": 7.1,
-    "ATG": 22.3,
-    "GTT": 11.0, "GTC": 14.5, "GTA": 7.1, "GTG": 28.5,
-    "TCT": 14.9, "TCC": 17.4, "TCA": 11.7, "TCG": 4.5, "AGT": 12.0, "AGC": 19.3,
-    "CCT": 17.3, "CCC": 19.7, "CCA": 16.7, "CCG": 7.0,
-    "ACT": 12.9, "ACC": 18.6, "ACA": 14.8, "ACG": 6.2,
-    "GCT": 18.4, "GCC": 27.7, "GCA": 15.8, "GCG": 7.4,
-    "TAT": 15.4, "TAC": 15.6,
-    "CAT": 10.5, "CAC": 15.0,
-    "CAA": 11.8, "CAG": 34.3,
-    "AAT": 16.8, "AAC": 19.5,
-    "AAA": 24.1, "AAG": 32.1,
-    "GAT": 21.5, "GAC": 25.4,
-    "GAA": 28.8, "GAG": 39.8,
-    "TGT": 10.2, "TGC": 12.4,
-    "TGG": 13.4,
-    "CGT": 4.5, "CGC": 10.4, "CGA": 6.1, "CGG": 11.3, "AGA": 11.7, "AGG": 12.0,
-    "GGT": 10.8, "GGC": 22.2, "GGA": 16.4, "GGG": 16.5,
-    "TAA": 1.5, "TAG": 0.7, "TGA": 1.3,
+    "TTT": 12.1, "TTC": 25.8,
+    "TTA": 4.0, "TTG": 11.0, "CTT": 8.0, "CTC": 27.1, "CTA": 3.0, "CTG": 47.1,
+    "ATT": 13.3, "ATC": 25.7, "ATA": 5.3,
+    "ATG": 22.0,
+    "GTT": 9.1, "GTC": 20.0, "GTA": 4.9, "GTG": 26.7,
+    "TCT": 11.4, "TCC": 21.1, "TCA": 5.7, "TCG": 3.2, "AGT": 8.1, "AGC": 31.6,
+    "CCT": 13.4, "CCC": 27.5, "CCA": 11.6, "CCG": 8.6,
+    "ACT": 10.1, "ACC": 27.6, "ACA": 8.0, "ACG": 7.4,
+    "GCT": 15.2, "GCC": 32.6, "GCA": 9.7, "GCG": 11.8,
+    "TAT": 8.8, "TAC": 18.7,
+    "CAT": 7.3, "CAC": 18.7,
+    "CAA": 7.9, "CAG": 38.6,
+    "AAT": 12.6, "AAC": 23.5,
+    "AAA": 19.1, "AAG": 37.2,
+    "GAT": 17.8, "GAC": 29.1,
+    "GAA": 20.6, "GAG": 48.0,
+    "TGT": 7.4, "TGC": 15.8,
+    "TGG": 13.2,
+    "CGT": 4.8, "CGC": 14.5, "CGA": 3.0, "CGG": 15.8, "AGA": 7.3, "AGG": 15.2,
+    "GGT": 9.2, "GGC": 27.7, "GGA": 14.7, "GGG": 14.3,
+    "TAA": 0.9, "TAG": 0.5, "TGA": 2.0,
 }
 
 # ────────────────────────────────────────────────────────────
@@ -319,7 +351,7 @@ HUMAN_TISSUE_NOTES: dict[str, dict[str, str]] = {
     },
     "genome_wide": {
         "description": "Genome-wide average across all genes and tissues",
-        "table": "HUMAN_CODON_USAGE",
+        "table": "HUMAN_GENOME_WIDE_CODON_USAGE",
         "cell_types": "All (93,487 CDSs from Kazusa)",
         "gc_content": "~52.3% coding GC",
         "notes": (
@@ -405,7 +437,7 @@ def get_human_codon_usage(
     if tissue in ("default", "brain", "liver", "immune", "cancer"):
         return HUMAN_HIGH_EXPR_CODON_USAGE
     if tissue == "genome_wide":
-        return HUMAN_CODON_USAGE
+        return HUMAN_GENOME_WIDE_CODON_USAGE
     valid = sorted(HUMAN_TISSUE_NOTES.keys())
     raise ValueError(
         f"Unknown tissue type {tissue!r}. Valid options: {valid}"

@@ -534,12 +534,29 @@ def _gc_aware_cpg_weight(target_gc: float) -> float:
     (<40%) have fewer unavoidable CpG occurrences, so stronger avoidance
     is feasible.
 
+    Edge cases:
+    - GC = 0: No G or C nucleotides → CpG dinucleotides are impossible.
+      Weight is 0.0 since there is nothing to minimize.
+    - GC = 1: Only G and C nucleotides → CpG dinucleotides are maximally
+      present and largely unavoidable.  Weight is set to the high-GC
+      value (0.5) to avoid over-penalising unavoidable occurrences.
+
     Args:
         target_gc: Target GC content as a fraction (e.g. 0.55 for 55%).
 
     Returns:
         CpG weight: 0.5 for GC > 60%, 2.0 for GC < 40%, 1.0 otherwise.
+        Returns 0.0 for the degenerate cases GC <= 0 or GC >= 1.
     """
+    # Edge cases: degenerate GC content
+    if target_gc <= 0.0:
+        # No G or C nucleotides → CpG impossible, no need to minimize
+        return 0.0
+    if target_gc >= 1.0:
+        # Only G and C → CpG maximally present and unavoidable;
+        # use high-GC weight to avoid penalising the inevitable
+        return _DEFAULT_CPG_WEIGHT_HIGH_GC   # 0.5
+
     if target_gc > 0.60:
         return _DEFAULT_CPG_WEIGHT_HIGH_GC   # 0.5
     elif target_gc < 0.40:
@@ -613,8 +630,11 @@ class SoftConstraintScorer:
         """Dynamically adjust scoring weights based on the target organism.
 
         Inspects the organism's domain (prokaryote vs eukaryote) and
-        adjusts the scorer's internal config weights accordingly:
+        adjusts **all** scorer weights accordingly:
 
+        - **CAI weight** → 10.0 for both domains (dominant objective).
+        - **CPB weight** → 3.0 for both domains (moderate, affects
+          translation efficiency).
         - **Prokaryotes**: CpG weight is zeroed out (no DNA methylation),
           and mRNA dG weight is set to a moderate value (1.0) since
           prokaryotic mRNA is short-lived regardless.
@@ -642,6 +662,8 @@ class SoftConstraintScorer:
         0.0
         >>> scorer.config.mrna_dg_weight  # moderate for prokaryotes
         1.0
+        >>> scorer.config.cai_weight  # dominant for all organisms
+        10.0
         """
         from ..organism_config import get_organism_config
 
@@ -651,6 +673,12 @@ class SoftConstraintScorer:
         old_cpg = self._config.cpg_weight
         old_mrna = self._config.mrna_dg_weight
         old_cpb = self._config.codon_pair_bias_weight
+
+        # ── Domain-independent weights ──────────────────────────────
+        # CAI is the dominant soft objective for ALL organisms.
+        self._config.cai_weight = _DEFAULT_CAI_WEIGHT
+        # CPB has moderate weight for ALL organisms.
+        self._config.codon_pair_bias_weight = _DEFAULT_CPB_WEIGHT
 
         # ── Prokaryote-specific adjustments ────────────────────────────
         if not org_config.is_eukaryote:
@@ -1017,6 +1045,12 @@ class SoftConstraintScorer:
         This maps negative CPB (disfavoured) → ~0.0, zero CPB → 0.5,
         and positive CPB (favoured) → ~1.0.
 
+        To prevent overflow for extreme CPB values (e.g. due to
+        corrupted input or very short sequences), the raw CPB is
+        clamped to [-2, 2] before the sigmoid is applied.  With
+        ``_CPB_NORMALIZATION_SCALE = 10.0``, this bounds the exponent
+        to [-20, 20], well within ``float`` range.
+
         Args:
             individual_scores: Raw scores dict containing
                 'MinimizeCodonPairBias'.
@@ -1026,13 +1060,12 @@ class SoftConstraintScorer:
         """
         raw = individual_scores.get("MinimizeCodonPairBias", 0.0)
 
+        # Clamp CPB to [-2, 2] to prevent sigmoid overflow
+        clamped_cpb = max(-2.0, min(2.0, raw))
+
         # Sigmoid normalization: maps CPB to (0, 1)
         # positive CPB → high score, negative CPB → low score
-        try:
-            normalized = 1.0 / (1.0 + math.exp(-raw * _CPB_NORMALIZATION_SCALE))
-        except OverflowError:
-            # Very negative CPB → exp overflows → normalized ≈ 0
-            normalized = 0.0
+        normalized = 1.0 / (1.0 + math.exp(-clamped_cpb * _CPB_NORMALIZATION_SCALE))
 
         return max(0.0, min(1.0, normalized))
 

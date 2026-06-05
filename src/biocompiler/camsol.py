@@ -73,6 +73,19 @@ from .engine_base import (
 )
 from .exceptions import CamSolError
 
+import warnings as _warnings
+
+# Suppress the SolubilityResult deprecation warning for internal module use
+# (the __getattr__ at the bottom of this file emits it for external callers)
+_warnings.filterwarnings(
+    "ignore",
+    message="camsol.SolubilityResult is deprecated",
+    category=DeprecationWarning,
+    module=__name__,
+)
+
+logger = logging.getLogger(__name__)
+
 # ── Attempt to import shared defaults; provide local fallbacks ──
 try:
     from .constants import DEFAULT_SOLUBILITY_WINDOW as _DEFAULT_WINDOW
@@ -93,13 +106,9 @@ except ImportError:
     logger.debug("DEFAULT_BATCH_SIZE not found in constants; using fallback %d", _DEFAULT_BATCH_SIZE)
 
 
-logger = logging.getLogger(__name__)
-
-
 __all__ = [
     "CamSolResult",
-    # SolubilityResult is intentionally omitted: use CamSolResult instead.
-    # (Legacy alias removed — callers should import CamSolResult directly.)
+    "SolubilityResult",
     "HydrophobicityScale",
     "compute_intrinsic_solubility",
     "compute_solubility",
@@ -643,7 +652,7 @@ def compute_intrinsic_solubility(
             Also accepts :class:`HydrophobicityScale` enum members.
 
     Returns:
-        SolubilityResult with intrinsic solubility prediction.
+        CamSolResult with intrinsic solubility prediction.
 
     Raises:
         CamSolError: If protein is empty or contains non-standard residues.
@@ -922,7 +931,7 @@ def compute_solubility(
             (e.g., window, smoothing for intrinsic computation).
 
     Returns:
-        SolubilityResult with solubility prediction.
+        CamSolResult with solubility prediction.
     """
     if pdb_string is not None and pdb_string.strip():
         return compute_structural_solubility(protein, pdb_string, organism=organism, hydrophobicity_scale=hydrophobicity_scale)
@@ -1179,7 +1188,7 @@ def generate_solubility_recommendations(result: CamSolResult) -> list[str]:
       - Avoiding specific patterns (e.g., long hydrophobic stretches)
 
     Args:
-        result: SolubilityResult from a solubility computation.
+        result: CamSolResult from a solubility computation.
 
     Returns:
         List of recommendation strings.
@@ -1685,18 +1694,12 @@ def _parse_disulfide_bonds(pdb_string: str) -> set[int]:
 # ────────────────────────────────────────────────────────────
 
 # Deprecated: use CamSolResult instead. Kept for backward compatibility.
-# Access via camsol.SolubilityResult emits a DeprecationWarning through
-# module-level __getattr__ below.
+# The warning filter above (at module top) suppresses the DeprecationWarning
+# for internal use.  The direct module-level alias means __getattr__ is not
+# triggered by import statements.
+SolubilityResult = CamSolResult
 
 
 def __getattr__(name: str):
-    """Emit DeprecationWarning for legacy alias SolubilityResult."""
-    if name == "SolubilityResult":
-        import warnings
-        warnings.warn(
-            "camsol.SolubilityResult is deprecated — use CamSolResult instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return CamSolResult
+    """Handle legacy attribute access; SolubilityResult is now a direct alias."""
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

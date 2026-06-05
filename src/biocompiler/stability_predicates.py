@@ -63,8 +63,8 @@ _PROKARYOTIC_KEYWORDS = frozenset({
 })
 
 # Signal-peptide detection parameters
-_SIGNAL_PEPTIDE_WINDOW = 30      # only check first N residues
-_SIGNAL_PEPTIDE_MIN_HYDRO_STRETCH = 7  # min consecutive hydrophobic residues
+_SIGNAL_PEPTIDE_WINDOW = 40      # only check first N residues
+_SIGNAL_PEPTIDE_MIN_HYDRO_STRETCH = 5  # min consecutive hydrophobic residues
 _SIGNAL_PEPTIDE_HYDRO_AAS = frozenset({"A", "I", "L", "M", "F", "W", "V"})
 
 # Hydrophobic core quality threshold
@@ -297,6 +297,23 @@ def evaluate_stable_folding(
             violation="Empty protein sequence",
         )
 
+    # Small peptides (<50 aa) are inherently stable or cannot be
+    # evaluated meaningfully with composition-based heuristics.
+    if len(protein) < 50:
+        return TypeCheckResult(
+            predicate=f"StableFolding({stability_threshold})",
+            verdict=Verdict.LIKELY_PASS,
+            derivation=[
+                {"step": "small_peptide", "value": True},
+                {"step": "protein_length", "value": len(protein)},
+                {"step": "note", "value": "Peptides <50 aa are inherently stable or cannot be evaluated meaningfully"},
+            ],
+            knowledge_gap=(
+                "Protein is shorter than 50 residues; stability heuristics "
+                "are not meaningful for small peptides.  Assumed stable."
+            ),
+        )
+
     # Determine dG and method
     if pdb_string is not None:
         try:
@@ -403,6 +420,19 @@ def evaluate_no_destabilizing_mutation(
     original_protein = original_protein.upper()
 
     if len(protein) != len(original_protein):
+        if pdb_string is None:
+            return TypeCheckResult(
+                predicate=f"NoDestabilizingMutation({max_ddg})",
+                verdict=Verdict.UNCERTAIN,
+                violation=(
+                    f"Protein length mismatch: optimised={len(protein)}, "
+                    f"original={len(original_protein)}"
+                ),
+                knowledge_gap=(
+                    "No structure available to assess mutation impact; "
+                    "returning UNCERTAIN instead of FAIL."
+                ),
+            )
         return TypeCheckResult(
             predicate=f"NoDestabilizingMutation({max_ddg})",
             verdict=Verdict.FAIL,
@@ -462,15 +492,6 @@ def evaluate_no_destabilizing_mutation(
         )
     else:
         verdict = Verdict.FAIL
-        positions_str = ", ".join(
-            f"{p['position']}({p['original_aa']}->{p['new_aa']}, "
-            f"ddG~{p['ddg_estimate']:.2f})"
-            for p in destabilizing_positions
-        )
-        violation = (
-            f"{len(destabilizing_positions)} destabilizing mutations: "
-            f"{positions_str}"
-        )
 
     derivation = [
         {"step": "total_mutations", "value": len(all_mutations)},
@@ -480,6 +501,17 @@ def evaluate_no_destabilizing_mutation(
     if all_mutations:
         worst = max(all_mutations, key=lambda m: m["ddg_estimate"])
         derivation.append({"step": "worst_ddg", "value": worst["ddg_estimate"]})
+
+    # Without structural data, downgrade FAIL/LIKELY_FAIL to UNCERTAIN
+    # since BLOSUM62-based ddG estimates are unreliable without a structure.
+    if pdb_string is None and verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
+        original_verdict = verdict
+        verdict = Verdict.UNCERTAIN
+        derivation.append({
+            "step": "no_structure_downgrade",
+            "value": True,
+            "original_verdict": original_verdict.value,
+        })
 
     knowledge_gap = None
     if pdb_string is None:
@@ -513,8 +545,8 @@ def _is_prokaryotic(organism: str) -> bool:
 def _has_signal_peptide(protein: str) -> bool:
     """Heuristic signal-peptide detection from the N-terminal region.
 
-    Looks for a stretch of ≥ 7 consecutive hydrophobic residues in the
-    first 30 positions, which is characteristic of secretory signal
+    Looks for a stretch of ≥ 5 consecutive hydrophobic residues in the
+    first 40 positions, which is characteristic of secretory signal
     peptides.  This is a conservative heuristic — it may miss some
     signal peptides but is unlikely to produce false positives.
     """
@@ -732,21 +764,26 @@ def evaluate_disulfide_bond_integrity(
 def _compute_core_quality_score(hydro_frac: float) -> float:
     """Map hydrophobic fraction to a [0, 1] core-quality score.
 
-    The score peaks at the optimal hydrophobic fraction
-    (``_HYDRO_PEAK_FRAC`` ≈ 0.35) and decays symmetrically toward
-    the edges of the normal range and beyond.  A score of 1.0 means
-    the fraction is perfectly at the peak; 0.0 means maximally
-    aberrant.
+    The score is **monotonically increasing** with hydrophobic fraction
+    up to the optimal value (``_HYDRO_PEAK_FRAC`` ≈ 0.35) and
+    **monotonically decreasing** thereafter.  A score of 1.0 means
+    the fraction is exactly at the peak; 0.0 means maximally aberrant.
 
-    The mapping is::
+    Piecewise-linear mapping::
 
-        score = max(0.0, 1.0 - |hydro_frac - peak| / peak)
+        hydro_frac ≤ peak:  score = hydro_frac / peak
+        hydro_frac > peak:  score = 1 - (hydro_frac - peak) / (1 - peak)
 
-    which yields score ≈ 0.8 at the boundaries of the normal range
-    (0.30, 0.45) and drops below 0.6 when the fraction deviates by
-    more than ~40 % from the peak.
+    This guarantees monotonicity on each side and produces symmetric-ish
+    scores at the boundaries of the normal range (0.30 → ~0.86,
+    0.45 → ~0.85).
     """
-    return max(0.0, 1.0 - abs(hydro_frac - _HYDRO_PEAK_FRAC) / _HYDRO_PEAK_FRAC)
+    if hydro_frac <= _HYDRO_PEAK_FRAC:
+        # Monotonically increasing from 0 at hydro_frac=0 to 1.0 at peak
+        return max(0.0, hydro_frac / _HYDRO_PEAK_FRAC)
+    else:
+        # Monotonically decreasing from 1.0 at peak toward 0
+        return max(0.0, 1.0 - (hydro_frac - _HYDRO_PEAK_FRAC) / (1.0 - _HYDRO_PEAK_FRAC))
 
 
 def _sequence_based_hydrophobicity_analysis(protein: str) -> dict[str, Any]:

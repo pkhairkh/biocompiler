@@ -17,6 +17,7 @@ import typing
 from dataclasses import fields
 from typing import Any, get_type_hints
 
+import pytest
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 
@@ -396,23 +397,17 @@ class TestBuildInitialSequenceProperties:
 
     @given(protein=extended_protein_strategy)
     @settings(max_examples=60, deadline=3000)
-    def test_nonstandard_aas_get_nnn_placeholder(self, protein):
-        """Non-standard amino acid codes get NNN placeholder codons."""
-        result = _build_initial_sequence(protein)
-        # Length invariant holds even with non-standard AAs
-        assert len(result) == len(protein) * 3
-
-        # Check each codon
+    def test_nonstandard_aas_raise_value_error(self, protein):
+        """Non-standard amino acid codes cause _build_initial_sequence to raise ValueError."""
         nonstandard = set("BJOUZX")
-        for i, aa in enumerate(protein):
-            codon = result[i * 3 : (i + 1) * 3]
-            assert len(codon) == 3
-            if aa in nonstandard:
-                assert codon == "NNN", f"Expected NNN for non-standard AA {aa!r}, got {codon!r}"
-            else:
-                # Standard AA should produce a valid ACGT-only codon
-                for base in codon:
-                    assert base in "ACGT", f"Non-ACGT base in codon for {aa!r}: {codon!r}"
+        has_nonstandard = any(aa in nonstandard for aa in protein)
+        if has_nonstandard:
+            with pytest.raises(ValueError, match="Unknown amino acid"):
+                _build_initial_sequence(protein)
+        else:
+            # All standard AAs — should succeed
+            result = _build_initial_sequence(protein)
+            assert len(result) == len(protein) * 3
 
     @given(aa=standard_aa)
     @settings(max_examples=20, deadline=1000)

@@ -185,7 +185,7 @@ def _try_backend(
     backend_name: str,
     backend_enum: SolverBackend,
     attempted_backends: list[str] | None = None,
-) -> SolverResult | None:
+) -> tuple[SolverResult | None, str | None]:
     """Try solving with a single backend engine.
 
     Encapsulates the try-except logic that was previously duplicated for
@@ -217,8 +217,12 @@ def _try_backend(
 
     Returns
     -------
-    SolverResult | None
-        A solved result with ``backend_used`` set, or ``None``.
+    tuple[SolverResult | None, str | None]
+        A tuple of (result, failure_reason).  On success, the result is
+        a solved SolverResult with ``backend_used`` set and the failure
+        reason is None.  On failure, the result is None and the failure
+        reason is a short string describing why the backend failed (e.g.
+        "returned infeasible", "raised TimeoutError", etc.).
     """
     logger.info("Attempting %s backend …", backend_name)
     try:
@@ -239,22 +243,24 @@ def _try_backend(
                 )
             else:
                 logger.info("%s solved successfully.", backend_name)
-            return result
+            return result, None
         elif result is not None and result.fallback_used:
             # Backend returned a fallback result (e.g. Z3 unavailable) —
             # treat as failure so dispatch can try the next backend.
+            reason = result.metadata.get("reason", "returned fallback")
             logger.info(
                 "%s returned fallback (reason: %s); trying next backend.",
                 backend_name,
-                result.metadata.get("reason", "unknown"),
+                reason,
             )
-            return None
+            return None, f"returned fallback: {reason}"
         else:
             logger.info("%s returned infeasible; trying next backend.", backend_name)
-            return None
+            return None, "returned infeasible"
     except Exception as e:
-        logger.warning("%s backend raised %s: %s", backend_name, type(e).__name__, e)
-        return None
+        reason = f"raised {type(e).__name__}: {e}"
+        logger.warning("%s backend %s", backend_name, reason)
+        return None, reason
 
 
 def solve_with_csp(
@@ -397,6 +403,9 @@ def solve_with_csp(
     # for fallback-chain provenance (Fix 1).
     result: SolverResult | None = None
     attempted_backends: list[str] = []
+    # Track failure reasons for provenance — each backend that fails gets
+    # a short reason string recorded alongside its name.
+    backend_failure_reasons: dict[str, str] = {}
 
     # If the user explicitly requested GREEDY_FALLBACK, skip OR-Tools and Z3
     skip_csp_backends = config.backend == SolverBackend.GREEDY_FALLBACK
@@ -409,35 +418,39 @@ def solve_with_csp(
     if config.backend == SolverBackend.Z3:
         # User explicitly requested Z3 — try it first
         if not skip_csp_backends and _z3_engine is not None:
-            result = _try_backend(
+            result, fail_reason = _try_backend(
                 _z3_engine, model, config, "Z3", SolverBackend.Z3,
                 attempted_backends=attempted_backends if attempted_backends else None,
             )
             if result is None:
                 attempted_backends.append("Z3")
+                backend_failure_reasons["Z3"] = fail_reason or "returned infeasible"
         if result is None and not skip_csp_backends and _ortools_engine is not None:
-            result = _try_backend(
+            result, fail_reason = _try_backend(
                 _ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS,
                 attempted_backends=attempted_backends if attempted_backends else None,
             )
             if result is None:
                 attempted_backends.append("OR-Tools")
+                backend_failure_reasons["OR-Tools"] = fail_reason or "returned infeasible"
     else:
         # Default priority: OR-Tools → Z3
         if not skip_csp_backends and _ortools_engine is not None:
-            result = _try_backend(
+            result, fail_reason = _try_backend(
                 _ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS,
                 attempted_backends=None,
             )
             if result is None:
                 attempted_backends.append("OR-Tools")
+                backend_failure_reasons["OR-Tools"] = fail_reason or "returned infeasible"
         if not skip_csp_backends and result is None and _z3_engine is not None:
-            result = _try_backend(
+            result, fail_reason = _try_backend(
                 _z3_engine, model, config, "Z3", SolverBackend.Z3,
                 attempted_backends=attempted_backends if attempted_backends else None,
             )
             if result is None:
                 attempted_backends.append("Z3")
+                backend_failure_reasons["Z3"] = fail_reason or "returned infeasible"
 
     # If CSP backends failed or were skipped, try greedy fallback engine
     if result is None:
@@ -484,17 +497,38 @@ def solve_with_csp(
         result.metadata["attempted_backends"] = attempted_backends
         return result
 
-    # Record provenance for fallback if prior backends failed (Fix 1)
+    # Record provenance for fallback chain — one entry per failed backend
+    # step, so the full provenance chain is preserved (not just the first
+    # failure).
     if attempted_backends and track_provenance:
-        provenance_records.append(
-            provenance_resolver.record_relaxation_provenance(
-                relaxed_constraint_name=f"<{attempted_backends[0]}_backend_failure>",
-                kept_constraint_name=f"<{result.backend_used.value}_backend_success>",
-                positions_affected=[],
-                sequence=result.sequence,
-                resolution_method="backend_fallback",
+        for i, failed_backend in enumerate(attempted_backends):
+            fail_reason = backend_failure_reasons.get(failed_backend, "unknown")
+            # The "kept" constraint is the backend that ultimately succeeded
+            if i < len(attempted_backends) - 1:
+                # Intermediate fallback: this backend was replaced by the
+                # next one in the chain
+                next_backend = attempted_backends[i + 1]
+                kept_name = f"<{next_backend}_backend_attempted>"
+            else:
+                # Last failed backend before the successful one
+                kept_name = f"<{result.backend_used.value}_backend_success>"
+            provenance_records.append(
+                provenance_resolver.record_relaxation_provenance(
+                    relaxed_constraint_name=f"<{failed_backend}_backend_failure>",
+                    kept_constraint_name=kept_name,
+                    positions_affected=[],
+                    sequence=result.sequence,
+                    resolution_method="backend_fallback",
+                )
             )
-        )
+            # Attach the failure reason to the last provenance record
+            if provenance_records:
+                provenance_records[-1].impact = (
+                    f"Backend {failed_backend} failed: {fail_reason}"
+                )
+
+        # Store the full fallback chain with reasons in metadata
+        result.metadata["backend_failure_reasons"] = backend_failure_reasons
 
     # Post-solve validation (returns violations + composite enforcement score)
     if result.sequence:
@@ -860,6 +894,17 @@ def validate_csp_solution(
                     priority=ConstraintPriority.CRITICAL,
                 ))
 
+    # ── Graceful handling of minor GC violations ────────────────────
+    # GC content is a global average that may be slightly outside the
+    # target range due to codon-usage constraints (e.g. a protein rich
+    # in low-GC amino acids may simply not be able to reach gc_lo).
+    # Treat minor GC violations as soft warnings rather than hard
+    # violations, reducing severity proportionally to the overshoot.
+    _GC_MINOR_TOLERANCE = 0.02  # 2% absolute tolerance
+    violations = _relax_minor_gc_violations(
+        violations, sequence, config, _GC_MINOR_TOLERANCE,
+    )
+
     # ── Compute composite enforcement score via ConstraintScorer ─────
     # Use the constraint specs from the model (which carry priority & weight)
     constraint_specs: list[ConstraintSpec] = list(
@@ -888,8 +933,97 @@ def validate_csp_solution(
 
 
 # ==============================================================================
-# Fix 2: Comprehensive config-level hard constraint validation
+# Graceful handling of minor GC violations
 # ==============================================================================
+
+def _relax_minor_gc_violations(
+    violations: list[ConstraintViolation],
+    sequence: str,
+    config: SolverConfig,
+    tolerance: float = 0.02,
+) -> list[ConstraintViolation]:
+    """Downgrade minor GC violations from HARD to SOFT with reduced severity.
+
+    GC content is a global average that can be difficult to bring within the
+    target range when amino-acid composition constrains codon choice.  A
+    sequence with GC=0.295 vs a target of 0.30 is biologically acceptable
+    but would be flagged as a hard violation with severity 0.8.
+
+    This function detects GC violations where the actual GC content is
+    within *tolerance* of the configured range, and:
+
+    1. Downgrades the strictness from HARD to SOFT.
+    2. Reduces severity proportionally to the overshoot distance.
+    3. Downgrades priority from MEDIUM to LOW.
+    4. Appends a note to the description explaining the relaxation.
+
+    Parameters
+    ----------
+    violations : list[ConstraintViolation]
+        The collected violations (will be modified in-place).
+    sequence : str
+        The candidate DNA sequence.
+    config : SolverConfig
+        Solver configuration (defines the GC target range).
+    tolerance : float
+        Absolute GC fraction tolerance for minor violations (default 0.02).
+
+    Returns
+    -------
+    list[ConstraintViolation]
+        The violations list with minor GC violations relaxed.
+    """
+    if not sequence:
+        return violations
+
+    # Compute actual GC content
+    gc_frac = sum(1 for b in sequence.upper() if b in "GC") / len(sequence)
+
+    for i, v in enumerate(violations):
+        # Only relax GC-related violations
+        if v.constraint_name != "GCRangeConstraint":
+            continue
+
+        # Check if this is a minor violation (within tolerance)
+        is_minor = False
+        overshoot = 0.0
+        if gc_frac < config.gc_lo:
+            overshoot = config.gc_lo - gc_frac
+            if overshoot <= tolerance:
+                is_minor = True
+        elif gc_frac > config.gc_hi:
+            overshoot = gc_frac - config.gc_hi
+            if overshoot <= tolerance:
+                is_minor = True
+
+        if not is_minor:
+            continue
+
+        # Relax: downgrade from HARD to SOFT, reduce severity,
+        # lower priority, and annotate the description.
+        severity_ratio = overshoot / tolerance if tolerance > 0 else 0.0
+        new_severity = max(0.1, min(0.4, 0.4 * severity_ratio))
+
+        violations[i] = ConstraintViolation(
+            constraint_name=v.constraint_name,
+            constraint_type=ConstraintStrictness.SOFT,  # Downgraded
+            description=(
+                f"{v.description} [minor GC violation: actual GC={gc_frac:.4f}, "
+                f"target=[{config.gc_lo:.2f},{config.gc_hi:.2f}], "
+                f"overshoot={overshoot:.4f}≤{tolerance:.2f}]"
+            ),
+            positions=v.positions,
+            severity=new_severity,
+            priority=ConstraintPriority.LOW,  # Downgraded from MEDIUM
+            weight=v.weight,
+        )
+        logger.info(
+            "Relaxed minor GC violation: actual=%.4f target=[%.2f,%.2f] "
+            "overshoot=%.4f severity=%.2f (downgraded to SOFT/LOW)",
+            gc_frac, config.gc_lo, config.gc_hi, overshoot, new_severity,
+        )
+
+    return violations
 
 # Eukaryotic-only constraint types that should be skipped for prokaryotes
 _EUKARYOTIC_CONSTRAINT_TYPES: frozenset[ConstraintType] = frozenset({
@@ -1039,16 +1173,27 @@ def _filter_prokaryotic_constraints(
     if is_eukaryote:
         return model  # No filtering needed for eukaryotes
 
+    # Helper: extract ConstraintType from both HardConstraint/SoftConstraint
+    # objects (which have .constraint_type) and ConstraintSpec objects
+    # (which have .ctype).  This is needed because model.hard_constraints
+    # and model.soft_constraints may return either type depending on
+    # whether the model is a constraints.CSPModel or types.CSPModel.
+    def _get_ctype(c: Any) -> ConstraintType:
+        if isinstance(c, ConstraintSpec):
+            return c.ctype
+        # HardConstraint / SoftConstraint instances have .constraint_type
+        return getattr(c, "constraint_type", ConstraintType.CUSTOM)
+
     # Filter hard constraints
     filtered_hard = [
         c for c in model.hard_constraints
-        if c.constraint_type not in _EUKARYOTIC_CONSTRAINT_TYPES
+        if _get_ctype(c) not in _EUKARYOTIC_CONSTRAINT_TYPES
     ]
 
     # Filter soft constraints
     filtered_soft = [
         c for c in model.soft_constraints
-        if c.constraint_type not in _EUKARYOTIC_CONSTRAINT_TYPES
+        if _get_ctype(c) not in _EUKARYOTIC_CONSTRAINT_TYPES
     ]
 
     # Check if any filtering actually happened
@@ -1082,7 +1227,7 @@ def _filter_prokaryotic_constraints(
         # types.CSPModel — filter the constraints list
         filtered_specs = [
             c for c in model.constraints
-            if c.ctype not in _EUKARYOTIC_CONSTRAINT_TYPES
+            if _get_ctype(c) not in _EUKARYOTIC_CONSTRAINT_TYPES
         ]
         return CSPModel(
             protein_sequence=model.protein_sequence,
@@ -1134,19 +1279,48 @@ def _compute_cai(
     if len(sequence) != len(protein) * 3:
         return 0.0
 
-    # Get the appropriate adaptiveness table
+    # Get the appropriate adaptiveness table.
+    # Try the resolved canonical name first, then the raw organism name
+    # (which may be an alias present in CODON_ADAPTIVENESS_TABLES but not
+    # in ORGANISM_ALIASES), and finally case-insensitive matching.
     canonical = resolve_organism(organism)
+
+    def _lookup_adaptiveness(key: str, table: dict[str, dict[str, float]]) -> dict[str, float]:
+        """Look up adaptiveness by key, falling back to case-insensitive match."""
+        result = table.get(key)
+        if result is not None:
+            return result
+        # Case-insensitive fallback: some callers pass 'ecoli' or 'E. coli'
+        key_lower = key.lower()
+        for k, v in table.items():
+            if k.lower() == key_lower:
+                return v
+        return {}
 
     try:
         if config.cai_reference_set == "sharp_li":
             from ..organisms import get_sharp_li_adaptiveness_tables
-            adaptiveness = get_sharp_li_adaptiveness_tables().get(canonical, {})
+            sharp_li = get_sharp_li_adaptiveness_tables()
+            adaptiveness = _lookup_adaptiveness(canonical, sharp_li)
+            if not adaptiveness:
+                adaptiveness = _lookup_adaptiveness(organism, sharp_li)
         else:
-            adaptiveness = CODON_ADAPTIVENESS_TABLES.get(canonical, {})
+            adaptiveness = _lookup_adaptiveness(canonical, CODON_ADAPTIVENESS_TABLES)
+            if not adaptiveness:
+                # Fall back to the raw organism name — CODON_ADAPTIVENESS_TABLES
+                # contains aliases like 'ecoli', 'human', 'e_coli', etc.
+                adaptiveness = _lookup_adaptiveness(organism, CODON_ADAPTIVENESS_TABLES)
     except Exception:
-        adaptiveness = CODON_ADAPTIVENESS_TABLES.get(canonical, {})
+        adaptiveness = _lookup_adaptiveness(canonical, CODON_ADAPTIVENESS_TABLES)
+        if not adaptiveness:
+            adaptiveness = _lookup_adaptiveness(organism, CODON_ADAPTIVENESS_TABLES)
 
     if not adaptiveness:
+        logger.warning(
+            "Could not find CAI adaptiveness table for organism=%r "
+            "(canonical=%r); returning CAI=0.0",
+            organism, canonical,
+        )
         return 0.0
 
     # Compute geometric mean of adaptiveness values

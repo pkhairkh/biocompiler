@@ -7,6 +7,7 @@ from .esmfold_fallback import (
     predict_structure_heuristic,
     estimate_plddt_from_sequence,
     estimate_secondary_structure_from_sequence,
+    estimate_fold_quality,
     compute_hydrophobicity_profile,
     compute_charge_profile,
     compute_contact_density,
@@ -15,6 +16,7 @@ from .esmfold_fallback import (
     ChargeProfile,
     SecondaryStructureEstimate,
     ContactDensityProfile,
+    FoldQualityEstimate,
 )
 from .viennarna_fallback import (
     nussinov_fold,
@@ -26,17 +28,32 @@ from .viennarna_fallback import (
     find_stable_structures_fallback,
 )
 
-# Re-export types from viennarna (or local fallbacks)
-try:
-    from ..viennarna import MFEResult, StemLoop, AccessibilityResult
-except ImportError:
-    from .viennarna_fallback import MFEResult, StemLoop, AccessibilityResult  # type: ignore[no-redef]
+# Re-export types from viennarna (or local fallbacks).
+# Use __getattr__ to avoid circular imports at module load time: if
+# viennarna.py ever imports from engines (directly or transitively),
+# the lazy lookup below will still resolve correctly because by the
+# time any attribute is actually accessed the module graph is fully
+# initialised.
+_LAZY_TYPE_NAMES = ("MFEResult", "StemLoop", "AccessibilityResult")
+
+
+def __getattr__(name: str):  # type: ignore[no-untyped-def]
+    if name in _LAZY_TYPE_NAMES:
+        try:
+            import biocompiler.viennarna as _vr
+            return getattr(_vr, name)
+        except (ImportError, AttributeError):
+            from .viennarna_fallback import MFEResult, StemLoop, AccessibilityResult
+            return {"MFEResult": MFEResult, "StemLoop": StemLoop,
+                    "AccessibilityResult": AccessibilityResult}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     # esmfold_fallback
     "predict_structure_heuristic",
     "estimate_plddt_from_sequence",
     "estimate_secondary_structure_from_sequence",
+    "estimate_fold_quality",
     "compute_hydrophobicity_profile",
     "compute_charge_profile",
     "compute_contact_density",
@@ -45,6 +62,7 @@ __all__ = [
     "ChargeProfile",
     "SecondaryStructureEstimate",
     "ContactDensityProfile",
+    "FoldQualityEstimate",
     # viennarna_fallback
     "nussinov_fold",
     "compute_approx_dg",
@@ -53,7 +71,7 @@ __all__ = [
     "predict_mfe_fallback",
     "predict_accessibility_fallback",
     "find_stable_structures_fallback",
-    # types
+    # types (resolved lazily via __getattr__)
     "MFEResult",
     "StemLoop",
     "AccessibilityResult",
