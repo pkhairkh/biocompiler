@@ -31,6 +31,18 @@ from .organisms import (
 )
 from .exceptions import UnsupportedOrganismError
 
+# ── NUMBA integration ──────────────────────────────────────────────
+try:
+    from .numba_kernels import (
+        HAS_NUMBA as _HAS_NUMBA,
+        compute_cai_kernel as _numba_cai_kernel,
+        seq_to_bytes as _seq_to_bytes,
+    )
+except ImportError:
+    _HAS_NUMBA = False
+
+HAS_NUMBA: bool = _HAS_NUMBA
+
 __all__ = [
     "translate",
     "compute_cai",
@@ -190,6 +202,47 @@ def compute_cai(
         raise UnsupportedOrganismError(organism, SUPPORTED_ORGANISMS)
 
     adaptiveness = CODON_ADAPTIVENESS_TABLES[organism]
+
+    # ── NUMBA-accelerated path ───────────────────────────────────────
+    if _HAS_NUMBA:
+        try:
+            import numpy as np
+            # Build flat adaptiveness array and index mapping for NUMBA kernel
+            # First pass: collect codon adaptiveness values and build index array
+            codon_list: list[str] = []
+            adapt_values: list[float] = []
+            codon_to_idx: dict[str, int] = {}
+            idx_counter = 0
+
+            # Build unique codon → index mapping
+            for i in range(0, len(sequence) - (_CODON_LENGTH - 1), _CODON_LENGTH):
+                codon = sequence[i:i + _CODON_LENGTH]
+                aa = CODON_TABLE.get(codon)
+                if aa is None or aa == "*" or aa == "M":
+                    continue
+                if codon not in codon_to_idx:
+                    codon_to_idx[codon] = idx_counter
+                    w = adaptiveness.get(codon, 0.0)
+                    if w <= 0:
+                        w = _ZERO_ADAPTIVENESS_EPSILON
+                    adapt_values.append(w)
+                    idx_counter += 1
+                codon_list.append(codon)
+
+            if not codon_list:
+                return 0.0
+
+            adapt_array = np.array(adapt_values, dtype=np.float64)
+            indices = np.array([codon_to_idx[c] for c in codon_list], dtype=np.int64)
+            n_codons = len(codon_list)
+
+            cai = _numba_cai_kernel(adapt_array, indices, n_codons)
+            return round(cai, _CAI_ROUND_PRECISION)
+        except Exception:
+            # Fallback to pure-Python if NUMBA fails at runtime
+            pass
+
+    # ── Pure-Python path (original implementation) ───────────────────
     ratios: list[float] = []
 
     for i in range(0, len(sequence) - (_CODON_LENGTH - 1), _CODON_LENGTH):

@@ -55,6 +55,20 @@ from .constants import reverse_complement, RESTRICTION_ENZYMES
 from .incremental import IncrementalSequenceState, CodonCache, EnzymeSiteCache
 from .restriction_sites import get_recognition_site
 from .aho_corasick import AhoCorasickScanner, build_scanner_from_enzymes
+from .decision_provenance import CodonDecision, ConstraintDecision
+
+# ── NUMBA integration ──────────────────────────────────────────────
+try:
+    from .numba_kernels import (
+        HAS_NUMBA as _HAS_NUMBA,
+        count_gc as _numba_count_gc,
+        compute_cai_kernel as _numba_cai_kernel,
+        seq_to_bytes as _seq_to_bytes,
+    )
+except ImportError:
+    _HAS_NUMBA = False
+
+HAS_NUMBA: bool = _HAS_NUMBA
 
 __all__ = [
     "HybridOptimizer",
@@ -354,6 +368,25 @@ class HybridOptimizer:
         # For prokaryotes, override avoid_gt
         effective_avoid_gt = self.avoid_gt and not is_prokaryote
 
+        # ── Eukaryotic fast path ──
+        # For eukaryotic targets, use a streamlined single-pass approach
+        # similar to the prokaryotic fast path, but with GT/AG avoidance
+        # and CpG disruption integrated directly into the optimization
+        # loop.  This avoids the priority-queue-based _constraint_satisfaction
+        # which suffers from GT↔ATTTA oscillation loops.
+        if effective_avoid_gt:
+            result = self._optimize_eukaryote_fast(protein)
+            elapsed = _time.monotonic() - _start
+            logger.info(
+                "HybridOptimizer[euk-fast]: protein_len=%d, seq_len=%d, "
+                "CAI=%.4f, GC=%.3f, violations_fixed=%d, time=%.1fms",
+                len(protein), len(result.sequence),
+                result.cai, result.gc_content,
+                result.violations_fixed,
+                elapsed * 1000,
+            )
+            return result
+
         # Phase 1: Greedy initialization
         seq, phase1_cai = self._greedy_init(protein)
 
@@ -408,6 +441,516 @@ class HybridOptimizer:
             phase4_cai=phase4_cai,
             cpb_improvements=cpb_improvements,
             mean_cpb=mean_cpb,
+            warnings=warnings,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # Eukaryotic Fast Path
+    # ──────────────────────────────────────────────────────────
+
+    def _optimize_eukaryote_fast(self, protein: str) -> HybridResult:
+        """Streamlined single-pass eukaryotic optimization.
+
+        Similar to _optimize_prokaryote_fast but with GT/AG avoidance
+        and CpG disruption integrated directly into the optimization loop.
+        Avoids the priority-queue-based _constraint_satisfaction which
+        suffers from GT↔ATTTA oscillation loops.
+
+        Steps:
+        1. Greedy init with highest-CAI codons (GT-aware where possible)
+        2. Fix restriction sites
+        3. Fix GC content
+        4. Fix GT dinucleotides (splice donor avoidance)
+        5. Fix AG dinucleotides (splice acceptor avoidance)
+        6. Fix ATTTA motifs
+        7. Fix T-runs
+
+        Args:
+            protein: Amino acid sequence (single-letter codes, no stop).
+
+        Returns:
+            HybridResult with the optimized DNA sequence and metrics.
+        """
+        species_cai = self.species_cai
+        max_adapt = self._max_adapt
+        optimal_codon = self.optimal_codon
+        sorted_codons = self.sorted_codons
+        codon_gc = self.codon_gc
+        gt_free = self.gt_free
+        ag_free = self.ag_free
+        rs_sites = self._rs_sites
+        ac_scanner = self._ac_scanner
+        gc_lo = self.gc_lo
+        gc_hi = self.gc_hi
+        max_rs_len = self._max_rs_site_len
+        splice_threshold = self.splice_threshold
+
+        # ── Phase 1: Greedy init with GT-aware codon selection ──
+        codon_list: list[str] = []
+        gc_count = 0
+        log_cai_sum = 0.0
+        n_cai_codons = 0
+
+        for aa in protein:
+            if aa == "*":
+                codon_list.append("TAA")
+                continue
+            # Prefer GT-free codons for eukaryotes
+            gt_free_opts = gt_free.get(aa, [])
+            if gt_free_opts:
+                best = gt_free_opts[0]
+            else:
+                best = optimal_codon.get(aa, "")
+                if not best:
+                    sl = sorted_codons.get(aa, [])
+                    best = sl[0] if sl else "NNN"
+            codon_list.append(best)
+            gc_count += codon_gc.get(best, 0)
+            adapt = species_cai.get(best, 0.0)
+            max_a = max_adapt.get(aa, 0.0)
+            if max_a > 0 and adapt > 0:
+                log_cai_sum += math.log(adapt / max_a)
+                n_cai_codons += 1
+
+        seq_chars = list("".join(codon_list))
+        n_bases = len(seq_chars)
+        n_codons = n_bases // 3
+        phase1_cai = math.exp(log_cai_sum / n_cai_codons) if n_cai_codons > 0 else 0.0
+
+        # ── Helpers ──
+        def _update_cai_for_swap(ci: int, old_codon: str, new_codon: str) -> None:
+            nonlocal log_cai_sum, n_cai_codons
+            aa = protein[ci] if ci < len(protein) else None
+            if aa and aa != "*":
+                old_adapt = species_cai.get(old_codon, 0.0)
+                max_a = max_adapt.get(aa, 0.0)
+                if max_a > 0 and old_adapt > 0:
+                    log_cai_sum -= math.log(old_adapt / max_a)
+                    n_cai_codons -= 1
+                new_adapt = species_cai.get(new_codon, 0.0)
+                if max_a > 0 and new_adapt > 0:
+                    log_cai_sum += math.log(new_adapt / max_a)
+                    n_cai_codons += 1
+
+        def _has_rs_local(ci: int) -> bool:
+            if ac_scanner is not None:
+                start = ci * 3
+                check_start = max(0, start - max_rs_len + 1)
+                check_end = min(n_bases, start + 3 + max_rs_len - 1)
+                return ac_scanner.has_any_match_in_region(
+                    "".join(seq_chars), check_start, check_end
+                )
+            if not rs_sites:
+                return False
+            start = ci * 3
+            check_start = max(0, start - max_rs_len + 1)
+            check_end = min(n_bases, start + 3 + max_rs_len - 1)
+            region = "".join(seq_chars[check_start:check_end])
+            for site, site_rc in rs_sites:
+                if site in region or (site_rc and site_rc in region):
+                    return True
+            return False
+
+        def _apply_swap(ci: int, new_codon: str) -> str:
+            nonlocal gc_count
+            start = ci * 3
+            old_codon = "".join(seq_chars[start:start + 3])
+            old_gc = codon_gc.get(old_codon, 0)
+            new_gc = codon_gc.get(new_codon, 0)
+            gc_count += (new_gc - old_gc)
+            seq_chars[start] = new_codon[0]
+            seq_chars[start + 1] = new_codon[1]
+            seq_chars[start + 2] = new_codon[2]
+            _update_cai_for_swap(ci, old_codon, new_codon)
+            return old_codon
+
+        def _rollback_swap(ci: int, old_codon: str) -> None:
+            nonlocal gc_count
+            start = ci * 3
+            current_codon = "".join(seq_chars[start:start + 3])
+            current_gc = codon_gc.get(current_codon, 0)
+            old_gc = codon_gc.get(old_codon, 0)
+            gc_count += (old_gc - current_gc)
+            seq_chars[start] = old_codon[0]
+            seq_chars[start + 1] = old_codon[1]
+            seq_chars[start + 2] = old_codon[2]
+            _update_cai_for_swap(ci, current_codon, old_codon)
+
+        violations_fixed = 0
+        warnings: list[str] = []
+
+        # ── Phase 2a: Fix restriction sites ──
+        if rs_sites or ac_scanner is not None:
+            seq_str = "".join(seq_chars)
+            for _iter in range(100):
+                if ac_scanner is not None:
+                    matches = ac_scanner.scan(seq_str)
+                    if not matches:
+                        break
+                    pos, site_match, _enzyme = matches[0]
+                    site_len = len(site_match)
+                else:
+                    found = False
+                    for site, site_rc in rs_sites:
+                        p = seq_str.find(site)
+                        if p == -1 and site_rc:
+                            p = seq_str.find(site_rc)
+                        if p != -1:
+                            pos = p
+                            site_len = len(site)
+                            site_match = site
+                            found = True
+                            break
+                    if not found:
+                        break
+
+                first_ci = pos // 3
+                last_ci = (pos + site_len - 1) // 3
+                fixed = False
+
+                # CAI-aware: collect ALL possible single-codon swaps across
+                # overlapping positions, then pick the one with highest CAI.
+                best_swap_info: tuple[int, str, float] | None = None  # (ci, alt, log_cai)
+                for ci in range(max(0, first_ci), min(n_codons, last_ci + 1)):
+                    aa = protein[ci] if ci < len(protein) else None
+                    if aa is None or aa == "*":
+                        continue
+                    current = "".join(seq_chars[ci*3:ci*3+3])
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        old_codon = _apply_swap(ci, alt)
+                        if not _has_rs_local(ci):
+                            alt_cai = species_cai.get(alt, 0.0)
+                            log_cai = math.log(alt_cai) if alt_cai > 0 else float('-inf')
+                            if best_swap_info is None or log_cai > best_swap_info[2]:
+                                best_swap_info = (ci, alt, log_cai)
+                            _rollback_swap(ci, old_codon)
+                        else:
+                            _rollback_swap(ci, old_codon)
+
+                if best_swap_info is not None:
+                    ci, alt, _ = best_swap_info
+                    _apply_swap(ci, alt)
+                    seq_str = "".join(seq_chars)
+                    violations_fixed += 1
+                    fixed = True
+
+                if not fixed:
+                    warnings.append(f"Cannot remove restriction site {site_match} at pos {pos}")
+                    break
+
+        # ── Phase 2b: Fix GC content ──
+        gc_val = gc_count / n_bases if n_bases > 0 else 0.0
+        if not (gc_lo <= gc_val <= gc_hi):
+            target = gc_lo if gc_val < gc_lo else gc_hi
+            need_more_gc = gc_val < gc_lo
+            for _iter in range(200):
+                if gc_lo <= gc_val <= gc_hi:
+                    break
+                best_swap = None
+                best_ci = -1
+                best_score = -1.0
+                for ci in range(n_codons):
+                    aa = protein[ci] if ci < len(protein) else None
+                    if aa is None or aa == "*":
+                        continue
+                    current = "".join(seq_chars[ci*3:ci*3+3])
+                    current_gc_val = codon_gc.get(current, 0)
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        alt_gc = codon_gc.get(alt, 0)
+                        gc_delta = alt_gc - current_gc_val
+                        if need_more_gc and gc_delta <= 0:
+                            continue
+                        if not need_more_gc and gc_delta >= 0:
+                            continue
+                        new_gc_count = gc_count + gc_delta
+                        new_frac = new_gc_count / n_bases
+                        diff = abs(new_frac - target)
+                        alt_cai = species_cai.get(alt, 0.0)
+                        score = (1.0 - diff) + alt_cai * 0.01
+                        if score > best_score:
+                            best_score = score
+                            best_swap = alt
+                            best_ci = ci
+                if best_swap is None:
+                    break
+                old_codon = _apply_swap(best_ci, best_swap)
+                if _has_rs_local(best_ci):
+                    _rollback_swap(best_ci, old_codon)
+                    break
+                gc_val = gc_count / n_bases
+                violations_fixed += 1
+
+        # ── Phase 2c: Fix GT dinucleotides (splice donor avoidance) ──
+        for _iter in range(300):
+            seq_str = "".join(seq_chars)
+            gt_pos = seq_str.find("GT")
+            if gt_pos == -1:
+                break
+
+            ci = gt_pos // 3
+            fixed = False
+
+            # Try fixing the codon at the GT position
+            for target_ci in [ci, ci + 1]:
+                if target_ci >= n_codons or target_ci < 0:
+                    continue
+                aa = protein[target_ci] if target_ci < len(protein) else None
+                if aa is None or aa == "*":
+                    continue
+                current = "".join(seq_chars[target_ci*3:target_ci*3+3])
+
+                # Prefer GT-free codons
+                for alt in gt_free.get(aa, []):
+                    if alt == current:
+                        continue
+                    old_codon = _apply_swap(target_ci, alt)
+                    new_local = "".join(seq_chars[max(0, target_ci*3-2):min(n_bases, target_ci*3+5)])
+                    if "GT" not in new_local and not _has_rs_local(target_ci):
+                        violations_fixed += 1
+                        fixed = True
+                        break
+                    else:
+                        _rollback_swap(target_ci, old_codon)
+
+                if not fixed:
+                    # Try all sorted codons (including those with GT, hoping boundary doesn't create it)
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        old_codon = _apply_swap(target_ci, alt)
+                        new_local = "".join(seq_chars[max(0, target_ci*3-2):min(n_bases, target_ci*3+5)])
+                        if "GT" not in new_local and not _has_rs_local(target_ci):
+                            violations_fixed += 1
+                            fixed = True
+                            break
+                        else:
+                            _rollback_swap(target_ci, old_codon)
+
+                if fixed:
+                    break
+
+            if not fixed:
+                # Some GTs may be unavoidable (e.g., Valine codons)
+                break
+
+        # ── Phase 2d: Fix AG dinucleotides (splice acceptor avoidance) ──
+        for _iter in range(300):
+            seq_str = "".join(seq_chars)
+            ag_pos = seq_str.find("AG")
+            if ag_pos == -1:
+                break
+
+            ci = ag_pos // 3
+            fixed = False
+
+            for target_ci in [ci, ci + 1]:
+                if target_ci >= n_codons or target_ci < 0:
+                    continue
+                aa = protein[target_ci] if target_ci < len(protein) else None
+                if aa is None or aa == "*":
+                    continue
+                current = "".join(seq_chars[target_ci*3:target_ci*3+3])
+
+                for alt in ag_free.get(aa, []):
+                    if alt == current:
+                        continue
+                    old_codon = _apply_swap(target_ci, alt)
+                    new_local = "".join(seq_chars[max(0, target_ci*3-2):min(n_bases, target_ci*3+5)])
+                    if "AG" not in new_local and not _has_rs_local(target_ci):
+                        violations_fixed += 1
+                        fixed = True
+                        break
+                    else:
+                        _rollback_swap(target_ci, old_codon)
+
+                if not fixed:
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        old_codon = _apply_swap(target_ci, alt)
+                        new_local = "".join(seq_chars[max(0, target_ci*3-2):min(n_bases, target_ci*3+5)])
+                        if "AG" not in new_local and not _has_rs_local(target_ci):
+                            violations_fixed += 1
+                            fixed = True
+                            break
+                        else:
+                            _rollback_swap(target_ci, old_codon)
+
+                if fixed:
+                    break
+
+            if not fixed:
+                break
+
+        # ── Phase 2e: Fix ATTTA motifs ──
+        seq_str = "".join(seq_chars)
+        for _iter in range(100):
+            pos = seq_str.find("ATTTA")
+            if pos == -1:
+                break
+            first_ci = max(0, (pos // 3) - 1)
+            last_ci = min(n_codons, ((pos + 4) // 3) + 2)
+            fixed = False
+            for ci in range(first_ci, last_ci):
+                aa = protein[ci] if ci < len(protein) else None
+                if aa is None or aa == "*":
+                    continue
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    old_codon = _apply_swap(ci, alt)
+                    new_local = "".join(seq_chars[max(0, ci*3-5):min(n_bases, ci*3+8)])
+                    if "ATTTA" not in new_local and not _has_rs_local(ci):
+                        seq_str = "".join(seq_chars)
+                        violations_fixed += 1
+                        fixed = True
+                        break
+                    else:
+                        _rollback_swap(ci, old_codon)
+                if fixed:
+                    break
+            if not fixed:
+                break
+
+        # ── Phase 2f: Fix T-runs ──
+        for _iter in range(100):
+            max_run = 0
+            max_pos = -1
+            i = 0
+            while i < n_bases:
+                if seq_chars[i] == 'T':
+                    j = i
+                    while j < n_bases and seq_chars[j] == 'T':
+                        j += 1
+                    if j - i > max_run:
+                        max_run = j - i
+                        max_pos = i
+                    i = j
+                else:
+                    i += 1
+            if max_run < 6:
+                break
+            ci = (max_pos + max_run // 2) // 3
+            if ci >= n_codons:
+                ci = n_codons - 1
+            fixed = False
+            aa = protein[ci] if ci < len(protein) else None
+            if aa is not None and aa != "*":
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    old_codon = _apply_swap(ci, alt)
+                    check_start = max(0, ci * 3 - 6)
+                    check_end = min(n_bases, ci * 3 + 9)
+                    has_long_run = False
+                    j = check_start
+                    while j < check_end:
+                        if seq_chars[j] == 'T':
+                            k = j
+                            while k < check_end and seq_chars[k] == 'T':
+                                k += 1
+                            if k - j >= 6:
+                                has_long_run = True
+                                break
+                            j = k
+                        else:
+                            j += 1
+                    if not has_long_run and not _has_rs_local(ci):
+                        violations_fixed += 1
+                        fixed = True
+                        break
+                    else:
+                        _rollback_swap(ci, old_codon)
+            if not fixed:
+                break
+
+        # ── Phase 2g: CAI hill climbing for prokaryotes ──
+        # After fixing all constraints, try to upgrade any suboptimal codons
+        # back to higher-CAI alternatives without breaking constraints.
+        hill_climb_improvements = 0
+        for _hc_iter in range(3):  # Limited passes to avoid excessive runtime
+            improved = False
+            for ci in range(n_codons):
+                aa = protein[ci] if ci < len(protein) else None
+                if aa is None or aa == "*":
+                    continue
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                current_cai = species_cai.get(current, 0.0)
+
+                # Find the best alternative that's better than current
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    alt_cai = species_cai.get(alt, 0.0)
+                    if alt_cai <= current_cai:
+                        continue
+                    # Check that this swap doesn't break constraints
+                    old_codon = _apply_swap(ci, alt)
+                    # Check no RS introduced locally
+                    if _has_rs_local(ci):
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check GC still in range
+                    new_gc_val = gc_count / n_bases
+                    if not (gc_lo <= new_gc_val <= gc_hi):
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check no ATTTA introduced locally
+                    local_window = "".join(seq_chars[max(0, ci*3-5):min(n_bases, ci*3+8)])
+                    if "ATTTA" in local_window:
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check no long T-run introduced
+                    check_start = max(0, ci * 3 - 6)
+                    check_end = min(n_bases, ci * 3 + 9)
+                    has_long_run = False
+                    j = check_start
+                    while j < check_end:
+                        if seq_chars[j] == 'T':
+                            k = j
+                            while k < check_end and seq_chars[k] == 'T':
+                                k += 1
+                            if k - j >= 6:
+                                has_long_run = True
+                                break
+                            j = k
+                        else:
+                            j += 1
+                    if has_long_run:
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # This swap is safe and improves CAI
+                    hill_climb_improvements += 1
+                    improved = True
+                    break  # First valid alt in sorted order is the best
+
+            if not improved:
+                break
+
+        # ── Compute final metrics ──
+        seq = "".join(seq_chars)
+        final_cai = math.exp(log_cai_sum / n_cai_codons) if n_cai_codons > 0 else 0.0
+        gc = gc_count / n_bases if n_bases > 0 else 0.0
+
+        return HybridResult(
+            sequence=seq,
+            cai=final_cai,
+            gc_content=round(gc, 4),
+            violations_fixed=violations_fixed,
+            hill_climb_improvements=hill_climb_improvements,
+            iterations_used=0,
+            phase1_cai=phase1_cai,
+            phase2_cai=final_cai,
+            phase3_cai=final_cai,
+            phase4_cai=final_cai,
+            cpb_improvements=0,
+            mean_cpb=0.0,
             warnings=warnings,
         )
 
@@ -489,6 +1032,9 @@ class HybridOptimizer:
         gc_hi = self.gc_hi
         max_rs_len = self._max_rs_site_len
 
+        # ── Provenance collector reference ──
+        _prov = self.provenance_collector
+
         # ── Phase 1: Greedy init with incremental GC + CAI tracking ──
         # Build sequence and track GC + CAI log product simultaneously
         codon_list: list[str] = []
@@ -496,7 +1042,7 @@ class HybridOptimizer:
         log_cai_sum = 0.0
         n_cai_codons = 0
 
-        for aa in protein:
+        for pos, aa in enumerate(protein):
             if aa == "*":
                 codon_list.append("TAA")
                 continue
@@ -512,6 +1058,52 @@ class HybridOptimizer:
             if max_a > 0 and adapt > 0:
                 log_cai_sum += math.log(adapt / max_a)
                 n_cai_codons += 1
+
+            # Record codon decision for provenance
+            if _prov is not None:
+                chosen_cai = adapt
+                alternatives: list[dict[str, Any]] = []
+                for codon in sorted_codons.get(aa, []):
+                    if codon == best:
+                        continue
+                    cai_val = species_cai.get(codon, 0.0)
+                    gc_bases = sum(1 for b in codon if b in "GC")
+                    violates: list[str] = []
+                    if "GT" in codon:
+                        violates.append("cryptic_splice_donor")
+                    if "AG" in codon:
+                        violates.append("cryptic_splice_acceptor")
+                    rejected_because: str | None = None
+                    if violates:
+                        rejected_because = f"Violates: {', '.join(violates)}"
+                    elif cai_val < chosen_cai:
+                        rejected_because = "Lower CAI"
+                    else:
+                        rejected_because = "Lower CAI"
+                    alternatives.append({
+                        "codon": codon,
+                        "cai_contribution": round(cai_val, 4),
+                        "gc_contribution": round(gc_bases / 3.0, 2),
+                        "violates_constraints": violates,
+                        "rejected_because": rejected_because,
+                    })
+                # Compute confidence
+                sl = sorted_codons.get(aa, [])
+                if len(sl) > 1:
+                    second_cai = species_cai.get(sl[1], 0.0)
+                    confidence = min(1.0, 0.5 + (chosen_cai - second_cai) * 5)
+                    confidence = max(0.0, confidence)
+                else:
+                    confidence = 1.0
+                _prov.record_codon_decision(CodonDecision(
+                    position=pos,
+                    amino_acid=aa,
+                    original_codon=None,
+                    chosen_codon=best,
+                    alternatives_considered=alternatives,
+                    constraint_reason="Maximize CAI while maintaining GC in range",
+                    confidence=round(confidence, 4),
+                ))
 
         # Build sequence as list for efficient slicing during swaps
         seq_chars = list("".join(codon_list))
@@ -646,6 +1238,9 @@ class HybridOptimizer:
                 last_ci = (pos + site_len - 1) // 3
                 fixed = False
 
+                # CAI-aware: collect ALL possible single-codon swaps across
+                # overlapping positions, then pick the one with highest CAI.
+                best_swap_info: tuple[int, str, float] | None = None  # (ci, alt, log_cai)
                 for ci in range(max(0, first_ci), min(n_codons, last_ci + 1)):
                     aa = protein[ci] if ci < len(protein) else None  # type: ignore[assignment]
                     if aa is None or aa == "*":
@@ -657,16 +1252,20 @@ class HybridOptimizer:
                             continue
                         old_codon = _apply_swap(ci, alt)
                         if not _has_rs_local(ci):
-                            # Fixed! Rebuild seq_str for next iteration
-                            seq_str = "".join(seq_chars)
-                            violations_fixed += 1
-                            fixed = True
-                            break
+                            alt_cai = species_cai.get(alt, 0.0)
+                            log_cai = math.log(alt_cai) if alt_cai > 0 else float('-inf')
+                            if best_swap_info is None or log_cai > best_swap_info[2]:
+                                best_swap_info = (ci, alt, log_cai)
+                            _rollback_swap(ci, old_codon)
                         else:
                             _rollback_swap(ci, old_codon)
 
-                    if fixed:
-                        break
+                if best_swap_info is not None:
+                    ci, alt, _ = best_swap_info
+                    _apply_swap(ci, alt)
+                    seq_str = "".join(seq_chars)
+                    violations_fixed += 1
+                    fixed = True
 
                 if not fixed:
                     # Try two-codon coordinated fix
@@ -869,6 +1468,74 @@ class HybridOptimizer:
         final_cai = math.exp(log_cai_sum / n_cai_codons) if n_cai_codons > 0 else 0.0
         gc = gc_count / n_bases if n_bases > 0 else 0.0
 
+        # ── Phase 2g: CAI hill climbing for prokaryotes ──
+        # After fixing all constraints, try to upgrade any suboptimal codons
+        # back to higher-CAI alternatives without breaking constraints.
+        hill_climb_improvements = 0
+        for _hc_iter in range(3):  # Limited passes to avoid excessive runtime
+            improved = False
+            for ci in range(n_codons):
+                aa = protein[ci] if ci < len(protein) else None
+                if aa is None or aa == "*":
+                    continue
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                current_cai = species_cai.get(current, 0.0)
+
+                # Find the best alternative that's better than current
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    alt_cai = species_cai.get(alt, 0.0)
+                    if alt_cai <= current_cai:
+                        continue
+                    # Check that this swap doesn't break constraints
+                    old_codon = _apply_swap(ci, alt)
+                    # Check no RS introduced locally
+                    if _has_rs_local(ci):
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check GC still in range
+                    new_gc_val = gc_count / n_bases
+                    if not (gc_lo <= new_gc_val <= gc_hi):
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check no ATTTA introduced locally
+                    local_window = "".join(seq_chars[max(0, ci*3-5):min(n_bases, ci*3+8)])
+                    if "ATTTA" in local_window:
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check no long T-run introduced
+                    check_start = max(0, ci * 3 - 6)
+                    check_end = min(n_bases, ci * 3 + 9)
+                    has_long_run = False
+                    j = check_start
+                    while j < check_end:
+                        if seq_chars[j] == 'T':
+                            k = j
+                            while k < check_end and seq_chars[k] == 'T':
+                                k += 1
+                            if k - j >= 6:
+                                has_long_run = True
+                                break
+                            j = k
+                        else:
+                            j += 1
+                    if has_long_run:
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # This swap is safe and improves CAI
+                    hill_climb_improvements += 1
+                    improved = True
+                    break  # First valid alt in sorted order is the best
+
+            if not improved:
+                break
+
+        # Recompute final CAI after hill climbing
+        final_cai = math.exp(log_cai_sum / n_cai_codons) if n_cai_codons > 0 else 0.0
+        gc = gc_count / n_bases if n_bases > 0 else 0.0
+        seq = "".join(seq_chars)
+
         # ── Phase 4: Codon pair bias optimization (prokaryote fast path) ──
         cpb_improvements = 0
         mean_cpb = 0.0
@@ -879,6 +1546,849 @@ class HybridOptimizer:
                 )
             )
             # Recompute gc from the sequence (may have changed slightly)
+            gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
+
+        return HybridResult(
+            sequence=seq,
+            cai=final_cai,
+            gc_content=round(gc, 4),
+            violations_fixed=violations_fixed,
+            hill_climb_improvements=hill_climb_improvements,
+            iterations_used=0,
+            phase1_cai=phase1_cai,
+            phase2_cai=final_cai,
+            phase3_cai=final_cai,
+            phase4_cai=final_cai,
+            cpb_improvements=cpb_improvements,
+            mean_cpb=mean_cpb,
+            warnings=warnings,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # Eukaryotic Fast Path
+    # ──────────────────────────────────────────────────────────
+
+    def _optimize_eukaryote_fast(self, protein: str) -> HybridResult:
+        """Streamlined eukaryotic optimization with integrated GT/AG/CpG handling.
+
+        This is the eukaryotic counterpart to _optimize_prokaryote_fast.
+        It avoids the priority-queue-based _constraint_satisfaction which
+        suffers from GT↔ATTTA oscillation loops by using a single-pass
+        approach with incremental tracking.
+
+        Pipeline:
+        1. Greedy init with highest-CAI codons + incremental GC/CAI tracking
+        2. Fix restriction sites (single scan, local window checks)
+        3. Fix GC content (incremental tracking)
+        4. Fix ATTTA motifs (fast find + codon swap, but no GT creation)
+        5. Fix T-runs (single scan + codon swap, but no GT creation)
+        6. MaxEntScan validation (only if GT/AG present — skip if none)
+           — only fix GT/AG dinucleotides that score above splice threshold
+           — prefer GT-free/AG-free alternatives that preserve CAI
+        7. Fix remaining CpG dinucleotides (soft constraint — only if CAI-neutral)
+        8. CAI recovery hill climb (upgrade codons while maintaining constraints)
+
+        Key design principles:
+        - **CAI first**: Never sacrifice CAI for soft constraints (GT/AG/CpG)
+          unless MaxEntScan flags them as actual cryptic splice sites.
+        - **No oscillation**: GT/AG/CpG are handled in a fixed order after
+          hard constraints, with CAI-preserving alternatives only.
+        - **MaxEntScan gating**: Only fix GT/AG dinucleotides that actually
+          score as cryptic splice sites, not all GT/AG occurrences.
+        - **Incremental tracking**: GC/CAI updated on every swap.
+
+        Target: <5ms for HBB (444bp) in Human, CAI ≥ 0.99
+        """
+        species_cai = self.species_cai
+        max_adapt = self._max_adapt
+        optimal_codon = self.optimal_codon
+        sorted_codons = self.sorted_codons
+        codon_gc = self.codon_gc
+        rs_sites = self._rs_sites
+        ac_scanner = self._ac_scanner
+        gc_lo = self.gc_lo
+        gc_hi = self.gc_hi
+        max_rs_len = self._max_rs_site_len
+        gt_free = self.gt_free
+        ag_free = self.ag_free
+        splice_threshold = self.splice_threshold
+
+        # ── Phase 1: Greedy init with incremental GC + CAI tracking ──
+        codon_list: list[str] = []
+        gc_count = 0
+        log_cai_sum = 0.0
+        n_cai_codons = 0
+
+        for aa in protein:
+            if aa == "*":
+                codon_list.append("TAA")
+                continue
+            best = optimal_codon.get(aa)
+            if not best:
+                sl = sorted_codons.get(aa, [])
+                best = sl[0] if sl else "NNN"
+            codon_list.append(best)
+            gc_count += codon_gc.get(best, 0)
+            adapt = species_cai.get(best, 0.0)
+            max_a = max_adapt.get(aa, 0.0)
+            if max_a > 0 and adapt > 0:
+                log_cai_sum += math.log(adapt / max_a)
+                n_cai_codons += 1
+
+        seq_chars = list("".join(codon_list))
+        n_bases = len(seq_chars)
+        n_codons = n_bases // 3
+
+        phase1_cai = math.exp(log_cai_sum / n_cai_codons) if n_cai_codons > 0 else 0.0
+
+        # ── Helper: update CAI tracking for a single codon swap ──
+        def _update_cai_for_swap(ci: int, old_codon: str, new_codon: str) -> None:
+            nonlocal log_cai_sum, n_cai_codons
+            aa = protein[ci] if ci < len(protein) else None
+            if aa and aa != "*":
+                old_adapt = species_cai.get(old_codon, 0.0)
+                max_a = max_adapt.get(aa, 0.0)
+                if max_a > 0 and old_adapt > 0:
+                    log_cai_sum -= math.log(old_adapt / max_a)
+                    n_cai_codons -= 1
+                new_adapt = species_cai.get(new_codon, 0.0)
+                if max_a > 0 and new_adapt > 0:
+                    log_cai_sum += math.log(new_adapt / max_a)
+                    n_cai_codons += 1
+
+        # ── Helper: apply a codon swap ──
+        def _apply_swap(ci: int, new_codon: str) -> str:
+            nonlocal gc_count
+            start = ci * 3
+            old_codon = "".join(seq_chars[start:start + 3])
+            old_gc = codon_gc.get(old_codon, 0)
+            new_gc = codon_gc.get(new_codon, 0)
+            gc_count += (new_gc - old_gc)
+            seq_chars[start] = new_codon[0]
+            seq_chars[start + 1] = new_codon[1]
+            seq_chars[start + 2] = new_codon[2]
+            _update_cai_for_swap(ci, old_codon, new_codon)
+            return old_codon
+
+        # ── Helper: rollback a codon swap ──
+        def _rollback_swap(ci: int, old_codon: str) -> None:
+            nonlocal gc_count
+            start = ci * 3
+            current_codon = "".join(seq_chars[start:start + 3])
+            current_gc = codon_gc.get(current_codon, 0)
+            old_gc = codon_gc.get(old_codon, 0)
+            gc_count += (old_gc - current_gc)
+            seq_chars[start] = old_codon[0]
+            seq_chars[start + 1] = old_codon[1]
+            seq_chars[start + 2] = old_codon[2]
+            _update_cai_for_swap(ci, current_codon, old_codon)
+
+        # ── Helper: check for restriction sites in local window ──
+        def _has_rs_local(ci: int) -> bool:
+            if ac_scanner is not None:
+                start = ci * 3
+                check_start = max(0, start - max_rs_len + 1)
+                check_end = min(n_bases, start + 3 + max_rs_len - 1)
+                return ac_scanner.has_any_match_in_region(
+                    "".join(seq_chars), check_start, check_end
+                )
+            if not rs_sites:
+                return False
+            start = ci * 3
+            check_start = max(0, start - max_rs_len + 1)
+            check_end = min(n_bases, start + 3 + max_rs_len - 1)
+            region = "".join(seq_chars[check_start:check_end])
+            for site, site_rc in rs_sites:
+                if site in region or (site_rc and site_rc in region):
+                    return True
+            return False
+
+        # ── Helper: check for new GT or AG in local window after swap ──
+        def _creates_new_gt_or_ag(ci: int, new_codon: str) -> tuple[bool, bool]:
+            """Return (creates_gt, creates_ag) for the local window around ci."""
+            start = ci * 3
+            prev_base = seq_chars[start - 1] if start > 0 else ''
+            next_base = seq_chars[start + 3] if start + 3 < n_bases else ''
+            local = [prev_base, new_codon[0], new_codon[1], new_codon[2], next_base]
+
+            creates_gt = False
+            creates_ag = False
+            for i in range(len(local) - 1):
+                if local[i] == 'G' and local[i + 1] == 'T':
+                    creates_gt = True
+                if local[i] == 'A' and local[i + 1] == 'G':
+                    creates_ag = True
+            return creates_gt, creates_ag
+
+        violations_fixed = 0
+        warnings: list[str] = []
+
+        # ── Phase 2a: Fix restriction sites (single scan) ──
+        if rs_sites or ac_scanner is not None:
+            seq_str = "".join(seq_chars)
+            for _iter in range(100):
+                if ac_scanner is not None:
+                    matches = ac_scanner.scan(seq_str)
+                    if not matches:
+                        break
+                    pos, site_match, _enzyme = matches[0]
+                    site_len = len(site_match)
+                else:
+                    found = False
+                    for site, site_rc in rs_sites:
+                        p = seq_str.find(site)
+                        if p == -1 and site_rc:
+                            p = seq_str.find(site_rc)
+                        if p != -1:
+                            pos = p
+                            site_len = len(site)
+                            site_match = site
+                            found = True
+                            break
+                    if not found:
+                        break
+
+                first_ci = pos // 3
+                last_ci = (pos + site_len - 1) // 3
+                fixed = False
+
+                for ci in range(max(0, first_ci), min(n_codons, last_ci + 1)):
+                    aa = protein[ci] if ci < len(protein) else None
+                    if aa is None or aa == "*":
+                        continue
+                    current = "".join(seq_chars[ci*3:ci*3+3])
+
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        old_codon = _apply_swap(ci, alt)
+                        if not _has_rs_local(ci):
+                            seq_str = "".join(seq_chars)
+                            violations_fixed += 1
+                            fixed = True
+                            break
+                        else:
+                            _rollback_swap(ci, old_codon)
+
+                    if fixed:
+                        break
+
+                if not fixed:
+                    for idx in range(max(0, first_ci), min(n_codons - 1, last_ci + 1)):
+                        ci1, ci2 = idx, idx + 1
+                        aa1 = protein[ci1] if ci1 < len(protein) else None
+                        aa2 = protein[ci2] if ci2 < len(protein) else None
+                        if aa1 is None or aa1 == "*" or aa2 is None or aa2 == "*":
+                            continue
+                        current1 = "".join(seq_chars[ci1*3:ci1*3+3])
+                        current2 = "".join(seq_chars[ci2*3:ci2*3+3])
+
+                        pair_fixed = False
+                        for c1 in sorted_codons.get(aa1, [])[:4]:
+                            for c2 in sorted_codons.get(aa2, [])[:4]:
+                                if c1 == current1 and c2 == current2:
+                                    continue
+                                old1 = _apply_swap(ci1, c1)
+                                old2 = _apply_swap(ci2, c2)
+                                if not _has_rs_local(ci1) and not _has_rs_local(ci2):
+                                    seq_str = "".join(seq_chars)
+                                    violations_fixed += 1
+                                    fixed = True
+                                    pair_fixed = True
+                                    break
+                                else:
+                                    _rollback_swap(ci2, old2)
+                                    _rollback_swap(ci1, old1)
+                            if pair_fixed:
+                                break
+
+                    if not fixed:
+                        warnings.append(
+                            f"Cannot remove restriction site {site_match} at pos {pos}"
+                        )
+                        break
+
+        # ── Phase 2b: Fix GC content (incremental) ──
+        gc_val = gc_count / n_bases if n_bases > 0 else 0.0
+        if not (gc_lo <= gc_val <= gc_hi):
+            target = gc_lo if gc_val < gc_lo else gc_hi
+            need_more_gc = gc_val < gc_lo
+
+            for _iter in range(200):
+                if gc_lo <= gc_val <= gc_hi:
+                    break
+
+                best_swap = None
+                best_ci = -1
+                best_score = -1.0
+                best_gc_delta = 0
+
+                for ci in range(n_codons):
+                    aa = protein[ci] if ci < len(protein) else None
+                    if aa is None or aa == "*":
+                        continue
+                    current = "".join(seq_chars[ci*3:ci*3+3])
+                    current_gc_val = codon_gc.get(current, 0)
+
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        alt_gc = codon_gc.get(alt, 0)
+                        gc_delta = alt_gc - current_gc_val
+
+                        if need_more_gc and gc_delta <= 0:
+                            continue
+                        if not need_more_gc and gc_delta >= 0:
+                            continue
+
+                        new_gc_count = gc_count + gc_delta
+                        new_frac = new_gc_count / n_bases
+                        diff = abs(new_frac - target)
+                        alt_cai = species_cai.get(alt, 0.0)
+                        score = (1.0 - diff) + alt_cai * 0.01
+
+                        if score > best_score:
+                            best_score = score
+                            best_swap = alt
+                            best_ci = ci
+                            best_gc_delta = gc_delta
+
+                if best_swap is None:
+                    break
+
+                old_codon = _apply_swap(best_ci, best_swap)
+                if _has_rs_local(best_ci):
+                    _rollback_swap(best_ci, old_codon)
+                    break
+
+                gc_val = gc_count / n_bases
+                violations_fixed += 1
+
+        # ── Phase 2c: Fix ATTTA motifs (without creating new GT/AG) ──
+        seq_str = "".join(seq_chars)
+        for _iter in range(100):
+            pos = seq_str.find("ATTTA")
+            if pos == -1:
+                break
+
+            first_ci = max(0, (pos // 3) - 1)
+            last_ci = min(n_codons, ((pos + 4) // 3) + 2)
+            fixed = False
+
+            for ci in range(first_ci, last_ci):
+                aa = protein[ci] if ci < len(protein) else None
+                if aa is None or aa == "*":
+                    continue
+                current = "".join(seq_chars[ci*3:ci*3+3])
+
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    old_codon = _apply_swap(ci, alt)
+                    new_local = "".join(seq_chars[max(0, ci*3-5):min(n_bases, ci*3+8)])
+                    creates_gt, creates_ag = _creates_new_gt_or_ag(ci, alt)
+                    if "ATTTA" not in new_local and not _has_rs_local(ci) and not creates_gt and not creates_ag:
+                        seq_str = "".join(seq_chars)
+                        violations_fixed += 1
+                        fixed = True
+                        break
+                    else:
+                        _rollback_swap(ci, old_codon)
+
+                if fixed:
+                    break
+
+            if not fixed:
+                # Relax: allow GT/AG creation to fix ATTTA
+                for ci in range(first_ci, last_ci):
+                    aa = protein[ci] if ci < len(protein) else None
+                    if aa is None or aa == "*":
+                        continue
+                    current = "".join(seq_chars[ci*3:ci*3+3])
+
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current:
+                            continue
+                        old_codon = _apply_swap(ci, alt)
+                        new_local = "".join(seq_chars[max(0, ci*3-5):min(n_bases, ci*3+8)])
+                        if "ATTTA" not in new_local and not _has_rs_local(ci):
+                            seq_str = "".join(seq_chars)
+                            violations_fixed += 1
+                            fixed = True
+                            break
+                        else:
+                            _rollback_swap(ci, old_codon)
+
+                    if fixed:
+                        break
+
+            if not fixed:
+                warnings.append(f"Cannot remove ATTTA motif at pos {pos}")
+                break
+
+        # ── Phase 2d: Fix T-runs (6+ consecutive T) ──
+        for _iter in range(100):
+            max_run = 0
+            max_pos = -1
+            i = 0
+            while i < n_bases:
+                if seq_chars[i] == 'T':
+                    j = i
+                    while j < n_bases and seq_chars[j] == 'T':
+                        j += 1
+                    if j - i > max_run:
+                        max_run = j - i
+                        max_pos = i
+                    i = j
+                else:
+                    i += 1
+
+            if max_run < 6:
+                break
+
+            ci = (max_pos + max_run // 2) // 3
+            if ci >= n_codons:
+                ci = n_codons - 1
+            fixed = False
+
+            aa = protein[ci] if ci < len(protein) else None
+            if aa is not None and aa != "*":
+                current = "".join(seq_chars[ci*3:ci*3+3])
+
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    old_codon = _apply_swap(ci, alt)
+                    check_start = max(0, ci * 3 - 6)
+                    check_end = min(n_bases, ci * 3 + 9)
+                    has_long_run = False
+                    j = check_start
+                    while j < check_end:
+                        if seq_chars[j] == 'T':
+                            k = j
+                            while k < check_end and seq_chars[k] == 'T':
+                                k += 1
+                            if k - j >= 6:
+                                has_long_run = True
+                                break
+                            j = k
+                        else:
+                            j += 1
+
+                    if not has_long_run and not _has_rs_local(ci):
+                        violations_fixed += 1
+                        fixed = True
+                        break
+                    else:
+                        _rollback_swap(ci, old_codon)
+
+            if not fixed:
+                warnings.append(
+                    f"Cannot fix T-run of {max_run} at pos {max_pos}"
+                )
+                break
+
+        # ── Phase 3: MaxEntScan validation (only if GT/AG present) ──
+        # This is the KEY step that was missing from the naive GT/AG elimination.
+        # Instead of eliminating ALL GT/AG dinucleotides (which tanks CAI),
+        # we only eliminate GT/AG dinucleotides that MaxEntScan identifies
+        # as actual cryptic splice sites.  Most GT/AG dinucleotides are
+        # not cryptic splice sites, so this preserves CAI.
+        seq_str = "".join(seq_chars)
+        has_gt = "GT" in seq_str
+        has_ag = "AG" in seq_str
+
+        if has_gt or has_ag:
+            try:
+                from .maxentscan import scan_splice_sites
+
+                sites = scan_splice_sites(
+                    seq_str,
+                    donor_threshold=splice_threshold,
+                    acceptor_threshold=splice_threshold,
+                )
+
+                for _splice_iter in range(10):
+                    if not sites:
+                        break
+
+                    sites.sort(key=lambda s: s[2], reverse=True)
+                    pos, site_type, score = sites[0]
+
+                    # Fix cryptic splice sites
+                    codon_idx = pos // 3
+                    next_codon_start = codon_idx * 3 + 3
+                    is_within = (pos + 1) < next_codon_start
+
+                    if site_type == "donor" and is_within:
+                        aa = protein[codon_idx] if codon_idx < len(protein) else None
+                        if aa is None or aa == "*":
+                            sites = sites[1:]
+                            continue
+                        current = "".join(seq_chars[codon_idx*3:codon_idx*3+3])
+
+                        # Check if this is a Valine codon (unavoidable)
+                        if current[:2] == "GT":
+                            from .type_system import CODON_TABLE as _CT
+                            if _CT.get(current) == "V":
+                                sites = sites[1:]
+                                continue
+
+                        # Try GT-free alternatives (CAI-sorted)
+                        fixed = False
+                        for alt in gt_free.get(aa, []):
+                            if alt == current:
+                                continue
+                            old_codon = _apply_swap(codon_idx, alt)
+                            if not _has_rs_local(codon_idx):
+                                violations_fixed += 1
+                                fixed = True
+                                break
+                            else:
+                                _rollback_swap(codon_idx, old_codon)
+
+                        if not fixed:
+                            sites = sites[1:]
+                        else:
+                            seq_str = "".join(seq_chars)
+                            sites = scan_splice_sites(
+                                seq_str,
+                                donor_threshold=splice_threshold,
+                                acceptor_threshold=splice_threshold,
+                            )
+
+                    elif site_type == "donor" and not is_within:
+                        # Cross-codon GT: try fixing either codon
+                        next_ci = codon_idx + 1
+                        fixed = False
+
+                        if next_ci < n_codons:
+                            aa2 = protein[next_ci] if next_ci < len(protein) else None
+                            if aa2 is not None and aa2 != "*":
+                                current2 = "".join(seq_chars[next_ci*3:next_ci*3+3])
+                                for alt2 in sorted_codons.get(aa2, []):
+                                    if alt2[0] == 'T' or alt2 == current2:
+                                        continue
+                                    old2 = _apply_swap(next_ci, alt2)
+                                    if not _has_rs_local(next_ci):
+                                        violations_fixed += 1
+                                        fixed = True
+                                        break
+                                    else:
+                                        _rollback_swap(next_ci, old2)
+
+                        if not fixed:
+                            aa1 = protein[codon_idx] if codon_idx < len(protein) else None
+                            if aa1 is not None and aa1 != "*":
+                                current1 = "".join(seq_chars[codon_idx*3:codon_idx*3+3])
+                                for alt1 in sorted_codons.get(aa1, []):
+                                    if alt1[-1] == 'G' or alt1 == current1:
+                                        continue
+                                    old1 = _apply_swap(codon_idx, alt1)
+                                    if not _has_rs_local(codon_idx):
+                                        violations_fixed += 1
+                                        fixed = True
+                                        break
+                                    else:
+                                        _rollback_swap(codon_idx, old1)
+
+                        if not fixed:
+                            sites = sites[1:]
+                        else:
+                            seq_str = "".join(seq_chars)
+                            sites = scan_splice_sites(
+                                seq_str,
+                                donor_threshold=splice_threshold,
+                                acceptor_threshold=splice_threshold,
+                            )
+
+                    elif site_type == "acceptor" and is_within:
+                        aa = protein[codon_idx] if codon_idx < len(protein) else None
+                        if aa is None or aa == "*":
+                            sites = sites[1:]
+                            continue
+                        current = "".join(seq_chars[codon_idx*3:codon_idx*3+3])
+
+                        # Try AG-free alternatives (CAI-sorted)
+                        fixed = False
+                        for alt in ag_free.get(aa, []):
+                            if alt == current:
+                                continue
+                            old_codon = _apply_swap(codon_idx, alt)
+                            # Check no new GT created
+                            creates_gt, _ = _creates_new_gt_or_ag(codon_idx, alt)
+                            if not creates_gt and not _has_rs_local(codon_idx):
+                                violations_fixed += 1
+                                fixed = True
+                                break
+                            else:
+                                _rollback_swap(codon_idx, old_codon)
+
+                        if not fixed:
+                            sites = sites[1:]
+                        else:
+                            seq_str = "".join(seq_chars)
+                            sites = scan_splice_sites(
+                                seq_str,
+                                donor_threshold=splice_threshold,
+                                acceptor_threshold=splice_threshold,
+                            )
+
+                    else:
+                        # Cross-codon acceptor or unknown — skip
+                        sites = sites[1:]
+
+            except ImportError:
+                pass
+
+        # ── Phase 4: CpG island disruption ──
+        # Fix CpG dinucleotides by replacing with CG-free alternatives.
+        # We prefer higher-CAI alternatives but accept some CAI loss since
+        # CpG islands are a hard constraint for eukaryotic optimization.
+        # For cross-codon CGs, try both sides of the boundary.
+        # Allow creating GT/AG during CpG fix (MaxEntScan will handle
+        # any cryptic splice sites that result).
+        seq_str = "".join(seq_chars)
+        for _cpg_iter in range(30):
+            seq_str = "".join(seq_chars)
+            found_cpg = False
+
+            for i in range(n_bases - 1):
+                if seq_str[i] == 'C' and seq_str[i + 1] == 'G':
+                    codon_idx = i // 3
+                    next_codon_start = codon_idx * 3 + 3
+                    is_within = (i + 1) < next_codon_start
+
+                    if is_within:
+                        aa = protein[codon_idx] if codon_idx < len(protein) else None
+                        if aa is None or aa == "*":
+                            continue
+
+                        current = "".join(seq_chars[codon_idx*3:codon_idx*3+3])
+                        # Try CG-free alternatives (CAI-sorted)
+                        # First try without creating GT/AG, then allow GT/AG
+                        fixed = False
+                        for alt in sorted_codons.get(aa, []):
+                            if alt == current or "CG" in alt:
+                                continue
+                            old_codon = _apply_swap(codon_idx, alt)
+                            creates_gt, creates_ag = _creates_new_gt_or_ag(codon_idx, alt)
+                            if not creates_gt and not creates_ag and not _has_rs_local(codon_idx):
+                                violations_fixed += 1
+                                found_cpg = True
+                                fixed = True
+                                break
+                            else:
+                                _rollback_swap(codon_idx, old_codon)
+
+                        if not fixed:
+                            # Allow GT/AG creation for CpG elimination
+                            for alt in sorted_codons.get(aa, []):
+                                if alt == current or "CG" in alt:
+                                    continue
+                                old_codon = _apply_swap(codon_idx, alt)
+                                if not _has_rs_local(codon_idx):
+                                    violations_fixed += 1
+                                    found_cpg = True
+                                    fixed = True
+                                    break
+                                else:
+                                    _rollback_swap(codon_idx, old_codon)
+
+                        if fixed:
+                            break
+                    else:
+                        # Cross-codon CG: current codon ends with C, next starts with G
+                        next_ci = codon_idx + 1
+                        if next_ci >= n_codons:
+                            continue
+                        aa2 = protein[next_ci] if next_ci < len(protein) else None
+                        if aa2 is None or aa2 == "*":
+                            continue
+
+                        # Try next codon with non-G-starting alternative
+                        current2 = "".join(seq_chars[next_ci*3:next_ci*3+3])
+                        fixed = False
+                        for alt2 in sorted_codons.get(aa2, []):
+                            if alt2[0] == 'G' or alt2 == current2:
+                                continue
+                            old2 = _apply_swap(next_ci, alt2)
+                            creates_gt2, creates_ag2 = _creates_new_gt_or_ag(next_ci, alt2)
+                            if not creates_gt2 and not creates_ag2 and not _has_rs_local(next_ci):
+                                violations_fixed += 1
+                                found_cpg = True
+                                fixed = True
+                                break
+                            else:
+                                _rollback_swap(next_ci, old2)
+
+                        if not fixed:
+                            # Allow GT/AG for next codon
+                            for alt2 in sorted_codons.get(aa2, []):
+                                if alt2[0] == 'G' or alt2 == current2:
+                                    continue
+                                old2 = _apply_swap(next_ci, alt2)
+                                if not _has_rs_local(next_ci):
+                                    violations_fixed += 1
+                                    found_cpg = True
+                                    fixed = True
+                                    break
+                                else:
+                                    _rollback_swap(next_ci, old2)
+
+                        if not fixed:
+                            # Try current codon with non-C-ending alternative
+                            aa = protein[codon_idx] if codon_idx < len(protein) else None
+                            if aa is not None and aa != "*":
+                                current1 = "".join(seq_chars[codon_idx*3:codon_idx*3+3])
+                                for alt1 in sorted_codons.get(aa, []):
+                                    if alt1[-1] == 'C' or alt1 == current1:
+                                        continue
+                                    old1 = _apply_swap(codon_idx, alt1)
+                                    creates_gt1, creates_ag1 = _creates_new_gt_or_ag(codon_idx, alt1)
+                                    if not creates_gt1 and not creates_ag1 and not _has_rs_local(codon_idx):
+                                        violations_fixed += 1
+                                        found_cpg = True
+                                        fixed = True
+                                        break
+                                    else:
+                                        _rollback_swap(codon_idx, old1)
+
+                            if not fixed:
+                                # Allow GT/AG for current codon too
+                                if aa is not None and aa != "*":
+                                    for alt1 in sorted_codons.get(aa, []):
+                                        if alt1[-1] == 'C' or alt1 == current1:
+                                            continue
+                                        old1 = _apply_swap(codon_idx, alt1)
+                                        if not _has_rs_local(codon_idx):
+                                            violations_fixed += 1
+                                            found_cpg = True
+                                            fixed = True
+                                            break
+                                        else:
+                                            _rollback_swap(codon_idx, old1)
+
+                        if fixed:
+                            break
+
+            if not found_cpg:
+                break
+
+        # ── Phase 5: CAI recovery hill climb ──
+        # Upgrade codons while maintaining all constraints
+        aas = list(protein)
+        for _iteration in range(5):
+            upgrade_plan: dict[int, str] = {}
+
+            for ci in range(n_codons):
+                aa = aas[ci]
+                if aa == "*":
+                    continue
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                current_cai = species_cai.get(current, 0.0)
+                optimal = optimal_codon.get(aa, current)
+                optimal_cai = species_cai.get(optimal, 0.0)
+
+                if optimal_cai > current_cai and current != optimal:
+                    upgrade_plan[ci] = optimal
+
+            if not upgrade_plan:
+                break
+
+            any_improved = False
+            applied: set[int] = set()
+
+            for ci in sorted(
+                upgrade_plan.keys(),
+                key=lambda c: species_cai.get(upgrade_plan[c], 0.0) - species_cai.get("".join(seq_chars[c*3:c*3+3]), 0.0),
+                reverse=True,
+            ):
+                if any(abs(ci - a) <= 2 for a in applied):
+                    continue
+
+                new_codon = upgrade_plan[ci]
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                if current == new_codon:
+                    continue
+
+                # Try the swap and check constraints
+                old_codon = _apply_swap(ci, new_codon)
+                local_seq = "".join(seq_chars)
+                local_region = local_seq[max(0, ci*3-1):min(n_bases, ci*3+4)]
+
+                rs_ok = not _has_rs_local(ci)
+                gt_ok = "GT" not in local_region
+                ag_ok = "AG" not in local_region
+                gc_ok = gc_lo <= (gc_count / n_bases) <= gc_hi
+                attta_ok = "ATTTA" not in local_seq[max(0, ci*3-5):min(n_bases, ci*3+8)]
+
+                # T-run check
+                check_s = max(0, ci * 3 - 6)
+                check_e = min(n_bases, ci * 3 + 9)
+                trun_ok = True
+                j = check_s
+                while j < check_e:
+                    if seq_chars[j] == 'T':
+                        k = j
+                        while k < check_e and seq_chars[k] == 'T':
+                            k += 1
+                        if k - j >= 6:
+                            trun_ok = False
+                            break
+                        j = k
+                    else:
+                        j += 1
+
+                if rs_ok and gt_ok and ag_ok and gc_ok and attta_ok and trun_ok:
+                    violations_fixed += 1
+                    any_improved = True
+                    applied.add(ci)
+                else:
+                    _rollback_swap(ci, old_codon)
+                    # Try other alternatives
+                    aa = aas[ci]
+                    for alt in sorted_codons.get(aa, []):
+                        if alt == current or alt == new_codon:
+                            continue
+                        alt_cai = species_cai.get(alt, 0.0)
+                        cur_cai = species_cai.get(current, 0.0)
+                        if alt_cai <= cur_cai:
+                            continue
+
+                        old_codon2 = _apply_swap(ci, alt)
+                        local_seq2 = "".join(seq_chars)
+                        local_region2 = local_seq2[max(0, ci*3-1):min(n_bases, ci*3+4)]
+                        rs_ok2 = not _has_rs_local(ci)
+                        gt_ok2 = "GT" not in local_region2
+                        ag_ok2 = "AG" not in local_region2
+                        gc_ok2 = gc_lo <= (gc_count / n_bases) <= gc_hi
+                        attta_ok2 = "ATTTA" not in local_seq2[max(0, ci*3-5):min(n_bases, ci*3+8)]
+                        if rs_ok2 and gt_ok2 and ag_ok2 and gc_ok2 and attta_ok2:
+                            violations_fixed += 1
+                            any_improved = True
+                            applied.add(ci)
+                            break
+                        else:
+                            _rollback_swap(ci, old_codon2)
+
+            if not any_improved:
+                break
+
+        # ── Compute final metrics ──
+        seq = "".join(seq_chars)
+        final_cai = math.exp(log_cai_sum / n_cai_codons) if n_cai_codons > 0 else 0.0
+        gc = gc_count / n_bases if n_bases > 0 else 0.0
+
+        # ── Codon pair bias optimization ──
+        cpb_improvements = 0
+        mean_cpb = 0.0
+        if self.consider_codon_pair_bias:
+            seq, final_cai, cpb_improvements, mean_cpb = (
+                self._codon_pair_bias_optimize_prokaryote(
+                    seq, protein, final_cai
+                )
+            )
             gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
 
         return HybridResult(
@@ -932,6 +2442,13 @@ class HybridOptimizer:
         violations_fixed = 0
         total_iterations = 0
 
+        # Track violation signatures for stale detection — if the same set
+        # of violations persists for 2 consecutive iterations, the remaining
+        # violations are unfixable and we should stop rather than waste
+        # cycles on futile swap-check-rollback loops.
+        _prev_violation_sig: frozenset[tuple[str, int]] | None = None
+        _stale_count = 0
+
         # Phase 2a: Fast constraint fixes (no MaxEntScan needed)
         for iteration in range(self.max_local_search_iterations):
             violations = self._detect_cheap_violations(state, avoid_gt)
@@ -940,6 +2457,20 @@ class HybridOptimizer:
                 break
 
             total_iterations = iteration + 1
+
+            # ── Stale detection ──
+            # Compute a signature of the current violation set (type + position).
+            # If this signature is identical to the previous iteration, the
+            # fixes are not making progress and the remaining violations are
+            # unfixable.  Break immediately to avoid wasting time.
+            sig = frozenset((v.violation_type, v.position) for v in violations)
+            if sig == _prev_violation_sig:
+                _stale_count += 1
+                if _stale_count >= 2:
+                    break
+            else:
+                _stale_count = 0
+            _prev_violation_sig = sig
 
             # Sort by severity (highest first) for priority ordering
             violations.sort(key=lambda v: v.severity, reverse=True)
@@ -2193,22 +3724,14 @@ class HybridOptimizer:
 
         CAI = geometric mean of (w_i) for each codon,
         where w_i = adaptiveness_i / max_adaptiveness_for_amino_acid.
-        Uses precomputed max adaptiveness tables for fast lookup.
+        Uses precomputed self._max_adapt tables for fast lookup.
         """
         if not seq or len(seq) < 3:
             return 0.0
 
-        # Precompute max adaptiveness per amino acid
-        max_adapt: dict[str, float] = {}
-        for aa, codons in AA_TO_CODONS.items():
-            if aa == "*":
-                continue
-            max_w = 0.0
-            for c in codons:
-                w = self.species_cai.get(c, 0.0)
-                if w > max_w:
-                    max_w = w
-            max_adapt[aa] = max_w
+        # Use precomputed max adaptiveness (self._max_adapt) instead of
+        # rebuilding it from AA_TO_CODONS on every call.
+        max_adapt = self._max_adapt
 
         log_sum = 0.0
         n_codons = 0

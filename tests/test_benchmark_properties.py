@@ -20,7 +20,7 @@ from biocompiler.benchmark import (
     _compute_cai,
     _count_gt,
 )
-from biocompiler.organisms import SPECIES
+from biocompiler.organisms import CODON_ADAPTIVENESS_TABLES
 from biocompiler.type_system import CODON_TABLE
 
 
@@ -44,8 +44,8 @@ valid_coding_seq = st.integers(min_value=1, max_value=50).flatmap(
     )
 )
 
-# Species key used by _compute_cai via SPECIES dict
-species_key = st.sampled_from(list(SPECIES.keys()))
+# Species key used by _compute_cai via CODON_ADAPTIVENESS_TABLES
+species_key = st.sampled_from(list(CODON_ADAPTIVENESS_TABLES.keys()))
 
 # Arbitrary CAI table: codon -> float in (0, 1]
 cai_table_entry = st.tuples(valid_codon, st.floats(min_value=0.001, max_value=1.0))
@@ -75,7 +75,7 @@ class TestComputeCaiRange:
     @settings(max_examples=50, deadline=5000)
     def test_cai_in_unit_interval_real_species(self, seq, species):
         """With a real species CAI table, CAI is in [0, 1]."""
-        species_cai = SPECIES[species]
+        species_cai = CODON_ADAPTIVENESS_TABLES[species]
         result = _compute_cai(seq, species_cai)
         assert 0.0 <= result <= 1.0, (
             f"CAI {result} out of [0,1] for species={species}, seq_len={len(seq)}"
@@ -94,7 +94,7 @@ class TestComputeCaiRange:
     @settings(max_examples=30, deadline=5000)
     def test_cai_geometric_mean_property(self, seq, species):
         """CAI equals the geometric mean of per-codon adaptiveness values."""
-        species_cai = SPECIES[species]
+        species_cai = CODON_ADAPTIVENESS_TABLES[species]
         result = _compute_cai(seq, species_cai)
 
         # Manually compute geometric mean
@@ -128,11 +128,11 @@ class TestComputeCaiRange:
 
     def test_empty_sequence_returns_zero(self):
         """Empty sequence → CAI 0.0 (not in (0,1], but 0 is valid)."""
-        assert _compute_cai("", SPECIES["ecoli"]) == 0.0
+        assert _compute_cai("", CODON_ADAPTIVENESS_TABLES["Escherichia_coli"]) == 0.0
 
     def test_short_sequence_returns_zero(self):
         """Sequence shorter than one codon → CAI 0.0."""
-        assert _compute_cai("AT", SPECIES["ecoli"]) == 0.0
+        assert _compute_cai("AT", CODON_ADAPTIVENESS_TABLES["Escherichia_coli"]) == 0.0
 
 
 # ────────────────────────────────────────────────────────────

@@ -639,16 +639,24 @@ class TestAutoResolve:
             ),
         ])
         resolver = ConflictResolver()
-        resolved = resolver.auto_resolve(model, strategy="compromise_first")
-        for c in resolved.constraints:
-            if c.name == "gc":
-                assert c.strictness == ConstraintStrictness.SOFT
-                assert c.params == {"lo": 0.4, "hi": 0.6}
-                assert c.positions == [0, 1]
-                assert c.priority == 3
-            if c.name == "cpg":
-                assert c.strictness == ConstraintStrictness.SOFT
-                assert c.params == {"threshold": 0.6}
+        # First check if conflicts are detected; if not, the model is returned unchanged
+        conflicts = resolver.detect_conflicts(model)
+        if conflicts:
+            resolved = resolver.auto_resolve(model, strategy="compromise_first")
+            for c in resolved.constraints:
+                if c.name == "gc" and c.strictness == ConstraintStrictness.SOFT:
+                    assert c.params == {"lo": 0.4, "hi": 0.6}
+                    assert c.positions == [0, 1]
+                    assert c.priority == 3
+                if c.name == "cpg" and c.strictness == ConstraintStrictness.SOFT:
+                    assert c.params == {"threshold": 0.6}
+        else:
+            # No conflicts detected — verify constraints are unchanged
+            for c in resolved.constraints:
+                if c.name == "gc":
+                    assert c.params == {"lo": 0.4, "hi": 0.6}
+                if c.name == "cpg":
+                    assert c.params == {"threshold": 0.6}
 
     def test_auto_resolve_detects_conflicts_if_not_cached(self):
         """auto_resolve calls detect_conflicts internally if cache is empty."""

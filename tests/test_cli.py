@@ -217,12 +217,14 @@ class TestArgumentParsing:
     # ── optimize ──
 
     def test_optimize_basic(self):
-        """Parse basic optimize command with input file."""
+        """Parse basic optimize command with protein positional arg."""
         parser = build_parser()
         args = parser.parse_args(["optimize", "my_gene.fasta"])
         assert args.command == "optimize"
-        assert args.input == "my_gene.fasta"
-        assert args.species == "human"
+        # v10: positional arg is 'protein', not 'input'
+        assert args.protein == "my_gene.fasta"
+        assert args.organism is None
+        assert args.species is None
         assert args.enzymes == ""
         assert args.splice_low == 3.0
         assert args.splice_high == 6.0
@@ -263,10 +265,11 @@ class TestArgumentParsing:
         assert args.certificate == "cert.txt"
 
     def test_optimize_invalid_species(self):
-        """Invalid species should cause parser error."""
+        """Invalid species is accepted by parser (validation happens at runtime)."""
         parser = build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["optimize", "gene.fasta", "--species", "yeast"])
+        # v10: species is no longer validated at parse time
+        args = parser.parse_args(["optimize", "gene.fasta", "--species", "yeast"])
+        assert args.species == "yeast"
 
     # ── check ──
 

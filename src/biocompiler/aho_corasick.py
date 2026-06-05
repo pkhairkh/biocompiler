@@ -44,6 +44,18 @@ from __future__ import annotations
 from collections import deque
 from typing import Optional
 
+# ── NUMBA integration ──────────────────────────────────────────────
+try:
+    from .numba_kernels import (
+        HAS_NUMBA as _HAS_NUMBA,
+        scan_restriction_sites as _numba_scan_rs,
+        seq_to_bytes as _seq_to_bytes,
+    )
+except ImportError:
+    _HAS_NUMBA = False
+
+HAS_NUMBA: bool = _HAS_NUMBA
+
 __all__ = [
     "AhoCorasickNode",
     "AhoCorasickScanner",

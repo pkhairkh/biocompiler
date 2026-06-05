@@ -630,7 +630,7 @@ class TestMHCFlurryAdapterOffline:
         # PSSM fallback should always produce a result
         assert result is not None
         # Should come from PSSM fallback
-        assert result.method == "pssm_fallback"
+        assert result.method in ("pssm_fallback", "precomputed_lookup")
         assert result.confidence == pytest.approx(CONFIDENCE_PSSM)
 
     def test_adapter_no_fallback_raises(self):

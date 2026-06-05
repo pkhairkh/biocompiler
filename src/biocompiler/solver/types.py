@@ -666,6 +666,7 @@ class SolverConfig:
     avoid_cpg: bool = True
     avoid_attta: bool = True
     avoid_t_runs: bool = True
+    add_default_restriction_sites: bool = True  # Add common 6+ bp sites when restriction_sites is empty
     cai_weight: float = 1.0
     cpg_weight: float = 0.5
     mrna_dg_weight: float = 0.3  # Weight for mRNA structure objective (ViennaRNA)
@@ -806,6 +807,11 @@ class SolverResult:
     fallback_used: bool = False
     warnings: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def backend(self) -> SolverBackend:
+        """Alias for :attr:`backend_used` — backward compatibility."""
+        return self.backend_used
 
 
 # ---------------------------------------------------------------------------

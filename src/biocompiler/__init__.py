@@ -237,6 +237,7 @@ try:
     from .organisms import (
         OrganismDatabase, get_database,
         SPECIES, ECOLI_CAI, HUMAN_CAI, compute_cai_weights,
+        get_species_cai_weights,
     )
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
@@ -246,6 +247,7 @@ except ImportError:
     ECOLI_CAI = None
     HUMAN_CAI = None
     compute_cai_weights = None
+    get_species_cai_weights = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tissue data
@@ -978,6 +980,7 @@ __all__ = [
     # ── Organisms ────────────────────────────────────────────
     "OrganismDatabase", "get_database",
     "SPECIES", "ECOLI_CAI", "HUMAN_CAI", "compute_cai_weights",
+    "get_species_cai_weights",
 
     # ── Tissue data ──────────────────────────────────────────
     "get_tissue_weights", "list_available_tissues", "add_custom_tissue",

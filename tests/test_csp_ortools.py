@@ -64,6 +64,7 @@ def _build_model(
     restriction_enzymes: list[str] | None = None,
     avoid_cpg: bool = False,
     avoid_gt: bool = False,
+    organism: str = "Escherichia_coli",
 ) -> CSPModel:
     sites = []
     for enz in (restriction_enzymes or []):
@@ -76,6 +77,8 @@ def _build_model(
         gc_hi=gc_bounds[1],
         restriction_sites=sites,
         avoid_cpg=avoid_cpg,
+        add_default_restriction_sites=bool(restriction_enzymes),
+        organism=organism,
     )
     codon_domains = {i: list(AA_TO_CODONS[aa]) for i, aa in enumerate(protein)}
     constraints: list[ConstraintSpec] = [
@@ -101,7 +104,7 @@ def _build_model(
         ))
     return CSPModel(
         protein_sequence=protein, codon_domains=codon_domains,
-        constraints=constraints, config=config,
+        constraints=constraints, config=config, organism=organism,
     )
 
 

@@ -98,14 +98,20 @@ class TestSpeciesRegistry:
     @pytest.mark.parametrize("name", sorted(EXPECTED_SPECIES_KEYS))
     def test_species_entry_has_cai_weights(self, name: str):
         """Each SPECIES entry must contain non-empty cai_weights."""
-        entry = SPECIES[name]
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            entry = SPECIES[name]
         assert "cai_weights" in entry, f"Species {name!r} missing 'cai_weights' key"
         assert len(entry["cai_weights"]) > 0, f"Species {name!r} has empty cai_weights"
 
     @pytest.mark.parametrize("name", sorted(EXPECTED_SPECIES_KEYS))
     def test_species_entry_has_validation_flag(self, name: str):
         """Each SPECIES entry must have a codon_usage_validation flag."""
-        entry = SPECIES[name]
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            entry = SPECIES[name]
         assert "codon_usage_validation" in entry, (
             f"Species {name!r} missing 'codon_usage_validation' key"
         )

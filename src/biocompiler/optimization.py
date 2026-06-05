@@ -33,6 +33,7 @@ v10.0.0 changes:
 from typing import List, Dict, Optional, Tuple, Set, Any
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import product as itertools_product
@@ -44,7 +45,7 @@ from .type_system import (
     check_valid_coding_seq,
     find_cross_codon_gt, find_cross_codon_cg, find_cross_codon_restriction,
 )
-from .organisms import SPECIES, CODON_ADAPTIVENESS_TABLES, ORGANISM_GC_TARGETS, resolve_organism, ORGANISM_ALIASES, SPECIES_SHORT_NAMES, SUPPORTED_ORGANISMS
+from .organisms import CODON_ADAPTIVENESS_TABLES, ORGANISM_GC_TARGETS, resolve_organism, ORGANISM_ALIASES, SPECIES_SHORT_NAMES, SUPPORTED_ORGANISMS
 from .constants import reverse_complement, RESTRICTION_ENZYMES, IUPAC_EXPAND
 from .scanner import gc_content
 from .maxentscan import score_donor, score_acceptor, max_donor_score, max_acceptor_score
@@ -59,6 +60,19 @@ from .decision_provenance import (
     OptimizationDecisionTrail,
 )
 from .aho_corasick import AhoCorasickScanner, build_scanner_from_enzymes, build_scanner_from_sites  # type: ignore[import-untyped]
+
+# ── NUMBA integration ──────────────────────────────────────────────
+try:
+    from .numba_kernels import (
+        HAS_NUMBA as _HAS_NUMBA,
+        count_gc as _numba_count_gc,
+        count_dinucleotides as _numba_count_dinuc,
+        seq_to_bytes as _seq_to_bytes,
+    )
+except ImportError:
+    _HAS_NUMBA = False
+
+HAS_NUMBA: bool = _HAS_NUMBA
 
 
 __all__ = [
@@ -292,6 +306,7 @@ def _get_overlapping_codons(pos: int, site_len: int, n_codons: int) -> list[int]
 def _remove_site_multicodon(
     sequence: str, aas: list[str], sorted_codons: dict[str, list[str]],
     site_upper: str, site_rc: str,
+    usage: dict[str, float] | None = None,
 ) -> tuple[str, bool]:
     """
     Try to remove a restriction site using multi-codon coordinated solving.
@@ -299,6 +314,11 @@ def _remove_site_multicodon(
     When a site straddles codon boundaries (e.g., PstI CTG|CAG spans codons i and i+1),
     single-codon swaps fail because changing either codon alone doesn't eliminate the site.
     This function enumerates valid codon COMBINATIONS for all overlapping codons.
+
+    When ``usage`` (a codon→CAI adaptiveness dict) is provided, the function
+    ranks all viable codon combinations by CAI impact and picks the one that
+    minimises CAI loss.  Without ``usage``, it returns the first combo that
+    eliminates the site (legacy behaviour).
 
     Pre-conditions:
     - sequence is uppercase DNA
@@ -324,19 +344,45 @@ def _remove_site_multicodon(
             aa = aas[ci]
             candidate_lists.append(sorted_codons[aa])
 
-        # Enumerate all codon combinations for overlapping positions
-        # Max search: ~6^3 = 216 for 3-codon overlap (very rare)
-        for combo in itertools_product(*candidate_lists):
-            # Build test sequence with this combo applied
-            test = list(sequence)
-            for idx, ci in enumerate(overlapping):
-                start = ci * 3
-                test[start:start + 3] = list(combo[idx])
-            test_seq = "".join(test)
+        if usage is not None:
+            # CAI-aware: enumerate ALL combos, rank by CAI, pick the best
+            best_seq: str | None = None
+            best_cai_sum: float = float('-inf')
 
-            # Check if site is eliminated
-            if site_upper not in test_seq and (not site_rc or site_rc not in test_seq):
-                return test_seq, True
+            for combo in itertools_product(*candidate_lists):
+                # Build test sequence with this combo applied
+                test = list(sequence)
+                for idx, ci in enumerate(overlapping):
+                    start = ci * 3
+                    test[start:start + 3] = list(combo[idx])
+                test_seq = "".join(test)
+
+                # Check if site is eliminated
+                if site_upper not in test_seq and (not site_rc or site_rc not in test_seq):
+                    # Compute total CAI contribution of the changed codons
+                    cai_sum = sum(
+                        math.log(usage.get(combo[idx], 1e-10))
+                        for idx, ci in enumerate(overlapping)
+                    )
+                    if cai_sum > best_cai_sum:
+                        best_cai_sum = cai_sum
+                        best_seq = test_seq
+
+            if best_seq is not None:
+                return best_seq, True
+        else:
+            # Legacy: return first combo that eliminates the site
+            for combo in itertools_product(*candidate_lists):
+                # Build test sequence with this combo applied
+                test = list(sequence)
+                for idx, ci in enumerate(overlapping):
+                    start = ci * 3
+                    test[start:start + 3] = list(combo[idx])
+                test_seq = "".join(test)
+
+                # Check if site is eliminated
+                if site_upper not in test_seq and (not site_rc or site_rc not in test_seq):
+                    return test_seq, True
 
     return sequence, False
 
@@ -554,31 +600,40 @@ def _greedy_optimize(
             site_len = len(site_match)
             site_rc = reverse_complement(site_match)
 
-            # Try multi-codon coordinated removal
+            # Try multi-codon coordinated removal (CAI-aware)
             new_seq, fixed = _remove_site_multicodon(
-                sequence, aas, sorted_codons, site_match, site_rc
+                sequence, aas, sorted_codons, site_match, site_rc, usage=usage
             )
             if fixed:
                 sequence = new_seq
                 continue
 
-            # Fallback: try single-codon swap
-            codon_idx = pos // 3
-            if codon_idx < len(aas):
-                aa = aas[codon_idx]
-                current = sequence[codon_idx * 3: codon_idx * 3 + 3]
-                single_fixed = False
-                for alt in sorted_codons[aa]:
-                    if alt != current:
-                        seq_list = list(sequence)
-                        seq_list[codon_idx * 3: codon_idx * 3 + 3] = list(alt)
-                        test = "".join(seq_list)
-                        if site_match not in test and site_rc not in test:
-                            sequence = test
-                            single_fixed = True
-                            break
-                if single_fixed:
+            # Fallback: try single-codon swap — CAI-aware: find the best
+            # swap across ALL overlapping codon positions, not just the first
+            overlapping = _get_overlapping_codons(pos, site_len, len(aas))
+            best_single_swap: tuple[int, str, float] | None = None  # (ci, alt, log_cai)
+            for ci in overlapping:
+                if ci >= len(aas):
                     continue
+                aa = aas[ci]
+                current = sequence[ci * 3: ci * 3 + 3]
+                for alt in sorted_codons[aa]:
+                    if alt == current:
+                        continue
+                    seq_list = list(sequence)
+                    seq_list[ci * 3: ci * 3 + 3] = list(alt)
+                    test = "".join(seq_list)
+                    if site_match not in test and site_rc not in test:
+                        alt_cai = usage.get(alt, 0.0)
+                        log_cai = math.log(alt_cai) if alt_cai > 0 else float('-inf')
+                        if best_single_swap is None or log_cai > best_single_swap[2]:
+                            best_single_swap = (ci, alt, log_cai)
+            if best_single_swap is not None:
+                ci, alt, _ = best_single_swap
+                seq_list = list(sequence)
+                seq_list[ci * 3: ci * 3 + 3] = list(alt)
+                sequence = "".join(seq_list)
+                continue
 
             # Try neighboring codons
             overlapping = _get_overlapping_codons(pos, site_len, len(aas))
@@ -619,34 +674,41 @@ def _greedy_optimize(
                 if not positions:
                     break
 
-                # Try multi-codon coordinated removal
+                # Try multi-codon coordinated removal (CAI-aware)
                 new_seq, fixed = _remove_site_multicodon(
-                    sequence, aas, sorted_codons, site_upper, site_rc
+                    sequence, aas, sorted_codons, site_upper, site_rc, usage=usage
                 )
                 if fixed:
                     sequence = new_seq
                     continue
 
-                # Fallback: try single-codon swap
-                # PERF (Optimization D): Use list mutation + join instead of
-                # string concatenation for codon substitutions.
+                # Fallback: CAI-aware single-codon swap across all overlapping
+                # positions — find the swap with minimal CAI loss
                 pos = positions[0]
-                codon_idx = pos // 3
-                if codon_idx < len(aas):
-                    aa = aas[codon_idx]
-                    current = sequence[codon_idx * 3: codon_idx * 3 + 3]
-                    single_fixed = False
-                    for alt in sorted_codons[aa]:
-                        if alt != current:
-                            seq_list = list(sequence)
-                            seq_list[codon_idx * 3: codon_idx * 3 + 3] = list(alt)
-                            test = "".join(seq_list)
-                            if site_upper not in test and site_rc not in test:
-                                sequence = test
-                                single_fixed = True
-                                break
-                    if single_fixed:
+                overlapping = _get_overlapping_codons(pos, len(site_upper), len(aas))
+                best_single_swap: tuple[int, str, float] | None = None
+                for ci in overlapping:
+                    if ci >= len(aas):
                         continue
+                    aa = aas[ci]
+                    current = sequence[ci * 3: ci * 3 + 3]
+                    for alt in sorted_codons[aa]:
+                        if alt == current:
+                            continue
+                        seq_list = list(sequence)
+                        seq_list[ci * 3: ci * 3 + 3] = list(alt)
+                        test = "".join(seq_list)
+                        if site_upper not in test and site_rc not in test:
+                            alt_cai = usage.get(alt, 0.0)
+                            log_cai = math.log(alt_cai) if alt_cai > 0 else float('-inf')
+                            if best_single_swap is None or log_cai > best_single_swap[2]:
+                                best_single_swap = (ci, alt, log_cai)
+                if best_single_swap is not None:
+                    ci, alt, _ = best_single_swap
+                    seq_list = list(sequence)
+                    seq_list[ci * 3: ci * 3 + 3] = list(alt)
+                    sequence = "".join(seq_list)
+                    continue
 
                 # Try neighboring codons
                 overlapping = _get_overlapping_codons(pos, len(site_upper), len(aas))
@@ -690,27 +752,36 @@ def _greedy_optimize(
                     break
 
                 new_seq, fixed = _remove_site_multicodon(
-                    sequence, aas, sorted_codons, variant, variant_rc
+                    sequence, aas, sorted_codons, variant, variant_rc, usage=usage
                 )
                 if fixed:
                     sequence = new_seq
                     continue
 
-                # Single-codon fallback
+                # CAI-aware single-codon fallback for IUPAC sites
                 pos = positions[0]
-                codon_idx = pos // 3
-                if codon_idx < len(aas):
-                    aa = aas[codon_idx]
-                    current = sequence[codon_idx * 3: codon_idx * 3 + 3]
+                overlapping = _get_overlapping_codons(pos, len(variant), len(aas))
+                best_iupac_swap: tuple[int, str, float] | None = None
+                for ci in overlapping:
+                    if ci >= len(aas):
+                        continue
+                    aa = aas[ci]
+                    current = sequence[ci * 3: ci * 3 + 3]
                     for alt in sorted_codons[aa]:
-                        if alt != current:
-                            test = sequence[:codon_idx * 3] + alt + sequence[codon_idx * 3 + 3:]
-                            if variant not in test and variant_rc not in test:
-                                sequence = test
-                                break
-                    else:
-                        warnings.append(f"Cannot remove IUPAC {site_upper} variant {variant} at iteration {iteration}")
-                        break
+                        if alt == current:
+                            continue
+                        test = sequence[:ci * 3] + alt + sequence[ci * 3 + 3:]
+                        if variant not in test and variant_rc not in test:
+                            alt_cai = usage.get(alt, 0.0)
+                            log_cai = math.log(alt_cai) if alt_cai > 0 else float('-inf')
+                            if best_iupac_swap is None or log_cai > best_iupac_swap[2]:
+                                best_iupac_swap = (ci, alt, log_cai)
+                if best_iupac_swap is not None:
+                    ci, alt, _ = best_iupac_swap
+                    sequence = sequence[:ci * 3] + alt + sequence[ci * 3 + 3:]
+                else:
+                    warnings.append(f"Cannot remove IUPAC {site_upper} variant {variant} at iteration {iteration}")
+                    break
             else:
                 if variant in sequence or variant_rc in sequence:
                     warnings.append(f"IUPAC site {site_upper} variant {variant}: max iterations")
@@ -787,7 +858,13 @@ def _greedy_optimize(
     # human's 0.41 target) is better than CAI=0.82 and GC=0.46.
     # PERF (Optimization F): Cache GC count for incremental updates
     n_bases = len(sequence)
-    gc_count = sum(1 for b in sequence if b in "GC")
+    if _HAS_NUMBA:
+        try:
+            gc_count = _numba_count_gc(_seq_to_bytes(sequence))
+        except Exception:
+            gc_count = sum(1 for b in sequence if b in "GC")
+    else:
+        gc_count = sum(1 for b in sequence if b in "GC")
     gc_val = gc_count / n_bases
     organism_gc_range = ORGANISM_GC_TARGETS.get(organism, (gc_lo, gc_hi))
     organism_gc = (organism_gc_range[0] + organism_gc_range[1]) / 2.0
@@ -850,12 +927,18 @@ def _greedy_optimize(
             site_rc = reverse_complement(site_match)
             # Try one more round of multi-codon removal
             new_seq, fixed = _remove_site_multicodon(
-                sequence, aas, sorted_codons, site_match, site_rc
+                sequence, aas, sorted_codons, site_match, site_rc, usage=usage
             )
             if fixed:
                 sequence = new_seq
                 # Re-check GC
-                gc_count = sum(1 for b in sequence if b in "GC")
+                if _HAS_NUMBA:
+                    try:
+                        gc_count = _numba_count_gc(_seq_to_bytes(sequence))
+                    except Exception:
+                        gc_count = sum(1 for b in sequence if b in "GC")
+                else:
+                    gc_count = sum(1 for b in sequence if b in "GC")
                 gc_val = gc_count / n_bases
                 if not (gc_lo <= gc_val <= gc_hi):
                     # GC drifted — try to fix with single-codon swaps that don't reintroduce sites
@@ -885,13 +968,19 @@ def _greedy_optimize(
             if site_upper in sequence or site_rc in sequence:
                 # Try one more round of multi-codon removal
                 new_seq, fixed = _remove_site_multicodon(
-                    sequence, aas, sorted_codons, site_upper, site_rc
+                    sequence, aas, sorted_codons, site_upper, site_rc, usage=usage
                 )
                 if fixed:
                     sequence = new_seq
                     # Re-check GC
                     # PERF (Optimization F): Update cached GC count
-                    gc_count = sum(1 for b in sequence if b in "GC")
+                    if _HAS_NUMBA:
+                        try:
+                            gc_count = _numba_count_gc(_seq_to_bytes(sequence))
+                        except Exception:
+                            gc_count = sum(1 for b in sequence if b in "GC")
+                    else:
+                        gc_count = sum(1 for b in sequence if b in "GC")
                     gc_val = gc_count / n_bases
                     if not (gc_lo <= gc_val <= gc_hi):
                         # GC drifted — try to fix with single-codon swaps that don't reintroduce sites
@@ -1300,7 +1389,7 @@ def _greedy_optimize(
             site_rc = reverse_complement(site_upper)
             if site_upper in sequence or site_rc in sequence:
                 new_seq, fixed = _remove_site_multicodon(
-                    sequence, aas, sorted_codons, site_upper, site_rc
+                    sequence, aas, sorted_codons, site_upper, site_rc, usage=usage
                 )
                 if fixed:
                     sequence = new_seq
@@ -2107,6 +2196,31 @@ def optimize_sequence(
                 biocompiler_version=_get_version(),
             )
 
+            # Finalize decision provenance trail if tracking is enabled
+            _prok_decision_trail: OptimizationDecisionTrail | None = None
+            if _provenance_collector is not None:
+                try:
+                    # Record constraint decisions from predicate results
+                    for _pr in pred_results:
+                        _action = "satisfied" if _pr.passed else "conflicted"
+                        _positions_affected: list[int] = list(range(len(optimized_seq) // 3))
+                        _details = _pr.details or ""
+                        _provenance_collector.record_constraint_decision(ConstraintDecision(
+                            constraint_name=_pr.predicate,
+                            constraint_type="hard",
+                            action_taken=_action,
+                            positions_affected=_positions_affected[:1] if _positions_affected else [],
+                            tradeoff_description=_details,
+                            impact_on_cai=0.0,
+                        ))
+                    _prok_decision_trail = _provenance_collector.finalize(
+                        output_dna=optimized_seq,
+                        cai=cai_val,
+                        gc=gc,
+                    )
+                except Exception:
+                    logger.debug("Provenance finalization failed for prokaryote path", exc_info=True)
+
             return OptimizationResult(
                 sequence=optimized_seq,
                 gc_content=gc,
@@ -2118,6 +2232,7 @@ def optimize_sequence(
                 fallback_used=False,
                 satisfied_predicates=satisfied,
                 provenance=provenance_record,
+                decision_trail=_prok_decision_trail,
             )
 
         # Use BioOptimizer just for predicate evaluation and certificate
@@ -2787,8 +2902,8 @@ def optimize_sequence(
                 cai=cai_val,
                 gc=gc,
             )
-        except Exception:
-            logger.debug("Provenance finalization failed", exc_info=True)
+        except Exception as _prov_exc:
+            logger.debug("Provenance finalization failed: %s: %s", type(_prov_exc).__name__, _prov_exc, exc_info=True)
             _decision_trail = None
 
     return OptimizationResult(
@@ -3046,18 +3161,23 @@ def batch_optimize(
 
 
 def _organism_to_species_key(organism: str) -> str:
-    """Map an organism name to the species key used in the SPECIES dict.
+    """Map an organism name to the species key used in SPECIES_SHORT_NAMES.
 
     Delegates to :func:`~biocompiler.organisms.resolve_organism` for
     name resolution and then looks up the short key in
     :data:`~biocompiler.organisms.SPECIES_SHORT_NAMES`.
+
+    .. deprecated::
+        Use :func:`~biocompiler.organisms.resolve_organism` and
+        CODON_ADAPTIVENESS_TABLES directly instead of mapping to
+        SPECIES dict keys.  Retained for backward compatibility.
     """
     canonical = resolve_organism(organism, strict=False)
     key = SPECIES_SHORT_NAMES.get(canonical)
-    if key and key in SPECIES:
+    if key:
         return key
-    # Fallback: try the organism name directly
-    if organism in SPECIES:
+    # Fallback: try the organism name directly in SPECIES_SHORT_NAMES values
+    if organism in SPECIES_SHORT_NAMES.values():
         return organism
     # Default to ecoli
     return "ecoli"

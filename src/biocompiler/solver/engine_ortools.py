@@ -227,6 +227,36 @@ class ORTOOLSEngine:
             protein = getattr(model, "protein_sequence", "")
         organism = getattr(model, "organism", "") or getattr(self.config, "organism", "unknown")
 
+        # Sync organism from model to config so that is_eukaryotic detection
+        # works correctly even when only the model specifies the organism.
+        if organism and organism != self.config.organism:
+            try:
+                object.__setattr__(self.config, "organism", organism)
+            except (AttributeError, TypeError):
+                # Frozen dataclass — can't modify; log warning
+                logger.warning(
+                    "SolverConfig.organism='%s' differs from model organism='%s' "
+                    "but config is frozen; eukaryotic detection may be incorrect",
+                    self.config.organism, organism,
+                )
+
+        # Log model construction diagnostics
+        codon_domains_attr = getattr(model, "codon_domains", {})
+        n_codon_domains = len(codon_domains_attr) if codon_domains_attr else 0
+        model_constraints = getattr(model, "constraints", [])
+        logger.info(
+            "OR-Tools engine diagnostics: protein_len=%d organism=%s "
+            "codon_domains=%d model_constraints=%d "
+            "config.gc_range=[%.2f,%.2f] config.avoid_cpg=%s "
+            "config.avoid_t_runs=%s config.avoid_attta=%s "
+            "config.cryptic_splice_threshold=%.1f",
+            len(protein) if protein else 0, organism,
+            n_codon_domains, len(model_constraints),
+            self.config.gc_lo, self.config.gc_hi,
+            self.config.avoid_cpg, self.config.avoid_t_runs,
+            self.config.avoid_attta, self.config.cryptic_splice_threshold,
+        )
+
         if not protein:
             logger.error("OR-Tools solve called with empty/missing protein attribute")
             return SolverResult(
@@ -399,9 +429,20 @@ class ORTOOLSEngine:
             )
 
         solve_time = time.monotonic() - start_time
+
+        # Map status to human-readable name for logging
+        status_names = {
+            ortools_cp.OPTIMAL: "OPTIMAL",
+            ortools_cp.FEASIBLE: "FEASIBLE",
+            ortools_cp.INFEASIBLE: "INFEASIBLE",
+            ortools_cp.MODEL_INVALID: "MODEL_INVALID",
+            ortools_cp.UNKNOWN: "UNKNOWN",
+        }
+        status_name = status_names.get(status, f"UNKNOWN({status})")
         logger.info(
-            "OR-Tools solve completed: status=%s time=%.2fs",
-            status, solve_time,
+            "OR-Tools solve completed: status=%s time=%.2fs "
+            "variables=%d constraints=%d",
+            status_name, solve_time, n_codons, num_constraints,
         )
 
         # ── 11. Process result ────────────────────────────────────────
@@ -662,11 +703,15 @@ class ORTOOLSEngine:
 
         # Restriction sites
         sites = self.config.restriction_sites
-        if not sites:
+        if not sites and self.config.add_default_restriction_sites:
             # Default: avoid common 6+ bp restriction sites.
             # 4 bp sites (AluI, HaeIII, MboI, etc.) are excluded because
             # they appear too frequently to avoid in long sequences and
             # make the model infeasible.
+            # Only add defaults when add_default_restriction_sites=True
+            # (the default); when restriction_sites=[] is explicitly
+            # passed alongside add_default_restriction_sites=False,
+            # no restriction sites are added.
             sites = [
                 seq for name, seq in RESTRICTION_ENZYMES.items()
                 if all(ch in "ACGT" for ch in seq) and len(seq) >= 6
@@ -1032,6 +1077,12 @@ class ORTOOLSEngine:
             codon = domain[idx]
             codons.append(codon)
         sequence = "".join(codons)
+
+        logger.info(
+            "OR-Tools solution extraction: %d codons extracted, "
+            "sequence_len=%d expected_len=%d",
+            len(codons), len(sequence), len(protein) * 3,
+        )
 
         # Validate: non-empty sequence
         if not sequence:

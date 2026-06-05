@@ -34,7 +34,7 @@ from biocompiler.benchmark import (
     format_benchmark_report_text,
     run_structured_benchmarks,
 )
-from biocompiler.organisms import SPECIES
+from biocompiler.organisms import CODON_ADAPTIVENESS_TABLES
 
 
 # ────────────────────────────────────────────────────────────────
@@ -46,11 +46,11 @@ class TestComputeCai:
 
     def test_empty_sequence_returns_zero(self):
         """Empty sequence → CAI 0.0."""
-        assert _compute_cai("", SPECIES["ecoli"]) == 0.0
+        assert _compute_cai("", CODON_ADAPTIVENESS_TABLES["Escherichia_coli"]) == 0.0
 
     def test_short_sequence_returns_zero(self):
         """Sequence shorter than 3 nt → CAI 0.0."""
-        assert _compute_cai("AT", SPECIES["ecoli"]) == 0.0
+        assert _compute_cai("AT", CODON_ADAPTIVENESS_TABLES["Escherichia_coli"]) == 0.0
 
     def test_single_codon_known_cai(self):
         """Single codon with known CAI weight returns that weight."""
@@ -88,13 +88,13 @@ class TestComputeCai:
     def test_ecoli_species_table(self):
         """Using real E. coli CAI table gives a value in [0, 1]."""
         seq = "ATGAAAGCTTAA"
-        result = _compute_cai(seq, SPECIES["ecoli"])
+        result = _compute_cai(seq, CODON_ADAPTIVENESS_TABLES["Escherichia_coli"])
         assert 0.0 < result <= 1.0
 
     def test_human_species_table(self):
         """Using real human CAI table gives a value in [0, 1]."""
         seq = "ATGAAAGCTTAA"
-        result = _compute_cai(seq, SPECIES["human"])
+        result = _compute_cai(seq, CODON_ADAPTIVENESS_TABLES["Homo_sapiens"])
         assert 0.0 < result <= 1.0
 
     def test_all_high_cai_codons(self):

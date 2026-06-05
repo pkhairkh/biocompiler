@@ -122,6 +122,7 @@ from .maxent_encoding import (
 # ═══════════════════════════════════════════════════════════════════════
 from .dispatch import (
     solve_with_csp,
+    solve_csp,
     get_csp_availability,
     csp_optimize,
     validate_csp_solution,

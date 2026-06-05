@@ -47,6 +47,8 @@ import logging
 import time
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Z3 import with graceful fallback
 # ---------------------------------------------------------------------------
@@ -87,8 +89,6 @@ from .types import (
 )
 from ..constants import AA_TO_CODONS, BASE_REV, IUPAC_EXPAND, RESTRICTION_ENZYMES, INSTABILITY_MOTIF, reverse_complement
 from ..organisms import CODON_ADAPTIVENESS_TABLES
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["Z3Engine"]
 
@@ -270,6 +270,36 @@ class Z3Engine(SolverBackendProtocol):
         ).upper()
         organism = getattr(model, "organism", None) or self.organism
 
+        # Sync organism from model to config so that is_eukaryotic detection
+        # works correctly even when only the model specifies the organism.
+        if organism and organism != config.organism:
+            try:
+                config.organism = organism
+            except (AttributeError, TypeError):
+                logger.warning(
+                    "SolverConfig.organism='%s' differs from model organism='%s' "
+                    "but config is frozen; eukaryotic detection may be incorrect",
+                    config.organism, organism,
+                )
+
+        # Log Z3 engine diagnostics
+        codon_domains_attr = getattr(model, "codon_domains", {})
+        n_codon_domains = len(codon_domains_attr) if codon_domains_attr else 0
+        model_constraints = getattr(model, "constraints", [])
+        logger.info(
+            "Z3 engine diagnostics: protein_len=%d organism=%s "
+            "codon_domains=%d model_constraints=%d "
+            "config.gc_range=[%.2f,%.2f] config.avoid_cpg=%s "
+            "config.avoid_t_runs=%s config.avoid_attta=%s "
+            "config.cryptic_splice_threshold=%.1f timeout=%.1fs",
+            len(protein) if protein else 0, organism,
+            n_codon_domains, len(model_constraints),
+            config.gc_lo, config.gc_hi,
+            config.avoid_cpg, config.avoid_t_runs,
+            config.avoid_attta, config.cryptic_splice_threshold,
+            config.timeout_seconds,
+        )
+
         logger.info(
             "Z3: Starting solve for %d aa protein, organism=%s, "
             "gc=[%.2f,%.2f], timeout=%.1fs",
@@ -366,7 +396,7 @@ class Z3Engine(SolverBackendProtocol):
         # matching OR-Tools engine behaviour — only 6+ bp sites to avoid
         # making long sequences infeasible)
         restriction_sites = config.restriction_sites
-        if not restriction_sites:
+        if not restriction_sites and getattr(config, 'add_default_restriction_sites', True):
             restriction_sites = [
                 seq for name, seq in RESTRICTION_ENZYMES.items()
                 if all(ch in "ACGT" for ch in seq) and len(seq) >= 6
@@ -406,15 +436,22 @@ class Z3Engine(SolverBackendProtocol):
         self._encode_cai_objective(optimizer, codon_vars, codon_lists)
 
         # --- Solve ---
-        if config.verbose:
-            logger.info(
-                "Z3: Solving codon optimization for %d aa protein "
-                "(%d nucleotide variables, %d constraints)",
-                n, total_nucs, len(constraint_names),
-            )
+        logger.info(
+            "Z3: Solving codon optimization for %d aa protein "
+            "(%d nucleotide variables, %d constraints, timeout=%.1fs)",
+            n, total_nucs, len(constraint_names), config.timeout_seconds,
+        )
 
         result_status = optimizer.check()
         solve_time = time.perf_counter() - start_time
+
+        # Log solver status for diagnostics
+        status_str = str(result_status)
+        logger.info(
+            "Z3 solve completed: status=%s time=%.2fs "
+            "variables=%d constraints=%d",
+            status_str, solve_time, n, len(constraint_names),
+        )
 
         if result_status == sat:
             z3_model = optimizer.model()
@@ -1030,6 +1067,12 @@ class Z3Engine(SolverBackendProtocol):
             chosen_codons.append(codons_for_aa[idx])
 
         sequence = "".join(chosen_codons)
+
+        logger.info(
+            "Z3 solution extraction: %d codons extracted, "
+            "sequence_len=%d expected_len=%d",
+            len(chosen_codons), len(sequence), len(protein) * 3,
+        )
 
         # ── Validate solution ──────────────────────────────────────────
         if not sequence:

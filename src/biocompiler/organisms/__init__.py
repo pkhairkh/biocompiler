@@ -41,7 +41,7 @@ v10.1.0 changes (Task 27 — organisms cleanup):
 from __future__ import annotations
 
 import warnings
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from .human import HUMAN_CODON_USAGE as HUMAN_CODON_USAGE
 from .human import HUMAN_CODON_ADAPTIVENESS as HUMAN_CODON_ADAPTIVENESS
@@ -528,13 +528,62 @@ class SpeciesEntry(TypedDict):
 #   canonical = resolve_organism("ecoli")   # → "Escherichia_coli"
 #   weights = CODON_ADAPTIVENESS_TABLES[canonical]
 # ────────────────────────────────────────────────────────────
-SPECIES: dict[str, SpeciesEntry] = {
+
+# ────────────────────────────────────────────────────────────
+# DEPRECATED: _DeprecatedSpeciesDict
+#
+# A dict subclass that wraps the legacy SPECIES data but emits
+# DeprecationWarning on __getitem__ access.  New code should
+# use CODON_ADAPTIVENESS_TABLES directly with resolve_organism().
+#
+# The nesting trap: SPECIES["ecoli"] returns a SpeciesEntry
+# (dict with "cai_weights" and "codon_usage_validation" keys),
+# NOT a flat codon→weight dict.  Any code that does
+# SPECIES["ecoli"]["ATG"] will get a KeyError, and
+# SPECIES["ecoli"].get("ATG", 0.0) will return 0.0.
+# Use get_species_cai_weights() or CODON_ADAPTIVENESS_TABLES instead.
+# ────────────────────────────────────────────────────────────
+
+class _DeprecatedSpeciesDict(dict):  # type: ignore[misc]
+    """Dict subclass that warns on item access to encourage migration.
+
+    The SPECIES dict has a nesting issue: SPECIES[key] returns a
+    SpeciesEntry (with 'cai_weights' and 'codon_usage_validation'
+    keys), not a flat codon→weight dict.  This wrapper emits a
+    DeprecationWarning on every ``__getitem__`` call to steer
+    callers toward CODON_ADAPTIVENESS_TABLES or
+    get_species_cai_weights().
+    """
+
+    _warned_keys: set[str]  # Track keys we've already warned about
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._warned_keys: set[str] = set()
+
+    def __getitem__(self, key: str) -> SpeciesEntry:  # type: ignore[override]
+        if key not in self._warned_keys:
+            warnings.warn(
+                f"SPECIES[{key!r}] is deprecated — use "
+                f"CODON_ADAPTIVENESS_TABLES with resolve_organism() "
+                f"instead.  Note: SPECIES[{key!r}] returns a nested "
+                f"SpeciesEntry, not a flat codon→weight dict.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._warned_keys.add(key)
+        return super().__getitem__(key)
+
+
+_SPECIES_RAW: dict[str, SpeciesEntry] = {
     short_key: {
         "cai_weights": dict(CODON_ADAPTIVENESS_TABLES[canonical_name]),
         "codon_usage_validation": True,
     }
     for canonical_name, short_key in SPECIES_SHORT_NAMES.items()
 }
+
+SPECIES: dict[str, SpeciesEntry] = _DeprecatedSpeciesDict(_SPECIES_RAW)
 
 
 def get_species_cai_weights(species_key: str) -> dict[str, float]:
@@ -679,15 +728,16 @@ def validate_cai_tables() -> list[str]:
     #    (Since SPECIES is now derived FROM CODON_ADAPTIVENESS_TABLES,
     #     this should always pass, but we keep it as a safety net.)
     #    SPECIES_SHORT_NAMES maps canonical_name → short_key
+    #    Use _SPECIES_RAW to avoid triggering deprecation warnings.
     for canonical_name, short_key in SPECIES_SHORT_NAMES.items():
-        if short_key not in SPECIES:
+        if short_key not in _SPECIES_RAW:
             errors.append(f"SPECIES missing key '{short_key}'")
             continue
         if canonical_name not in CODON_ADAPTIVENESS_TABLES:
             errors.append(f"CODON_ADAPTIVENESS_TABLES missing '{canonical_name}'")
             continue
 
-        species_weights = SPECIES[short_key]["cai_weights"]
+        species_weights = _SPECIES_RAW[short_key]["cai_weights"]
         adapt_weights = CODON_ADAPTIVENESS_TABLES[canonical_name]
 
         # Check that the optimal codon (w=1.0) for each AA matches

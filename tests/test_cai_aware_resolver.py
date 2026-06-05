@@ -630,10 +630,10 @@ class TestMaximizeCAIIntegration:
 
 
 class TestConflictResolverCAIAware:
-    """Test ConflictResolver.auto_resolve() with cai_aware strategy."""
+    """Test CAIAwareConstraintResolver auto-resolve with CAI awareness."""
 
-    def test_cai_aware_strategy_with_adaptiveness(self):
-        """CAI-aware strategy works when adaptiveness is provided."""
+    def test_cai_aware_auto_resolve(self):
+        """CAI-aware auto-resolve works via CAIAwareConstraintResolver."""
         model = _make_model(
             protein="AV",
             constraints=[
@@ -641,17 +641,13 @@ class TestConflictResolverCAIAware:
                 _hard_spec("splice", positions=[0, 1]),
             ],
         )
-        resolver = ConflictResolver()
-        resolved = resolver.auto_resolve(
-            model,
-            strategy="cai_aware",
-            adaptiveness=_SIMPLE_ADAPTIVENESS,
-        )
+        resolver = CAIAwareConstraintResolver(model, _SIMPLE_ADAPTIVENESS)
+        resolved = resolver.auto_resolve_cai_aware(model)
         assert isinstance(resolved, CSPModel)
         assert resolved.protein_sequence == model.protein_sequence
 
-    def test_cai_aware_strategy_without_adaptiveness_raises(self):
-        """CAI-aware strategy without adaptiveness raises ValueError."""
+    def test_base_resolver_rejects_cai_aware_strategy(self):
+        """Base ConflictResolver rejects 'cai_aware' as unknown strategy."""
         model = _make_model(
             protein="AV",
             constraints=[
@@ -660,15 +656,15 @@ class TestConflictResolverCAIAware:
             ],
         )
         resolver = ConflictResolver()
-        with pytest.raises(ValueError, match="adaptiveness"):
+        with pytest.raises(ValueError, match="Unknown auto-resolution strategy"):
             resolver.auto_resolve(model, strategy="cai_aware")
 
-    def test_cai_aware_strategy_is_valid(self):
-        """'cai_aware' is a valid auto-resolution strategy."""
+    def test_cai_aware_resolver_creates_valid_model(self):
+        """CAIAwareConstraintResolver produces a valid CSPModel."""
         model = _make_model(protein="AV", constraints=[])
-        resolver = ConflictResolver()
+        resolver = CAIAwareConstraintResolver(model, _SIMPLE_ADAPTIVENESS)
         # Should not raise
-        resolved = resolver.auto_resolve(model, strategy="cai_aware", adaptiveness=_SIMPLE_ADAPTIVENESS)
+        resolved = resolver.auto_resolve_cai_aware(model)
         assert isinstance(resolved, CSPModel)
 
 
@@ -691,38 +687,34 @@ class TestLightweightVsFullMode:
         assert isinstance(impact, float)
 
     def test_full_mode_with_model(self):
-        """CAIAwareConstraintResolver works in full mode with model + adaptiveness."""
-        from biocompiler.solver.conflict_resolution import CAIAwareConstraintResolver as LightweightResolver
-
+        """CAIAwareConstraintResolver (full) works with model + adaptiveness."""
         model = _make_model(protein="A")
-        resolver = LightweightResolver(model=model, adaptiveness=_SIMPLE_ADAPTIVENESS)
-        spec = _hard_spec("gc", ctype=ConstraintType.GC_CONTENT)
+        # Full resolver from cai_aware_resolver module
+        resolver = CAIAwareConstraintResolver(model, _SIMPLE_ADAPTIVENESS)
+        spec = _hard_spec("gc", ctype=ConstraintType.GC_CONTENT, positions=[0])
 
-        # With position, uses full mode
-        impact_full = resolver.estimate_cai_impact(
-            spec, position=0,
-            codon_domains={0: ["GCT", "GCC", "GCA", "GCG"]},
+        # estimate_cai_impact requires position, codon_domains, and adaptiveness
+        impact = resolver.estimate_cai_impact(
+            spec,
+            position=0,
+            codon_domains=model.codon_domains,
+            adaptiveness=_SIMPLE_ADAPTIVENESS,
         )
-        # Without position, uses lightweight mode
-        impact_light = resolver.estimate_cai_impact(spec)
+        assert isinstance(impact, float)
 
-        # Both should return valid floats
-        assert isinstance(impact_full, float)
-        assert isinstance(impact_light, float)
+    def test_resolve_with_min_cai_loss_works_in_full_mode(self):
+        """resolve_with_min_cai_loss works with the full CAIAwareConstraintResolver."""
+        model = _make_model(protein="A")
+        resolver = CAIAwareConstraintResolver(model, _SIMPLE_ADAPTIVENESS)
+        spec_a = _hard_spec("gc", ctype=ConstraintType.GC_CONTENT, positions=[0])
+        spec_b = _hard_spec("cpg", ctype=ConstraintType.NO_CPG, positions=[0])
 
-    def test_resolve_with_min_cai_loss_requires_full_mode(self):
-        """resolve_with_min_cai_loss raises RuntimeError in lightweight mode."""
-        from biocompiler.solver.conflict_resolution import CAIAwareConstraintResolver as LightweightResolver
-
-        resolver = LightweightResolver()
-        spec = _hard_spec("gc", positions=[0])
-
-        with pytest.raises(RuntimeError, match="full mode"):
-            resolver.resolve_with_min_cai_loss(
-                conflicting_constraints=[spec, spec],
-                current_sequence="GCT",
-                codon_domains={0: ["GCT", "GCC"]},
-            )
+        choice = resolver.resolve_with_min_cai_loss(
+            conflicting_constraints=[spec_a, spec_b],
+            current_sequence="GCT",
+            codon_domains={0: ["GCT", "GCC"]},
+        )
+        assert isinstance(choice, ResolutionChoice)
 
     def test_rank_resolution_compromise_adjusted(self):
         """rank_resolution adjusts compromise strategy based on CAI impact."""

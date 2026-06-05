@@ -52,7 +52,7 @@ except ImportError:
 from .optimization import optimize_sequence
 
 from .certificate import compute_certificate
-from .organisms import CODON_ADAPTIVENESS_TABLES, SPECIES, resolve_organism
+from .organisms import CODON_ADAPTIVENESS_TABLES, resolve_organism
 from .translation import translate, compute_cai
 from .scanner import gc_content
 from .constants import AA_TO_CODONS, RESTRICTION_ENZYMES, reverse_complement

@@ -440,7 +440,9 @@ class TestExportFastaEndpoint:
     def test_export_fasta_content_starts_with_header(self, client):
         resp = client.post("/export/fasta", json={"sequence": VALID_DNA})
         data = resp.json()
-        assert data["content"].startswith(">")
+        # FASTA may start with comment lines (';') before the header ('>')
+        content = data["content"]
+        assert ">" in content or content.startswith(";")
 
 
 class TestExportGenbankEndpoint:

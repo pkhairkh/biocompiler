@@ -74,14 +74,40 @@ logger = logging.getLogger(__name__)
 try:
     from .engine_ortools import ORTOOLSEngine as _ortools_engine  # noqa: F811
     _ORTOOLS_AVAILABLE = True
-except ImportError:
-    logger.debug("OR-Tools engine not available")
+    logger.info("OR-Tools engine loaded successfully")
+except ImportError as _ortools_import_err:
+    _ORTOOLS_AVAILABLE = False
+    logger.info(
+        "OR-Tools engine not available (ImportError: %s). "
+        "Install with: pip install ortools",
+        _ortools_import_err,
+    )
+except Exception as _ortools_err:
+    _ORTOOLS_AVAILABLE = False
+    logger.warning(
+        "OR-Tools engine failed to load (%s: %s). "
+        "The native extension may be broken.",
+        type(_ortools_err).__name__, _ortools_err,
+    )
 
 try:
     from .engine_z3 import Z3Engine as _z3_engine  # noqa: F811
     _Z3_AVAILABLE = True
-except ImportError:
-    logger.debug("Z3 engine not available")
+    logger.info("Z3 engine loaded successfully")
+except ImportError as _z3_import_err:
+    _Z3_AVAILABLE = False
+    logger.info(
+        "Z3 engine not available (ImportError: %s). "
+        "Install with: pip install z3-solver",
+        _z3_import_err,
+    )
+except Exception as _z3_err:
+    _Z3_AVAILABLE = False
+    logger.warning(
+        "Z3 engine failed to load (%s: %s). "
+        "The native extension may be broken.",
+        type(_z3_err).__name__, _z3_err,
+    )
 
 
 def get_csp_availability() -> dict[str, bool]:
@@ -415,6 +441,38 @@ def solve_with_csp(
         result.metadata["conflict_provenance"] = provenance_records
 
     return result
+
+
+def solve_csp(
+    protein: str,
+    organism: str = "Homo_sapiens",
+    config: SolverConfig | None = None,
+    **kwargs: Any,
+) -> SolverResult:
+    """Convenience alias for :func:`solve_with_csp`.
+
+    This is the primary public API for the CSP solver.  It dispatches to
+    OR-Tools (primary) or Z3 (fallback) backends, with a greedy fallback
+    when neither is available.
+
+    Parameters
+    ----------
+    protein : str
+        Amino-acid sequence (single-letter codes, e.g. ``"MVLSPADKTN"``).
+    organism : str
+        Target organism name.
+    config : SolverConfig | None
+        Full solver configuration.  If ``None``, a default is constructed.
+    **kwargs
+        Additional keyword arguments forwarded to :func:`solve_with_csp`.
+
+    Returns
+    -------
+    SolverResult
+        Optimized solution or a fallback indicator.  Check ``result.solved``
+        before using ``result.sequence``.
+    """
+    return solve_with_csp(protein, organism, config=config, **kwargs)
 
 
 def csp_optimize(
