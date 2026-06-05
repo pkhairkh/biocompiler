@@ -29,7 +29,8 @@ v10.0.0 highlights (BREAKING — CAI table unification):
   - E. coli GFP benchmark: CAI 0.67→0.999, Time 20ms→2ms (10× faster)
 """
 
-__version__ = "11.1.0"
+__version__ = "12.0.0"
+SAFETY_VERSION = "1.0.0"
 
 import logging
 import warnings
@@ -72,6 +73,9 @@ from .exceptions import (
     FoldXError,
     CamSolError,
     ImmunogenicityError,
+    BiosecurityError,
+    TranslationVerificationError,
+    OptimizationConstraintError,
     InvalidSequenceError,
     CertificateGenerationError,
     CertificateVerificationError,
@@ -163,7 +167,32 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════
 
 from .optimization import BioOptimizer, optimize_sequence, batch_optimize, OptimizationResult, FullConstructResult
+from .objectives import (
+    ObjectiveFunction,
+    cai_objective,
+    cai_gc_balanced_objective,
+    codon_pair_objective,
+    min_max_gc_objective,
+    resolve_objective,
+    OBJECTIVE_REGISTRY,
+)
 from .hybrid_optimizer import HybridOptimizer
+
+# ═══════════════════════════════════════════════════════════════════════
+# Large Sequence Support (chunk-based optimization for >10kb proteins)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .large_sequence import (
+        optimize_large_sequence,
+        ProteinTooLongError,
+        MAX_PROTEIN_LENGTH_DEFAULT,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    optimize_large_sequence = None
+    ProteinTooLongError = None
+    MAX_PROTEIN_LENGTH_DEFAULT = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Incremental sequence state (O(1) constraint tracking for optimization)
@@ -315,6 +344,39 @@ except ImportError:
     from_seqrecord = None
     optimize_to_seqrecord = None
 
+# Deep BioPython integration
+try:
+    from .biopython_compat import (
+        CodonUsageResult, load_codon_usage_table, compute_cai_from_table,
+        AlignmentResult, align_to_reference,
+        phylo_distance,
+        ORFResult, detect_orfs,
+        BlastResult, blast_local,
+        back_translate_protein,
+    )
+except ImportError:
+    _logger.debug("Could not import deep BioPython features, using None fallbacks")
+    CodonUsageResult = None
+    load_codon_usage_table = None
+    compute_cai_from_table = None
+    AlignmentResult = None
+    align_to_reference = None
+    phylo_distance = None
+    ORFResult = None
+    detect_orfs = None
+    BlastResult = None
+    blast_local = None
+    back_translate_protein = None
+
+# Sequence Annotation Enrichment
+try:
+    from .annotation import SequenceAnnotation, annotate_sequence, annotate_to_genbank
+except ImportError:
+    _logger.debug("Could not import annotation module, using None fallbacks")
+    SequenceAnnotation = None
+    annotate_sequence = None
+    annotate_to_genbank = None
+
 try:
     from .jupyter import display_sequence, display_optimization_result, display_type_check, plot_gc_content, plot_codon_usage
 except ImportError:
@@ -324,6 +386,25 @@ except ImportError:
     display_type_check = None
     plot_gc_content = None
     plot_codon_usage = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# SBOL3 Export / Import (Synthetic Biology Open Language)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .sbol_export import SBOLComponent, export_sbol, export_sbol_collection
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    SBOLComponent = None  # type: ignore[assignment, misc]
+    export_sbol = None
+    export_sbol_collection = None
+
+try:
+    from .sbol_import import import_sbol, sbol_to_genespecs
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    import_sbol = None
+    sbol_to_genespecs = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Mutagenesis
@@ -789,6 +870,23 @@ except ImportError:
     AVAILABLE_ORGANISMS = None
 
 # ═══════════════════════════════════════════════════════════════════════
+# Multi-Gene Construct / Operon Support
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .multigene import (
+        GeneSpec, MultiGeneResult, OperonConfig,
+        optimize_multigene, optimize_operon,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    GeneSpec = None  # type: ignore[assignment, misc]
+    MultiGeneResult = None  # type: ignore[assignment, misc]
+    OperonConfig = None  # type: ignore[assignment, misc]
+    optimize_multigene = None
+    optimize_operon = None
+
+# ═══════════════════════════════════════════════════════════════════════
 # Benchmarking sub-package (structured head-to-head comparison)
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -879,11 +977,53 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════
 
 try:
+    from .pattern_enforcement import (
+        PatternConstraint, PatternResult,
+        check_pattern, check_patterns,
+        enforce_pattern, enforce_patterns,
+        build_avoidance_scanner,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    PatternConstraint = None  # type: ignore[assignment,misc]
+    PatternResult = None  # type: ignore[assignment,misc]
+    check_pattern = None  # type: ignore[assignment,misc]
+    check_patterns = None  # type: ignore[assignment,misc]
+    enforce_pattern = None  # type: ignore[assignment,misc]
+    enforce_patterns = None  # type: ignore[assignment,misc]
+    build_avoidance_scanner = None  # type: ignore[assignment,misc]
+
+# ═══════════════════════════════════════════════════════════════════════
+# What-If Analysis (original)
+
+try:
     from .whatif_analysis import WhatIfAnalyzer, WhatIfScenario
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
     WhatIfAnalyzer = None
     WhatIfScenario = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# IUPAC Ambiguous Base Support
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .iupac import (
+        IUPAC_DNA,
+        resolve_ambiguous,
+        is_ambiguous,
+        expand_ambiguous,
+        has_ambiguous,
+        validate_iupac_sequence,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    IUPAC_DNA = None
+    resolve_ambiguous = None
+    is_ambiguous = None
+    expand_ambiguous = None
+    has_ambiguous = None
+    validate_iupac_sequence = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Codon Pair Scoring
@@ -899,12 +1039,41 @@ except ImportError:
     suggest_better_pair = None
 
 # ═══════════════════════════════════════════════════════════════════════
+# Sliding-Window GC Constraint
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .sliding_gc import check_sliding_gc, SlidingGCResult, WindowViolation, fix_sliding_gc_violations, evaluate_sliding_gc
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    check_sliding_gc = None
+    SlidingGCResult = None
+    WindowViolation = None
+    fix_sliding_gc_violations = None
+    evaluate_sliding_gc = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Safety modules (biosecurity screening + protein verification)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .biosecurity import screen_hazardous_sequence, BiosecurityReport, HazardMatch
+except ImportError:
+    pass  # Optional safety modules
+
+try:
+    from .protein_verification import verify_translation, verify_and_raise, VerificationResult, PositionMismatch
+except ImportError:
+    pass  # Optional safety modules
+
+# ═══════════════════════════════════════════════════════════════════════
 # Public API — organized by domain
 # ═══════════════════════════════════════════════════════════════════════
 
 __all__ = [
     # ── Version ──────────────────────────────────────────────
     "__version__",
+    "SAFETY_VERSION",
 
     # ── Core types ───────────────────────────────────────────
     "Verdict", "Token", "PositionRange", "SpliceIsoform",
@@ -914,6 +1083,8 @@ __all__ = [
     # ── Exceptions ───────────────────────────────────────────
     "BioCompilerError", "EngineError",
     "ESMFoldError", "FoldXError", "CamSolError", "ImmunogenicityError",
+    "BiosecurityError", "TranslationVerificationError",
+    "OptimizationConstraintError",
     "InvalidSequenceError",
     "CertificateGenerationError", "CertificateVerificationError",
     "UnknownPredicateError", "OptimizationError",
@@ -928,6 +1099,10 @@ __all__ = [
 
     # ── Scanner ──────────────────────────────────────────────
     "validate_dna_sequence", "gc_content", "scan_sequence",
+
+    # ── IUPAC ambiguous base support ────────────────────────
+    "IUPAC_DNA", "resolve_ambiguous", "is_ambiguous",
+    "expand_ambiguous", "has_ambiguous", "validate_iupac_sequence",
 
     # ── Splicing ─────────────────────────────────────────────
     "compute_splice_isoforms", "maxent_score", "maxent_score_v2", "score_splice_sites",
@@ -1149,4 +1324,53 @@ __all__ = [
 
     # ── Codon Pair Scoring ──────────────────────────────────
     "compute_cpb", "score_codon_pair",
+
+    # ── Multi-Gene / Operon ────────────────────────────────
+    "GeneSpec", "MultiGeneResult", "OperonConfig",
+    "optimize_multigene", "optimize_operon",
+
+    # ── Sliding-Window GC ──────────────────────────────────
+    "check_sliding_gc", "SlidingGCResult", "WindowViolation",
+    "fix_sliding_gc_violations", "evaluate_sliding_gc",
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# LIMS Integration (Benchling, LabGuru)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .lims import (
+        LIMSIntegration,
+        BenchlingExporter,
+        LabGuruExporter,
+        LIMSSubmissionRecord,
+        export_to_benchling,
+        export_to_labguru,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    LIMSIntegration = None
+    BenchlingExporter = None
+    LabGuruExporter = None
+    LIMSSubmissionRecord = None
+    export_to_benchling = None
+    export_to_labguru = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# GenBank Round-Trip Verification
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .genbank_roundtrip import (
+        RoundTripResult,
+        verify_genbank_roundtrip,
+        compare_sequences,
+        verify_annotation_preservation,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    RoundTripResult = None
+    verify_genbank_roundtrip = None
+    compare_sequences = None
+    verify_annotation_preservation = None

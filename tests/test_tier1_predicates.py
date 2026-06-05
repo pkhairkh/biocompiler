@@ -228,7 +228,7 @@ class TestCoTranslationalFolding:
         # Use a short protein with mixed codon speeds
         protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGR"
         from biocompiler.optimization import optimize_sequence
-        result = optimize_sequence(target_protein=protein, organism="Homo_sapiens")
+        result = optimize_sequence(target_protein=protein, organism="Homo_sapiens", strict_mode=False)
         # Check the folding predicate directly
         from biocompiler.organisms import SPECIES
         species_cai = SPECIES.get("human", {})

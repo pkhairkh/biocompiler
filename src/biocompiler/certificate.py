@@ -240,6 +240,8 @@ _PREDICATE_KWARGS_MAP: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     # DNA-level predicates
     "NoCrypticSplice": lambda params: {
         "known_exon_boundaries": params.get("exon_boundaries", []),
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+        "cryptic_splice_threshold": params.get("cryptic_splice_threshold", _DEFAULT_CRYPTIC_SPLICE_THRESHOLD),
     },
     "SpliceCorrect": lambda params: {
         "known_exon_boundaries": params.get("exon_boundaries", []),
@@ -280,6 +282,17 @@ _PREDICATE_KWARGS_MAP: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "CoTranslationalFolding": lambda params: {
         "organism": params.get("organism", _DEFAULT_ORGANISM),
         "domain_boundaries": params.get("domain_boundaries", []),
+    },
+    # Optimizer predicates (8 original + 4 extended)
+    "NoStopCodons": _empty_kwargs,
+    "ValidCodingSeq": _empty_kwargs,
+    "ConservationScore": lambda params: {
+        "protein": params.get("protein", ""),
+        "min_score": params.get("conservation_min_score", 0),
+    },
+    "CodonOptimality": lambda params: {
+        "organism": params.get("organism", _DEFAULT_ORGANISM),
+        "threshold": params.get("cai_threshold", _DEFAULT_CAI_THRESHOLD),
     },
     # Structure predicates
     "StructureConfidence": lambda params: {
@@ -322,6 +335,12 @@ _PREDICATE_KWARGS_MAP: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "NoDominantBCellEpitope": _empty_kwargs,
     "PopulationCoverageSafe": lambda params: {
         "organism": params.get("organism", _DEFAULT_ORGANISM),
+    },
+    # Sliding-window GC constraint
+    "SlidingGC": lambda params: {
+        "window_size": params.get("sliding_gc_window", 50),
+        "gc_min": params.get("gc_lo", _DEFAULT_GC_LO),
+        "gc_max": params.get("gc_hi", _DEFAULT_GC_HI),
     },
 }
 
@@ -388,6 +407,16 @@ def verify_certificate(cert_dict: dict[str, Any], **kwargs: Any) -> tuple[str, l
         )
 
     # Check 2: Re-evaluate each predicate using the registry
+    # Equivalent verdict classes for verification purposes:
+    #   PASS ≡ LIKELY_PASS  (both indicate the predicate is satisfied)
+    #   FAIL ≡ LIKELY_FAIL  (both indicate the predicate is not satisfied)
+    #   UNCERTAIN           (indeterminate — always matches itself)
+    _verdict_class = {
+        "PASS": "pass", "LIKELY_PASS": "pass",
+        "FAIL": "fail", "LIKELY_FAIL": "fail",
+        "UNCERTAIN": "uncertain",
+    }
+
     for type_entry in cert_dict.get("types", []):
         predicate_name = type_entry["predicate"]
         claimed_verdict = type_entry["verdict"]
@@ -404,7 +433,10 @@ def verify_certificate(cert_dict: dict[str, Any], **kwargs: Any) -> tuple[str, l
 
             result = registry.verify(registry_name, **verify_kwargs)
 
-            if result.verdict.value != claimed_verdict:
+            claimed_class = _verdict_class.get(claimed_verdict, claimed_verdict)
+            actual_class = _verdict_class.get(result.verdict.value, result.verdict.value)
+
+            if claimed_class != actual_class:
                 failures.append(
                     f"Predicate {predicate_name}: certificate claims {claimed_verdict}, "
                     f"re-evaluation gives {result.verdict.value}"

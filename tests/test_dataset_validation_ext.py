@@ -79,26 +79,26 @@ class TestMinimalProteinEdgeCases:
 
     def test_single_methionine(self):
         """A single Met (ATG) should optimize trivially."""
-        result = optimize_sequence("M", "Homo_sapiens", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence("M", "Homo_sapiens", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         assert result.sequence == "ATG"
         assert len(result.sequence) == 3
 
     def test_single_tryptophan(self):
         """A single Trp (TGG) should optimize trivially — only one codon."""
-        result = optimize_sequence("W", "Homo_sapiens", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence("W", "Homo_sapiens", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         assert result.sequence == "TGG"
 
     def test_two_amino_acids(self):
         """Two-amino-acid protein should still produce a valid sequence."""
         protein = "MK"
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
 
     def test_protein_of_only_single_codon_aas(self):
         """Protein composed entirely of Met and Trp (no codon choice)."""
         protein = "MWWMWWMW"
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
         # Sequence should be fully determined: ATG + TGG alternating
@@ -110,7 +110,7 @@ class TestMinimalProteinEdgeCases:
     def test_protein_of_only_high_degeneracy_aas(self):
         """Protein of Leu (6 codons), Ser (6 codons), Arg (6 codons)."""
         protein = "LSR" * 10
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
         # Each codon must be valid for its amino acid
@@ -123,14 +123,14 @@ class TestMinimalProteinEdgeCases:
     def test_all_twenty_standard_aas(self):
         """A protein containing every standard amino acid at least once."""
         protein = STANDARD_AAS  # "ACDEFGHIKLMNPQRSTVWY"
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
 
     def test_homopolymer_protein(self):
         """A protein of repeated single amino acid (Ala, 4 codons)."""
         protein = "A" * 50
-        result = optimize_sequence(protein, "Escherichia_coli", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence(protein, "Escherichia_coli", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
 
@@ -141,7 +141,7 @@ class TestGCRangeEdgeCases:
     def test_very_tight_gc_range(self):
         """Extremely tight GC range (0.49, 0.51) should still produce valid output."""
         protein = "ACDEFGHIKLMNPQRSTVWY" * 2
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.49, gc_hi=0.51)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.49, gc_hi=0.51, strict_mode=False)
         # The optimizer may not perfectly hit the tight range, but should not crash
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
@@ -149,7 +149,7 @@ class TestGCRangeEdgeCases:
     def test_wide_gc_range(self):
         """Very wide GC range (0.05, 0.95) should produce valid output."""
         protein = "ACDEFGHIKLMNPQRSTVWY" * 2
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.05, gc_hi=0.95)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.05, gc_hi=0.95, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
         gc = gc_content(result.sequence)
@@ -159,7 +159,7 @@ class TestGCRangeEdgeCases:
         """Very low GC range (0.05, 0.20) — AT-rich target."""
         # Use amino acids that can be encoded with AT-rich codons
         protein = "MFFLLIII" * 3
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.05, gc_hi=0.20)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.05, gc_hi=0.20, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
 
@@ -167,7 +167,7 @@ class TestGCRangeEdgeCases:
         """Very high GC range (0.80, 0.95) — GC-rich target."""
         # Use amino acids that can be encoded with GC-rich codons
         protein = "MGGGPPPPAAAA" * 3
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.80, gc_hi=0.95)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.80, gc_hi=0.95, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
 
@@ -522,7 +522,8 @@ class TestPropertyOptimizationCorrectness:
         """Property: Any valid protein optimized for any supported organism
         should translate back to the same protein."""
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein, (
@@ -535,7 +536,8 @@ class TestPropertyOptimizationCorrectness:
     def test_optimized_sequence_correct_length(self, protein, organism):
         """Property: Optimized sequence length must equal protein length * 3."""
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         assert len(result.sequence) == len(protein) * 3, (
             f"Protein length {len(protein)}, sequence length {len(result.sequence)}"
@@ -546,7 +548,8 @@ class TestPropertyOptimizationCorrectness:
     def test_optimized_sequence_valid_dna(self, protein, organism):
         """Property: Optimized sequence should contain only A, C, G, T."""
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         valid_bases = set("ACGT")
         invalid = set(result.sequence) - valid_bases
@@ -557,7 +560,8 @@ class TestPropertyOptimizationCorrectness:
     def test_cai_in_valid_range(self, protein, organism):
         """Property: CAI must always be in [0, 1]."""
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         assert 0.0 <= result.cai <= 1.0, f"CAI out of range: {result.cai}"
 
@@ -566,7 +570,8 @@ class TestPropertyOptimizationCorrectness:
     def test_gc_content_in_valid_range(self, protein, organism):
         """Property: GC content must be in [0, 1]."""
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         assert 0.0 <= result.gc_content <= 1.0, (
             f"GC content out of range: {result.gc_content}"
@@ -578,7 +583,8 @@ class TestPropertyOptimizationCorrectness:
         """Property: Every codon in the optimized sequence must encode
         the corresponding amino acid in the protein."""
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         for i, aa in enumerate(protein):
             codon = result.sequence[i * 3 : i * 3 + 3]
@@ -592,7 +598,8 @@ class TestPropertyOptimizationCorrectness:
     def test_gc_content_matches_computed(self, protein, organism):
         """Property: Reported GC content should match independently computed GC."""
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         computed_gc = gc_content(result.sequence)
         assert abs(result.gc_content - computed_gc) < 1e-6, (
@@ -604,8 +611,8 @@ class TestPropertyOptimizationCorrectness:
     def test_optimization_deterministic(self, protein, organism):
         """Property: Same protein + same organism + same params → same result."""
         kwargs = dict(gc_lo=0.30, gc_hi=0.70, cai_threshold=0.2)
-        result1 = optimize_sequence(protein, organism, **kwargs)
-        result2 = optimize_sequence(protein, organism, **kwargs)
+        result1 = optimize_sequence(protein, organism, **kwargs, strict_mode=False)
+        result2 = optimize_sequence(protein, organism, **kwargs, strict_mode=False)
         assert result1.sequence == result2.sequence, (
             f"Optimization is not deterministic for {protein[:10]}.../{organism}"
         )
@@ -708,7 +715,7 @@ class TestErrorHandlingInvalidOrganism:
         """optimize_sequence with unsupported organism should either raise
         UnsupportedOrganismError or produce a very-low-CAI fallback result."""
         try:
-            result = optimize_sequence("MK", "Alien_organism", gc_lo=0.30, gc_hi=0.70)
+            result = optimize_sequence("MK", "Alien_organism", gc_lo=0.30, gc_hi=0.70, strict_mode=False)
             # If it doesn't raise, it should produce a valid (but low-quality) result
             assert len(result.sequence) == 6
             assert result.cai >= 0.0
@@ -785,32 +792,32 @@ class TestErrorHandlingInvalidProtein:
     def test_empty_protein_raises(self):
         """Empty protein should raise InvalidProteinError."""
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("", "Homo_sapiens")
+            optimize_sequence("", "Homo_sapiens", strict_mode=False)
 
     def test_whitespace_only_protein_raises(self):
         """Whitespace-only protein should raise InvalidProteinError or
         a clear error (currently triggers ZeroDivisionError — a known bug)."""
         with pytest.raises((InvalidProteinError, ZeroDivisionError)):
-            optimize_sequence("   ", "Homo_sapiens")
+            optimize_sequence("   ", "Homo_sapiens", strict_mode=False)
 
     def test_protein_with_invalid_chars_raises(self):
         """Protein with invalid amino acid codes should raise InvalidProteinError."""
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("MKX", "Homo_sapiens")
+            optimize_sequence("MKX", "Homo_sapiens", strict_mode=False)
 
     def test_protein_with_numbers_raises(self):
         """Protein with numeric characters should raise InvalidProteinError."""
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("M1K2", "Homo_sapiens")
+            optimize_sequence("M1K2", "Homo_sapiens", strict_mode=False)
 
     def test_protein_with_special_chars_raises(self):
         """Protein with special characters should raise InvalidProteinError."""
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("M@K", "Homo_sapiens")
+            optimize_sequence("M@K", "Homo_sapiens", strict_mode=False)
 
     def test_protein_lowercase_accepted(self):
         """Protein with lowercase letters is accepted (optimizer upper-strips)."""
-        result = optimize_sequence("mkwva", "Homo_sapiens", gc_lo=0.20, gc_hi=0.80)
+        result = optimize_sequence("mkwva", "Homo_sapiens", gc_lo=0.20, gc_hi=0.80, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == "MKWVA"
 
@@ -843,25 +850,25 @@ class TestErrorHandlingInvalidGCBounds:
 
     def test_gc_lo_greater_than_gc_hi_no_crash(self):
         """gc_lo > gc_hi should not crash the optimizer."""
-        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=0.70, gc_hi=0.30)
+        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=0.70, gc_hi=0.30, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == "MKWVA"
 
     def test_gc_lo_equals_gc_hi_no_crash(self):
         """gc_lo == gc_hi should not crash the optimizer."""
-        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=0.50, gc_hi=0.50)
+        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=0.50, gc_hi=0.50, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == "MKWVA"
 
     def test_gc_bounds_negative_no_crash(self):
         """Negative GC bounds should not crash the optimizer."""
-        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=-0.1, gc_hi=0.50)
+        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=-0.1, gc_hi=0.50, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == "MKWVA"
 
     def test_gc_hi_above_1_no_crash(self):
         """gc_hi > 1.0 should not crash the optimizer."""
-        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=0.30, gc_hi=1.5)
+        result = optimize_sequence("MKWVA", "Homo_sapiens", gc_lo=0.30, gc_hi=1.5, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == "MKWVA"
 
@@ -975,7 +982,8 @@ class TestMultiOrganismConsistency:
         """A common protein should optimize successfully for each organism."""
         protein = "ACDEFGHIKLMNPQRSTVWY"
         result = optimize_sequence(
-            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1
+            protein, organism, gc_lo=0.20, gc_hi=0.80, cai_threshold=0.1,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
@@ -992,7 +1000,8 @@ class TestMultiOrganismConsistency:
         cai_scores = {}
         for organism in SUPPORTED_ORGANISMS:
             result = optimize_sequence(
-                protein, organism, gc_lo=0.30, gc_hi=0.70, cai_threshold=0.1
+                protein, organism, gc_lo=0.30, gc_hi=0.70, cai_threshold=0.1,
+                strict_mode=False,
             )
             cai_scores[organism] = result.cai
 
@@ -1008,7 +1017,8 @@ class TestMultiOrganismConsistency:
         under that organism's codon usage than under a distant organism's."""
         protein = "ACDEFGHIKLMNPQRSTVWY" * 3
         ecoli_result = optimize_sequence(
-            protein, "Escherichia_coli", gc_lo=0.30, gc_hi=0.70
+            protein, "Escherichia_coli", gc_lo=0.30, gc_hi=0.70,
+            strict_mode=False,
         )
         # E. coli-optimized sequence should score at least somewhat well
         # under E. coli codon usage
@@ -1028,7 +1038,8 @@ class TestRobustness:
         results = []
         for _ in range(5):
             result = optimize_sequence(
-                protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70
+                protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70,
+                strict_mode=False,
             )
             results.append(result.sequence)
         assert len(set(results)) == 1, "Repeated optimization not deterministic"
@@ -1037,7 +1048,8 @@ class TestRobustness:
         """A long protein of a single amino acid should optimize."""
         protein = "A" * 100
         result = optimize_sequence(
-            protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80
+            protein, "Homo_sapiens", gc_lo=0.20, gc_hi=0.80,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
@@ -1047,7 +1059,8 @@ class TestRobustness:
         """Alternating two amino acids should optimize correctly."""
         protein = "AE" * 50
         result = optimize_sequence(
-            protein, "Escherichia_coli", gc_lo=0.30, gc_hi=0.70
+            protein, "Escherichia_coli", gc_lo=0.30, gc_hi=0.70,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein

@@ -861,11 +861,35 @@ class HybridOptimizer:
                 violations_fixed += 1
 
         # ── Phase 2c: Fix GT dinucleotides (splice donor avoidance) ──
+        # Cost-aware: only fix GTs with high splice donor potential.
+        # GTs with low SDP (< threshold) are not biologically dangerous
+        # and CAI takes priority over GT avoidance for such GTs.
+        from .optimization import score_splice_donor_potential, SPLICE_DONOR_POTENTIAL_THRESHOLD
         for _iter in range(300):
             seq_str = "".join(seq_chars)
             gt_pos = seq_str.find("GT")
             if gt_pos == -1:
                 break
+
+            # Cost-aware GT resolution: check splice donor potential
+            sdp = score_splice_donor_potential(seq_str, gt_pos)
+            if sdp < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                # This GT has low splice donor potential — not dangerous.
+                # Check if there are any remaining high-SDP GTs.
+                _found_high_risk = False
+                _search_pos = gt_pos + 1
+                while _search_pos < len(seq_str) - 1:
+                    _next_gt = seq_str.find("GT", _search_pos)
+                    if _next_gt == -1:
+                        break
+                    _sdp = score_splice_donor_potential(seq_str, _next_gt)
+                    if _sdp >= SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                        _found_high_risk = True
+                        gt_pos = _next_gt
+                        break
+                    _search_pos = _next_gt + 1
+                if not _found_high_risk:
+                    break  # No high-risk GTs remain
 
             ci = gt_pos // 3
             fixed = False
@@ -2848,6 +2872,16 @@ class HybridOptimizer:
                     is_within = (pos + 1) < next_codon_start
 
                     if site_type == "donor" and is_within:
+                        # Cost-aware: check splice donor potential before fixing.
+                        # Even if MaxEntScan donor score exceeds threshold, a GT
+                        # with low overall splice donor potential (no acceptor,
+                        # no polypyrimidine tract) is not biologically dangerous.
+                        from .optimization import score_splice_donor_potential as _sdp, SPLICE_DONOR_POTENTIAL_THRESHOLD as _sdp_thresh
+                        sdp_val = _sdp(seq_str, pos)
+                        if sdp_val < _sdp_thresh:
+                            sites = sites[1:]
+                            continue  # Low-risk GT — CAI takes priority
+
                         aa = protein[codon_idx] if codon_idx < len(protein) else None
                         if aa is None or aa == "*":
                             sites = sites[1:]
@@ -2895,7 +2929,14 @@ class HybridOptimizer:
                             sites.extend(adjusted)
 
                     elif site_type == "donor" and not is_within:
-                        # Cross-codon GT: try fixing either codon
+                        # Cross-codon GT: check splice donor potential first
+                        from .optimization import score_splice_donor_potential as _sdp2, SPLICE_DONOR_POTENTIAL_THRESHOLD as _sdp_thresh2
+                        sdp_val2 = _sdp2(seq_str, pos)
+                        if sdp_val2 < _sdp_thresh2:
+                            sites = sites[1:]
+                            continue  # Low-risk GT — CAI takes priority
+
+                        # Try fixing either codon
                         next_ci = codon_idx + 1
                         fixed = False
 
@@ -3986,9 +4027,19 @@ class HybridOptimizer:
             ))
 
         # 4. Avoidable GT dinucleotides (simple check, no MaxEntScan)
+        # Cost-aware: only flag GTs with high splice donor potential.
+        # GTs with low splice donor potential (< threshold) are not
+        # biologically dangerous and CAI takes priority.
         if avoid_gt:
+            from .optimization import score_splice_donor_potential, SPLICE_DONOR_POTENTIAL_THRESHOLD
             for gt_pos in state.gt_positions_list():
                 if self._is_unavoidable_gt(seq, gt_pos):
+                    continue
+                # Cost-aware GT resolution: check splice donor potential
+                sdp = score_splice_donor_potential(seq, gt_pos)
+                if sdp < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                    # This GT has low splice donor potential — not dangerous.
+                    # Accept it (CAI > GT avoidance for low-risk GTs).
                     continue
                 codon_idx = gt_pos // 3
                 next_codon_start = (gt_pos // 3) * 3 + 3
@@ -4008,7 +4059,8 @@ class HybridOptimizer:
                     codon_indices=involved,
                     details=(
                         f"GT at pos {gt_pos} "
-                        f"({'within' if is_within else 'cross'}-codon)"
+                        f"({'within' if is_within else 'cross'}-codon, "
+                        f"SDP={sdp:.3f})"
                     ),
                 ))
 
@@ -4140,12 +4192,21 @@ class HybridOptimizer:
             max_donor = max_donor_score(seq)
             if max_donor >= self.splice_threshold:
                 from .maxentscan import score_donor
+                from .optimization import score_splice_donor_potential, SPLICE_DONOR_POTENTIAL_THRESHOLD
                 for i in range(len(seq) - 1):
                     if seq[i:i+2] == "GT":
                         if self._is_unavoidable_gt(seq, i):
                             continue
                         donor_score = score_donor(seq, i)
                         if donor_score >= self.splice_threshold:
+                            # Cost-aware: also check splice donor potential
+                            # Even if MaxEntScan donor score is high, a GT
+                            # with low overall splice donor potential (no
+                            # acceptor context, no polypyrimidine tract)
+                            # is not biologically dangerous.
+                            sdp = score_splice_donor_potential(seq, i)
+                            if sdp < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                                continue  # Low-risk GT — CAI takes priority
                             codon_idx = i // 3
                             next_codon_start = codon_idx * 3 + 3
                             is_within = (i + 1) < next_codon_start

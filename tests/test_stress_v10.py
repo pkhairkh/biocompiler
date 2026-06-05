@@ -96,32 +96,32 @@ class TestSingleAminoAcid:
 
     def test_single_methionine(self):
         """M has exactly one codon (ATG). Optimizer must return ATG."""
-        result = optimize_sequence("M", organism="Homo_sapiens")
+        result = optimize_sequence("M", organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert result.sequence == "ATG"
         assert len(result.sequence) == 3
 
     def test_single_tryptophan(self):
         """W has exactly one codon (TGG)."""
-        result = optimize_sequence("W", organism="Homo_sapiens")
+        result = optimize_sequence("W", organism="Homo_sapiens", strict_mode=False)
         assert result.sequence == "TGG"
 
     def test_single_alanine(self):
         """A has 4 codons — optimizer must pick a valid one."""
-        result = optimize_sequence("A", organism="Homo_sapiens")
+        result = optimize_sequence("A", organism="Homo_sapiens", strict_mode=False)
         assert result.sequence in AA_TO_CODONS["A"]
         assert len(result.sequence) == 3
 
     def test_single_leucine(self):
         """L has 6 codons — the most of any amino acid."""
-        result = optimize_sequence("L", organism="Escherichia_coli")
+        result = optimize_sequence("L", organism="Escherichia_coli", strict_mode=False)
         assert result.sequence in AA_TO_CODONS["L"]
         assert len(result.sequence) == 3
 
     def test_single_for_each_organism(self):
         """Single amino acid works for every supported organism."""
         for org in SUPPORTED_ORGANISMS:
-            result = optimize_sequence("A", organism=org)
+            result = optimize_sequence("A", organism=org, strict_mode=False)
             assert isinstance(result, OptimizationResult)
             assert result.sequence in AA_TO_CODONS["A"], (
                 f"Invalid codon for {org}: {result.sequence}"
@@ -143,7 +143,7 @@ class TestAllSameAminoAcid:
     def test_50x_alanine(self):
         """50 Alanines — 4 codons (GCN), GC-rich."""
         protein = "A" * 50
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 150
         assert _all_valid_codons(result.sequence)
@@ -154,7 +154,7 @@ class TestAllSameAminoAcid:
     def test_50x_leucine(self):
         """50 Leucines — 6 codons (TTR + CTN), most diversity."""
         protein = "L" * 50
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert len(result.sequence) == 150
         assert _all_valid_codons(result.sequence)
         assert _no_internal_stops(result.sequence)
@@ -162,21 +162,21 @@ class TestAllSameAminoAcid:
     def test_50x_serine(self):
         """50 Serines — 6 codons in two disconnected groups (TCN, AGY)."""
         protein = "S" * 50
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         assert len(result.sequence) == 150
         assert _all_valid_codons(result.sequence)
 
     def test_50x_arginine(self):
         """50 Arginines — 6 codons (CGN + AGR), includes AG dinucleotide."""
         protein = "R" * 50
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert len(result.sequence) == 150
         assert _all_valid_codons(result.sequence)
 
     def test_50x_methionine(self):
         """50 Methionines — only 1 codon (ATG). No codon choice at all."""
         protein = "M" * 50
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert len(result.sequence) == 150
         assert result.sequence == "ATG" * 50
 
@@ -195,7 +195,7 @@ class TestVeryLongProtein:
         """1000 alanines in E. coli — prokaryote fast path."""
         protein = "A" * 1000
         t0 = time.monotonic()
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         elapsed = time.monotonic() - t0
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 3000
@@ -209,7 +209,7 @@ class TestVeryLongProtein:
         """1000 alanines in human — eukaryote path with splice checking."""
         protein = "A" * 1000
         t0 = time.monotonic()
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         elapsed = time.monotonic() - t0
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 3000
@@ -221,7 +221,7 @@ class TestVeryLongProtein:
         """1000 amino acids of mixed composition (repeating STANDARD_AAS)."""
         # Repeat the 20 standard AAs 50 times = 1000 aa
         protein = STANDARD_AAS * 50
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 3000
         assert _all_valid_codons(result.sequence)
@@ -232,7 +232,7 @@ class TestVeryLongProtein:
         # "MAGTHIVKLMN" is 11 aa; 11 * 136 = 1496; + "MAGT" = 1500 aa
         protein = "MAGTHIVKLMN" * 136 + "MAGT"
         assert len(protein) == 1500
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         assert len(result.sequence) == len(protein) * 3
         assert _all_valid_codons(result.sequence)
 
@@ -252,21 +252,21 @@ class TestRareAminoAcids:
     def test_all_trp(self):
         """30 Tryptophans — only TGG codon. No optimization freedom."""
         protein = "W" * 30
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert result.sequence == "TGG" * 30
 
     def test_all_met(self):
         """30 Methionines — only ATG codon. Creates unavoidable GT."""
         protein = "M" * 30
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert result.sequence == "ATG" * 30
 
     def test_trp_met_alternating(self):
         """Alternating W-M: TGG ATG TGG ATG... — no codon choice at all."""
         protein = "WM" * 25  # 50 aa
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert len(result.sequence) == 150
         # Every odd codon is TGG, every even codon is ATG
         for i in range(0, 150, 6):
@@ -276,7 +276,7 @@ class TestRareAminoAcids:
     def test_protein_with_many_trp_met(self):
         """A realistic protein heavy in W and M."""
         protein = "MWWWMWWWMWWWKLMN" * 6  # 96 aa, many W and M
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert _all_valid_codons(result.sequence)
@@ -302,6 +302,7 @@ class TestGCExtremeTarget:
             organism="Escherichia_coli",
             gc_lo=0.49,
             gc_hi=0.51,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         # The optimizer should try to get GC close to target;
@@ -318,6 +319,7 @@ class TestGCExtremeTarget:
             organism="Homo_sapiens",
             gc_lo=0.49,
             gc_hi=0.51,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert _all_valid_codons(result.sequence)
@@ -331,6 +333,7 @@ class TestGCExtremeTarget:
             organism="Escherichia_coli",
             gc_lo=0.49,
             gc_hi=0.51,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert _all_valid_codons(result.sequence)
@@ -345,6 +348,7 @@ class TestGCExtremeTarget:
             organism="Escherichia_coli",
             gc_lo=0.49,
             gc_hi=0.51,
+            strict_mode=False,
         )
         # Can't achieve 0.49–0.51 with only ATG codons, but optimizer shouldn't crash
         assert isinstance(result, OptimizationResult)
@@ -358,6 +362,7 @@ class TestGCExtremeTarget:
             organism="Escherichia_coli",
             gc_lo=0.50,
             gc_hi=0.501,
+            strict_mode=False,
         )
         # Such a narrow window is likely impossible for this protein,
         # but the optimizer must not crash
@@ -385,6 +390,7 @@ class TestManyRestrictionSites:
             protein,
             organism="Escherichia_coli",
             enzymes=self._MANY_ENZYMES,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert _all_valid_codons(result.sequence)
@@ -402,6 +408,7 @@ class TestManyRestrictionSites:
             protein,
             organism="Homo_sapiens",
             enzymes=self._MANY_ENZYMES,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert _all_valid_codons(result.sequence)
@@ -413,6 +420,7 @@ class TestManyRestrictionSites:
             protein,
             organism="Homo_sapiens",
             enzymes=self._MANY_ENZYMES,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 21
@@ -425,6 +433,7 @@ class TestManyRestrictionSites:
             protein,
             organism="Escherichia_coli",
             enzymes=four_cutters,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert _all_valid_codons(result.sequence)
@@ -448,7 +457,7 @@ class TestRepeatedOptimization:
         protein = _REFERENCE_PROTEIN
         results = []
         for _ in range(100):
-            r = optimize_sequence(protein, organism="Escherichia_coli")
+            r = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
             results.append(r.sequence)
         # All 100 sequences must be identical
         assert len(set(results)) == 1, "Optimizer is non-deterministic!"
@@ -458,7 +467,7 @@ class TestRepeatedOptimization:
         protein = _REFERENCE_PROTEIN
         results = []
         for _ in range(100):
-            r = optimize_sequence(protein, organism="Homo_sapiens")
+            r = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
             results.append(r.sequence)
         assert len(set(results)) == 1, "Optimizer is non-deterministic!"
 
@@ -470,6 +479,7 @@ class TestRepeatedOptimization:
         for _ in range(100):
             r = optimize_sequence(
                 protein, organism="Homo_sapiens", enzymes=enzymes,
+                strict_mode=False,
             )
             results.append(r.sequence)
         assert len(set(results)) == 1, "Optimizer is non-deterministic with enzymes!"
@@ -479,7 +489,7 @@ class TestRepeatedOptimization:
         protein = _REFERENCE_PROTEIN
         results = []
         for _ in range(50):
-            r = optimize_sequence(protein, organism="Escherichia_coli")
+            r = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
             results.append((r.sequence, r.cai, r.gc_content))
         seqs = [r[0] for r in results]
         cais = [r[1] for r in results]
@@ -496,6 +506,7 @@ class TestRepeatedOptimization:
             r = optimize_sequence(
                 protein, organism="Escherichia_coli",
                 gc_lo=0.45, gc_hi=0.55,
+                strict_mode=False,
             )
             results.append(r.sequence)
         assert len(set(results)) == 1
@@ -517,7 +528,7 @@ class TestAllOrganismsSameProtein:
         return _REFERENCE_PROTEIN
 
     def test_homo_sapiens(self, protein):
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert result.cai > 0.0
@@ -525,7 +536,7 @@ class TestAllOrganismsSameProtein:
         assert _no_internal_stops(result.sequence)
 
     def test_escherichia_coli(self, protein):
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert result.cai > 0.0
@@ -533,7 +544,7 @@ class TestAllOrganismsSameProtein:
         assert _no_internal_stops(result.sequence)
 
     def test_mus_musculus(self, protein):
-        result = optimize_sequence(protein, organism="Mus_musculus")
+        result = optimize_sequence(protein, organism="Mus_musculus", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert result.cai > 0.0
@@ -541,7 +552,7 @@ class TestAllOrganismsSameProtein:
         assert _no_internal_stops(result.sequence)
 
     def test_cho_k1(self, protein):
-        result = optimize_sequence(protein, organism="CHO_K1")
+        result = optimize_sequence(protein, organism="CHO_K1", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert result.cai > 0.0
@@ -549,7 +560,7 @@ class TestAllOrganismsSameProtein:
         assert _no_internal_stops(result.sequence)
 
     def test_saccharomyces_cerevisiae(self, protein):
-        result = optimize_sequence(protein, organism="Saccharomyces_cerevisiae")
+        result = optimize_sequence(protein, organism="Saccharomyces_cerevisiae", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert result.cai > 0.0
@@ -560,7 +571,7 @@ class TestAllOrganismsSameProtein:
         """Different organisms should generally produce different codon choices."""
         sequences = {}
         for org in SUPPORTED_ORGANISMS:
-            r = optimize_sequence(protein, organism=org)
+            r = optimize_sequence(protein, organism=org, strict_mode=False)
             sequences[org] = r.sequence
         # At least 2 organisms should differ (codon preferences differ)
         unique_seqs = set(sequences.values())
@@ -571,13 +582,13 @@ class TestAllOrganismsSameProtein:
     def test_all_organisms_cai_reasonable(self, protein):
         """CAI should be > 0.2 for all organisms (reasonable optimization)."""
         for org in SUPPORTED_ORGANISMS:
-            r = optimize_sequence(protein, organism=org)
+            r = optimize_sequence(protein, organism=org, strict_mode=False)
             assert r.cai > 0.2, f"CAI too low for {org}: {r.cai:.4f}"
 
     def test_all_organisms_gc_in_range(self, protein):
         """GC content should be within default [0.30, 0.70] for all organisms."""
         for org in SUPPORTED_ORGANISMS:
-            r = optimize_sequence(protein, organism=org, gc_lo=0.30, gc_hi=0.70)
+            r = optimize_sequence(protein, organism=org, gc_lo=0.30, gc_hi=0.70, strict_mode=False)
             # GC may not always be perfectly in range due to amino acid constraints,
             # but it should be a valid fraction
             assert 0.0 <= r.gc_content <= 1.0, (
@@ -600,7 +611,7 @@ class TestManyValine:
     def test_all_valine(self):
         """100% valine protein — every codon has GT."""
         protein = "V" * 30
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 90
         for i in range(0, 90, 3):
@@ -609,7 +620,7 @@ class TestManyValine:
     def test_valine_heavy_mixed(self):
         """50% valine + alternating amino acid."""
         protein = "VA" * 40  # 80 aa
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 240
         assert _all_valid_codons(result.sequence)
@@ -618,7 +629,7 @@ class TestManyValine:
     def test_valine_with_serine(self):
         """Valine + Serine — both create GT dinucleotides (AGT in serine AGY codons)."""
         protein = "VS" * 30  # 60 aa
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 180
         assert _all_valid_codons(result.sequence)
@@ -627,7 +638,7 @@ class TestManyValine:
         """In E. coli, valine GT should not trigger splice checks (prokaryote path)."""
         protein = "V" * 50
         t0 = time.monotonic()
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         elapsed = time.monotonic() - t0
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 150
@@ -637,7 +648,7 @@ class TestManyValine:
     def test_valine_ecoli_high_cai(self):
         """Valine-heavy protein in E. coli should achieve decent CAI."""
         protein = "VAVAVAVAVA" * 5  # 50 aa
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         assert result.cai > 0.0
         # E. coli prokaryote fast path doesn't waste CAI on GT avoidance
         assert _all_valid_codons(result.sequence)
@@ -662,6 +673,7 @@ class TestEmptyEnzymeList:
             protein,
             organism="Homo_sapiens",
             enzymes=[],
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
@@ -675,6 +687,7 @@ class TestEmptyEnzymeList:
             protein,
             organism="Homo_sapiens",
             enzymes=None,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
@@ -685,9 +698,11 @@ class TestEmptyEnzymeList:
         protein = "MAGTHIVKLMN" * 5
         result_empty = optimize_sequence(
             protein, organism="Escherichia_coli", enzymes=[],
+            strict_mode=False,
         )
         result_default = optimize_sequence(
             protein, organism="Escherichia_coli",
+            strict_mode=False,
         )
         # Both should be valid
         assert _all_valid_codons(result_empty.sequence)
@@ -701,7 +716,7 @@ class TestEmptyEnzymeList:
         """Empty enzyme list works for all organisms."""
         protein = "MAGTHIVKLMN"
         for org in SUPPORTED_ORGANISMS:
-            result = optimize_sequence(protein, organism=org, enzymes=[])
+            result = optimize_sequence(protein, organism=org, enzymes=[], strict_mode=False)
             assert isinstance(result, OptimizationResult)
             assert len(result.sequence) == len(protein) * 3
             assert _all_valid_codons(result.sequence)
@@ -711,6 +726,7 @@ class TestEmptyEnzymeList:
         protein = STANDARD_AAS * 25  # 500 aa
         result = optimize_sequence(
             protein, organism="Escherichia_coli", enzymes=[],
+            strict_mode=False,
         )
         assert len(result.sequence) == 1500
         assert _all_valid_codons(result.sequence)

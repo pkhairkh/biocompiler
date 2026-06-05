@@ -86,6 +86,9 @@ __all__ = [
     "NoCpGIslandConstraint",
     "NoATTTAMotifConstraint",
     "NoTRunConstraint",
+    # Pattern constraints (DNA-Chisel-style)
+    "PatternAvoidanceConstraint",
+    "PatternEnforcementConstraint",
     # Soft constraints
     "MaximizeCAI",
     "MinimizeCpG",
@@ -1037,6 +1040,122 @@ class NoTRunConstraint(HardConstraint):
             else:
                 i += 1
         return positions
+
+
+class PatternAvoidanceConstraint(HardConstraint):
+    """A pattern that MUST NOT appear in the DNA sequence.
+
+    Generalization of :class:`NoRestrictionSiteConstraint` to arbitrary
+    patterns (regex, IUPAC, or literal).  Uses the
+    :mod:`~biocompiler.pattern_enforcement` module for matching and
+    enforcement.
+
+    This is the CSP constraint model's representation of an
+    **AvoidPattern** constraint (DNA-Chisel terminology).
+
+    Attributes:
+        pattern: The pattern to avoid (literal, IUPAC, or regex).
+        strand: ``"both"`` (check forward + reverse complement),
+            ``"forward"`` (forward strand only), or ``"reverse"``
+            (reverse complement only).
+        scope: ``"dna"`` or ``"protein"``.
+    """
+
+    def __init__(
+        self,
+        pattern: str,
+        strand: str = "both",
+        scope: str = "dna",
+    ) -> None:
+        from ..pattern_enforcement import PatternConstraint
+
+        self._pattern_constraint = PatternConstraint(
+            pattern=pattern, action="avoid", scope=scope, strand=strand,
+        )
+
+    @property
+    def name(self) -> str:
+        return f"AvoidPattern({self._pattern_constraint.pattern!r})"
+
+    @property
+    def constraint_type(self) -> ConstraintType:
+        return ConstraintType.PATTERN_AVOIDANCE
+
+    @property
+    def pattern(self) -> str:
+        return self._pattern_constraint.pattern
+
+    def check(self, sequence: str) -> bool:
+        """Return True if the pattern is NOT found in the sequence."""
+        from ..pattern_enforcement import check_pattern
+
+        result = check_pattern(sequence, self._pattern_constraint)
+        return result.passed
+
+    def violated_positions(self, sequence: str) -> list[int]:
+        """Return start positions of all pattern matches."""
+        from ..pattern_enforcement import check_pattern
+
+        result = check_pattern(sequence, self._pattern_constraint)
+        return sorted(start for start, _end in result.matches)
+
+
+class PatternEnforcementConstraint(HardConstraint):
+    """A pattern that MUST appear in the DNA sequence.
+
+    DNA-Chisel-style **EnforcePattern** constraint.  Useful for
+    embedding restriction sites, affinity tags, or other required
+    motifs.
+
+    Attributes:
+        pattern: The pattern that must appear (literal, IUPAC, or regex).
+        strand: ``"both"`` (check forward + reverse complement),
+            ``"forward"`` (forward strand only), or ``"reverse"``
+            (reverse complement only).
+        scope: ``"dna"`` or ``"protein"``.
+    """
+
+    def __init__(
+        self,
+        pattern: str,
+        strand: str = "both",
+        scope: str = "dna",
+    ) -> None:
+        from ..pattern_enforcement import PatternConstraint
+
+        self._pattern_constraint = PatternConstraint(
+            pattern=pattern, action="enforce", scope=scope, strand=strand,
+        )
+
+    @property
+    def name(self) -> str:
+        return f"EnforcePattern({self._pattern_constraint.pattern!r})"
+
+    @property
+    def constraint_type(self) -> ConstraintType:
+        return ConstraintType.PATTERN_ENFORCEMENT
+
+    @property
+    def pattern(self) -> str:
+        return self._pattern_constraint.pattern
+
+    def check(self, sequence: str) -> bool:
+        """Return True if the pattern IS found in the sequence."""
+        from ..pattern_enforcement import check_pattern
+
+        result = check_pattern(sequence, self._pattern_constraint)
+        return result.passed
+
+    def violated_positions(self, sequence: str) -> list[int]:
+        """Return all positions (entire sequence) if pattern is missing."""
+        from ..pattern_enforcement import check_pattern
+
+        result = check_pattern(sequence, self._pattern_constraint)
+        if result.passed:
+            return []
+        # Pattern not found — report the entire sequence as violated
+        # since the pattern could potentially be inserted anywhere
+        return list(range(len(sequence)))
 
 
 # ==============================================================================

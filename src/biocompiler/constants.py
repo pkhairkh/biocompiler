@@ -22,6 +22,7 @@ __all__ = [
     "RESTRICTION_ENZYMES",
     # Nucleotide encoding
     "BASE_MAP", "BASE_REV", "COMPLEMENT", "IUPAC_EXPAND",
+    "VALID_IUPAC_BASES",
     "reverse_complement",
     # Amino acid constants
     "STANDARD_AAS", "STANDARD_AAS_BLOSUM_ORDER", "BLOSUM62",
@@ -192,6 +193,9 @@ IUPAC_EXPAND: dict[str, str] = {
     "K": "GT", "M": "AC", "B": "CGT", "D": "AGT",
     "H": "ACT", "V": "ACG", "N": "ACGT",
 }
+
+# Set of all valid IUPAC DNA bases (A, C, G, T + ambiguity codes)
+VALID_IUPAC_BASES: set[str] = set(IUPAC_EXPAND.keys())
 
 
 def reverse_complement(seq: str) -> str:

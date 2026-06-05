@@ -63,7 +63,7 @@ class TestOptimizeAndTranslate:
     def test_optimize_short_protein_translates_back(self):
         """The DNA produced by optimize_sequence should translate to the
         original protein when re-translated."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert result.sequence, "Optimized sequence must not be empty"
 
@@ -75,38 +75,38 @@ class TestOptimizeAndTranslate:
 
     def test_optimized_sequence_length(self):
         """Optimized DNA length must equal 3 × protein length."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         assert len(result.sequence) == len(SHORT_PROTEIN) * 3, (
             f"Expected {len(SHORT_PROTEIN) * 3} bp, got {len(result.sequence)}"
         )
 
     def test_optimized_sequence_valid_dna(self):
         """All bases in the optimized sequence must be A/C/G/T."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         assert set(result.sequence) <= {"A", "C", "G", "T"}, (
             f"Invalid bases found: {set(result.sequence) - {'A', 'C', 'G', 'T'}}"
         )
 
     def test_optimize_medium_protein_translates_back(self):
         """Round-trip translation test with a longer protein (60 AA)."""
-        result = optimize_sequence(MEDIUM_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(MEDIUM_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         translated = translate(result.sequence)
         assert translated == MEDIUM_PROTEIN
 
     def test_optimize_ecoli_translates_back(self):
         """Optimization for E. coli should also preserve the protein."""
-        result = optimize_sequence(SHORT_PROTEIN, organism="Escherichia_coli")
+        result = optimize_sequence(SHORT_PROTEIN, organism="Escherichia_coli", strict_mode=False)
         translated = translate(result.sequence)
         assert translated == SHORT_PROTEIN
 
     def test_cai_is_nonzero(self):
         """The CAI score should be > 0 for any valid optimization."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         assert result.cai > 0.0, f"CAI should be positive, got {result.cai}"
 
     def test_gc_content_in_range(self):
         """GC content should be reported and within valid bounds."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         assert 0.0 <= result.gc_content <= 1.0
 
 
@@ -119,13 +119,13 @@ class TestOptimizeWithConstraints:
 
     def test_no_internal_stop_codons(self):
         """Optimized sequence must not contain internal stop codons."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         check = check_no_stop_codons(result.sequence)
         assert check.passed, f"Internal stop codons found: {check.details}"
 
     def test_valid_coding_sequence(self):
         """All codons must be valid and sequence length divisible by 3."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         check = check_valid_coding_seq(result.sequence)
         assert check.passed, f"Invalid coding sequence: {check.details}"
 
@@ -135,6 +135,7 @@ class TestOptimizeWithConstraints:
             SHORT_PROTEIN,
             organism=DEFAULT_ORGANISM,
             enzymes=DEFAULT_ENZYMES,
+            strict_mode=False,
         )
         check = check_no_restriction_site(result.sequence, DEFAULT_ENZYMES)
         assert check.passed, f"Restriction sites found: {check.details}"
@@ -147,6 +148,7 @@ class TestOptimizeWithConstraints:
             organism=DEFAULT_ORGANISM,
             gc_lo=gc_lo,
             gc_hi=gc_hi,
+            strict_mode=False,
         )
         actual_gc = gc_content(result.sequence)
         assert gc_lo <= actual_gc <= gc_hi, (
@@ -164,6 +166,7 @@ class TestOptimizeWithConstraints:
             organism=DEFAULT_ORGANISM,
             gc_lo=gc_lo,
             gc_hi=gc_hi,
+            strict_mode=False,
         )
         actual_gc = gc_content(result.sequence)
         assert gc_lo <= actual_gc <= gc_hi, (
@@ -175,6 +178,7 @@ class TestOptimizeWithConstraints:
         result = optimize_sequence(
             SHORT_PROTEIN,
             organism=DEFAULT_ORGANISM,
+            strict_mode=False,
         )
         check = check_no_cpg_island(result.sequence)
         assert check.passed, f"CpG island detected: {check.details}"
@@ -189,6 +193,7 @@ class TestOptimizeWithConstraints:
             enzymes=DEFAULT_ENZYMES,
             gc_lo=0.30,
             gc_hi=0.70,
+            strict_mode=False,
         )
         type_results = evaluate_all_predicates(
             result.sequence,
@@ -218,7 +223,7 @@ class TestExportFastaE2E:
     """End-to-end: optimize → export FASTA → verify format compliance."""
 
     def test_fasta_header_starts_with_greater_than(self):
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         fasta = export_fasta(
             result.sequence,
             identifier="test_gene",
@@ -228,7 +233,7 @@ class TestExportFastaE2E:
         assert fasta.startswith(">"), "FASTA must start with '>'"
 
     def test_fasta_header_contains_organism(self):
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         fasta = export_fasta(
             result.sequence,
             identifier="test_gene",
@@ -237,14 +242,14 @@ class TestExportFastaE2E:
         assert f"organism={DEFAULT_ORGANISM}" in fasta
 
     def test_fasta_header_contains_gc_and_length(self):
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         fasta = export_fasta(result.sequence, identifier="test_gene")
         assert "gc=" in fasta
         assert "len=" in fasta
 
     def test_fasta_sequence_preserves_optimized_dna(self):
         """All bases from the optimized DNA must appear in the FASTA body."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         fasta = export_fasta(result.sequence, identifier="test_gene")
         # Extract sequence lines (skip header)
         lines = fasta.strip().split("\n")
@@ -253,7 +258,7 @@ class TestExportFastaE2E:
 
     def test_fasta_wrapping_at_60_chars(self):
         """Sequence lines should be at most 60 characters each."""
-        result = optimize_sequence(MEDIUM_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(MEDIUM_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         fasta = export_fasta(result.sequence, identifier="test_gene")
         lines = fasta.strip().split("\n")
         seq_lines = lines[1:]  # skip header
@@ -262,13 +267,13 @@ class TestExportFastaE2E:
 
     def test_fasta_translation_matches_protein(self):
         """Auto-computed protein translation in header should match."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         fasta = export_fasta(result.sequence, identifier="test_gene")
         assert "protein_len=" in fasta
         assert f"{len(SHORT_PROTEIN)}aa" in fasta
 
     def test_fasta_ends_with_newline(self):
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         fasta = export_fasta(result.sequence, identifier="test_gene")
         assert fasta.endswith("\n"), "FASTA output should end with a newline"
 
@@ -282,7 +287,7 @@ class TestExportGenbankE2E:
 
     def test_genbank_has_required_sections(self):
         """GenBank output must contain LOCUS, FEATURES, ORIGIN, and //."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(
             result.sequence,
             locus_name="TESTGENE",
@@ -297,21 +302,21 @@ class TestExportGenbankE2E:
 
     def test_genbank_section_ordering(self):
         """Sections must appear in correct order: LOCUS < FEATURES < ORIGIN < //."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(result.sequence, locus_name="TESTGENE")
         assert gb.index("LOCUS") < gb.index("FEATURES") < gb.index("ORIGIN")
         assert gb.index("ORIGIN") < gb.index("//")
 
     def test_genbank_locus_contains_bp(self):
         """LOCUS line must report the correct sequence length in bp."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(result.sequence, locus_name="TESTGENE")
         expected_bp = f"{len(result.sequence)} bp"
         assert expected_bp in gb, f"Expected '{expected_bp}' in GenBank output"
 
     def test_genbank_cds_translation(self):
         """CDS feature must contain a /translation qualifier."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(
             result.sequence,
             gene_name="test_gene",
@@ -322,7 +327,7 @@ class TestExportGenbankE2E:
 
     def test_genbank_preserves_sequence_content(self):
         """All bases from the optimized DNA must appear in the ORIGIN section."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(result.sequence, locus_name="TESTGENE")
         # Extract ORIGIN section, strip numbering and spaces
         origin_start = gb.index("ORIGIN")
@@ -334,7 +339,7 @@ class TestExportGenbankE2E:
 
     def test_genbank_with_gene_name(self):
         """Gene name should appear in both gene and CDS features."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(
             result.sequence,
             gene_name="eGFP",
@@ -344,20 +349,20 @@ class TestExportGenbankE2E:
 
     def test_genbank_accession_present(self):
         """ACCESSION line must be present."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(result.sequence, locus_name="TESTGENE")
         assert "ACCESSION" in gb
 
     def test_genbank_source_organism(self):
         """SOURCE line must contain the organism name."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(result.sequence, organism=DEFAULT_ORGANISM)
         assert "SOURCE" in gb
         assert DEFAULT_ORGANISM in gb
 
     def test_genbank_comment_includes_gc(self):
         """COMMENT section should include GC content."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         gb = export_genbank(result.sequence)
         assert "GC content:" in gb
 
@@ -375,6 +380,7 @@ class TestCertificateGenerationE2E:
             MEDIUM_PROTEIN,
             organism=DEFAULT_ORGANISM,
             enzymes=DEFAULT_ENZYMES,
+            strict_mode=False,
         )
         type_results = evaluate_all_predicates(
             result.sequence,
@@ -408,7 +414,7 @@ class TestCertificateGenerationE2E:
 
     def test_certificate_design_id_matches_sequence_hash(self):
         """design_id should be the SHA-256 hash of the sequence."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         type_results = evaluate_all_predicates(result.sequence, organism=DEFAULT_ORGANISM)
         input_params = {"organism": DEFAULT_ORGANISM}
         cert = generate_certificate(
@@ -424,7 +430,7 @@ class TestCertificateGenerationE2E:
 
     def test_certificate_types_contain_verdicts(self):
         """Each type entry must have 'predicate' and 'verdict' keys."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         type_results = evaluate_all_predicates(result.sequence, organism=DEFAULT_ORGANISM)
         input_params = {"organism": DEFAULT_ORGANISM}
         cert = generate_certificate(
@@ -441,7 +447,7 @@ class TestCertificateGenerationE2E:
 
     def test_certificate_provenance_has_parameters(self):
         """Provenance should contain the full input parameters."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         type_results = evaluate_all_predicates(result.sequence, organism=DEFAULT_ORGANISM)
         input_params = {
             "organism": DEFAULT_ORGANISM,
@@ -460,7 +466,7 @@ class TestCertificateGenerationE2E:
 
     def test_certificate_serialization_round_trip(self):
         """Certificate should survive to_dict → from_dict round-trip."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         type_results = evaluate_all_predicates(result.sequence, organism=DEFAULT_ORGANISM)
         cert = generate_certificate(
             sequence=result.sequence,
@@ -476,7 +482,7 @@ class TestCertificateGenerationE2E:
 
     def test_certificate_verify_matches_design_id(self):
         """Independent verification should confirm design_id matches sequence."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         type_results = evaluate_all_predicates(result.sequence, organism=DEFAULT_ORGANISM)
         cert = generate_certificate(
             sequence=result.sequence,
@@ -507,6 +513,7 @@ class TestFullPipeline:
             enzymes=DEFAULT_ENZYMES,
             gc_lo=0.30,
             gc_hi=0.70,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert result.sequence
@@ -598,6 +605,7 @@ class TestFullPipeline:
             enzymes=DEFAULT_ENZYMES,
             gc_lo=0.30,
             gc_hi=0.70,
+            strict_mode=False,
         )
         # Translate
         assert translate(result.sequence) == MEDIUM_PROTEIN
@@ -636,6 +644,7 @@ class TestFullPipeline:
             SHORT_PROTEIN,
             organism="Escherichia_coli",
             enzymes=DEFAULT_ENZYMES,
+            strict_mode=False,
         )
         assert translate(result.sequence) == SHORT_PROTEIN
         type_results = evaluate_all_predicates(
@@ -678,6 +687,7 @@ class TestFullPipeline:
             organism=DEFAULT_ORGANISM,
             gc_lo=gc_lo,
             gc_hi=gc_hi,
+            strict_mode=False,
         )
         actual_gc = gc_content(result.sequence)
         assert gc_lo <= actual_gc <= gc_hi, (
@@ -706,7 +716,7 @@ class TestFullPipeline:
     def test_pipeline_certificate_embedded_in_genbank(self):
         """When a certificate is provided, it should be embedded in the
         GenBank COMMENT section."""
-        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM)
+        result = optimize_sequence(SHORT_PROTEIN, organism=DEFAULT_ORGANISM, strict_mode=False)
         type_results = evaluate_all_predicates(result.sequence, organism=DEFAULT_ORGANISM)
         cert = generate_certificate(
             sequence=result.sequence,

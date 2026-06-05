@@ -433,6 +433,7 @@ def validate_translation_fidelity(
             gc_lo=gc_lo,
             gc_hi=gc_hi,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True)
 
@@ -491,6 +492,7 @@ def validate_gc_content(
             gc_lo=gc_lo,
             gc_hi=gc_hi,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         gc = result.gc_content
         gc_lo_exp, gc_hi_exp = expected_gc_range
@@ -543,6 +545,7 @@ def validate_cai_bounds(
             gc_lo=gc_lo,
             gc_hi=gc_hi,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         cai_lo, cai_hi = expected_cai_range
         passed = cai_lo <= result.cai <= cai_hi
@@ -592,6 +595,7 @@ def validate_cross_organism_consistency(
             gc_lo=0.30,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
 
         # Optimize for human
@@ -601,6 +605,7 @@ def validate_cross_organism_consistency(
             gc_lo=0.30,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
 
         # Compute cross-organism CAI values
@@ -680,6 +685,7 @@ def validate_protein_length(
             gc_lo=gc_lo,
             gc_hi=gc_hi,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         actual_codons = len(result.sequence) // 3
         passed = actual_codons == expected_length
@@ -741,6 +747,7 @@ def validate_optimization_improvement(
             gc_lo=0.30,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
 
         # Optimized should be better than random (or nearly so).
@@ -804,10 +811,14 @@ def validate_no_cpg_island(
             gc_lo=gc_lo,
             gc_hi=gc_hi,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         # Check if sequence has CpG islands
+        # Pass the organism so that prokaryotic organisms (e.g., E. coli)
+        # are automatically skipped — CpG islands are a eukaryotic gene
+        # regulation concern and irrelevant for prokaryotes.
         from .type_system import evaluate_no_cpg_island
-        cpg_result = evaluate_no_cpg_island(result.sequence)
+        cpg_result = evaluate_no_cpg_island(result.sequence, organism=organism)
         passed = cpg_result.verdict == Verdict.PASS
         elapsed = (time.perf_counter() - t0) * 1000
 

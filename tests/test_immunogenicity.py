@@ -356,15 +356,13 @@ class TestEpitope:
 # TestImmunoPredicates
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Source-module bug: immuno_predicates.py references non-existent fields
-# (immunogenicity_score, mhc_score, risk_level, t_cell_epitopes, b_cell_epitopes)
-# on ImmunogenicityResult and EpitopePredictionResult.  These tests are
-# marked xfail until the source module is fixed.
-_PREDICATE_SOURCE_BUG = pytest.mark.xfail(
-    reason="immuno_predicates.py references non-existent fields "
-           "(immunogenicity_score, t_cell_epitopes, b_cell_epitopes, etc.) "
-           "on result dataclasses — source module needs fixing"
-)
+# NOTE: The original _PREDICATE_SOURCE_BUG xfail markers have been removed.
+# The underlying issue (non-existent fields on result dataclasses) was fixed
+# by adding property aliases to ImmunogenicityResult (overall_score,
+# immunogenicity_score, immunogenicity_class, t_cell_score, b_cell_score,
+# t_cell_epitopes, b_cell_epitopes).  The tests now pass source_organism
+# explicitly for foreign proteins so that context-aware classification
+# distinguishes self vs. non-self correctly.
 
 
 class TestImmunoPredicates:
@@ -372,7 +370,6 @@ class TestImmunoPredicates:
 
     # ── evaluate_low_immunogenicity ──────────────────────────────────────
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_low_immunogenicity_pass(self):
         """Low immunogenicity protein should PASS the low-immunogenicity predicate."""
         result = evaluate_low_immunogenicity(HBB_HUMAN)
@@ -381,10 +378,9 @@ class TestImmunoPredicates:
             f"HBB immunogenicity verdict {result.verdict}, expected PASS/LIKELY_PASS"
         )
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_low_immunogenicity_fail(self):
         """High immunogenicity protein should FAIL or LIKELY_FAIL."""
-        result = evaluate_low_immunogenicity(FOREIGN_PROTEIN)
+        result = evaluate_low_immunogenicity(FOREIGN_PROTEIN, source_organism="Bos_taurus")
         assert isinstance(result, TypeCheckResult)
         assert result.verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL, Verdict.UNCERTAIN), (
             f"Foreign protein immunogenicity verdict {result.verdict}, "
@@ -393,7 +389,6 @@ class TestImmunoPredicates:
 
     # ── evaluate_no_strong_t_cell_epitope ───────────────────────────────
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_no_strong_t_cell_epitope_pass(self):
         """Protein with few strong binders should PASS."""
         # HBB is a self-protein — fewer strong T-cell epitopes expected
@@ -403,11 +398,10 @@ class TestImmunoPredicates:
             f"HBB T-cell epitope verdict {result.verdict}, expected PASS/LIKELY_PASS"
         )
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_no_strong_t_cell_epitope_fail(self):
         """Protein with many strong binders should FAIL."""
         # Foreign-like protein likely has many strong T-cell binders
-        result = evaluate_no_strong_t_cell_epitope(FOREIGN_PROTEIN)
+        result = evaluate_no_strong_t_cell_epitope(FOREIGN_PROTEIN, source_organism="Bos_taurus")
         assert isinstance(result, TypeCheckResult)
         assert result.verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL, Verdict.UNCERTAIN), (
             f"Foreign protein T-cell epitope verdict {result.verdict}, "
@@ -416,7 +410,6 @@ class TestImmunoPredicates:
 
     # ── evaluate_no_dominant_b_cell_epitope ─────────────────────────────
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_no_dominant_b_cell_epitope_pass(self):
         """Protein with low B-cell epitope coverage should PASS."""
         result = evaluate_no_dominant_b_cell_epitope(HBB_HUMAN)
@@ -425,10 +418,9 @@ class TestImmunoPredicates:
             f"HBB B-cell epitope verdict {result.verdict}, expected PASS/LIKELY_PASS"
         )
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_no_dominant_b_cell_epitope_fail(self):
         """Protein with high B-cell epitope coverage should FAIL/LIKELY_FAIL."""
-        result = evaluate_no_dominant_b_cell_epitope(FOREIGN_PROTEIN)
+        result = evaluate_no_dominant_b_cell_epitope(FOREIGN_PROTEIN, source_organism="Bos_taurus", therapeutic=True)
         assert isinstance(result, TypeCheckResult)
         assert result.verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL, Verdict.UNCERTAIN), (
             f"Foreign protein B-cell epitope verdict {result.verdict}, "
@@ -437,7 +429,6 @@ class TestImmunoPredicates:
 
     # ── evaluate_population_coverage_safe ───────────────────────────────
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_population_coverage_safe_pass(self):
         """Protein binding only rare alleles should PASS coverage predicate."""
         # Use HBB — self-proteins typically bind fewer common alleles
@@ -447,12 +438,10 @@ class TestImmunoPredicates:
             f"HBB population coverage verdict {result.verdict}, expected PASS/LIKELY_PASS/UNCERTAIN"
         )
 
-    @_PREDICATE_SOURCE_BUG
     def test_evaluate_population_coverage_safe_fail(self):
         """Protein binding common alleles broadly should FAIL/LIKELY_FAIL."""
         # Foreign proteins tend to bind many common alleles → high population coverage
         result = evaluate_population_coverage_safe(FOREIGN_PROTEIN)
-        assert isinstance(result, TypeCheckResult)
         # This is a soft predicate; any non-PASS verdict signals elevated risk
         assert isinstance(result.verdict, Verdict), (
             f"Unexpected verdict type: {type(result.verdict)}"
@@ -507,7 +496,6 @@ class TestImmunogenicityIntegration:
                     f"{original_score:.3f} → {new_score:.3f}"
                 )
 
-    @_PREDICATE_SOURCE_BUG
     def test_all_predicates_return_type_check_result(self):
         """Every immuno predicate function returns TypeCheckResult."""
         for protein in [HBB_HUMAN, FOREIGN_PROTEIN]:

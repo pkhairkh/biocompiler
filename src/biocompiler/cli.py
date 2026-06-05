@@ -541,6 +541,24 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         if cert_text:
             print(cert_text)
 
+        # Biosecurity report (legacy FASTA-input mode)
+        if getattr(args, "biosecurity_report", False):
+            from .export import format_biosecurity_report
+            gc_val = gc_content(optimized) if optimized else 0.0
+            cai_val = None
+            if hasattr(opt_result, "cai"):
+                cai_val = opt_result.cai
+            pred_results_for_report = pred_results if pred_results else []
+            report = format_biosecurity_report(
+                sequence=optimized,
+                organism=organism,
+                cai=cai_val,
+                gc=gc_val,
+                type_results=pred_results_for_report,
+            )
+            print()
+            print(report)
+
         # Provenance tracking
         if getattr(args, "provenance", False):
             from .provenance import ProvenanceTracker, DecisionRecord, OptimizationRecord
@@ -598,6 +616,24 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         if cert_text:
             print()
             print(cert_text)
+
+        # ── Biosecurity report (if requested) ─────────────────────────
+        if getattr(args, "biosecurity_report", False):
+            from .export import format_biosecurity_report
+            gc_val = gc_content(optimized) if optimized else 0.0
+            cai_val = None
+            if hasattr(opt_result, "cai"):
+                cai_val = opt_result.cai
+            pred_results_for_report = pred_results if pred_results else []
+            report = format_biosecurity_report(
+                sequence=optimized,
+                organism=organism,
+                cai=cai_val,
+                gc=gc_val,
+                type_results=pred_results_for_report,
+            )
+            print()
+            print(report)
 
         # Print optimized sequence
         print()
@@ -1748,6 +1784,17 @@ def build_parser() -> argparse.ArgumentParser:
             "immune responses can compromise drug efficacy."
         ),
     )
+    opt_parser.add_argument(
+        "--biosecurity-report",
+        action="store_true",
+        default=False,
+        help=(
+            "Print a full biosecurity screening report before outputting "
+            "the optimized sequence. The report includes biosafety level "
+            "(BSL-1/BSL-2), screening status, predicate results, and "
+            "risk assessment summary."
+        ),
+    )
 
     # ── batch ── (v10.0.0)
     batch_parser = subparsers.add_parser(
@@ -1936,6 +1983,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument(
         "--port", type=int, default=8000,
         help="Port to bind to (default: 8000)",
+    )
+    serve_parser.add_argument(
+        "--no-auth", action="store_true",
+        help="Disable API authentication (for local development only! DANGEROUS in production)",
     )
 
     # ── structure ──
@@ -2275,7 +2326,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         cmd_scan(args)
     elif args.command == "serve":
         import uvicorn
-        from .api import app
+        from .api import app, set_no_auth_flag
+        if getattr(args, "no_auth", False):
+            set_no_auth_flag()
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.command == "structure":
         cmd_structure(args)

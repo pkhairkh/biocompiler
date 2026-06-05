@@ -342,6 +342,7 @@ def _get_result(gene_name: str, organism: str, protein: str,
             cai_threshold=cai_min,
             enzymes=["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"],
             seed=42,
+            strict_mode=False,
         )
     return _result_cache[cache_key]
 

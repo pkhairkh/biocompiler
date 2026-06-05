@@ -191,9 +191,11 @@ class TestOptimizeSequenceProkaryote:
         because skipping splice/CpG constraints frees up codon choices."""
         result_ecoli = optimize_sequence(
             _SHORT_PROTEIN, organism="ecoli", track_provenance=False,
+            strict_mode=False,
         )
         result_human = optimize_sequence(
             _SHORT_PROTEIN, organism="Homo_sapiens", track_provenance=False,
+            strict_mode=False,
         )
         # E. coli CAI may be 1.0 while human CAI is lower
         assert result_ecoli.cai > 0, "E. coli CAI must be positive"
@@ -210,9 +212,11 @@ class TestOptimizeSequenceProkaryote:
         """
         result_ecoli = optimize_sequence(
             _SHORT_PROTEIN, organism="ecoli", track_provenance=False,
+            strict_mode=False,
         )
         result_human = optimize_sequence(
             _SHORT_PROTEIN, organism="Homo_sapiens", track_provenance=False,
+            strict_mode=False,
         )
         gt_ecoli = result_ecoli.sequence.count("GT")
         gt_human = result_human.sequence.count("GT")
@@ -232,9 +236,11 @@ class TestOptimizeSequenceProkaryote:
         """
         result_ecoli = optimize_sequence(
             _SHORT_PROTEIN, organism="ecoli", track_provenance=False,
+            strict_mode=False,
         )
         result_human = optimize_sequence(
             _SHORT_PROTEIN, organism="Homo_sapiens", track_provenance=False,
+            strict_mode=False,
         )
         cg_ecoli = result_ecoli.sequence.count("CG")
         cg_human = result_human.sequence.count("CG")
@@ -247,6 +253,7 @@ class TestOptimizeSequenceProkaryote:
         from biocompiler.translation import translate
         result = optimize_sequence(
             _SHORT_PROTEIN, organism="ecoli", track_provenance=False,
+            strict_mode=False,
         )
         translated = translate(result.sequence)
         assert translated == _SHORT_PROTEIN, (
@@ -266,6 +273,7 @@ class TestUniversalConstraintsBothDomains:
         result = optimize_sequence(
             _SHORT_PROTEIN, organism=organism, gc_lo=0.30, gc_hi=0.70,
             track_provenance=False,
+            strict_mode=False,
         )
         assert 0.0 <= result.gc_content <= 1.0, "GC must be a valid fraction"
 
@@ -275,6 +283,7 @@ class TestUniversalConstraintsBothDomains:
         from biocompiler.type_system import check_no_stop_codons
         result = optimize_sequence(
             _SHORT_PROTEIN, organism=organism, track_provenance=False,
+            strict_mode=False,
         )
         check = check_no_stop_codons(result.sequence)
         assert check.passed, f"Internal stop codons found for {organism}"
@@ -284,6 +293,7 @@ class TestUniversalConstraintsBothDomains:
         """Optimized sequence length must equal protein length * 3."""
         result = optimize_sequence(
             _SHORT_PROTEIN, organism=organism, track_provenance=False,
+            strict_mode=False,
         )
         assert len(result.sequence) == len(_SHORT_PROTEIN) * 3
 
@@ -299,6 +309,7 @@ class TestCAIImprovementProkaryotes:
         eukaryotic constraints sacrifice codon quality."""
         result = optimize_sequence(
             _SHORT_PROTEIN, organism="ecoli", track_provenance=False,
+            strict_mode=False,
         )
         assert result.cai >= 0.9, (
             f"E. coli CAI ({result.cai:.4f}) should be >= 0.9 after "
@@ -310,11 +321,13 @@ class TestCAIImprovementProkaryotes:
         # Normal prokaryote optimization
         result_prok = optimize_sequence(
             _SHORT_PROTEIN, organism="ecoli", track_provenance=False,
+            strict_mode=False,
         )
         # Force eukaryotic constraints
         result_euk = optimize_sequence(
             _SHORT_PROTEIN, organism="ecoli",
             organism_domain="eukaryote", track_provenance=False,
+            strict_mode=False,
         )
         # Prokaryote CAI should be >= eukaryote-forced CAI
         assert result_prok.cai >= result_euk.cai, (

@@ -303,10 +303,10 @@ class TestExportedSequenceUppercaseACGT:
 # ────────────────────────────────────────────────────────────
 
 def _extract_fasta_gc(fasta_output: str) -> float:
-    """Extract the gc= value from the FASTA header."""
+    """Extract the GC= value from the FASTA header (case-insensitive)."""
     header = _find_fasta_header_line(fasta_output)
     for part in header.lstrip(">").split("|"):
-        if part.startswith("gc="):
+        if part.lower().startswith("gc="):
             return float(part.split("=")[1])
     raise ValueError(f"No gc= field found in FASTA header: {header!r}")
 

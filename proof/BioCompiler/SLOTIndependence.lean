@@ -170,6 +170,21 @@ theorem core_not_slot (P : TypePredicate) :
   | NoCrypticPromoter _ _ => simp [isSLOT]
   | _ => intro h; simp [isCorePredicate] at h
 
+/-- THEOREM: A predicate is core if and only if it is not SLOT-dependent.
+    Forward: core implies not SLOT (by core_not_slot).
+    Reverse: not SLOT implies core (since every predicate is core or SLOT). -/
+theorem isCore_iff_not_slot (P : TypePredicate) :
+    isCorePredicate P = true ↔ isSLOT P = false := by
+  constructor
+  · exact core_not_slot P
+  · intro h_slot_false
+    have h_core_or_slot := predicate_is_core_or_slot P
+    cases h_core_or_slot with
+    | inl h_core => exact h_core
+    | inr h_slot_true =>
+      rw [h_slot_true] at h_slot_false
+      exact (Bool.true_ne_false h_slot_false).elim
+
 -- ==============================================================================
 -- SLOT-Independence Theorems
 -- ==============================================================================

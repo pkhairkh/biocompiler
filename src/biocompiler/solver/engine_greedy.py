@@ -105,8 +105,21 @@ class GreedyEngine(SolverBackendProtocol):
         self.config: SolverConfig = config
         self._rng: random.Random = random.Random(seed if seed is not None else 0)
 
-    def solve(self, model: CSPModel) -> SolverResult:
-        """Solve the CSP model using greedy per-position codon selection."""
+    def solve(
+        self,
+        model: CSPModel,
+        warm_start_sequence: Optional[str] = None,
+    ) -> SolverResult:
+        """Solve the CSP model using greedy per-position codon selection.
+
+        Args:
+            model: The CSP model encoding the optimization problem.
+            warm_start_sequence: Optional DNA sequence from a partial Z3
+                solution.  When provided, the greedy optimizer uses this
+                as a starting point instead of selecting the highest-CAI
+                codon for each position.  This gives the greedy optimizer
+                a "warm start" when Z3 times out but has a partial solution.
+        """
         start_time: float = time.monotonic()
         protein: str = model.protein_sequence.upper()
 
@@ -136,19 +149,56 @@ class GreedyEngine(SolverBackendProtocol):
                     "CAI will be 0.0", target_organism,
                 )
 
-        codons: list[str] = []
+        # ── Warm start: Use Z3's partial solution if available ────────
+        # When Z3 timed out but produced a partial solution, use those
+        # codons as the starting point instead of always picking the
+        # highest-CAI codon.  This preserves any constraint-satisfying
+        # choices Z3 already made.
         aas: list[str] = list(protein)
-        for aa in aas:
-            domain: list[str] = AA_TO_CODONS.get(aa, [])
-            if not domain:
+        if warm_start_sequence and len(warm_start_sequence) == len(protein) * 3:
+            logger.info(
+                "GreedyEngine: Using warm-start sequence from Z3 "
+                "(length=%d)", len(warm_start_sequence),
+            )
+            codons: list[str] = [
+                warm_start_sequence[i:i + 3]
+                for i in range(0, len(warm_start_sequence), 3)
+            ]
+            # Validate warm-start codons — replace any invalid ones
+            validated_codons: list[str] = []
+            for idx, (codon, aa) in enumerate(zip(codons, protein)):
+                domain = AA_TO_CODONS.get(aa, [])
+                if codon in domain:
+                    validated_codons.append(codon)
+                else:
+                    # Invalid codon — fall back to best-CAI choice
+                    best = self._pick_best_codon(domain, adaptiveness)
+                    validated_codons.append(best)
+                    logger.debug(
+                        "GreedyEngine: Warm-start codon '%s' at position %d "
+                        "is invalid for AA '%s'; replaced with '%s'",
+                        codon, idx, aa, best,
+                    )
+            codons = validated_codons
+        else:
+            if warm_start_sequence:
                 logger.warning(
-                    "No codons found for amino acid '%s'; using %s placeholder",
-                    aa, _UNKNOWN_CODON_PLACEHOLDER,
+                    "GreedyEngine: Warm-start sequence length %d != expected %d; "
+                    "ignoring warm-start",
+                    len(warm_start_sequence), len(protein) * 3,
                 )
-                codons.append(_UNKNOWN_CODON_PLACEHOLDER)
-                continue
-            best: str = self._pick_best_codon(domain, adaptiveness)
-            codons.append(best)
+            codons = []
+            for aa in aas:
+                domain: list[str] = AA_TO_CODONS.get(aa, [])
+                if not domain:
+                    logger.warning(
+                        "No codons found for amino acid '%s'; using %s placeholder",
+                        aa, _UNKNOWN_CODON_PLACEHOLDER,
+                    )
+                    codons.append(_UNKNOWN_CODON_PLACEHOLDER)
+                    continue
+                best: str = self._pick_best_codon(domain, adaptiveness)
+                codons.append(best)
 
         sequence: str = "".join(codons)
 

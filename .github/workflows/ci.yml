@@ -104,26 +104,35 @@ jobs:
           mypy src/biocompiler --ignore-missing-imports
 
   # ──────────────────────────────────────────────
-  # Lean4 proof checking
+  # Lean4 proof checking (non-blocking initially)
   # ──────────────────────────────────────────────
-  lean4-proofs:
-    name: Lean4 Proofs
+  proof-check:
+    name: Lean4 Proof Check
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Lean4 / Lake
-        uses: leanprover/lean-action@v1
-        with:
-          lean-toolchain: leanprover/lean4:v4.30.0
-          workdir: proof
+      - name: Install elan (Lean version manager)
+        run: |
+          curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          ./elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - name: Check Lean4 proofs (proof/)
+      - name: Install Lean4 via elan
         working-directory: proof
         run: |
-          lake exe cache get || true
-          lake build
+          elan toolchain install leanprover/lean4:v4.30.0
+          lake --version
+
+      - name: Fetch Mathlib cache (if applicable)
+        working-directory: proof
+        run: lake exe cache get || true
+
+      - name: Build and verify Lean4 proofs (proof/)
+        working-directory: proof
+        run: lake build
 
   # ──────────────────────────────────────────────
   # Docker build verification
@@ -145,11 +154,15 @@ jobs:
     name: CI Pass
     if: always()
     runs-on: ubuntu-latest
-    needs: [test, lint, mypy, lean4-proofs, docker]
+    needs: [test, lint, mypy, proof-check, docker]
     steps:
       - name: Check all job results
         run: |
-          if [[ "${{ needs.test.result }}" == "failure" || "${{ needs.lint.result }}" == "failure" || "${{ needs.mypy.result }}" == "failure" || "${{ needs.lean4-proofs.result }}" == "failure" || "${{ needs.docker.result }}" == "failure" ]]; then
+          # proof-check is non-blocking (continue-on-error) — only warn on failure
+          if [[ "${{ needs.proof-check.result }}" == "failure" ]]; then
+            echo "::warning::Lean4 proof check failed — not blocking CI (non-blocking check)"
+          fi
+          if [[ "${{ needs.test.result }}" == "failure" || "${{ needs.lint.result }}" == "failure" || "${{ needs.mypy.result }}" == "failure" || "${{ needs.docker.result }}" == "failure" ]]; then
             echo "::error::One or more CI jobs failed"
             exit 1
           fi

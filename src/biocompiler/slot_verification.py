@@ -101,6 +101,7 @@ from typing import Dict, List, Optional, Any
 import logging
 
 from .types import Verdict, SLOTMode
+from .proof_checks import assert_conservative_safe, assert_verified_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +319,7 @@ def verify_no_cryptic_splice(
     tool_available = _check_maxent_available()
 
     if slot_mode == SLOTMode.CONSERVATIVE:
-        return Verdict.UNCERTAIN, VerificationEvidence(
+        result = Verdict.UNCERTAIN, VerificationEvidence(
             predicate="NoCrypticSplice",
             slot_mode=slot_mode,
             tool_available=tool_available,
@@ -326,6 +327,8 @@ def verify_no_cryptic_splice(
             verified=False,
             details="CONSERVATIVE mode: always UNCERTAIN for SLOT predicates",
         )
+        assert_conservative_safe(result[0], result[1])
+        return result
 
     if slot_mode == SLOTMode.VERIFIED:
         if not tool_available:
@@ -342,7 +345,7 @@ def verify_no_cryptic_splice(
             from .type_system import check_no_cryptic_splice
             result = check_no_cryptic_splice(seq, low_thresh, high_thresh)
             verified = result.verdict == Verdict.PASS
-            return result.verdict, VerificationEvidence(
+            evidence = VerificationEvidence(
                 predicate="NoCrypticSplice",
                 slot_mode=slot_mode,
                 tool_available=True,
@@ -352,6 +355,8 @@ def verify_no_cryptic_splice(
                 verified=verified,
                 details=f"VERIFIED mode: MaxEntScan result = {result.verdict.value}",
             )
+            assert_verified_evidence(result.verdict, evidence)
+            return result.verdict, evidence
         except Exception as e:
             return Verdict.UNCERTAIN, VerificationEvidence(
                 predicate="NoCrypticSplice",
@@ -443,7 +448,7 @@ def verify_no_cryptic_promoter(
     tool_available = True  # PWM scanner is always available (built-in)
 
     if slot_mode == SLOTMode.CONSERVATIVE:
-        return Verdict.UNCERTAIN, VerificationEvidence(
+        result = Verdict.UNCERTAIN, VerificationEvidence(
             predicate="NoCrypticPromoter",
             slot_mode=slot_mode,
             tool_available=tool_available,
@@ -451,6 +456,8 @@ def verify_no_cryptic_promoter(
             verified=False,
             details="CONSERVATIVE mode: always UNCERTAIN for SLOT predicates",
         )
+        assert_conservative_safe(result[0], result[1])
+        return result
 
     # VERIFIED and PERMISSIVE: run the actual check
     try:

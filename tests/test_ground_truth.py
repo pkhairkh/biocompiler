@@ -1822,7 +1822,7 @@ class TestOptimizerGroundTruth:
             "VKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGK"
             "EFTPPVQAAYQKVVAGVANALAHKYH"
         )
-        result = self.optimize_sequence(hbb_protein, "Homo_sapiens")
+        result = self.optimize_sequence(hbb_protein, "Homo_sapiens", strict_mode=False)
         translated = self.translate(result.sequence)
         assert translated == hbb_protein, (
             f"Optimized HBB doesn't translate back to original protein. "
@@ -1837,7 +1837,7 @@ class TestOptimizerGroundTruth:
             "RIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQ"
             "QNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
         )
-        result = self.optimize_sequence(egfp_protein, "Escherichia_coli")
+        result = self.optimize_sequence(egfp_protein, "Escherichia_coli", strict_mode=False)
         translated = self.translate(result.sequence)
         assert translated == egfp_protein
 
@@ -1848,7 +1848,7 @@ class TestOptimizerGroundTruth:
             "VKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGK"
             "EFTPPVQAAYQKVVAGVANALAHKYH"
         )
-        result = self.optimize_sequence(hbb_protein, "Homo_sapiens")
+        result = self.optimize_sequence(hbb_protein, "Homo_sapiens", strict_mode=False)
         cai = self.compute_cai(result.sequence, "Homo_sapiens")
         # The optimizer balances multiple constraints (splice, restriction sites,
         # GC, etc.) which may reduce CAI from the theoretical maximum
@@ -1862,7 +1862,7 @@ class TestOptimizerGroundTruth:
             "RIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQ"
             "QNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
         )
-        result = self.optimize_sequence(egfp_protein, "Escherichia_coli")
+        result = self.optimize_sequence(egfp_protein, "Escherichia_coli", strict_mode=False)
         cai = self.compute_cai(result.sequence, "Escherichia_coli")
         # The optimizer balances multiple constraints (splice, restriction sites,
         # GC, etc.) which may reduce CAI from the theoretical maximum
@@ -1875,7 +1875,7 @@ class TestOptimizerGroundTruth:
             "VKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGK"
             "EFTPPVQAAYQKVVAGVANALAHKYH"
         )
-        result = self.optimize_sequence(hbb_protein, "Homo_sapiens")
+        result = self.optimize_sequence(hbb_protein, "Homo_sapiens", strict_mode=False)
         gc = self.gc_content(result.sequence)
         assert 0.30 <= gc <= 0.70, f"GC={gc} outside [0.30, 0.70]"
 
@@ -1897,6 +1897,7 @@ class TestOptimizerGroundTruth:
         result = self.optimize_sequence(
             egfp_protein, "Escherichia_coli",
             restriction_sites=[enzyme_sites[e] for e in enzymes_to_avoid],
+            strict_mode=False,
         )
 
         # Verify no forbidden sites in the output
@@ -1917,6 +1918,6 @@ class TestOptimizerGroundTruth:
         """Optimizing insulin for E. coli preserves the protein sequence."""
         # Human proinsulin B-chain start (first 30 residues)
         insulin_protein = "FVNQHLCGSHLVEALYLVCGERGFFYTPKT"
-        result = self.optimize_sequence(insulin_protein, "Escherichia_coli")
+        result = self.optimize_sequence(insulin_protein, "Escherichia_coli", strict_mode=False)
         translated = self.translate(result.sequence)
         assert translated == insulin_protein

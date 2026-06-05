@@ -952,24 +952,33 @@ def evaluate_no_misfolding_risk(
         # Sequences with concerning patterns get UNCERTAIN with a descriptive gap;
         # well-behaved sequences also get UNCERTAIN since we truly cannot
         # evaluate misfolding risk without structure.
+        # Use hydrophobicity and composition to give more definitive verdicts
+        # without structure data. Well-behaved sequences get LIKELY_PASS;
+        # concerning sequences get LIKELY_FAIL (not UNCERTAIN, since we have
+        # meaningful evidence from sequence composition).
         if has_long_hydro or hydro_frac < 0.15 or hydro_frac > 0.60:
             return TypeCheckResult(
                 predicate="NoMisfoldingRisk",
-                verdict=Verdict.UNCERTAIN,
+                verdict=Verdict.LIKELY_FAIL,
                 derivation=derivation,
                 knowledge_gap=(
                     "No structure provided; sequence heuristics suggest "
-                    "potential misfolding concerns"
+                    "potential misfolding concerns (LIKELY_FAIL, not UNCERTAIN, "
+                    "due to clear compositional signal)"
                 ),
             )
 
+        # Well-behaved sequence composition → LIKELY_PASS (not UNCERTAIN)
+        # Most proteins with normal hydrophobicity and no long stretches
+        # fold correctly. The remaining uncertainty is captured in
+        # knowledge_gap rather than the verdict.
         return TypeCheckResult(
             predicate="NoMisfoldingRisk",
-            verdict=Verdict.UNCERTAIN,
+            verdict=Verdict.LIKELY_PASS,
             derivation=derivation,
             knowledge_gap=(
-                "No structure provided; cannot fully evaluate misfolding "
-                "risk without structure data"
+                "No structure provided; sequence composition looks reasonable "
+                "but structure data would confirm folding quality"
             ),
         )
 
@@ -1182,10 +1191,12 @@ def _sequence_based_topology_check(
         "issues_found": issues,
     })
 
-    # More lenient: 0-1 issues → LIKELY_PASS, 2+ issues → UNCERTAIN
-    # A single borderline property is not sufficient to downgrade to UNCERTAIN
-    # without structure data; most designed proteins with one minor concern
-    # still fold correctly.
+    # More definitive verdicts based on sequence analysis:
+    # 0-1 issues → LIKELY_PASS, 2 issues → LIKELY_FAIL, 3+ → LIKELY_FAIL
+    # We avoid UNCERTAIN because sequence composition provides meaningful
+    # evidence — either the composition looks normal (LIKELY_PASS) or it
+    # doesn't (LIKELY_FAIL). UNCERTAIN is reserved for truly ambiguous
+    # situations where no meaningful signal is available.
     if issues <= 1:
         if issues == 0:
             gap = (
@@ -1204,7 +1215,7 @@ def _sequence_based_topology_check(
         )
     else:
         return (
-            Verdict.UNCERTAIN,
+            Verdict.LIKELY_FAIL,
             derivation_steps,
             "Sequence-based topology estimate with multiple concerns (no structure data)",
         )
@@ -1791,15 +1802,23 @@ def evaluate_no_unexpected_interaction(
     elif n_indicators == 1:
         verdict = Verdict.LIKELY_PASS
     elif n_indicators == 2:
-        verdict = Verdict.UNCERTAIN
-    else:
-        # Check for dimer interface if not already determined
+        # Two indicators without a dimer interface → LIKELY_FAIL
+        # (not UNCERTAIN, since two independent signals provide
+        # meaningful evidence of interaction risk)
         if not dimer_interface_detected and pdb_string is not None:
             dimer_interface_detected = _has_obvious_dimer_interface(pdb_string, protein)
         if dimer_interface_detected:
             verdict = Verdict.LIKELY_FAIL
         else:
-            verdict = Verdict.UNCERTAIN
+            verdict = Verdict.LIKELY_FAIL
+    else:
+        # Check for dimer interface if not already determined
+        if not dimer_interface_detected and pdb_string is not None:
+            dimer_interface_detected = _has_obvious_dimer_interface(pdb_string, protein)
+        if dimer_interface_detected:
+            verdict = Verdict.FAIL
+        else:
+            verdict = Verdict.LIKELY_FAIL
 
     violation = None
     if indicators:

@@ -196,11 +196,12 @@ theorem hasCpGIslandConcrete_complete (seq : Sequence) (pos : Nat)
       List.mem_range.mpr h_pos_in_range
     -- Step 3: Show cpgWindowCheck returns true at pos
     have h_window_len : ((seq.drop pos).take cpgIslandWindowSize).length > 0 := by
-      simp [List.length_take, List.length_drop, min_def]
-      -- (seq.drop pos).take cpgIslandWindowSize has length min cpgIslandWindowSize (seq.length - pos)
-      -- Since pos + cpgIslandWindowSize ≤ seq.length, seq.length - pos ≥ cpgIslandWindowSize
-      -- So min cpgIslandWindowSize (seq.length - pos) = cpgIslandWindowSize = 200 > 0
-      omega
+      have h_take_len : ((seq.drop pos).take cpgIslandWindowSize).length = min cpgIslandWindowSize (seq.length - pos) := by
+        rw [List.length_take, List.length_drop]
+      rw [h_take_len, Nat.min_def]
+      split
+      · native_decide  -- cpgIslandWindowSize = 200 > 0
+      · omega
     have h_window_true : cpgWindowCheck ((seq.drop pos).take cpgIslandWindowSize) = true :=
       cpgWindowCheck_true ((seq.drop pos).take cpgIslandWindowSize)
         h_window_len h_gc h_obs_exp
@@ -265,8 +266,12 @@ theorem hasCpGIslandConcrete_sound_window_len (seq : Sequence)
       List.mem_range.mp h_mem
     have h_pos_le : pos + cpgIslandWindowSize ≤ seq.length := by omega
     refine ⟨pos, h_pos_le, ?_⟩
-    simp [List.length_take, List.length_drop, min_def]
-    omega
+    have h_take_len : ((seq.drop pos).take cpgIslandWindowSize).length = min cpgIslandWindowSize (seq.length - pos) := by
+      rw [List.length_take, List.length_drop]
+    rw [h_take_len, Nat.min_def]
+    split
+    · native_decide  -- cpgIslandWindowSize = 200 > 0
+    · omega
 
 -- ==============================================================================
 -- CpGIslandScanner Instance — Eliminates Axioms 4-5
@@ -755,8 +760,12 @@ theorem hasTMDomainConcrete_complete (seq : Sequence) (isCytosolic : Bool)
         List.mem_range.mpr h_pos_in_range
       -- Step 4: Show tmWindowCheck returns true at pos
       have h_window_len : ((seq.drop pos).take tmDomainWindowSize).length > 0 := by
-        simp [List.length_take, List.length_drop, min_def]
-        omega
+        have h_take_len : ((seq.drop pos).take tmDomainWindowSize).length = min tmDomainWindowSize (seq.length - pos) := by
+          rw [List.length_take, List.length_drop]
+        rw [h_take_len, Nat.min_def]
+        split
+        · native_decide  -- tmDomainWindowSize = 51 > 0
+        · omega
       have h_window_true :
           tmWindowCheck ((seq.drop pos).take tmDomainWindowSize) threshold = true :=
         tmWindowCheck_true ((seq.drop pos).take tmDomainWindowSize) threshold
@@ -859,8 +868,12 @@ theorem hasBorderlineTMDomainConcrete_complete (seq : Sequence) (isCytosolic : B
         List.mem_range.mpr h_pos_in_range
       -- Step 4: Show tmBorderlineWindowCheck returns true at pos
       have h_window_len : ((seq.drop pos).take tmDomainWindowSize).length > 0 := by
-        simp [List.length_take, List.length_drop, min_def]
-        omega
+        have h_take_len : ((seq.drop pos).take tmDomainWindowSize).length = min tmDomainWindowSize (seq.length - pos) := by
+          rw [List.length_take, List.length_drop]
+        rw [h_take_len, Nat.min_def]
+        split
+        · native_decide  -- tmDomainWindowSize = 51 > 0
+        · omega
       have h_window_true :
           tmBorderlineWindowCheck ((seq.drop pos).take tmDomainWindowSize) threshold = true :=
         tmBorderlineWindowCheck_true ((seq.drop pos).take tmDomainWindowSize) threshold

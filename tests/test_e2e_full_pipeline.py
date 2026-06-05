@@ -119,6 +119,7 @@ class TestInsulinEcoliFullPipeline:
             cai_threshold=0.5,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
         self.elapsed = time.monotonic() - self.start_time
 
@@ -381,6 +382,7 @@ class TestWhatIfAnalysisHBB:
             gc_hi=0.55,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
         # Relaxed GC
         result_relaxed = optimize_sequence(
@@ -390,6 +392,7 @@ class TestWhatIfAnalysisHBB:
             gc_hi=0.80,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
         # Both must produce valid protein translations
@@ -411,6 +414,7 @@ class TestWhatIfAnalysisHBB:
             organism=E_COLI,
             enzymes=["EcoRI"],
             seed=42,
+            strict_mode=False,
         )
         # More enzymes
         result_many = optimize_sequence(
@@ -418,6 +422,7 @@ class TestWhatIfAnalysisHBB:
             organism=E_COLI,
             enzymes=["EcoRI", "BamHI", "HindIII", "XhoI", "NotI", "XbaI"],
             seed=42,
+            strict_mode=False,
         )
 
         # Both must be valid
@@ -446,6 +451,7 @@ class TestWhatIfAnalysisHBB:
             HBB_PROTEIN, organism=E_COLI,
             gc_lo=0.30, gc_hi=0.70,
             enzymes=AVOID_ENZYMES, seed=42,
+            strict_mode=False,
         )
         scenarios.append({
             "name": "baseline",
@@ -460,6 +466,7 @@ class TestWhatIfAnalysisHBB:
             HBB_PROTEIN, organism=E_COLI,
             gc_lo=0.20, gc_hi=0.80,
             enzymes=AVOID_ENZYMES, seed=42,
+            strict_mode=False,
         )
         scenarios.append({
             "name": "relaxed_gc",
@@ -475,6 +482,7 @@ class TestWhatIfAnalysisHBB:
             gc_lo=0.30, gc_hi=0.70,
             enzymes=["EcoRI", "BamHI", "HindIII", "XhoI", "NotI", "XbaI"],
             seed=42,
+            strict_mode=False,
         )
         scenarios.append({
             "name": "more_enzymes",
@@ -489,6 +497,7 @@ class TestWhatIfAnalysisHBB:
             HBB_PROTEIN, organism=E_COLI,
             gc_lo=0.0, gc_hi=1.0,
             enzymes=AVOID_ENZYMES, seed=42,
+            strict_mode=False,
         )
         scenarios.append({
             "name": "no_gc_constraint",
@@ -538,6 +547,7 @@ class TestProvenanceQueryInsulin:
             cai_threshold=0.5,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     def test_which_constraints_reduced_cai_most(self):
@@ -557,6 +567,7 @@ class TestProvenanceQueryInsulin:
             gc_hi=1.0,
             enzymes=[],  # No restriction sites to avoid
             seed=42,
+            strict_mode=False,
         )
         cai_free = result_free.cai
 
@@ -720,7 +731,8 @@ class TestNoExternalDependencies:
         # our code works either way
         # Just verify optimization works
         result = optimize_sequence(
-            "MVSKGE", organism=E_COLI, enzymes=["EcoRI"]
+            "MVSKGE", organism=E_COLI, enzymes=["EcoRI"],
+            strict_mode=False,
         )
         assert result.sequence
         assert translate(result.sequence) == "MVSKGE"
@@ -731,7 +743,8 @@ class TestNoExternalDependencies:
         spec = importlib.util.find_spec("RNA")
         # ViennaRNA may or may not be installed; just verify we work
         result = optimize_sequence(
-            "MVSKGE", organism=E_COLI, enzymes=["EcoRI"]
+            "MVSKGE", organism=E_COLI, enzymes=["EcoRI"],
+            strict_mode=False,
         )
         assert result.sequence
 
@@ -741,7 +754,8 @@ class TestNoExternalDependencies:
         spec = importlib.util.find_spec("dnachisel")
         # DNAchisel may or may not be installed; just verify we work
         result = optimize_sequence(
-            "MVSKGE", organism=E_COLI, enzymes=["EcoRI"]
+            "MVSKGE", organism=E_COLI, enzymes=["EcoRI"],
+            strict_mode=False,
         )
         assert result.sequence
 

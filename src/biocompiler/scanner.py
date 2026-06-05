@@ -18,7 +18,7 @@ import logging
 from .constants import (
     DONOR_CONSENSUS, ACCEPTOR_CONSENSUS, INSTABILITY_MOTIF,
     RESTRICTION_ENZYMES, POLYPYRIMIDINE_WINDOW,
-    IUPAC_EXPAND,
+    IUPAC_EXPAND, VALID_IUPAC_BASES,
     reverse_complement,
     START_CODON,
     STOP_CODONS,
@@ -142,23 +142,36 @@ def _iupac_match(seq: str, pattern: str) -> bool:
     return True
 
 
-def validate_dna_sequence(seq: str) -> str:
+def validate_dna_sequence(seq: str, allow_iupac: bool = False) -> str:
     """
     Validate and normalize a DNA sequence.
 
-    Converts to uppercase and checks that every character is in {A, C, G, T, N}.
+    Converts to uppercase and checks that every character is valid.
+    By default, only A, C, G, T, N are accepted.  When ``allow_iupac=True``,
+    all IUPAC ambiguity codes (R, Y, S, W, K, M, B, D, H, V) are also
+    accepted — this is useful for input sequences from degenerate primers
+    or consensus sequences.
+
+    Note: sequences with IUPAC codes (other than ACGTN) should be resolved
+    to concrete bases before being used for optimization.  Use
+    :func:`biocompiler.iupac.resolve_ambiguous` for that purpose.
 
     Args:
         seq: raw DNA sequence (case-insensitive)
+        allow_iupac: if True, accept all IUPAC ambiguity codes in addition
+            to ACGTN.  Defaults to False for backward compatibility.
 
     Returns:
         Uppercased, validated DNA string.
 
     Raises:
-        InvalidSequenceError: if any character is not A/C/G/T/N.
+        InvalidSequenceError: if any character is not a valid base.
     """
     seq = seq.upper()
-    valid: set[str] = set("ACGTN")
+    if allow_iupac:
+        valid: set[str] = VALID_IUPAC_BASES
+    else:
+        valid = set("ACGTN")
     invalid: set[str] = set(seq) - valid
     if invalid:
         raise InvalidSequenceError(seq, invalid)

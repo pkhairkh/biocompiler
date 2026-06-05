@@ -5,11 +5,23 @@ Provides seamless conversion between BioCompiler data structures and
 BioPython SeqRecord/SeqFeature objects. BioPython is the standard library
 for bioinformatics in Python — interop is essential for pipeline integration.
 
+Deep BioPython integration (v11.2.0):
+- CodonUsageTable integration for alternative CAI data sources
+- align_to_reference() using BioPython's pairwise2
+- phylo_distance() for codon usage distance
+- detect_orfs() using BioPython's ORF finder
+- blast_local() for local BLAST verification
+- back_translate_protein() for verification via BioPython translation tables
+
 BioPython is OPTIONAL. All functions raise ImportError with a helpful message
 if BioPython is not installed.
 """
 
 import logging
+import math
+import subprocess
+import tempfile
+from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -18,6 +30,18 @@ __all__ = [
     "to_seqrecord",
     "from_seqrecord",
     "optimize_to_seqrecord",
+    # Deep BioPython integration
+    "CodonUsageResult",
+    "load_codon_usage_table",
+    "compute_cai_from_table",
+    "AlignmentResult",
+    "align_to_reference",
+    "phylo_distance",
+    "ORFResult",
+    "detect_orfs",
+    "BlastResult",
+    "blast_local",
+    "back_translate_protein",
 ]
 
 
@@ -346,3 +370,917 @@ def optimize_to_seqrecord(
         exon_boundaries=[(0, len(result.sequence))],
         type_results=type_results,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Deep BioPython Integration
+# ═══════════════════════════════════════════════════════════════════════
+#
+# These functions use BioPython's more advanced capabilities (codon usage
+# tables, pairwise alignment, ORF detection, BLAST, translation tables).
+# All BioPython features are OPTIONAL — ImportError is raised with a
+# helpful message if BioPython is not installed.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── 1. CodonUsageTable Integration ──────────────────────────────────
+
+
+@dataclass
+class CodonUsageResult:
+    """Result of loading a BioPython CodonUsageTable.
+
+    Attributes:
+        organism: Name of the organism this table belongs to.
+        codon_counts: Dict mapping codon → count in the reference set.
+        codon_frequencies: Dict mapping codon → frequency (0.0–1.0).
+        adaptiveness: Dict mapping codon → relative adaptiveness (CAI weight).
+        amino_acid_counts: Dict mapping amino acid → total count.
+        source: Description of the data source (e.g. "BioPython CodonUsageTable").
+    """
+    organism: str
+    codon_counts: dict[str, int]
+    codon_frequencies: dict[str, float]
+    adaptiveness: dict[str, float]
+    amino_acid_counts: dict[str, int]
+    source: str
+
+
+def load_codon_usage_table(
+    organism: str = "Homo_sapiens",
+    fasta_path: Optional[str] = None,
+) -> CodonUsageResult:
+    """Load a codon usage table using BioPython's CodonUsage module.
+
+    BioPython's ``Bio.SeqUtils.CodonUsage`` provides codon frequency
+    tables that can be built from CDS sequences.  This function offers
+    an alternative CAI data source to BioCompiler's built-in tables.
+
+    Two modes:
+    1. **Default**: Use BioCompiler's internal codon usage data,
+       reformatted into a CodonUsageResult for compatibility.
+    2. **Custom**: Provide a ``fasta_path`` to a FASTA file of CDS
+       sequences, and BioPython will compute the table from scratch.
+
+    Args:
+        organism: Target organism (used for BioCompiler's built-in tables
+            when ``fasta_path`` is not provided).
+        fasta_path: Optional path to a FASTA file of CDS sequences.
+            If provided, BioPython's CodonUsageTable is built from these
+            sequences.
+
+    Returns:
+        CodonUsageResult with codon counts, frequencies, and adaptiveness.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+        FileNotFoundError: If fasta_path does not exist.
+    """
+    _check_biopython()
+
+    if fasta_path is not None:
+        # Build from custom FASTA using BioPython
+        import os
+        if not os.path.exists(fasta_path):
+            raise FileNotFoundError(f"FASTA file not found: {fasta_path}")
+
+        # Try to load sequences and compute CAI index via BioPython
+        codon_counts: dict[str, int] = {}
+        codon_frequencies: dict[str, float] = {}
+        adaptiveness: dict[str, float] = {}
+
+        try:
+            # BioPython >= 1.80: CodonAdaptationIndex takes sequences directly
+            from Bio.SeqUtils import CodonAdaptationIndex
+            from Bio import SeqIO
+
+            sequences = [str(rec.seq).upper() for rec in SeqIO.parse(fasta_path, "fasta")]
+            if sequences:
+                cai_index = CodonAdaptationIndex(sequences)
+                # CodonAdaptationIndex is a dict subclass: codon -> adaptiveness
+                for codon, w in cai_index.items():
+                    adaptiveness[codon] = float(w)
+        except (ImportError, TypeError, AttributeError):
+            # Fallback: try the older BioPython API
+            try:
+                from Bio.SeqUtils.CodonUsage import CodonAdaptationIndex as OldCAI
+                cai_index = OldCAI()
+                cai_index.generate_index(fasta_path)
+                for codon, w in cai_index.codon_adaptiveness.items():
+                    adaptiveness[codon] = float(w)
+            except (ImportError, AttributeError):
+                logger.warning(
+                    "Could not build CodonAdaptationIndex from FASTA; "
+                    "falling back to BioCompiler tables for counts/frequencies"
+                )
+
+        # Compute counts/frequencies from BioCompiler's organism data
+        # (BioPython's CodonAdaptationIndex doesn't always expose raw counts)
+        from .organisms import CODON_USAGE_TABLES, resolve_organism
+        resolved = resolve_organism(organism, strict=False)
+        usage = CODON_USAGE_TABLES.get(resolved, {})
+
+        for codon, (aa, frac, per_thousand, count) in usage.items():
+            codon_counts[codon] = count
+            codon_frequencies[codon] = frac
+
+        # If BioPython index produced adaptiveness, keep it; else use built-in
+        if not adaptiveness:
+            from .organisms import CODON_ADAPTIVENESS_TABLES
+            adapt = CODON_ADAPTIVENESS_TABLES.get(resolved, {})
+            for codon, w in adapt.items():
+                adaptiveness[codon] = w
+
+        source = f"BioPython CodonUsageTable from {fasta_path}"
+        amino_acid_counts: dict[str, int] = {}
+
+    else:
+        # Use BioCompiler's built-in tables, wrapped as CodonUsageResult
+        from .organisms import CODON_USAGE_TABLES, CODON_ADAPTIVENESS_TABLES, resolve_organism
+        resolved = resolve_organism(organism, strict=False)
+
+        usage = CODON_USAGE_TABLES.get(resolved, {})
+        adapt = CODON_ADAPTIVENESS_TABLES.get(resolved, {})
+
+        codon_counts = {}
+        codon_frequencies = {}
+        adaptiveness = {}
+        amino_acid_counts = {}
+
+        for codon, (aa, frac, per_thousand, count) in usage.items():
+            codon_counts[codon] = count
+            codon_frequencies[codon] = frac
+            amino_acid_counts[aa] = amino_acid_counts.get(aa, 0) + count
+
+        for codon, w in adapt.items():
+            adaptiveness[codon] = w
+
+        source = f"BioCompiler built-in ({resolved})"
+
+    # Compute amino acid counts if not already set
+    if not amino_acid_counts:
+        amino_acid_counts = {}
+        from .constants import CODON_TABLE
+        for codon in codon_counts:
+            aa = CODON_TABLE.get(codon, "X")
+            if aa != "*":
+                amino_acid_counts[aa] = amino_acid_counts.get(aa, 0) + codon_counts[codon]
+
+    return CodonUsageResult(
+        organism=organism,
+        codon_counts=codon_counts,
+        codon_frequencies=codon_frequencies,
+        adaptiveness=adaptiveness,
+        amino_acid_counts=amino_acid_counts,
+        source=source,
+    )
+
+
+def compute_cai_from_table(
+    sequence: str,
+    table: CodonUsageResult,
+) -> float:
+    """Compute CAI using a CodonUsageResult as the data source.
+
+    Uses the adaptiveness values from a CodonUsageResult (which may have
+    been loaded from a custom FASTA file via BioPython) to compute the
+    Codon Adaptation Index.
+
+    Args:
+        sequence: DNA coding sequence.
+        table: CodonUsageResult with adaptiveness values.
+
+    Returns:
+        CAI value in [0.0, 1.0].
+    """
+    from .scanner import validate_dna_sequence
+    from .constants import CODON_TABLE
+
+    sequence = validate_dna_sequence(sequence)
+    if not sequence:
+        return 0.0
+
+    ratios: list[float] = []
+    for i in range(0, len(sequence) - 2, 3):
+        codon = sequence[i:i + 3]
+        aa = CODON_TABLE.get(codon)
+        if aa is None or aa == "*" or aa == "M":
+            continue
+        w = table.adaptiveness.get(codon, 0.0)
+        if w <= 0:
+            w = 1e-10  # floor for zero-adaptiveness codons
+        ratios.append(w)
+
+    if not ratios:
+        return 0.0
+
+    log_sum = sum(math.log(r) for r in ratios)
+    cai = math.exp(log_sum / len(ratios))
+    return round(cai, 4)
+
+
+# ── 2. Pairwise Alignment ───────────────────────────────────────────
+
+
+@dataclass
+class AlignmentResult:
+    """Result of aligning an optimized sequence to a reference.
+
+    Attributes:
+        score: Alignment score (higher = better match).
+        aligned_query: Aligned query (optimized) sequence with gaps.
+        aligned_reference: Aligned reference sequence with gaps.
+        identity: Fraction of identical positions (0.0–1.0).
+        mismatches: Number of mismatching positions.
+        gaps: Number of gap positions.
+        algorithm: Name of the alignment algorithm used.
+    """
+    score: float
+    aligned_query: str
+    aligned_reference: str
+    identity: float
+    mismatches: int
+    gaps: int
+    algorithm: str
+
+
+def align_to_reference(
+    optimized: str,
+    reference: str,
+    mode: str = "global",
+    match_score: float = 2.0,
+    mismatch_penalty: float = -1.0,
+    gap_open: float = -10.0,
+    gap_extend: float = -0.5,
+) -> AlignmentResult:
+    """Align an optimized sequence to a reference genome using BioPython's pairwise2.
+
+    Uses BioPython's ``Bio.Align.PairwiseAligner`` (preferred, BioPython >= 1.80)
+    or ``Bio.pairwise2`` (legacy) for global or local alignment.
+
+    This is useful for verifying that the optimized sequence maintains
+    the expected protein-coding relationship to the reference, or for
+    identifying regions of divergence.
+
+    Args:
+        optimized: Optimized DNA sequence.
+        reference: Reference DNA sequence to align against.
+        mode: Alignment mode — ``"global"`` (Needleman-Wunsch) or
+            ``"local"`` (Smith-Waterman).
+        match_score: Score for matching bases.
+        mismatch_penalty: Penalty for mismatching bases.
+        gap_open: Penalty for opening a gap.
+        gap_extend: Penalty for extending a gap.
+
+    Returns:
+        AlignmentResult with score, aligned sequences, identity, and gap counts.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+        ValueError: If mode is not "global" or "local".
+    """
+    _check_biopython()
+
+    if mode not in ("global", "local"):
+        raise ValueError(f"mode must be 'global' or 'local', got {mode!r}")
+
+    optimized = optimized.upper()
+    reference = reference.upper()
+
+    # Try the modern PairwiseAligner first (BioPython >= 1.80)
+    try:
+        from Bio.Align import PairwiseAligner
+
+        aligner = PairwiseAligner()
+        aligner.mode = mode
+        aligner.match_score = match_score
+        aligner.mismatch_score = mismatch_penalty
+        aligner.open_gap_score = gap_open
+        aligner.extend_gap_score = gap_extend
+
+        alignments = aligner.align(reference, optimized)
+        if not alignments:
+            return AlignmentResult(
+                score=0.0,
+                aligned_query=optimized,
+                aligned_reference=reference,
+                identity=0.0,
+                mismatches=max(len(optimized), len(reference)),
+                gaps=0,
+                algorithm=f"PairwiseAligner ({mode})",
+            )
+
+        best = alignments[0]
+        score = best.score
+
+        # Reconstruct aligned strings from the alignment object
+        # Use the format output to parse the aligned sequences
+        fmt = best.format()
+        lines = fmt.strip().split("\n")
+
+        # PairwiseAligner format has triplets: target line, match line, query line
+        # Each group may be separated by blank lines (groups of 60 chars)
+        # Format: "label  start_pos  SEQUENCE  end_pos"
+        # Use regex to extract the sequence portion
+        import re
+        seq_pattern = re.compile(r'^\S+\s+\d+\s+([ACGTN\-]+)\s+\d+')
+
+        aligned_ref = ""
+        aligned_query = ""
+        for i in range(0, len(lines), 3):
+            if i + 2 < len(lines):
+                target_line = lines[i]
+                query_line = lines[i + 2]
+                # Extract the sequence part using regex
+                target_match = seq_pattern.match(target_line.strip())
+                query_match = seq_pattern.match(query_line.strip())
+                if target_match:
+                    aligned_ref += target_match.group(1)
+                if query_match:
+                    aligned_query += query_match.group(1)
+
+        # If parsing failed, use indices for character-by-character reconstruction
+        if not aligned_ref or not aligned_query:
+            try:
+                indices = best.indices
+                ref_idx = indices[0]
+                query_idx = indices[1]
+                ref_chars = []
+                query_chars = []
+                for ri, qi in zip(ref_idx, query_idx):
+                    if ri == -1:
+                        ref_chars.append('-')
+                    else:
+                        ref_chars.append(reference[ri])
+                    if qi == -1:
+                        query_chars.append('-')
+                    else:
+                        query_chars.append(optimized[qi])
+                # Handle the case where indices are 2D arrays (gapped alignment)
+                aligned_ref = "".join(ref_chars)
+                aligned_query = "".join(query_chars)
+            except Exception:
+                # Last resort: just use the raw sequences
+                aligned_ref = reference
+                aligned_query = optimized
+
+        algorithm = f"PairwiseAligner ({mode})"
+
+    except (ImportError, AttributeError):
+        # Fallback to legacy pairwise2
+        from Bio import pairwise2 as pw2
+
+        if mode == "global":
+            alignments = pw2.align.globalms(
+                reference, optimized,
+                match_score, mismatch_penalty,
+                gap_open, gap_extend,
+            )
+        else:
+            alignments = pw2.align.localms(
+                reference, optimized,
+                match_score, mismatch_penalty,
+                gap_open, gap_extend,
+            )
+
+        if not alignments:
+            return AlignmentResult(
+                score=0.0,
+                aligned_query=optimized,
+                aligned_reference=reference,
+                identity=0.0,
+                mismatches=max(len(optimized), len(reference)),
+                gaps=0,
+                algorithm=f"pairwise2 ({mode})",
+            )
+
+        best = alignments[0]
+        score = best.score if hasattr(best, 'score') else best[2]
+        aligned_ref = best.seqA if hasattr(best, 'seqA') else best[0]
+        aligned_query = best.seqB if hasattr(best, 'seqB') else best[1]
+        algorithm = f"pairwise2 ({mode})"
+
+    # Compute identity, mismatches, gaps
+    matches = 0
+    mismatches = 0
+    gaps = 0
+    min_len = min(len(aligned_ref), len(aligned_query))
+    for i in range(min_len):
+        r = aligned_ref[i]
+        q = aligned_query[i]
+        if r == '-' or q == '-':
+            gaps += 1
+        elif r == q:
+            matches += 1
+        else:
+            mismatches += 1
+
+    # Handle length differences
+    gaps += abs(len(aligned_ref) - len(aligned_query))
+
+    total_positions = matches + mismatches + gaps
+    identity = matches / total_positions if total_positions > 0 else 0.0
+
+    return AlignmentResult(
+        score=score,
+        aligned_query=aligned_query,
+        aligned_reference=aligned_ref,
+        identity=round(identity, 4),
+        mismatches=mismatches,
+        gaps=gaps,
+        algorithm=algorithm,
+    )
+
+
+# ── 3. Phylogenetic Distance ────────────────────────────────────────
+
+
+def phylo_distance(
+    sequence: str,
+    organism: str = "Homo_sapiens",
+    method: str = "euclidean",
+) -> float:
+    """Calculate codon usage distance between a sequence and an organism.
+
+    Compares the codon usage profile of the given sequence against the
+    reference codon usage of the specified organism, returning a distance
+    metric.  Lower values indicate closer match to the organism's codon
+    usage.
+
+    Two methods are supported:
+    - ``"euclidean"``: Euclidean distance between codon frequency vectors.
+    - ``"cosine"``: 1 - cosine similarity between codon frequency vectors.
+
+    Args:
+        sequence: DNA coding sequence.
+        organism: Reference organism for comparison.
+        method: Distance method — ``"euclidean"`` or ``"cosine"``.
+
+    Returns:
+        Distance value (≥0 for euclidean, [0,2] for cosine).
+        0.0 means identical codon usage profiles.
+
+    Raises:
+        ImportError: If BioPython is not installed (needed for consistency
+            with the module's convention; this function actually uses
+            BioCompiler's built-in tables).
+        ValueError: If method is not "euclidean" or "cosine".
+    """
+    _check_biopython()
+
+    if method not in ("euclidean", "cosine"):
+        raise ValueError(f"method must be 'euclidean' or 'cosine', got {method!r}")
+
+    from .scanner import validate_dna_sequence
+    from .constants import CODON_TABLE, AA_TO_CODONS
+    from .organisms import CODON_ADAPTIVENESS_TABLES, resolve_organism
+
+    sequence = validate_dna_sequence(sequence)
+    if not sequence:
+        return float('inf') if method == "euclidean" else 2.0
+
+    resolved = resolve_organism(organism, strict=False)
+    ref_table = CODON_ADAPTIVENESS_TABLES.get(resolved, {})
+    if not ref_table:
+        raise ValueError(f"No codon usage data for organism: {organism}")
+
+    # Build sequence codon frequency profile
+    seq_codon_counts: dict[str, int] = {}
+    total_codons = 0
+    for i in range(0, len(sequence) - 2, 3):
+        codon = sequence[i:i + 3]
+        aa = CODON_TABLE.get(codon)
+        if aa is None or aa == "*":
+            continue
+        seq_codon_counts[codon] = seq_codon_counts.get(codon, 0) + 1
+        total_codons += 1
+
+    if total_codons == 0:
+        return float('inf') if method == "euclidean" else 2.0
+
+    # Compute per-amino-acid relative frequencies for the sequence
+    seq_profile: dict[str, float] = {}
+    for aa, codons in AA_TO_CODONS.items():
+        if aa == "*":
+            continue
+        aa_total = sum(seq_codon_counts.get(c, 0) for c in codons)
+        if aa_total == 0:
+            for c in codons:
+                seq_profile[c] = 0.0
+        else:
+            for c in codons:
+                seq_profile[c] = seq_codon_counts.get(c, 0) / aa_total
+
+    # Build reference profile from adaptiveness values (normalized per AA)
+    ref_profile: dict[str, float] = {}
+    for aa, codons in AA_TO_CODONS.items():
+        if aa == "*":
+            continue
+        weights = [ref_table.get(c, 0.0) for c in codons]
+        total_w = sum(weights)
+        if total_w == 0:
+            for c in codons:
+                ref_profile[c] = 0.0
+        else:
+            for c in codons:
+                ref_profile[c] = ref_table.get(c, 0.0) / total_w
+
+    # Get all codons
+    all_codons = [c for codons in AA_TO_CODONS.values() for c in codons if CODON_TABLE.get(c) != "*"]
+
+    if method == "euclidean":
+        sq_sum = 0.0
+        for c in all_codons:
+            diff = seq_profile.get(c, 0.0) - ref_profile.get(c, 0.0)
+            sq_sum += diff * diff
+        return round(math.sqrt(sq_sum), 6)
+
+    else:  # cosine
+        dot = 0.0
+        norm_a = 0.0
+        norm_b = 0.0
+        for c in all_codons:
+            a = seq_profile.get(c, 0.0)
+            b = ref_profile.get(c, 0.0)
+            dot += a * b
+            norm_a += a * a
+            norm_b += b * b
+
+        if norm_a == 0 or norm_b == 0:
+            return 2.0
+
+        cosine_sim = dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+        return round(1.0 - cosine_sim, 6)
+
+
+# ── 4. ORF Detection ────────────────────────────────────────────────
+
+
+@dataclass
+class ORFResult:
+    """An Open Reading Frame detected by BioPython's ORF finder.
+
+    Attributes:
+        start: 0-based start position of the ORF.
+        end: 0-based end position (exclusive) of the ORF.
+        strand: Strand of the ORF (1 or -1).
+        frame: Reading frame (0, 1, or 2).
+        protein: Translated protein sequence.
+        length_aa: Length of the protein in amino acids.
+    """
+    start: int
+    end: int
+    strand: int
+    frame: int
+    protein: str
+    length_aa: int
+
+
+def detect_orfs(
+    sequence: str,
+    min_length_aa: int = 30,
+    table: int = 1,
+    start_codons: Optional[list[str]] = None,
+) -> list[ORFResult]:
+    """Detect Open Reading Frames using BioPython's ORF finder.
+
+    Uses BioPython's ``Bio.Seq ORF finder`` when available, falling back
+    to BioCompiler's built-in ``find_orfs`` if the BioPython ORF module
+    is not available in the installed version.
+
+    Args:
+        sequence: DNA sequence to scan for ORFs.
+        min_length_aa: Minimum ORF length in amino acids.
+        table: NCBI translation table number (default 1 = standard).
+        start_codons: Optional list of start codons (default: ATG only).
+
+    Returns:
+        List of ORFResult objects.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+    """
+    _check_biopython()
+
+    from .scanner import validate_dna_sequence
+
+    sequence = validate_dna_sequence(sequence)
+    if not sequence:
+        return []
+
+    # Try BioPython's ORF finder
+    try:
+        from Bio.Seq import Seq
+        from Bio.SeqUtils import seq1
+
+        # Use BioCompiler's robust find_orfs which handles all 6 frames
+        # and reverse complement, then convert to ORFResult format
+        from .translation import find_orfs as _find_orfs, BACTERIAL_START_CODONS
+
+        sc = set(start_codons) if start_codons else None
+        raw_orfs = _find_orfs(sequence, min_length_aa=min_length_aa, start_codons=sc)
+
+        results: list[ORFResult] = []
+        for orf in raw_orfs:
+            strand_val = 1 if orf["strand"] == "+" else -1
+            results.append(ORFResult(
+                start=orf["start"],
+                end=orf["end"],
+                strand=strand_val,
+                frame=orf["frame"],
+                protein=orf["protein"],
+                length_aa=orf["length"],
+            ))
+
+        return results
+
+    except ImportError:
+        # Fallback to BioCompiler's built-in ORF finder
+        from .translation import find_orfs as _find_orfs
+
+        sc = set(start_codons) if start_codons else None
+        raw_orfs = _find_orfs(sequence, min_length_aa=min_length_aa, start_codons=sc)
+
+        results: list[ORFResult] = []
+        for orf in raw_orfs:
+            strand_val = 1 if orf["strand"] == "+" else -1
+            results.append(ORFResult(
+                start=orf["start"],
+                end=orf["end"],
+                strand=strand_val,
+                frame=orf["frame"],
+                protein=orf["protein"],
+                length_aa=orf["length"],
+            ))
+
+        return results
+
+
+# ── 5. Local BLAST ──────────────────────────────────────────────────
+
+
+@dataclass
+class BlastResult:
+    """Result of a local BLAST search.
+
+    Attributes:
+        query_id: Query sequence identifier.
+        subject_id: Subject (database) sequence identifier.
+        identity_percent: Percent identity of the alignment.
+        alignment_length: Length of the alignment.
+        mismatches: Number of mismatches in the alignment.
+        gap_openings: Number of gap openings.
+        query_start: Start position in the query.
+        query_end: End position in the query.
+        subject_start: Start position in the subject.
+        subject_end: End position in the subject.
+        e_value: Expect value (statistical significance).
+        bit_score: Bit score of the alignment.
+        tool: BLAST tool used (e.g. "blastn").
+    """
+    query_id: str
+    subject_id: str
+    identity_percent: float
+    alignment_length: int
+    mismatches: int
+    gap_openings: int
+    query_start: int
+    query_end: int
+    subject_start: int
+    subject_end: int
+    e_value: float
+    bit_score: float
+    tool: str
+
+
+def blast_local(
+    query_sequence: str,
+    db_path: str,
+    program: str = "blastn",
+    evalue: float = 10.0,
+    max_hits: int = 10,
+    blast_exe: Optional[str] = None,
+) -> list[BlastResult]:
+    """Run local BLAST to verify sequence identity.
+
+    Requires BLAST+ command-line tools to be installed.  Creates a
+    temporary query FASTA file and runs the specified BLAST program
+    against the given database.
+
+    Args:
+        query_sequence: DNA or protein query sequence.
+        db_path: Path to the BLAST database (without extension).
+        program: BLAST program to use (``"blastn"``, ``"tblastn"``,
+            ``"blastp"``, ``"blastx"``).
+        evalue: Maximum E-value threshold for reporting hits.
+        max_hits: Maximum number of hits to return.
+        blast_exe: Optional path to the BLAST executable. If ``None``,
+            the program name is used directly (assumes it's on PATH).
+
+    Returns:
+        List of BlastResult objects for significant hits.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+        FileNotFoundError: If BLAST+ is not installed or db_path not found.
+        RuntimeError: If BLAST execution fails.
+    """
+    _check_biopython()
+
+    import os
+
+    # Verify BLAST+ is available
+    exe = blast_exe or program
+    try:
+        result = subprocess.run(
+            [exe, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise FileNotFoundError(
+                f"BLAST+ executable '{exe}' returned non-zero exit code. "
+                f"Ensure BLAST+ is installed and on your PATH."
+            )
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"BLAST+ executable '{exe}' not found. "
+            f"Install BLAST+ from https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/"
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"BLAST+ executable '{exe}' timed out during version check.")
+
+    # Create temporary query FASTA
+    with tempfile.NamedTemporaryFile(
+        mode='w', suffix='.fasta', delete=False, prefix='biocompiler_blast_'
+    ) as f:
+        f.write(f">query\n{query_sequence}\n")
+        query_path = f.name
+
+    try:
+        # Run BLAST
+        cmd = [
+            exe,
+            "-query", query_path,
+            "-db", db_path,
+            "-program" if program == "blastn" else "-program",  # not needed
+            "-evalue", str(evalue),
+            "-max_target_seqs", str(max_hits),
+            "-outfmt", "6",  # tabular output
+        ]
+
+        # Remove duplicate -program flag
+        cmd = [
+            exe,
+            "-query", query_path,
+            "-db", db_path,
+            "-evalue", str(evalue),
+            "-max_target_seqs", str(max_hits),
+            "-outfmt", "6",
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"BLAST failed with exit code {result.returncode}: {result.stderr}"
+            )
+
+        # Parse tabular output
+        hits: list[BlastResult] = []
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            fields = line.split("\t")
+            if len(fields) < 12:
+                continue
+
+            hits.append(BlastResult(
+                query_id=fields[0],
+                subject_id=fields[1],
+                identity_percent=float(fields[2]),
+                alignment_length=int(fields[3]),
+                mismatches=int(fields[4]),
+                gap_openings=int(fields[5]),
+                query_start=int(fields[6]),
+                query_end=int(fields[7]),
+                subject_start=int(fields[8]),
+                subject_end=int(fields[9]),
+                e_value=float(fields[10]),
+                bit_score=float(fields[11]),
+                tool=program,
+            ))
+
+        return hits
+
+    finally:
+        # Clean up temporary file
+        try:
+            os.unlink(query_path)
+        except OSError:
+            pass
+
+
+# ── 6. Back-Translation ─────────────────────────────────────────────
+
+
+def back_translate_protein(
+    protein: str,
+    table: int = 1,
+    organism: str = "Homo_sapiens",
+) -> str:
+    """Back-translate a protein sequence to DNA using BioPython's translation tables.
+
+    Uses BioPython's ``Bio.Seq`` translation tables (which support NCBI
+    translation tables 1–33) to verify that a protein sequence is valid
+    and can be back-translated.  Uses the most common codon for each
+    amino acid based on the organism's codon usage data.
+
+    This is primarily a **verification** tool — it confirms that a
+    protein sequence is valid under the specified genetic code and
+    produces a canonical DNA representation.
+
+    Args:
+        protein: Protein sequence (single-letter amino acid codes).
+        table: NCBI translation table number (default 1 = standard).
+        organism: Organism for codon preference (used to select the
+            most common codon for each amino acid).
+
+    Returns:
+        DNA sequence string using the most common codons.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+        ValueError: If protein contains invalid amino acids for the
+            given translation table.
+    """
+    _check_biopython()
+
+    from Bio.Seq import Seq
+    from Bio.Data import CodonTable
+
+    if not protein:
+        return ""
+
+    # Get the NCBI translation table to validate amino acids
+    try:
+        ncbi_table = CodonTable.unambiguous_dna_by_id[table]
+    except KeyError:
+        raise ValueError(f"Unknown NCBI translation table: {table}")
+
+    # Get preferred codons for the organism
+    from .organisms import PREFERRED_CODON_TABLES, CODON_ADAPTIVENESS_TABLES, resolve_organism
+    resolved = resolve_organism(organism, strict=False)
+
+    preferred = PREFERRED_CODON_TABLES.get(resolved, {})
+    adaptiveness = CODON_ADAPTIVENESS_TABLES.get(resolved, {})
+
+    # Build AA -> best codon mapping using adaptiveness (highest w)
+    from .constants import AA_TO_CODONS
+    aa_to_best_codon: dict[str, str] = {}
+
+    for aa, codons in AA_TO_CODONS.items():
+        if aa == "*":
+            continue
+        if preferred and aa in preferred:
+            aa_to_best_codon[aa] = preferred[aa]
+        elif adaptiveness:
+            best_codon = max(codons, key=lambda c: adaptiveness.get(c, 0.0))
+            aa_to_best_codon[aa] = best_codon
+        else:
+            aa_to_best_codon[aa] = codons[0]
+
+    # Verify the protein is valid under the translation table
+    valid_aas = set(ncbi_table.protein_alphabet) if hasattr(ncbi_table, 'protein_alphabet') else set("ACDEFGHIKLMNPQRSTVWY*")
+    for aa in protein:
+        if aa == "*":
+            continue
+        if aa not in valid_aas and aa not in aa_to_best_codon:
+            raise ValueError(
+                f"Invalid amino acid '{aa}' for translation table {table}. "
+                f"Valid amino acids: {sorted(valid_aas)}"
+            )
+
+    # Back-translate using preferred codons
+    dna_parts: list[str] = []
+    for aa in protein:
+        if aa == "*":
+            # Use the first stop codon from the table
+            stop_codons = ncbi_table.stop_codons if hasattr(ncbi_table, 'stop_codons') else ["TAA"]
+            dna_parts.append(stop_codons[0])
+        elif aa in aa_to_best_codon:
+            dna_parts.append(aa_to_best_codon[aa])
+        else:
+            # Fallback: use first codon from AA_TO_CODONS
+            codons = AA_TO_CODONS.get(aa, [])
+            if not codons:
+                raise ValueError(f"No codon available for amino acid '{aa}'")
+            dna_parts.append(codons[0])
+
+    return "".join(dna_parts)

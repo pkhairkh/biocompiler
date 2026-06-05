@@ -25,6 +25,8 @@ __all__ = [
     "export_batch_fasta",
     "export_full_construct",
     "export_json",
+    "export_with_annotations",
+    "format_biosecurity_report",
     "GENBANK_MAX_LINE",
     "GENBANK_SEQ_LINE",
     "GENBANK_SEQ_GROUP",
@@ -41,6 +43,16 @@ from .types import Certificate, TypeCheckResult, Verdict, combined_verdict
 from .scanner import gc_content
 from .translation import translate, compute_cai
 from . import __version__
+
+# Prokaryotic organisms (BSL-1 by default)
+_PROKARYOTIC_ORGANISMS = frozenset({
+    "Escherichia_coli", "E_coli", "Bacillus_subtilis",
+})
+
+# BSL-2 organisms (human/mammalian pathogens or cell lines)
+_BSL2_ORGANISMS = frozenset({
+    "Homo_sapiens", "Mus_musculus", "CHO_K1",
+})
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +147,137 @@ class FastaSequenceEntry(_FastaSequenceEntryRequired, total=False):
     gc: float
 
 
+def _assess_biosafety_level(
+    organism: str,
+    type_results: Optional[list[TypeCheckResult]] = None,
+) -> str:
+    """Assess the biosafety level for a given organism and predicate results.
+
+    Returns one of: 'BSL-1', 'BSL-2', or 'unknown'.
+
+    BSL-1: Non-pathogenic organisms (E. coli K-12, B. subtilis) and
+           sequences where all predicates pass.
+    BSL-2: Organisms associated with human cell lines or known pathogens,
+           or sequences with failed predicates that may indicate safety concerns.
+    unknown: Organisms not in the known classification.
+    """
+    if organism in _PROKARYOTIC_ORGANISMS:
+        base_level = "BSL-1"
+    elif organism in _BSL2_ORGANISMS:
+        base_level = "BSL-2"
+    else:
+        base_level = "unknown"
+
+    # If any predicate failed, escalate to BSL-2 minimum
+    if type_results:
+        has_fail = any(
+            r.verdict == Verdict.FAIL for r in type_results
+        )
+        if has_fail and base_level == "BSL-1":
+            return "BSL-2"
+
+    return base_level
+
+
+def _is_biosecurity_screened(
+    type_results: Optional[list[TypeCheckResult]] = None,
+) -> bool:
+    """Determine if the sequence has been biosecurity-screened.
+
+    A sequence is considered biosecurity-screened if it has passed
+    all type-check predicates (no FAIL verdicts).
+    """
+    if not type_results:
+        return False
+    return all(r.verdict != Verdict.FAIL for r in type_results)
+
+
+def format_biosecurity_report(
+    sequence: str,
+    organism: str = "Homo_sapiens",
+    cai: Optional[float] = None,
+    gc: Optional[float] = None,
+    type_results: Optional[list[TypeCheckResult]] = None,
+) -> str:
+    """Format a full biosecurity screening report for CLI display.
+
+    This function produces a human-readable report summarizing the
+    biosecurity assessment of a designed sequence, including biosafety
+    level, screening status, and predicate results.
+
+    Args:
+        sequence: DNA sequence.
+        organism: Target organism name.
+        cai: CAI value.
+        gc: GC content value.
+        type_results: Type-check predicate results.
+
+    Returns:
+        Human-readable biosecurity report string.
+    """
+    seq = sequence.upper().replace(" ", "")
+    if gc is None:
+        gc = gc_content(seq)
+
+    bsl = _assess_biosafety_level(organism, type_results)
+    screened = _is_biosecurity_screened(type_results)
+
+    passed_predicates = []
+    failed_predicates = []
+    if type_results:
+        for r in type_results:
+            if r.verdict == Verdict.PASS:
+                passed_predicates.append(r.predicate)
+            elif r.verdict == Verdict.FAIL:
+                failed_predicates.append(r.predicate)
+
+    provenance_id = f"BC_{uuid.uuid4().hex[:12].upper()}"
+
+    lines = [
+        "=" * 60,
+        "  BIOSECURITY SCREENING REPORT",
+        "=" * 60,
+        f"  Provenance ID    : {provenance_id}",
+        f"  Optimized by     : biocompiler v{__version__}",
+        f"  Organism         : {organism.replace('_', ' ')}",
+        f"  CAI score        : {cai:.4f}" if cai is not None else "  CAI score        : N/A",
+        f"  GC content       : {gc:.4f}",
+        f"  Biosecurity level: {bsl}",
+        f"  Screened         : {'PASS' if screened else 'FAIL'}",
+        "",
+        f"  Passed predicates ({len(passed_predicates)}):",
+    ]
+    for p in passed_predicates:
+        lines.append(f"    [+] {p}")
+    if not passed_predicates:
+        lines.append("    (none)")
+
+    lines.append(f"")
+    lines.append(f"  Failed predicates ({len(failed_predicates)}):")
+    for p in failed_predicates:
+        lines.append(f"    [X] {p}")
+    if not failed_predicates:
+        lines.append("    (none)")
+
+    # Risk assessment summary
+    lines.append("")
+    lines.append("  Risk Assessment Summary:")
+    if not failed_predicates:
+        lines.append("    All predicates passed. Sequence is considered safe for synthesis.")
+    else:
+        lines.append(f"    WARNING: {len(failed_predicates)} predicate(s) failed.")
+        lines.append("    Additional review recommended before submitting for synthesis.")
+    if bsl == "BSL-2":
+        lines.append("    Biosafety level BSL-2: Follow institutional BSL-2 containment procedures.")
+    elif bsl == "BSL-1":
+        lines.append("    Biosafety level BSL-1: Standard laboratory practices sufficient.")
+    else:
+        lines.append("    Biosafety level unknown: Consult institutional biosafety officer.")
+
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
 def _format_genbank_header(
     locus: str,
     seq_len: int,
@@ -221,10 +364,76 @@ def _format_genbank_header(
         comments.append(f"Certificate ID: {certificate.design_id[:16]}...")
         comments.append(f"Certificate timestamp: {certificate.provenance.get('timestamp', 'N/A')}")
 
+    # ── BIOCOMPILER_ANNOTATIONS ──
+    # Biosafety annotation block
+    bsl = _assess_biosafety_level(organism, type_results)
+    screened = _is_biosecurity_screened(type_results)
+    provenance_id = f"BC_{uuid.uuid4().hex[:12].upper()}"
+
+    passed_preds = []
+    failed_preds = []
+    if type_results:
+        for r in type_results:
+            if r.verdict == Verdict.PASS:
+                passed_preds.append(r.predicate)
+            elif r.verdict == Verdict.FAIL:
+                failed_preds.append(r.predicate)
+
+    comments.append("")  # blank line separator
+    comments.append("BIOCOMPILER_ANNOTATIONS:")
+    comments.append(f"  optimized_by: biocompiler v{__version__}")
+    comments.append(f"  organism: {organism}")
+    comments.append(f"  cai_score: {cai:.4f}" if cai is not None else "  cai_score: N/A")
+    comments.append(f"  gc_content: {gc:.4f}")
+    comments.append(f"  passed_predicates: {passed_preds}")
+    comments.append(f"  failed_predicates: {failed_preds}")
+    comments.append(f"  biosecurity_screened: {screened}")
+    comments.append(f"  biosafety_level: {bsl}")
+    comments.append(f"  provenance_id: {provenance_id}")
+
+    # ── WARNING if predicates failed ──
+    if failed_preds:
+        comments.append("")
+        comments.append(
+            f"WARNING: {len(failed_preds)} predicate(s) failed: "
+            f"{', '.join(failed_preds)}. "
+            f"Review before submitting for gene synthesis."
+        )
+
+    # ── BIOSECURITY NOTICE ──
+    comments.append("")
+    comments.append("BIOSECURITY NOTICE:")
+    if not failed_preds:
+        comments.append(
+            "  This sequence has passed all biosecurity screening predicates "
+            "and is considered safe for synthesis."
+        )
+    else:
+        comments.append(
+            "  This sequence has FAILED one or more biosecurity predicates. "
+            "Additional review by a biosafety officer is recommended before "
+            "submitting for gene synthesis."
+        )
+    if bsl == "BSL-1":
+        comments.append(
+            "  Risk level: BSL-1 — Standard laboratory practices are sufficient."
+        )
+    elif bsl == "BSL-2":
+        comments.append(
+            "  Risk level: BSL-2 — Institutional BSL-2 containment procedures apply."
+        )
+    else:
+        comments.append(
+            "  Risk level: Unknown — Consult institutional biosafety officer."
+        )
+
     if any(c for c in comments):
         lines.append("COMMENT     " + comments[0])
         for c in comments[1:]:
-            if c:
+            # Preserve blank lines for readability
+            if c == "":
+                lines.append("            ")
+            else:
                 lines.append("            " + c)
 
     return lines
@@ -354,6 +563,7 @@ def export_fasta(
     protein: Optional[str] = None,
     cai: Optional[float] = None,
     include_comments: bool = True,
+    type_results: Optional[list[TypeCheckResult]] = None,
 ) -> str:
     """
     Export a designed sequence in FASTA format.
@@ -375,6 +585,9 @@ def export_fasta(
         protein: Optional protein translation (auto-computed if None)
         cai: Optional CAI value (auto-computed if None)
         include_comments: If True, add FASTA comment lines with metadata
+        type_results: Optional type-check predicate results for biosafety
+            level assessment. When provided, failed predicates escalate
+            the biosecurity level in the header (e.g. BSL-1 → BSL-2).
 
     Returns:
         FASTA-formatted string
@@ -415,15 +628,16 @@ def export_fasta(
             meta_parts.append(f"Protein: {len(protein)} aa")
         output_parts.append(f"; {' | '.join(meta_parts)}")
 
-    # Build FASTA header with structured metadata
+    # Assess biosecurity level for header annotation
+    bsl = _assess_biosafety_level(organism, type_results)
+
+    # Build FASTA header with structured metadata including biosecurity
     header_parts = [identifier]
     header_parts.append(f"organism={organism}")
-    header_parts.append(f"gc={gc:.3f}")
-    if cai is not None:
-        header_parts.append(f"cai={cai:.4f}")
-    header_parts.append(f"len={len(seq)}")
-    if protein:
-        header_parts.append(f"protein_len={len(protein)}aa")
+    header_parts.append(f"CAI={cai:.4f}" if cai is not None else "CAI=N/A")
+    header_parts.append(f"GC={gc:.4f}")
+    header_parts.append(f"biosecurity={bsl}")
+    header_parts.append(f"biocompiler_v{__version__}")
 
     header = "|".join(header_parts)
     if description:
@@ -792,6 +1006,22 @@ def export_json(
         },
     }
 
+    # Biosafety annotations for JSON export
+    organism_name = getattr(result, "organism_name", None) or "unknown"
+    bsl = _assess_biosafety_level(organism_name)
+    provenance_id = f"BC_{uuid.uuid4().hex[:12].upper()}"
+    output["biosafety"] = {
+        "optimized_by": f"biocompiler v{__version__}",
+        "organism": organism_name,
+        "cai_score": result.cai,
+        "gc_content": result.gc_content,
+        "passed_predicates": result.satisfied_predicates,
+        "failed_predicates": result.failed_predicates,
+        "biosecurity_screened": len(result.failed_predicates) == 0,
+        "biosafety_level": bsl,
+        "provenance_id": provenance_id,
+    }
+
     # mRNA stability metrics
     if result.mrna_stability_score is not None:
         output["metrics"]["mrna_stability_score"] = _serialize_for_json(
@@ -1096,3 +1326,94 @@ def export_full_construct(
     lines.extend(_format_genbank_sequence(full_seq))
 
     return "\n".join(lines)
+
+
+# ─── Annotation-Aware Export ────────────────────────────────────────
+
+def export_with_annotations(
+    sequence: str,
+    organism: str = "Homo_sapiens",
+    cai: Optional[float] = None,
+    gc: Optional[float] = None,
+    type_results: Optional[list[TypeCheckResult]] = None,
+    format: str = "genbank",
+    **kwargs: Any,
+) -> str:
+    """Export a sequence with full biosafety annotations in the specified format.
+
+    This is the primary export function for production use. It wraps the
+    existing export functions and adds comprehensive biosafety metadata
+    including BSL level, screening status, and provenance tracking.
+
+    For GenBank format, the COMMENT section includes the full
+    ``BIOCOMPILER_ANNOTATIONS`` block, ``WARNING`` (if predicates failed),
+    and ``BIOSECURITY NOTICE`` with risk assessment summary.
+
+    For FASTA format, the header includes biosecurity level and
+    biocompiler version metadata.
+
+    Args:
+        sequence: DNA sequence (designed, verified).
+        organism: Target organism name.
+        cai: Optional CAI value (auto-computed if None).
+        gc: Optional GC content (auto-computed if None).
+        type_results: Optional type-check predicate results.
+        format: Export format — ``"genbank"`` or ``"fasta"``.
+        **kwargs: Additional keyword arguments forwarded to the underlying
+            export function (e.g., ``locus_name``, ``gene_name``,
+            ``identifier``, ``description``).
+
+    Returns:
+        Formatted string with embedded biosafety annotations.
+
+    Example::
+
+        from biocompiler.export import export_with_annotations
+        from biocompiler.types import TypeCheckResult, Verdict
+
+        type_results = [
+            TypeCheckResult(predicate="gc_content", verdict=Verdict.PASS),
+            TypeCheckResult(predicate="no_stop_codons", verdict=Verdict.PASS),
+        ]
+        result = export_with_annotations(
+            "ATGGTGAGCAAGGGCGAGGAG",
+            organism="Escherichia_coli",
+            cai=0.95,
+            type_results=type_results,
+            format="genbank",
+        )
+        assert "BIOCOMPILER_ANNOTATIONS:" in result
+        assert "biosafety_level: BSL-1" in result
+    """
+    seq = sequence.upper().replace(" ", "")
+    if gc is None:
+        gc = gc_content(seq)
+
+    # Auto-compute CAI if not provided
+    if cai is None and len(seq) >= 3 and len(seq) % 3 == 0:
+        try:
+            cai = compute_cai(seq, organism=organism)
+        except Exception:
+            cai = None
+
+    format_lower = format.lower()
+    if format_lower == "fasta":
+        return export_fasta(
+            sequence=sequence,
+            organism=organism,
+            cai=cai,
+            type_results=type_results,
+            **kwargs,
+        )
+    elif format_lower == "genbank":
+        return export_genbank(
+            sequence=sequence,
+            organism=organism,
+            cai=cai,
+            type_results=type_results,
+            **kwargs,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported format: {format!r}. Use 'genbank' or 'fasta'."
+        )

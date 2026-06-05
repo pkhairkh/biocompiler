@@ -52,6 +52,7 @@ class TestBasicCodonDecisionRecording:
             gc_lo=0.30,
             gc_hi=0.70,
             track_provenance=True,
+            strict_mode=False,
         )
 
     def test_result_has_decision_trail(self, result):
@@ -127,6 +128,7 @@ class TestAlternativesConsideredQuality:
             gc_lo=0.30,
             gc_hi=0.70,
             track_provenance=True,
+            strict_mode=False,
         )
 
     def test_leucine_has_at_least_3_alternatives(self, result):
@@ -224,6 +226,7 @@ class TestConstraintDecisionRecording:
             gc_lo=0.45,
             gc_hi=0.55,
             track_provenance=True,
+            strict_mode=False,
         )
 
     def test_constraint_decisions_non_empty(self, result):
@@ -282,6 +285,7 @@ class TestWhatIfAnalysis:
             gc_lo=0.30,
             gc_hi=0.70,
             track_provenance=True,
+            strict_mode=False,
         )
 
     def test_gc_relaxation_scenario(self, baseline_result):
@@ -375,6 +379,7 @@ class TestProvenanceQuery:
             gc_lo=0.30,
             gc_hi=0.70,
             track_provenance=True,
+            strict_mode=False,
         )
         assert result.decision_trail is not None
         return result.decision_trail
@@ -462,6 +467,7 @@ class TestBackwardCompatibility:
             gc_lo=0.30,
             gc_hi=0.70,
             track_provenance=False,
+            strict_mode=False,
         )
 
     def test_decision_trail_is_none(self, result):
@@ -514,6 +520,7 @@ class TestReportGeneration:
             gc_lo=0.30,
             gc_hi=0.70,
             track_provenance=True,
+            strict_mode=False,
         )
         assert result.decision_trail is not None
         return result.decision_trail

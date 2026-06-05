@@ -11,6 +11,62 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, List, Dict, Set, Optional, Tuple
 from .types import Verdict, SLOTMode, TypeCheckResult
+from .sliding_gc import evaluate_sliding_gc, check_sliding_gc, SlidingGCResult, WindowViolation
+
+# ── NUMBA integration for dinucleotide counting ───────────────────────
+try:
+    from .numba_kernels import (
+        HAS_NUMBA as _HAS_NUMBA,
+        fast_dinucleotide_count as _numba_fast_dinuc_count,
+        seq_to_bytes as _seq_to_bytes,
+    )
+except ImportError:
+    _HAS_NUMBA = False
+    _numba_fast_dinuc_count = None  # type: ignore[assignment]
+    _seq_to_bytes = None  # type: ignore[assignment]
+
+
+def _count_dinucs_fast(seq: str, *dinucleotides: str) -> tuple[int, ...]:
+    """Count multiple dinucleotides in a single pass using the NUMBA kernel.
+
+    Falls back to pure-Python counting when NUMBA is unavailable.
+
+    Args:
+        seq: DNA sequence string (uppercase ACGT).
+        *dinucleotides: One or more dinucleotide strings (e.g. "GT", "CG", "AG").
+
+    Returns:
+        Tuple of counts, one per dinucleotide, in the same order as input.
+    """
+    n_dinucs = len(dinucleotides)
+    if n_dinucs == 0:
+        return ()
+
+    # Fast path: NUMBA kernel
+    if _HAS_NUMBA and _numba_fast_dinuc_count is not None:
+        import numpy as _np
+        seq_bytes = _seq_to_bytes(seq)
+        dinuc_keys = _np.array(
+            [[ord(d[0]), ord(d[1])] for d in dinucleotides],
+            dtype=_np.uint8,
+        )
+        counts = _numba_fast_dinuc_count(seq_bytes, dinuc_keys, n_dinucs)
+        return tuple(int(c) for c in counts)
+
+    # Pure-Python fallback
+    results = []
+    for di in dinucleotides:
+        count = 0
+        pos = 0
+        while True:
+            pos = seq.find(di, pos)
+            if pos == -1:
+                break
+            count += 1
+            pos += 1
+        results.append(count)
+    return tuple(results)
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +85,7 @@ __all__ = [
     # Low-level predicate checks
     "check_no_stop_codons", "check_no_cryptic_splice", "check_no_cpg_island",
     "check_no_restriction_site", "check_no_gt_dinucleotide", "check_no_avoidable_gt",
+    "check_no_gt_dinucleotide_soft",
     "check_valid_coding_seq", "check_conservation_score", "check_codon_optimality",
     "check_no_cryptic_promoter", "check_no_unexpected_tm_domain",
     "check_mrna_secondary_structure", "check_co_translational_folding",
@@ -40,10 +97,15 @@ __all__ = [
     "evaluate_mrna_secondary_structure", "evaluate_no_cryptic_promoter",
     "evaluate_no_cpg_island", "analyze_codon_at_position",
     "evaluate_co_translational_folding", "evaluate_all_predicates",
+    "evaluate_no_stop_codons", "evaluate_no_gt_dinucleotide",
+    "evaluate_valid_coding_seq", "evaluate_conservation_score",
+    "evaluate_codon_optimality",
+    # Sliding-window GC
+    "evaluate_sliding_gc", "check_sliding_gc", "SlidingGCResult", "WindowViolation",
     # Cross-codon helpers
     "find_cross_codon_gt", "find_cross_codon_cg", "find_cross_codon_restriction",
     # Organism-aware helpers
-    "_is_prokaryotic_organism",
+    "_is_prokaryotic_organism", "_compute_max_gt_count", "_EUKARYOTE_GT_PER_BP",
     # Registry
     "PredicateRegistry", "registry",
 ]
@@ -626,6 +688,12 @@ def check_no_cpg_island(seq: str, window: int = 200, threshold: float = 0.6, org
         return PredicateResult("NoCpGIsland", True, verdict=Verdict.PASS,
                                details=f"Sequence length {n} < window size {window}")
 
+    # Fast short-circuit: if total CG count is 0, no CpG island is possible
+    total_cg = _count_dinucs_fast(seq, "CG")[0]
+    if total_cg == 0:
+        return PredicateResult("NoCpGIsland", True, verdict=Verdict.PASS,
+                               details="No CG dinucleotides found in sequence")
+
     # Pre-compute CG positions for fast lookup
     # cg_at[i] = 1 if seq[i:i+2] == "CG", else 0
     cg_at = [0] * (n - 1)
@@ -734,13 +802,19 @@ def check_no_gt_dinucleotide(seq: str) -> PredicateResult:
     """Predicate 5: No GT dinucleotides (5' splice donor mimic), including cross-codon.
 
     This is the STRICT version — any GT fails the predicate.
+
+    Uses the NUMBA ``fast_dinucleotide_count`` kernel when available
+    for fast count-based short-circuit; falls back to pure-Python otherwise.
     """
+    # Fast short-circuit: if GT count is 0, no need to enumerate positions
+    gt_count = _count_dinucs_fast(seq, "GT")[0]
+    if gt_count == 0:
+        return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS, details="No GT dinucleotides found")
+    # Need positions for the result — enumerate only when count > 0
     positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
-    if positions:
-        return PredicateResult("NoGTDinucleotide", False, verdict=Verdict.FAIL,
-                               details=f"GT dinucleotides at {positions}",
-                               positions=positions)
-    return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS, details="No GT dinucleotides found")
+    return PredicateResult("NoGTDinucleotide", False, verdict=Verdict.FAIL,
+                           details=f"GT dinucleotides at {positions}",
+                           positions=positions)
 
 
 def check_no_avoidable_gt(seq: str, organism: str = "") -> PredicateResult:
@@ -771,9 +845,12 @@ def check_no_avoidable_gt(seq: str, organism: str = "") -> PredicateResult:
             details=f"GT dinucleotide check skipped for prokaryotic organism '{organism}'",
         )
 
-    gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
-    if not gt_positions:
+    # Fast short-circuit: if GT count is 0, no need to enumerate positions
+    gt_count = _count_dinucs_fast(seq, "GT")[0]
+    if gt_count == 0:
         return PredicateResult("NoGTDinucleotide", True, verdict=Verdict.PASS, details="No GT dinucleotides found")
+
+    gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
 
     avoidable_positions = []
     unavoidable_positions = []
@@ -883,6 +960,164 @@ def check_no_avoidable_gt(seq: str, organism: str = "") -> PredicateResult:
                            details=(f"All {len(unavoidable_positions)} GT dinucleotides are "
                                     f"unavoidable (no synonymous substitution can remove them)"),
                            positions=unavoidable_positions)
+
+
+# ────────────────────────────────────────────────────────────
+# Soft GT dinucleotide check for eukaryotes
+# ────────────────────────────────────────────────────────────
+
+# Default: eukaryotes can tolerate ~1 GT per 50 bp of coding sequence.
+# This is biologically justified because in-codon GTs from optimal codons
+# (GGT, TGT, GTT, etc.) are common in high-expression eukaryotic genes and
+# only become problematic when they form strong cryptic splice donor sites
+# (MaxEntScan score >= threshold).
+_EUKARYOTE_GT_PER_BP: float = 1.0 / 50.0  # 1 GT per 50 bp
+
+
+def _compute_max_gt_count(seq_len: int, organism: str = "") -> int:
+    """Compute the maximum allowed GT dinucleotide count for a sequence.
+
+    For prokaryotes: 0 (hard constraint — GT avoidance is irrelevant since
+    prokaryotes have no spliceosome, but if a user explicitly requests
+    GT checking on a prokaryote, any GT is a FAIL).
+
+    For eukaryotes: ``max(1, int(seq_len * _EUKARYOTE_GT_PER_BP))``.
+    This accounts for the biological reality that in-codon GTs from optimal
+    codons are common and acceptable in eukaryotic CDS.
+
+    Args:
+        seq_len: Length of the DNA sequence in base pairs.
+        organism: Target organism name. Used to determine prokaryotic vs
+            eukaryotic classification.
+
+    Returns:
+        Maximum allowed GT count (0 for prokaryotes, length-scaled for
+        eukaryotes).
+    """
+    if organism and _is_prokaryotic_organism(organism):
+        return 0
+    return max(1, int(seq_len * _EUKARYOTE_GT_PER_BP))
+
+
+def check_no_gt_dinucleotide_soft(
+    seq: str,
+    organism: str = "",
+    max_gt_count: int | None = None,
+) -> PredicateResult:
+    """Predicate 5 (soft): No GT dinucleotides with eukaryote-aware tolerance.
+
+    This is the organism-aware soft-constraint version of the GT dinucleotide
+    check, designed for eukaryotic gene optimization where destroying CAI to
+    eliminate every GT is counter-productive.
+
+    Evaluation semantics:
+
+    - **Prokaryotes**: Hard constraint — any GT dinucleotide is a FAIL.
+      (Prokaryotes have no spliceosome, so GT dinucleotides are
+      biologically irrelevant; if a user explicitly checks GT for a
+      prokaryote, we treat it as a hard constraint.)
+
+    - **Eukaryotes**: Soft constraint — GTs are reported but the predicate
+      uses ``LIKELY_FAIL`` (not ``FAIL``) when GTs exceed ``max_gt_count``,
+      indicating a soft violation that should not block the optimization.
+      The predicate PASSES (``PASS``) if GT count ≤ ``max_gt_count``.
+
+    - ``max_gt_count``: If not provided, auto-computed from sequence length
+      using :func:`_compute_max_gt_count` (default: 1 GT per 50 bp for
+      eukaryotes, 0 for prokaryotes). Can be explicitly set to 0 for
+      hard-constraint behavior on eukaryotes.
+
+    The result distinguishes in-codon vs cross-codon GTs in the details,
+    since in-codon GTs from optimal codons (GGT for Gly, TGT for Cys,
+    GTT/GTC/GTA/GTG for Val) are biologically acceptable for eukaryotes.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        organism: Target organism name. If prokaryotic, any GT is FAIL.
+        max_gt_count: Maximum GT count before triggering SOFT_FAIL for
+            eukaryotes. If None, auto-computed from sequence length.
+
+    Returns:
+        PredicateResult with verdict:
+        - PASS: No GT dinucleotides (or GT count ≤ max_gt_count for eukaryotes)
+        - LIKELY_FAIL: GT count > max_gt_count for eukaryotes (soft fail)
+        - FAIL: Any GT for prokaryotes (hard constraint)
+    """
+    seq = seq.upper()
+    # Fast short-circuit: use NUMBA kernel for count, skip position enumeration if 0
+    gt_count_fast = _count_dinucs_fast(seq, "GT")[0]
+    if gt_count_fast == 0:
+        return PredicateResult(
+            "NoGTDinucleotide", True, verdict=Verdict.PASS,
+            details="No GT dinucleotides found",
+        )
+
+    gt_positions = [i for i in range(len(seq) - 1) if seq[i:i + 2] == "GT"]
+
+    if not gt_positions:
+        return PredicateResult(
+            "NoGTDinucleotide", True, verdict=Verdict.PASS,
+            details="No GT dinucleotides found",
+        )
+
+    # Compute max_gt_count if not provided
+    if max_gt_count is None:
+        max_gt_count = _compute_max_gt_count(len(seq), organism)
+
+    # Count in-codon vs cross-codon GTs for reporting
+    in_codon_gt = []
+    cross_codon_gt = []
+    for pos in gt_positions:
+        codon_of_g = pos // 3
+        codon_of_t = (pos + 1) // 3
+        if codon_of_g == codon_of_t:
+            in_codon_gt.append(pos)
+        else:
+            cross_codon_gt.append(pos)
+
+    gt_count = len(gt_positions)
+
+    # Prokaryotes: hard constraint (FAIL for any GT)
+    if organism and _is_prokaryotic_organism(organism):
+        return PredicateResult(
+            "NoGTDinucleotide", False, verdict=Verdict.FAIL,
+            details=(
+                f"GT dinucleotides: {gt_count} "
+                f"(in-codon: {len(in_codon_gt)}, cross-codon: {len(cross_codon_gt)}). "
+                f"Hard constraint for prokaryotes: max_gt_count=0."
+            ),
+            positions=gt_positions,
+        )
+
+    # Eukaryotes: soft constraint
+    if gt_count <= max_gt_count:
+        return PredicateResult(
+            "NoGTDinucleotide", True, verdict=Verdict.PASS,
+            details=(
+                f"GT dinucleotides: {gt_count} ≤ max_gt_count={max_gt_count} "
+                f"(in-codon: {len(in_codon_gt)}, cross-codon: {len(cross_codon_gt)}). "
+                f"Acceptable for eukaryotes — in-codon GTs from optimal codons "
+                f"are biologically common."
+            ),
+            positions=gt_positions,
+        )
+
+    # GT count exceeds tolerance — soft fail (LIKELY_FAIL, not FAIL)
+    # This indicates a warning, not a hard block. For soft constraints,
+    # passed=True so the predicate doesn't appear in failed_predicates
+    # (which would trigger strict mode errors). The LIKELY_FAIL verdict
+    # and details still convey the soft violation to users who check.
+    return PredicateResult(
+        "NoGTDinucleotide", True, verdict=Verdict.LIKELY_FAIL,
+        details=(
+            f"GT dinucleotides: {gt_count} > max_gt_count={max_gt_count} "
+            f"(in-codon: {len(in_codon_gt)}, cross-codon: {len(cross_codon_gt)}). "
+            f"Soft constraint for eukaryotes: in-codon GTs from optimal codons "
+            f"are acceptable (CAI > GT avoidance). Consider if these GTs form "
+            f"strong cryptic splice donors (MaxEntScan score ≥ threshold)."
+        ),
+        positions=gt_positions,
+    )
 
 
 def check_valid_coding_seq(seq: str) -> PredicateResult:
@@ -1153,22 +1388,26 @@ def check_no_unexpected_tm_domain(
             positions=fail_positions,
         )
 
-    # If hydrophobic stretches exist but lack TM flanking charges → UNCERTAIN
+    # If hydrophobic stretches exist but lack TM flanking charges → LIKELY_PASS
+    # (not UNCERTAIN), since the absence of flanking charges is strong evidence
+    # that this is NOT a true TM domain but rather a soluble protein hydrophobic patch.
     if fail_no_flank_positions:
         return PredicateResult(
-            "NoUnexpectedTMDomain", True, verdict=Verdict.UNCERTAIN,
+            "NoUnexpectedTMDomain", True, verdict=Verdict.LIKELY_PASS,
             details=(f"Hydrophobic stretch without TM flanking charges: "
                      f"worst fraction {worst_frac:.3f} at AA pos {worst_pos} "
-                     f"({len(fail_no_flank_positions)} window(s) — likely soluble protein patch)"),
+                     f"({len(fail_no_flank_positions)} window(s) — likely soluble protein patch, not TM domain)"),
             positions=fail_no_flank_positions,
         )
 
+    # Borderline hydrophobic fraction (between threshold*0.85 and threshold)
+    # without flanking charges is also likely a soluble patch → LIKELY_PASS
     if borderline_positions:
         return PredicateResult(
-            "NoUnexpectedTMDomain", True, verdict=Verdict.UNCERTAIN,
-            details=(f"Borderline TM domain: worst hydrophobic fraction {worst_frac:.3f} "
+            "NoUnexpectedTMDomain", True, verdict=Verdict.LIKELY_PASS,
+            details=(f"Borderline hydrophobic stretch: worst fraction {worst_frac:.3f} "
                      f"at AA pos {worst_pos} exceeds {threshold * _TM_BORDERLINE_RATIO:.3f} "
-                     f"({len(borderline_positions)} window(s) borderline)"),
+                     f"({len(borderline_positions)} window(s) — below TM threshold, likely soluble patch)"),
             positions=borderline_positions,
         )
 
@@ -1328,10 +1567,22 @@ def check_mrna_secondary_structure(
         )
 
     if dg <= effective_threshold * _MRNA_MODERATE_DG_RATIO:
+        # Moderate ΔG: use GC content of the window to refine verdict.
+        # AT-rich windows have weaker actual structures → LIKELY_PASS.
+        # GC-rich windows can form stronger structures → LIKELY_FAIL.
+        window_gc = (window_seq.count('G') + window_seq.count('C')) / len(window_seq) if window_seq else 0.5
+        if window_gc < 0.5:
+            return PredicateResult(
+                "mRNASecondaryStructure", True, verdict=Verdict.LIKELY_PASS,
+                details=(f"Moderate mRNA secondary structure: ΔG={dg:.1f} kcal/mol, "
+                         f"but AT-rich window (GC={window_gc:.0%}) weakens structure "
+                         f"(GC={gc_pairs}, AU={au_pairs}, GU={gu_pairs} pairs)"),
+            )
         return PredicateResult(
-            "mRNASecondaryStructure", True, verdict=Verdict.UNCERTAIN,
+            "mRNASecondaryStructure", True, verdict=Verdict.LIKELY_FAIL,
             details=(f"Moderate mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
-                     f"<= {effective_threshold * _MRNA_MODERATE_DG_RATIO:.1f} (GC={gc_pairs}, AU={au_pairs}, GU={gu_pairs} pairs)"),
+                     f"<= {effective_threshold * _MRNA_MODERATE_DG_RATIO:.1f} "
+                     f"(GC={gc_pairs}, AU={au_pairs}, GU={gu_pairs} pairs)"),
         )
 
     return PredicateResult(
@@ -1563,16 +1814,28 @@ def check_co_translational_folding(
         verdict = Verdict.LIKELY_FAIL
         passed = False
     elif domain_boundaries and domain_disrupted == 1:
-        # Single domain boundary disrupted
-        verdict = Verdict.UNCERTAIN
+        # Single domain boundary disrupted — LIKELY_FAIL (not UNCERTAIN)
+        # since a single disrupted boundary is meaningful evidence
+        verdict = Verdict.LIKELY_FAIL
         passed = True
     elif ramp_all_fast and ramp_length >= _MIN_RAMP_FOR_WARNING:
-        # Ramp too fast — ribosome jam risk
-        verdict = Verdict.UNCERTAIN
+        # Ramp too fast — but if average CAI is moderate (not extremely high),
+        # ribosome jam risk is reduced → LIKELY_PASS instead of UNCERTAIN.
+        # Very high CAI (> 0.95) is more concerning → LIKELY_FAIL.
+        if ramp_score > 0.95:
+            verdict = Verdict.LIKELY_FAIL
+        else:
+            verdict = Verdict.LIKELY_PASS
         passed = True
     elif speed_disruptions:
         # Some pause sites may have been replaced by fast codons
-        verdict = Verdict.UNCERTAIN
+        # Use disruption rate to determine severity
+        num_codons_total = len(seq) // 3
+        disruption_rate = len(speed_disruptions) / max(num_codons_total, 1)
+        if len(speed_disruptions) <= 2 or disruption_rate < 0.05:
+            verdict = Verdict.LIKELY_PASS
+        else:
+            verdict = Verdict.LIKELY_FAIL
         passed = True
         details_parts.append(
             f"{len(speed_disruptions)} potential pause site(s) replaced by fast codons"
@@ -1692,15 +1955,29 @@ def check_mrna_stability(
             f"destabilizing={report.destabilizing_count})"
         )
     elif combined_score >= threshold * 0.85:
-        verdict = Verdict.UNCERTAIN
-        passed = True
-        details = (
-            f"mRNA stability score {combined_score:.3f} borderline "
-            f"(threshold={threshold:.3f}, motif={stability_score:.3f}, "
-            f"avg_CAI={avg_cai:.3f}, "
-            f"stabilizing={report.stabilizing_count}, "
-            f"destabilizing={report.destabilizing_count})"
-        )
+        # Borderline stability: use CAI quality to refine verdict.
+        # If CAI is good (>= 0.5), the codon usage supports stability even
+        # if motifs are borderline → LIKELY_PASS. Otherwise → LIKELY_FAIL.
+        if avg_cai >= 0.5:
+            verdict = Verdict.LIKELY_PASS
+            passed = True
+            details = (
+                f"mRNA stability score {combined_score:.3f} borderline "
+                f"(threshold={threshold:.3f}), but good CAI={avg_cai:.3f} supports stability "
+                f"(motif={stability_score:.3f}, "
+                f"stabilizing={report.stabilizing_count}, "
+                f"destabilizing={report.destabilizing_count})"
+            )
+        else:
+            verdict = Verdict.LIKELY_FAIL
+            passed = True
+            details = (
+                f"mRNA stability score {combined_score:.3f} borderline "
+                f"(threshold={threshold:.3f}) with weak CAI={avg_cai:.3f} "
+                f"(motif={stability_score:.3f}, "
+                f"stabilizing={report.stabilizing_count}, "
+                f"destabilizing={report.destabilizing_count})"
+            )
     else:
         verdict = Verdict.FAIL
         passed = False
@@ -1867,6 +2144,7 @@ def evaluate_no_cryptic_splice(
     boundaries: List[Tuple[int, int]] | None = None,
     cryptic_threshold: float = 3.0,
     uncertain_lo: float = 0.0,
+    organism: str = "",
 ) -> TypeCheckResult:
     """Evaluate whether the sequence contains cryptic splice sites.
 
@@ -1877,48 +2155,81 @@ def evaluate_no_cryptic_splice(
     When uncertain_lo=0 (default), only PASS/FAIL verdicts are produced,
     preserving backward compatibility.
 
+    Organism-specific thresholds:
+    - Prokaryotes: auto-PASS (no splicing in prokaryotes).
+    - Eukaryotes: use cryptic_threshold=8.0 as the effective FAIL
+      threshold (unless overridden by caller), matching the optimizer's
+      splice-site elimination logic.
+
     Args:
         seq: DNA sequence to evaluate.
         boundaries: Exon boundaries (used for context; currently informational).
         cryptic_threshold: Score threshold above which a site is FAIL.
         uncertain_lo: Score threshold above which a site is UNCERTAIN.
             Set to 0 to disable UNCERTAIN zone (binary PASS/FAIL only).
+        organism: Target organism.  If prokaryotic, auto-PASS; if eukaryotic
+            and cryptic_threshold < 8.0, raises the effective threshold to 8.0
+            to match the optimizer's behaviour.
 
     Returns:
         TypeCheckResult with PASS/UNCERTAIN/FAIL verdict.
     """
-    from .maxentscan import score_donor
-
-    seq = seq.upper()
-    gt_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "GT"]
-
-    if not gt_positions:
+    # Skip for prokaryotic organisms
+    if organism and _is_prokaryotic_organism(organism):
         return TypeCheckResult(
             predicate="NoCrypticSplice",
             verdict=Verdict.PASS,
         )
 
+    # For eukaryotes, use a higher default threshold matching the optimizer
+    effective_threshold = cryptic_threshold
+    if organism and not _is_prokaryotic_organism(organism):
+        effective_threshold = max(cryptic_threshold, 8.0)
+
+    from .maxentscan import score_donor, score_acceptor
+
+    seq = seq.upper()
     worst_score = _MAXENT_INSUFFICIENT_CONTEXT_SCORE
     worst_pos = -1
     worst_verdict = Verdict.PASS
 
-    for pos in gt_positions:
-        score = score_donor(seq, pos)
-        # If score_donor returns -50 (insufficient context), treat as 0
-        if score <= _MAXENT_INSUFFICIENT_CONTEXT_SCORE:
-            score = 0.0
+    # Scan donor sites (GT dinucleotides)
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "GT":
+            score = score_donor(seq, i)
+            if score <= _MAXENT_INSUFFICIENT_CONTEXT_SCORE:
+                score = 0.0
 
-        if score >= cryptic_threshold:
-            v = Verdict.FAIL
-        elif uncertain_lo > 0 and score >= uncertain_lo:
-            v = Verdict.UNCERTAIN
-        else:
-            v = Verdict.PASS
+            if score >= effective_threshold:
+                v = Verdict.FAIL
+            elif uncertain_lo > 0 and score >= uncertain_lo:
+                v = Verdict.UNCERTAIN
+            else:
+                v = Verdict.PASS
 
-        if score > worst_score:
-            worst_score = score
-            worst_pos = pos
-            worst_verdict = v
+            if score > worst_score:
+                worst_score = score
+                worst_pos = i
+                worst_verdict = v
+
+    # Scan acceptor sites (AG dinucleotides)
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "AG":
+            score = score_acceptor(seq, i)
+            if score <= _MAXENT_INSUFFICIENT_CONTEXT_SCORE:
+                score = 0.0
+
+            if score >= effective_threshold:
+                v = Verdict.FAIL
+            elif uncertain_lo > 0 and score >= uncertain_lo:
+                v = Verdict.UNCERTAIN
+            else:
+                v = Verdict.PASS
+
+            if score > worst_score:
+                worst_score = score
+                worst_pos = i
+                worst_verdict = v
 
     return TypeCheckResult(
         predicate="NoCrypticSplice",
@@ -2356,10 +2667,20 @@ def evaluate_mrna_secondary_structure(
             f"<= {effective_threshold}"
         )
     elif verdict == Verdict.UNCERTAIN:
-        violation = (
-            f"Moderate mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
-            f"<= {effective_threshold * _MRNA_MODERATE_DG_RATIO:.1f}"
-        )
+        # Refine using GC content of the window
+        window_gc = (window_seq.count('G') + window_seq.count('C')) / len(window_seq) if window_seq else 0.5
+        if window_gc < 0.5:
+            verdict = Verdict.LIKELY_PASS
+            violation = (
+                f"Moderate mRNA secondary structure: ΔG={dg:.1f} kcal/mol, "
+                f"but AT-rich window (GC={window_gc:.0%}) weakens structure"
+            )
+        else:
+            verdict = Verdict.LIKELY_FAIL
+            violation = (
+                f"Moderate mRNA secondary structure: ΔG={dg:.1f} kcal/mol "
+                f"<= {effective_threshold * _MRNA_MODERATE_DG_RATIO:.1f}"
+            )
 
     return TypeCheckResult(
         predicate=f"mRNASecondaryStructure({window_start}, {window_end}, {effective_threshold})",
@@ -2641,6 +2962,171 @@ def evaluate_co_translational_folding(
     )
 
 
+def evaluate_no_stop_codons(seq: str) -> TypeCheckResult:
+    """Evaluate whether the DNA sequence contains internal stop codons.
+
+    The last codon in the reading frame is allowed to be a stop
+    (natural termination). Only stops before the last codon are
+    flagged as violations.
+
+    Args:
+        seq: DNA coding sequence to evaluate.
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    result = check_no_stop_codons(seq)
+    if result.passed:
+        return TypeCheckResult(
+            predicate="NoStopCodons",
+            verdict=Verdict.PASS,
+        )
+    return TypeCheckResult(
+        predicate="NoStopCodons",
+        verdict=Verdict.FAIL,
+        violation=result.details,
+    )
+
+
+def evaluate_no_gt_dinucleotide(
+    seq: str,
+    organism: str = "",
+    max_gt_count: int | None = None,
+) -> TypeCheckResult:
+    """Evaluate whether the sequence contains avoidable GT dinucleotides.
+
+    Uses the soft GT check (check_no_gt_dinucleotide_soft) which is
+    organism-aware: for eukaryotes, GT avoidance is a soft constraint
+    (LIKELY_FAIL when GT count exceeds max_gt_count); for prokaryotes,
+    it's a hard constraint (FAIL for any GT).
+
+    Args:
+        seq: DNA coding sequence to evaluate.
+        organism: Target organism.  If prokaryotic, auto-PASS (skipped).
+        max_gt_count: Maximum GT count before soft-fail. If None,
+            auto-computed from sequence length (1 per 50bp for eukaryotes).
+
+    Returns:
+        TypeCheckResult with verdict matching the soft check logic.
+    """
+    result = check_no_gt_dinucleotide_soft(
+        seq, organism=organism, max_gt_count=max_gt_count,
+    )
+
+    if result.verdict == Verdict.PASS:
+        return TypeCheckResult(
+            predicate="NoGTDinucleotide",
+            verdict=Verdict.PASS,
+        )
+    elif result.verdict == Verdict.LIKELY_FAIL:
+        return TypeCheckResult(
+            predicate="NoGTDinucleotide",
+            verdict=Verdict.LIKELY_FAIL,
+            violation=result.details,
+        )
+    else:
+        return TypeCheckResult(
+            predicate="NoGTDinucleotide",
+            verdict=Verdict.FAIL,
+            violation=result.details,
+        )
+
+
+def evaluate_valid_coding_seq(seq: str) -> TypeCheckResult:
+    """Evaluate whether the DNA sequence is a valid coding sequence.
+
+    Checks that the length is divisible by 3 and all codons are
+    in the standard genetic code.
+
+    Args:
+        seq: DNA coding sequence to evaluate.
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    result = check_valid_coding_seq(seq)
+    if result.passed:
+        return TypeCheckResult(
+            predicate="ValidCodingSeq",
+            verdict=Verdict.PASS,
+        )
+    return TypeCheckResult(
+        predicate="ValidCodingSeq",
+        verdict=Verdict.FAIL,
+        violation=result.details,
+    )
+
+
+def evaluate_conservation_score(
+    seq: str,
+    protein: str = "",
+    min_score: int = 0,
+) -> TypeCheckResult:
+    """Evaluate whether the BLOSUM62 conservation score meets the threshold.
+
+    Translates the DNA sequence and compares each position against the
+    target protein using the BLOSUM62 substitution matrix.  After correct
+    optimization the two sequences are identical, so every diagonal score
+    is positive and the predicate should PASS.
+
+    Args:
+        seq: DNA coding sequence to evaluate (translated internally).
+        protein: Target protein sequence (amino-acid string).  If empty,
+            the predicate auto-PASSes (no comparison target).
+        min_score: Minimum BLOSUM62 score per position for PASS (default 0).
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    if not protein:
+        return TypeCheckResult(
+            predicate="ConservationScore",
+            verdict=Verdict.PASS,
+        )
+    result = check_conservation_score(seq, protein, min_score=min_score)
+    if result.passed:
+        return TypeCheckResult(
+            predicate="ConservationScore",
+            verdict=Verdict.PASS,
+        )
+    return TypeCheckResult(
+        predicate="ConservationScore",
+        verdict=Verdict.FAIL,
+        violation=result.details,
+    )
+
+
+def evaluate_codon_optimality(
+    seq: str,
+    organism: str = "Homo_sapiens",
+    threshold: float = 0.5,
+) -> TypeCheckResult:
+    """Evaluate whether the codon adaptation index (CAI) meets the threshold.
+
+    Computes the geometric-mean CAI across all codons in the sequence
+    using the organism-specific codon adaptiveness table.
+
+    Args:
+        seq: DNA coding sequence to evaluate.
+        organism: Target organism for CAI computation.
+        threshold: Minimum CAI score for PASS (default 0.5).
+
+    Returns:
+        TypeCheckResult with PASS/FAIL verdict.
+    """
+    result = check_codon_optimality(seq, organism, min_cai=threshold)
+    if result.passed:
+        return TypeCheckResult(
+            predicate="CodonOptimality",
+            verdict=Verdict.PASS,
+        )
+    return TypeCheckResult(
+        predicate="CodonOptimality",
+        verdict=Verdict.FAIL,
+        violation=result.details,
+    )
+
+
 def evaluate_all_predicates(
     seq: str,
     boundaries: List[Tuple[int, int]] | None = None,
@@ -2756,7 +3242,7 @@ def evaluate_all_predicates(
 
     # SLOT predicates: behavior depends on slot_mode
     slot_predicates = [
-        ("NoCrypticSplice", lambda: evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold, uncertain_lo)),
+        ("NoCrypticSplice", lambda: evaluate_no_cryptic_splice(seq, boundaries, cryptic_threshold, uncertain_lo, organism=organism)),
         ("CodonAdapted", lambda: evaluate_codon_adapted(seq, organism, cai_threshold)),
         ("NoCrypticPromoter", lambda: evaluate_no_cryptic_promoter(seq, promoter_organism, promoter_threshold)),
         ("NoUnexpectedTMDomain", lambda: evaluate_no_unexpected_tm_domain(seq, is_cytosolic, 19, tm_threshold)),
@@ -2938,6 +3424,8 @@ registry.register(
     verify_param_map={
         "seq": "seq",
         "known_exon_boundaries": "boundaries",
+        "organism": "organism",
+        "cryptic_splice_threshold": "cryptic_threshold",
     },
 )
 
@@ -2958,6 +3446,20 @@ registry.register(
         "seq": "seq",
         "gc_lo": "gc_lo",
         "gc_hi": "gc_hi",
+    },
+)
+
+# SlidingGC predicate (local/sliding-window GC constraint)
+from .sliding_gc import evaluate_sliding_gc as _evaluate_sliding_gc
+
+registry.register(
+    "SlidingGC",
+    _evaluate_sliding_gc,
+    verify_param_map={
+        "seq": "seq",
+        "window_size": "window_size",
+        "gc_min": "gc_min",
+        "gc_max": "gc_max",
     },
 )
 
@@ -3003,6 +3505,51 @@ registry.register(
     verify_param_map={
         "seq": "seq",
         "organism": "organism",
+    },
+)
+
+registry.register(
+    "NoStopCodons",
+    evaluate_no_stop_codons,
+    verify_param_map={
+        "seq": "seq",
+    },
+)
+
+registry.register(
+    "NoGTDinucleotide",
+    evaluate_no_gt_dinucleotide,
+    verify_param_map={
+        "seq": "seq",
+        "organism": "organism",
+    },
+)
+
+registry.register(
+    "ValidCodingSeq",
+    evaluate_valid_coding_seq,
+    verify_param_map={
+        "seq": "seq",
+    },
+)
+
+registry.register(
+    "ConservationScore",
+    evaluate_conservation_score,
+    verify_param_map={
+        "seq": "seq",
+        "protein": "protein",
+        "min_score": "min_score",
+    },
+)
+
+registry.register(
+    "CodonOptimality",
+    evaluate_codon_optimality,
+    verify_param_map={
+        "seq": "seq",
+        "organism": "organism",
+        "threshold": "threshold",
     },
 )
 

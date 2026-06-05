@@ -197,6 +197,7 @@ class TestGao2004HPV16L1:
             gc_hi=0.70,
             cai_threshold=0.5,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
 
     def test_cai_above_naive_baseline(self, hpv16_l1_result: OptimizationResult):
@@ -268,6 +269,7 @@ class TestPuigbo2008CAIcal:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
 
     @pytest.fixture
@@ -280,6 +282,7 @@ class TestPuigbo2008CAIcal:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
 
     # --- Insulin tests ---
@@ -379,6 +382,7 @@ class TestGustafsson2004CodonBias:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
 
     def test_preferential_high_frequency_codon_usage(self, optimized_insulin: OptimizationResult):
@@ -487,6 +491,7 @@ class TestWelch2009CodonPairBias:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
 
     def test_no_consecutive_rare_codon_pairs(self, optimized_hgh: OptimizationResult):
@@ -607,6 +612,7 @@ class TestCrossCuttingConstraints:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
         naive_cai = _compute_naive_cai(protein_seq, E_COLI)
         assert result.cai > naive_cai, (
@@ -632,6 +638,7 @@ class TestCrossCuttingConstraints:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
         _assert_protein_preserved(result.sequence, protein_seq)
 
@@ -653,6 +660,7 @@ class TestCrossCuttingConstraints:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
         _assert_gc_in_range(result.gc_content, 0.30, 0.70)
 
@@ -674,6 +682,7 @@ class TestCrossCuttingConstraints:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
         _assert_no_restriction_sites(result.sequence, STANDARD_ENZYME_PANEL)
 
@@ -695,6 +704,7 @@ class TestCrossCuttingConstraints:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
         seq = result.sequence
         assert len(seq) % 3 == 0, f"Sequence length {len(seq)} is not a multiple of 3"
@@ -720,6 +730,7 @@ class TestCrossCuttingConstraints:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
         seq = result.sequence
         for i in range(0, len(seq) - 3, 3):
@@ -754,6 +765,7 @@ class TestEndToEndIntegration:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
 
     def test_e2e_cai_above_naive(self, e2e_result: OptimizationResult):
@@ -864,6 +876,7 @@ class TestEndToEndIntegration:
             gc_hi=0.70,
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYME_PANEL,
+            strict_mode=False,
         )
         assert e2e_result.sequence == second_result.sequence, (
             "Optimization is not deterministic: two runs produced different sequences"

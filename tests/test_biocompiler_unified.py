@@ -792,7 +792,7 @@ class TestOptimizePipeline:
     def test_optimize_short_protein(self):
         """Optimize a short protein and verify the result."""
         # Short protein to avoid z3 timeout
-        result = optimize_sequence("MVHLTPEEK", organism="Homo_sapiens")
+        result = optimize_sequence("MVHLTPEEK", organism="Homo_sapiens", strict_mode=False)
         assert len(result.sequence) == 9 * 3  # 9 AA * 3 bases
         assert 0.0 <= result.gc_content <= 1.0
         assert result.cai >= 0.0
@@ -801,7 +801,7 @@ class TestOptimizePipeline:
         """Invalid protein should raise InvalidProteinError."""
         from biocompiler.exceptions import InvalidProteinError
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("MVHXTPEEK")  # X is not a valid AA
+            optimize_sequence("MVHXTPEEK", strict_mode=False)
 
 
 # ==============================================================================
@@ -824,7 +824,7 @@ class TestCpGAvoidance:
         We verify the CpG count is computable and the result is valid.
         """
         protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPK"
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70, strict_mode=False)
 
         # Count CpG in optimized sequence
         opt_cpg = sum(1 for i in range(len(result.sequence)-1) if result.sequence[i:i+2] == "CG")
@@ -842,14 +842,14 @@ class TestCpGAvoidance:
         invariant of the optimizer.
         """
         protein = "MVSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTL"
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70, strict_mode=False)
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
 
     def test_cpg_avoidance_preserves_gc_range(self):
         """CpG avoidance should not push GC content out of range."""
         protein = "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPK"
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70, strict_mode=False)
         assert 0.30 <= result.gc_content <= 0.70, (
             f"GC content {result.gc_content:.3f} out of range [0.30, 0.70] "
             f"after CpG avoidance step"
@@ -892,6 +892,7 @@ class TestCrypticSplicePassRate:
                 organism=gene_data["organism"],
                 gc_lo=0.30, gc_hi=0.70,
                 cai_threshold=0.2,
+                strict_mode=False,
             )
             total += 1
             if "NoCrypticSplice" not in result.failed_predicates:
@@ -919,7 +920,7 @@ class TestCrypticSplicePassRate:
 
         # Use a protein with known C/G/R/S positions
         protein = "MVSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTL"
-        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70)
+        result = optimize_sequence(protein, "Homo_sapiens", gc_lo=0.30, gc_hi=0.70, strict_mode=False)
 
         if "NoCrypticSplice" in result.failed_predicates:
             # Check that remaining unrepairable positions are only at GT-mandatory AAs

@@ -84,6 +84,7 @@ def _call_greedy_optimize(
         gc_lo=gc_lo,
         gc_hi=gc_hi,
         enzymes=[] if not restriction_sites else None,
+        strict_mode=False,
     )
     return result.sequence, []
 from biocompiler.organisms import (
@@ -295,6 +296,7 @@ class TestFullPipelineEGFP:
             gc_lo=0.30,
             gc_hi=0.70,
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(EGFP_PROTEIN) * 3
@@ -422,6 +424,7 @@ class TestComparisonWithGreedy:
             gc_lo=0.30,
             gc_hi=0.70,
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
 
     def test_greedy_cai_is_reasonable(self):
@@ -670,6 +673,7 @@ class TestHBBGrammar:
             gc_lo=0.40,
             gc_hi=0.60,
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(HBB_PROTEIN) * 3
@@ -797,6 +801,7 @@ class TestStressTest:
             gc_lo=0.30,
             gc_hi=0.70,
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
         elapsed = time.time() - start
 
@@ -1016,6 +1021,7 @@ class TestFallbackIntegration:
             gc_lo=0.49,
             gc_hi=0.51,  # Very tight GC range — may challenge CSP
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(EGFP_PROTEIN) * 3
@@ -1077,6 +1083,7 @@ class TestFallbackIntegration:
             gc_lo=0.30,
             gc_hi=0.70,
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
         assert result is not None
         assert len(result.sequence) > 0
@@ -1112,6 +1119,7 @@ class TestCrossCuttingIntegration:
             gc_lo=0.30,
             gc_hi=0.70,
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
 
         type_results = evaluate_all_predicates(
@@ -1137,6 +1145,7 @@ class TestCrossCuttingIntegration:
             organism="Homo_sapiens",
             gc_lo=0.30,
             gc_hi=0.70,
+            strict_mode=False,
         )
         manual_gc = _gc_content(result.sequence)
         assert abs(result.gc_content - manual_gc) < 0.01, (
@@ -1150,6 +1159,7 @@ class TestCrossCuttingIntegration:
             organism="Homo_sapiens",
             gc_lo=0.30,
             gc_hi=0.70,
+            strict_mode=False,
         )
         assert 0.0 <= result.cai <= 1.0, f"CAI out of range: {result.cai}"
         # For human optimization, CAI should be reasonable
@@ -1164,6 +1174,7 @@ class TestCrossCuttingIntegration:
                 gc_lo=0.25,
                 gc_hi=0.75,
                 enzymes=["EcoRI", "BamHI"],
+                strict_mode=False,
             )
             assert isinstance(result, OptimizationResult)
             assert len(result.sequence) == len(EGFP_PROTEIN) * 3
@@ -1198,6 +1209,7 @@ class TestCrossCuttingIntegration:
             gc_lo=0.30,
             gc_hi=0.70,
             enzymes=STANDARD_ENZYMES,
+            strict_mode=False,
         )
 
         from biocompiler.restriction_sites import get_recognition_site

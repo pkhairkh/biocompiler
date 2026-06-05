@@ -17,11 +17,19 @@ Design Philosophy:
     constraint language for some tasks, and BioCompiler's type-system/certificate
     approach for others. Comparative benchmarking helps users choose.
 
-DNA Chisel API Mapping:
+DNA Chisel API Mapping (expanded to 10+ constraint types):
     BioCompiler constraints -> DNA Chisel specifications:
         - GC range (gc_lo, gc_hi) -> EnforceGCContent
+        - GC range (local window) -> EnforceGCContent with window parameter
         - Restriction site avoidance -> AvoidPattern
         - Translation fidelity -> EnforceTranslation
+        - Bacterial promoter avoidance -> AvoidBacterialPromoter
+        - Start codon enforcement -> EnforceStartCodon
+        - Stop codon enforcement -> EnforceStopCodon
+        - Sequence uniqueness -> UniquifyAllKmers
+        - Sequence preservation -> AvoidChanges
+        - Exact sequence enforcement -> EnforceSequence
+        - Hairpin avoidance -> AvoidHairpins
         - CAI threshold -> (no direct equivalent; post-hoc check)
 
     DNA Chisel uses a different amino acid representation. We convert
@@ -57,6 +65,10 @@ __all__ = [
     "compare_optimizers",
     "run_comparative_benchmark",
     "format_comparative_report_text",
+    # Expanded constraint mapping
+    "CONSTRAINT_MAPPING",
+    "build_constraint_spec",
+    "translate_biocompiler_constraints",
 ]
 
 # ─── Named constants (avoid magic numbers) ───────────────────────────
@@ -69,6 +81,19 @@ MAX_RESTRICTION_ENZYMES = 10
 
 CAI_COMPARISON_EPSILON = 0.001
 """Minimum CAI difference to declare a winner (avoids noise from tiny deltas)."""
+
+# Default parameters for extended constraint mappings
+DEFAULT_HAIRPIN_STEM_SIZE = 15
+"""Minimum stem size (bp) for hairpin avoidance."""
+
+DEFAULT_HAIRPIN_BOOST = 1.0
+"""Boost factor for hairpin avoidance."""
+
+DEFAULT_KMER_UNIQUIFY_SIZE = 9
+"""K-mer size for sequence uniqueness enforcement."""
+
+DEFAULT_BACTERIAL_PROMOTER_LENGTH = 35
+"""Length of sequence to check for bacterial promoter patterns."""
 
 # ─── DNA Chisel availability check ───────────────────────────────────
 
@@ -90,6 +115,43 @@ except ImportError as exc:
         "DNA Chisel not installed — comparative benchmarking will be limited. "
         "Install with: pip install 'biocompiler[compare]'"
     )
+
+# ─── Extended DNA Chisel constraint imports (optional) ────────────────
+# These constraints may not be available in all DNA Chisel versions.
+# We import them individually and track availability.
+
+_DNA_CHISEL_CONSTRAINTS: dict[str, type] = {}
+
+if _DNA_CHISEL_AVAILABLE:
+    _optional_imports = [
+        ("AvoidBacterialPromoter", "dnachisel", None),
+        ("EnforceStartCodon", "dnachisel", None),
+        ("EnforceStopCodon", "dnachisel", None),
+        ("UniquifyAllKmers", "dnachisel", None),
+        ("AvoidChanges", "dnachisel", None),
+        ("EnforceSequence", "dnachisel", None),
+        ("AvoidHairpins", "dnachisel", None),
+        ("AvoidStopCodons", "dnachisel", None),
+        ("EnforceTerminalGCContent", "dnachisel", None),
+        ("MaximizeCAI", "dnachisel", None),
+    ]
+    for _cls_name, _module_name, _fallback in _optional_imports:
+        try:
+            import importlib as _imp
+            _mod = _imp.import_module(_module_name)
+            _cls = getattr(_mod, _cls_name, None)
+            if _cls is not None:
+                _DNA_CHISEL_CONSTRAINTS[_cls_name] = _cls
+                logger.debug("DNA Chisel constraint %s available", _cls_name)
+        except (ImportError, AttributeError) as _exc:
+            logger.debug(
+                "DNA Chisel constraint %s not available: %s", _cls_name, _exc
+            )
+
+    # Always-available core constraints
+    _DNA_CHISEL_CONSTRAINTS["EnforceTranslation"] = EnforceTranslation
+    _DNA_CHISEL_CONSTRAINTS["EnforceGCContent"] = EnforceGCContent
+    _DNA_CHISEL_CONSTRAINTS["AvoidPattern"] = AvoidPattern
 
 
 def is_dna_chisel_available() -> bool:
@@ -407,6 +469,392 @@ def _count_restriction_sites(sequence: str, restriction_enzymes: list[str] | Non
                 start = pos + 1
 
     return count
+
+
+# ─── Expanded Constraint Mapping ──────────────────────────────────────
+
+# Mapping of constraint names to their builder functions.
+# Each builder takes constraint parameters and returns a DNA Chisel
+# Specification object (or None if the constraint type is unavailable).
+
+CONSTRAINT_MAPPING: dict[str, str] = {
+    "EnforceTranslation": "enforce_translation",
+    "EnforceGCContent": "enforce_gc_content",
+    "EnforceGCContentLocal": "enforce_gc_content_local",
+    "AvoidPattern": "avoid_pattern",
+    "AvoidBacterialPromoter": "avoid_bacterial_promoter",
+    "EnforceStartCodon": "enforce_start_codon",
+    "EnforceStopCodon": "enforce_stop_codon",
+    "UniquifyAllKmers": "uniquify_all_kmers",
+    "AvoidChanges": "avoid_changes",
+    "EnforceSequence": "enforce_sequence",
+    "AvoidHairpins": "avoid_hairpins",
+}
+"""Registry mapping constraint type names to builder function names."""
+
+
+def build_constraint_spec(
+    constraint_type: str,
+    **params,
+) -> object | None:
+    """Build a single DNA Chisel constraint specification.
+
+    This is the core mapping function.  Given a constraint type name and
+    keyword parameters, it returns the corresponding DNA Chisel
+    Specification object.  Returns ``None`` if:
+
+    - DNA Chisel is not installed
+    - The constraint type is not recognized
+    - The constraint class is not available in the installed DNA Chisel version
+
+    Supported constraint types and their parameters:
+
+    - ``"EnforceTranslation"``: ``protein`` (str) — AA sequence
+    - ``"EnforceGCContent"``: ``gc_lo`` (float), ``gc_hi`` (float)
+    - ``"EnforceGCContentLocal"``: ``gc_lo`` (float), ``gc_hi`` (float),
+      ``window`` (int, default 50)
+    - ``"AvoidPattern"``: ``pattern`` (str) — e.g. a restriction site
+    - ``"AvoidBacterialPromoter"``: ``length`` (int, default 35)
+    - ``"EnforceStartCodon"``: ``start_codon`` (str, default "ATG")
+    - ``"EnforceStopCodon"``: ``location`` (str, default "end")
+    - ``"UniquifyAllKmers"``: ``kmer_size`` (int, default 9)
+    - ``"AvoidChanges"``: ``zone`` (str, default "whole sequence")
+    - ``"EnforceSequence"``: ``sequence`` (str)
+    - ``"AvoidHairpins"``: ``stem_size`` (int, default 15),
+      ``boost`` (float, default 1.0)
+
+    Args:
+        constraint_type: Name of the constraint type.
+        **params: Parameters for the constraint.
+
+    Returns:
+        A DNA Chisel Specification object, or None if unavailable.
+    """
+    if not _DNA_CHISEL_AVAILABLE:
+        logger.warning(
+            "DNA Chisel not installed; cannot build constraint %s",
+            constraint_type,
+        )
+        return None
+
+    builder_name = CONSTRAINT_MAPPING.get(constraint_type)
+    if builder_name is None:
+        logger.warning("Unknown constraint type: %s", constraint_type)
+        return None
+
+    # Dispatch to the appropriate builder
+    builder = _CONSTRAINT_BUILDERS.get(builder_name)
+    if builder is None:
+        logger.warning("No builder registered for %s", constraint_type)
+        return None
+
+    return builder(**params)
+
+
+def enforce_translation(protein: str, **_kwargs) -> object | None:
+    """Build EnforceTranslation constraint."""
+    cls = _DNA_CHISEL_CONSTRAINTS.get("EnforceTranslation")
+    if cls is None:
+        return None
+    return cls(translation=protein)
+
+
+def enforce_gc_content(gc_lo: float = 0.30, gc_hi: float = 0.70, **_kwargs) -> object | None:
+    """Build EnforceGCContent constraint (global)."""
+    cls = _DNA_CHISEL_CONSTRAINTS.get("EnforceGCContent")
+    if cls is None:
+        return None
+    return cls(mini=gc_lo, maxi=gc_hi)
+
+
+def enforce_gc_content_local(
+    gc_lo: float = 0.30,
+    gc_hi: float = 0.70,
+    window: int = GC_ENFORCEMENT_WINDOW,
+    **_kwargs,
+) -> object | None:
+    """Build EnforceGCContent constraint with a local sliding window."""
+    cls = _DNA_CHISEL_CONSTRAINTS.get("EnforceGCContent")
+    if cls is None:
+        return None
+    return cls(mini=gc_lo, maxi=gc_hi, window=window)
+
+
+def avoid_pattern(pattern: str, **_kwargs) -> object | None:
+    """Build AvoidPattern constraint."""
+    cls = _DNA_CHISEL_CONSTRAINTS.get("AvoidPattern")
+    if cls is None:
+        return None
+    return cls(pattern)
+
+
+def avoid_bacterial_promoter(
+    length: int = DEFAULT_BACTERIAL_PROMOTER_LENGTH,
+    **_kwargs,
+) -> object | None:
+    """Build AvoidBacterialPromoter constraint.
+
+    Falls back to AvoidPattern with common -35/-10 consensus sequences
+    if AvoidBacterialPromoter is not available.
+    """
+    cls = _DNA_CHISEL_CONSTRAINTS.get("AvoidBacterialPromoter")
+    if cls is not None:
+        try:
+            return cls(length=length)
+        except TypeError:
+            pass
+    # Fallback: use AvoidPattern for common bacterial promoter motifs
+    avoid_cls = _DNA_CHISEL_CONSTRAINTS.get("AvoidPattern")
+    if avoid_cls is not None:
+        # -10 box (TATAAT) and -35 box (TTGACA) consensus patterns
+        return avoid_cls("TTGACA")
+    logger.debug("AvoidBacterialPromoter not available in this DNA Chisel version")
+    return None
+
+
+def enforce_start_codon(
+    start_codon: str = "ATG",
+    **_kwargs,
+) -> object | None:
+    """Build EnforceStartCodon constraint.
+
+    Falls back to EnforceSequence at the start of the sequence if
+    EnforceStartCodon is not available in the installed DNA Chisel version.
+    """
+    cls = _DNA_CHISEL_CONSTRAINTS.get("EnforceStartCodon")
+    if cls is not None:
+        try:
+            return cls(start_codon=start_codon)
+        except TypeError:
+            pass
+    # Fallback: use EnforceSequence to enforce start codon at position 0
+    enforce_seq_cls = _DNA_CHISEL_CONSTRAINTS.get("EnforceSequence")
+    if enforce_seq_cls is not None:
+        return enforce_seq_cls(sequence=start_codon, location=(0, len(start_codon)))
+    logger.debug("EnforceStartCodon not available in this DNA Chisel version")
+    return None
+
+
+def enforce_stop_codon(
+    location: str = "end",
+    **_kwargs,
+) -> object | None:
+    """Build EnforceStopCodon constraint.
+
+    Falls back to AvoidStopCodons (which avoids in-frame stop codons)
+    if EnforceStopCodon is not available.
+    """
+    cls = _DNA_CHISEL_CONSTRAINTS.get("EnforceStopCodon")
+    if cls is not None:
+        try:
+            return cls(location=location)
+        except TypeError:
+            pass
+    # Fallback: use AvoidStopCodons to prevent premature stops
+    avoid_stop_cls = _DNA_CHISEL_CONSTRAINTS.get("AvoidStopCodons")
+    if avoid_stop_cls is not None:
+        return avoid_stop_cls()
+    logger.debug("EnforceStopCodon not available in this DNA Chisel version")
+    return None
+
+
+def uniquify_all_kmers(
+    kmer_size: int = DEFAULT_KMER_UNIQUIFY_SIZE,
+    **_kwargs,
+) -> object | None:
+    """Build UniquifyAllKmers constraint."""
+    cls = _DNA_CHISEL_CONSTRAINTS.get("UniquifyAllKmers")
+    if cls is None:
+        logger.debug("UniquifyAllKmers not available in this DNA Chisel version")
+        return None
+    return cls(k=kmer_size)
+
+
+def avoid_changes(zone: str = "", **_kwargs) -> object | None:
+    """Build AvoidChanges constraint.
+
+    The ``zone`` parameter is a BioCompiler concept that maps to DNA Chisel's
+    ``location`` parameter.  Accepts formats like "0-50" (start-end) which
+    are parsed into a tuple for DNA Chisel.
+    """
+    cls = _DNA_CHISEL_CONSTRAINTS.get("AvoidChanges")
+    if cls is None:
+        logger.debug("AvoidChanges not available in this DNA Chisel version")
+        return None
+    if zone:
+        # Parse zone string like "0-50" into a location tuple for DNA Chisel
+        try:
+            parts = zone.split("-")
+            if len(parts) == 2:
+                start, end = int(parts[0]), int(parts[1])
+                return cls(location=(start, end))
+        except (ValueError, IndexError):
+            pass
+        # Fallback: try passing as-is
+        try:
+            return cls(location=zone)
+        except TypeError:
+            return cls()
+    return cls()
+
+
+def enforce_sequence(sequence: str, **_kwargs) -> object | None:
+    """Build EnforceSequence constraint."""
+    cls = _DNA_CHISEL_CONSTRAINTS.get("EnforceSequence")
+    if cls is None:
+        logger.debug("EnforceSequence not available in this DNA Chisel version")
+        return None
+    return cls(sequence)
+
+
+def avoid_hairpins(
+    stem_size: int = DEFAULT_HAIRPIN_STEM_SIZE,
+    boost: float = DEFAULT_HAIRPIN_BOOST,
+    **_kwargs,
+) -> object | None:
+    """Build AvoidHairpins constraint."""
+    cls = _DNA_CHISEL_CONSTRAINTS.get("AvoidHairpins")
+    if cls is None:
+        logger.debug("AvoidHairpins not available in this DNA Chisel version")
+        return None
+    try:
+        return cls(stem_size=stem_size, boost=boost)
+    except TypeError:
+        # Some DNA Chisel versions may use different parameter names
+        return cls(stem_size=stem_size)
+
+
+# Registry of builder functions (name -> callable)
+_CONSTRAINT_BUILDERS: dict[str, callable] = {
+    "enforce_translation": enforce_translation,
+    "enforce_gc_content": enforce_gc_content,
+    "enforce_gc_content_local": enforce_gc_content_local,
+    "avoid_pattern": avoid_pattern,
+    "avoid_bacterial_promoter": avoid_bacterial_promoter,
+    "enforce_start_codon": enforce_start_codon,
+    "enforce_stop_codon": enforce_stop_codon,
+    "uniquify_all_kmers": uniquify_all_kmers,
+    "avoid_changes": avoid_changes,
+    "enforce_sequence": enforce_sequence,
+    "avoid_hairpins": avoid_hairpins,
+}
+
+
+def translate_biocompiler_constraints(
+    protein: str = "",
+    gc_lo: float = 0.30,
+    gc_hi: float = 0.70,
+    restriction_enzymes: list[str] | None = None,
+    local_gc_window: int | None = None,
+    avoid_bacterial_promoters: bool = False,
+    enforce_start: bool = True,
+    enforce_stop: bool = True,
+    uniquify_kmers: int | None = None,
+    preserve_zones: list[str] | None = None,
+    enforce_sequence_str: str | None = None,
+    avoid_hairpins_flag: bool = False,
+) -> list:
+    """Translate BioCompiler-style constraint parameters into DNA Chisel specs.
+
+    This is a high-level function that converts BioCompiler's constraint
+    vocabulary into a list of DNA Chisel Specification objects.  It extends
+    the original ``_build_dna_chisel_spec`` with support for 10+ constraint
+    types.
+
+    Args:
+        protein: Target protein sequence for EnforceTranslation.
+        gc_lo: Minimum global GC content fraction.
+        gc_hi: Maximum global GC content fraction.
+        restriction_enzymes: Enzyme names for AvoidPattern constraints.
+        local_gc_window: If set, also add a local GC constraint with this
+            window size (bp).
+        avoid_bacterial_promoters: If True, add AvoidBacterialPromoter.
+        enforce_start: If True, add EnforceStartCodon (requires protein).
+        enforce_stop: If True, add EnforceStopCodon.
+        uniquify_kmers: If set, add UniquifyAllKmers with this kmer size.
+        preserve_zones: List of zone strings for AvoidChanges constraints.
+        enforce_sequence_str: If set, add EnforceSequence for this sequence.
+        avoid_hairpins_flag: If True, add AvoidHairpins constraint.
+
+    Returns:
+        List of DNA Chisel Specification objects (may be empty if DNA
+        Chisel is not installed or no constraints could be built).
+    """
+    specs: list = []
+
+    # 1. EnforceTranslation
+    if protein:
+        spec = build_constraint_spec("EnforceTranslation", protein=protein)
+        if spec is not None:
+            specs.append(spec)
+
+    # 2. EnforceGCContent (global)
+    spec = build_constraint_spec("EnforceGCContent", gc_lo=gc_lo, gc_hi=gc_hi)
+    if spec is not None:
+        specs.append(spec)
+
+    # 3. EnforceGCContentLocal (optional)
+    if local_gc_window is not None:
+        spec = build_constraint_spec(
+            "EnforceGCContentLocal",
+            gc_lo=gc_lo, gc_hi=gc_hi, window=local_gc_window,
+        )
+        if spec is not None:
+            specs.append(spec)
+
+    # 4. AvoidPattern (restriction sites)
+    if restriction_enzymes:
+        for enz_name in restriction_enzymes:
+            site = RESTRICTION_ENZYMES.get(enz_name)
+            if site:
+                spec = build_constraint_spec("AvoidPattern", pattern=site)
+                if spec is not None:
+                    specs.append(spec)
+
+    # 5. AvoidBacterialPromoter
+    if avoid_bacterial_promoters:
+        spec = build_constraint_spec("AvoidBacterialPromoter")
+        if spec is not None:
+            specs.append(spec)
+
+    # 6. EnforceStartCodon
+    if enforce_start and protein:
+        spec = build_constraint_spec("EnforceStartCodon")
+        if spec is not None:
+            specs.append(spec)
+
+    # 7. EnforceStopCodon
+    if enforce_stop:
+        spec = build_constraint_spec("EnforceStopCodon")
+        if spec is not None:
+            specs.append(spec)
+
+    # 8. UniquifyAllKmers
+    if uniquify_kmers is not None:
+        spec = build_constraint_spec("UniquifyAllKmers", kmer_size=uniquify_kmers)
+        if spec is not None:
+            specs.append(spec)
+
+    # 9. AvoidChanges (preserve zones)
+    if preserve_zones:
+        for zone in preserve_zones:
+            spec = build_constraint_spec("AvoidChanges", zone=zone)
+            if spec is not None:
+                specs.append(spec)
+
+    # 10. EnforceSequence
+    if enforce_sequence_str:
+        spec = build_constraint_spec("EnforceSequence", sequence=enforce_sequence_str)
+        if spec is not None:
+            specs.append(spec)
+
+    # 11. AvoidHairpins
+    if avoid_hairpins_flag:
+        spec = build_constraint_spec("AvoidHairpins")
+        if spec is not None:
+            specs.append(spec)
+
+    return specs
 
 
 # ─── Public API ───────────────────────────────────────────────────────

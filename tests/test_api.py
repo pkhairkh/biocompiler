@@ -23,7 +23,7 @@ from biocompiler.api import (
     create_app,
     _check_rate_limit,
     _check_batch_rate_limit,
-    _rate_limit_store,
+    _rate_limiter,
     RATE_LIMIT_RPM,
     BATCH_CHECK_MAX,
     BATCH_OPTIMIZE_MAX,
@@ -52,17 +52,34 @@ from biocompiler.api import (
     BatchCheckResponse,
     BatchOptimizeResponse,
     BatchExportResponse,
+    get_auth_mode,
+    get_configured_api_keys,
 )
+
+from biocompiler import api as _api_module
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────
 
 @pytest.fixture()
 def app():
-    """Create a fresh FastAPI app for each test (isolates rate-limit state)."""
+    """Create a fresh FastAPI app for each test (isolates rate-limit state).
+
+    Disables auth for most functional tests by setting auth mode to 'disabled'.
+    Auth-specific tests are in test_api_auth.py.
+    """
     # Clear rate-limit store so tests don't interfere with each other
-    _rate_limit_store.clear()
-    return create_app()
+    _rate_limiter.clear()
+    # Save and disable auth for functional tests
+    original_mode = _api_module._AUTH_MODE
+    original_keys = set(_api_module._CONFIGURED_API_KEYS)
+    _api_module._AUTH_MODE = "disabled"
+    _api_module._CONFIGURED_API_KEYS = set()
+    try:
+        yield create_app()
+    finally:
+        _api_module._AUTH_MODE = original_mode
+        _api_module._CONFIGURED_API_KEYS = original_keys
 
 
 @pytest.fixture()
@@ -358,7 +375,7 @@ class TestOptimizeEndpoint:
     """Test POST /optimize request/response types."""
 
     def test_optimize_valid_protein(self, client):
-        resp = client.post("/optimize", json={"protein": VALID_PROTEIN})
+        resp = client.post("/optimize", json={"protein": VALID_PROTEIN, "strict_mode": False})
         assert resp.status_code == 200
         data = resp.json()
         assert "sequence" in data
@@ -370,7 +387,7 @@ class TestOptimizeEndpoint:
         assert "fallback_used" in data
 
     def test_optimize_response_types(self, client):
-        resp = client.post("/optimize", json={"protein": VALID_PROTEIN})
+        resp = client.post("/optimize", json={"protein": VALID_PROTEIN, "strict_mode": False})
         data = resp.json()
         assert isinstance(data["sequence"], str)
         assert isinstance(data["protein"], str)
@@ -381,7 +398,7 @@ class TestOptimizeEndpoint:
         assert isinstance(data["fallback_used"], bool)
 
     def test_optimize_protein_matches_input(self, client):
-        resp = client.post("/optimize", json={"protein": VALID_PROTEIN})
+        resp = client.post("/optimize", json={"protein": VALID_PROTEIN, "strict_mode": False})
         data = resp.json()
         assert data["protein"] == VALID_PROTEIN
 
@@ -746,8 +763,8 @@ class TestFullWorkflowIntegration:
 
     def test_optimize_then_check(self, client):
         """Optimize a protein, then check the resulting sequence."""
-        # Step 1: optimize
-        opt_resp = client.post("/optimize", json={"protein": VALID_PROTEIN})
+        # Step 1: optimize (strict_mode=False to allow partial results)
+        opt_resp = client.post("/optimize", json={"protein": VALID_PROTEIN, "strict_mode": False})
         assert opt_resp.status_code == 200
         optimized_seq = opt_resp.json()["sequence"]
 
@@ -844,7 +861,8 @@ class TestValidateProteinInput:
         assert "Invalid amino acids" in result
 
     def test_too_long_protein_returns_error(self):
-        result = validate_protein_input("A" * 5001)
+        from biocompiler.api import MAX_PROTEIN_LENGTH
+        result = validate_protein_input("A" * (MAX_PROTEIN_LENGTH + 1))
         assert result is not None
         assert "too long" in result.lower()
 
@@ -875,17 +893,16 @@ class TestRateLimiting:
 
     def test_check_rate_limit_allows_under_limit(self):
         """_check_rate_limit should not raise for requests under the limit."""
-        _rate_limit_store.clear()
+        _rate_limiter.clear()
         # Should not raise
         _check_rate_limit("test_client")
 
     def test_check_rate_limit_raises_at_limit(self):
         """_check_rate_limit should raise HTTPException when limit is exceeded."""
-        _rate_limit_store.clear()
-        import time as _time
+        _rate_limiter.clear()
         # Fill up the rate limit window with current timestamps
-        now = _time.monotonic()
-        _rate_limit_store["test_client_2"] = [now] * RATE_LIMIT_RPM
+        for _ in range(RATE_LIMIT_RPM):
+            _rate_limiter.record("test_client_2")
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
             _check_rate_limit("test_client_2")
@@ -893,10 +910,10 @@ class TestRateLimiting:
 
     def test_batch_rate_limit_raises(self):
         """_check_batch_rate_limit should raise when item count exceeds remaining."""
-        _rate_limit_store.clear()
-        import time as _time
-        now = _time.monotonic()
-        _rate_limit_store["test_batch_client"] = [now] * (RATE_LIMIT_RPM - 5)
+        _rate_limiter.clear()
+        # Record (RATE_LIMIT_RPM - 5) requests so only 5 remain
+        for _ in range(RATE_LIMIT_RPM - 5):
+            _rate_limiter.record("test_batch_client")
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
             _check_batch_rate_limit("test_batch_client", 10)
@@ -904,7 +921,7 @@ class TestRateLimiting:
 
     def test_batch_rate_limit_allows_within_remaining(self):
         """_check_batch_rate_limit should not raise for requests within remaining."""
-        _rate_limit_store.clear()
+        _rate_limiter.clear()
         # No previous requests, so all should be available
         _check_batch_rate_limit("test_batch_client_ok", 5)
 
@@ -914,10 +931,15 @@ class TestRateLimiting:
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestAPIKeyAuthentication:
-    """Test API key authentication behavior (when no key is configured)."""
+    """Test API key authentication behavior.
+
+    Note: The app fixture disables auth by default for functional tests.
+    These tests verify the disabled-auth state works correctly.
+    For auth-enabled tests, see test_api_auth.py.
+    """
 
     def test_no_auth_required_by_default(self, client):
-        """When no API key env var is set, auth should be disabled."""
+        """When auth is disabled in test fixtures, health should work."""
         resp = client.get("/health")
         assert resp.status_code == 200
 
@@ -927,7 +949,7 @@ class TestAPIKeyAuthentication:
         assert resp.status_code == 200
 
     def test_health_reports_auth_disabled(self, client):
-        """Health endpoint should report auth_enabled=False by default."""
+        """Health endpoint should report auth_enabled=False when auth is disabled."""
         resp = client.get("/health")
         data = resp.json()
         assert data["auth_enabled"] is False

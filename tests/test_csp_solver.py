@@ -511,59 +511,245 @@ class TestCSPIntegration:
             assert result.cai >= 0.5, f"CAI {result.cai:.3f} is unreasonably low"
 
     def test_infeasibility_detected(self):
-        """Truly infeasible GC target should produce violations or infeasibility.
+        """Truly infeasible GC target should produce a proper InfeasibilityReport.
 
-        Uses a protein of all Lysines (codons AAA/AAG, max GC = 1/3) with a
-        GC target of [0.90, 0.95], which is mathematically impossible.
+        Tests TWO detection paths:
 
-        The solver should either:
-        - Report infeasibility (solved=False), or
-        - Return a solution with violations indicating the GC constraint
-          could not be satisfied (e.g. greedy fallback), or
-        - If a real CSP solver finds a valid solution, verify GC is within bounds.
+        Path 1 (pre-solve check): When the quick feasibility check detects that
+        GC bounds are mathematically impossible for a protein of all Lysines
+        (codons AAA/AAG, max GC = 1/3) with GC target [0.90, 0.95], the
+        dispatch layer returns solved=False with an InfeasibilityReport whose
+        detection_method='presolve_check'.
+
+        Path 2 (CP-SAT solver): By calling the OR-Tools engine directly (bypassing
+        the pre-solve check), we verify that when CP-SAT itself returns INFEASIBLE,
+        the engine extracts a UNSAT core and returns an InfeasibilityReport with
+        detection_method='cp_sat_infeasible'.
         """
         mod_types = _import_solver_types()
         mod_dispatch = _import_solver_dispatch()
 
+        # ── Path 1: Pre-solve check detects infeasibility ───────────
         # Lysine (K) codons: AAA, AAG — max GC = 1/3 ≈ 0.333
-        # GC target [0.90, 0.95] is mathematically impossible for this protein.
+        # GC target [0.90, 0.95] is mathematically impossible.
         protein = "KKKKKKKKKK"
         cfg = mod_types.SolverConfig(gc_lo=0.90, gc_hi=0.95)
         result = mod_dispatch.solve_with_csp(protein, config=cfg)
 
-        if not result.solved:
-            # Infeasible — the expected outcome for a truly impossible constraint
-            return
-
-        # If solved by greedy fallback, GC may not be within bounds but
-        # violations should be reported indicating the constraint couldn't be met.
-        if getattr(result, "fallback_used", False):
-            # Greedy fallback found a best-effort solution; verify it either
-            # reports GC violations or that GC is at least close to the target.
-            has_gc_violation = any(
-                "GC" in getattr(v, "constraint_name", "")
-                for v in getattr(result, "violations", [])
-            )
-            # GC should be far below the target since it's impossible
-            assert result.gc_content < 0.50, (
-                f"Greedy fallback GC {result.gc_content:.3f} unexpectedly high "
-                f"for all-Lysine protein"
-            )
-            # Either violations are reported or warnings mention GC failure
-            has_gc_warning = any(
-                "GC" in w for w in getattr(result, "warnings", [])
-            )
-            assert has_gc_violation or has_gc_warning, (
-                "Greedy fallback should report GC violations or warnings "
-                "for impossible GC target"
-            )
-            return
-
-        # If a real CSP solver found a valid solution, GC must be in bounds
-        assert cfg.gc_lo <= result.gc_content <= cfg.gc_hi, (
-            f"GC content {result.gc_content:.3f} outside "
-            f"[{cfg.gc_lo}, {cfg.gc_hi}]"
+        # The problem MUST be detected as infeasible
+        assert result.solved is False, (
+            "All-Lysine protein with GC target [0.90, 0.95] should be infeasible"
         )
+
+        # Verify InfeasibilityReport is populated
+        assert result.infeasibility_report is not None, (
+            "InfeasibilityReport should be populated for infeasible constraint set"
+        )
+        report = result.infeasibility_report
+        assert report.is_infeasible is True, (
+            "InfeasibilityReport.is_infeasible should be True"
+        )
+        assert len(report.conflicting_constraints) > 0, (
+            "InfeasibilityReport should list at least one conflicting constraint"
+        )
+        # GC_CONTENT must be identified as a conflicting constraint
+        assert any(
+            "GC" in c.upper() or "gc" in c.lower() for c in report.conflicting_constraints
+        ), (
+            f"InfeasibilityReport should identify GC constraint as conflicting, "
+            f"got: {report.conflicting_constraints}"
+        )
+        assert report.explanation, (
+            "InfeasibilityReport should provide a human-readable explanation"
+        )
+        assert len(report.suggested_relaxations) > 0, (
+            "InfeasibilityReport should suggest at least one relaxation"
+        )
+
+        # ── Path 2: CP-SAT solver detects infeasibility directly ────
+        # Bypass the pre-solve check by calling the OR-Tools engine
+        # directly with a truly infeasible constraint. The engine should
+        # extract a UNSAT core and return an InfeasibilityReport with
+        # detection_method='cp_sat_infeasible'.
+        try:
+            from biocompiler.solver.engine_ortools import ORTOOLSEngine
+        except ImportError:
+            pytest.skip("OR-Tools not installed")
+
+        if not ORTOOLSEngine.is_available():
+            pytest.skip("OR-Tools native extension not available")
+
+        from biocompiler.constants import AA_TO_CODONS
+        from biocompiler.solver.types import CSPModel
+
+        # All-Lysine protein with impossible GC — forces CP-SAT to
+        # return INFEASIBLE because Lysine codons (AAA/AAG) can never
+        # achieve 90%+ GC content.
+        protein_inf = "KKKKKKKKKK"
+        cfg_inf = mod_types.SolverConfig(
+            gc_lo=0.90, gc_hi=0.95,
+            restriction_sites=[],
+            add_default_restriction_sites=False,
+            avoid_cpg=False,
+            avoid_t_runs=False,
+            avoid_attta=False,
+        )
+        codon_domains = {
+            i: list(AA_TO_CODONS.get(aa, []))
+            for i, aa in enumerate(protein_inf)
+        }
+        model = CSPModel(
+            protein_sequence=protein_inf,
+            codon_domains=codon_domains,
+            constraints=[],
+            config=cfg_inf,
+        )
+        engine = ORTOOLSEngine(cfg_inf)
+        solver_result = engine.solve(model)
+
+        assert solver_result.solved is False, (
+            "CP-SAT should report INFEASIBLE for impossible GC constraint"
+        )
+        assert solver_result.infeasibility_report is not None, (
+            "InfeasibilityReport should be populated when CP-SAT returns INFEASIBLE"
+        )
+        solver_report = solver_result.infeasibility_report
+        assert solver_report.is_infeasible is True
+        assert solver_report.detection_method == "cp_sat_infeasible", (
+            f"Expected detection_method='cp_sat_infeasible', "
+            f"got '{solver_report.detection_method}'"
+        )
+        assert solver_report.unsat_core is not None, (
+            "UNSAT core should be populated from CP-SAT infeasibility"
+        )
+        assert len(solver_report.unsat_core) > 0, (
+            "UNSAT core should contain at least one constraint"
+        )
+        # GC constraint must appear in the UNSAT core
+        assert any(
+            "gc" in c.lower() for c in solver_report.unsat_core
+        ), (
+            f"UNSAT core should identify GC constraint, got: {solver_report.unsat_core}"
+        )
+        assert len(solver_report.conflicting_constraints) > 0
+        assert solver_report.explanation, (
+            "InfeasibilityReport from CP-SAT should include an explanation"
+        )
+        assert len(solver_report.suggested_relaxations) > 0, (
+            "InfeasibilityReport from CP-SAT should suggest relaxations"
+        )
+
+    def test_infeasibility_report_from_solver(self):
+        """When CP-SAT returns INFEASIBLE, the InfeasibilityReport should
+        carry the detection_method='cp_sat_infeasible' and a UNSAT core.
+
+        Directly calls the OR-Tools engine with an impossible GC constraint,
+        bypassing the pre-solve feasibility check. This tests the solver's
+        own infeasibility detection and UNSAT core extraction.
+        """
+        mod_types = _import_solver_types()
+
+        try:
+            from biocompiler.solver.engine_ortools import ORTOOLSEngine
+        except ImportError:
+            pytest.skip("OR-Tools not installed")
+
+        if not ORTOOLSEngine.is_available():
+            pytest.skip("OR-Tools native extension not available")
+
+        from biocompiler.constants import AA_TO_CODONS
+        from biocompiler.solver.types import CSPModel
+
+        # All-Lysine protein: K codons AAA/AAG, max GC = 1/3 ≈ 0.333
+        # GC target [0.999, 1.000] is impossible → CP-SAT returns INFEASIBLE.
+        protein = "KKKKKKKKKK"
+        cfg = mod_types.SolverConfig(
+            gc_lo=0.999, gc_hi=1.000,
+            restriction_sites=[],
+            add_default_restriction_sites=False,
+            avoid_cpg=False,
+            avoid_t_runs=False,
+            avoid_attta=False,
+        )
+        codon_domains = {
+            i: list(AA_TO_CODONS.get(aa, []))
+            for i, aa in enumerate(protein)
+        }
+        model = CSPModel(
+            protein_sequence=protein,
+            codon_domains=codon_domains,
+            constraints=[],
+            config=cfg,
+        )
+        engine = ORTOOLSEngine(cfg)
+        result = engine.solve(model)
+
+        assert result.solved is False, (
+            "All-Lysine protein with GC target [0.999, 1.000] should be infeasible"
+        )
+        assert result.infeasibility_report is not None, (
+            "InfeasibilityReport should be populated"
+        )
+        report = result.infeasibility_report
+        assert report.is_infeasible is True
+        assert report.detection_method == "cp_sat_infeasible", (
+            f"Expected detection_method='cp_sat_infeasible', got '{report.detection_method}'"
+        )
+        assert report.unsat_core is not None, (
+            "UNSAT core should be populated when CP-SAT detects infeasibility"
+        )
+
+    def test_infeasibility_report_dataclass(self):
+        """InfeasibilityReport dataclass should be creatable with all fields."""
+        mod_types = _import_solver_types()
+        report = mod_types.InfeasibilityReport(
+            is_infeasible=True,
+            conflicting_constraints=["GC_CONTENT", "NoRestrictionSite_EcoRI"],
+            unsat_core=["GC_CONTENT"],
+            suggested_relaxations=["Widen GC bounds from [0.90, 0.95] to [0.85, 1.00]"],
+            explanation="GC bounds [0.90, 0.95] are not achievable for this protein",
+            detection_method="presolve_check",
+        )
+        assert report.is_infeasible is True
+        assert len(report.conflicting_constraints) == 2
+        assert report.unsat_core == ["GC_CONTENT"]
+        assert len(report.suggested_relaxations) == 1
+        assert report.explanation
+        assert report.detection_method == "presolve_check"
+
+    def test_infeasibility_report_from_mus(self):
+        """InfeasibilityReport.from_mus_report should convert MUSReport fields."""
+        mod_types = _import_solver_types()
+        mus = mod_types.MUSReport(
+            conflicting_constraints=["gc_content", "cryptic_splice"],
+            explanation="GC bounds conflict with splice avoidance",
+            suggested_relaxations=["Widen GC range"],
+        )
+        report = mod_types.InfeasibilityReport.from_mus_report(
+            mus, detection_method="cp_sat_infeasible"
+        )
+        assert report.is_infeasible is True
+        assert "gc_content" in report.conflicting_constraints
+        assert "cryptic_splice" in report.conflicting_constraints
+        assert report.unsat_core == ["gc_content", "cryptic_splice"]
+        assert report.detection_method == "cp_sat_infeasible"
+        assert "Widen GC range" in report.suggested_relaxations
+
+    def test_infeasibility_report_from_feasibility(self):
+        """InfeasibilityReport.from_feasibility_report should convert FeasibilityReport."""
+        mod_types = _import_solver_types()
+        mod_mus = pytest.importorskip("biocompiler.solver.mus")
+        feas = mod_mus.FeasibilityReport(
+            feasible=False,
+            impossible_constraints=["GC_CONTENT"],
+            suggested_relaxations=["Lower GC lower bound"],
+        )
+        report = mod_types.InfeasibilityReport.from_feasibility_report(feas)
+        assert report.is_infeasible is True
+        assert "GC_CONTENT" in report.conflicting_constraints
+        assert report.unsat_core is None  # Pre-solve doesn't compute MUS
+        assert report.detection_method == "presolve_check"
+        assert "Lower GC lower bound" in report.suggested_relaxations
 
     def test_egfp_solve(self, eGFP_protein):
         """Full eGFP protein should be solvable with default bounds."""

@@ -206,26 +206,36 @@ _HUMAN_REFERENCE: Dict[str, Dict[str, float]] = {
 }
 
 _YEAST_REFERENCE: Dict[str, Dict[str, float]] = {
-    "F": {"TTT": 18.3, "TTC": 12.7},
-    "L": {"TTA": 13.2, "TTG": 5.2, "CTT": 6.1, "CTC": 2.4, "CTA": 6.7, "CTG": 13.7},
-    "I": {"ATT": 20.6, "ATC": 13.3, "ATA": 10.7},
+    # Source: 30+ highly expressed S. cerevisiae genes
+    # (ribosomal proteins, glycolytic enzymes: ADH1, PGK1, TDH1/2/3, ENO1/2, PYK1, etc.)
+    # Reference: Ikemura (1985) J Mol Evol 21:388-409;
+    #            Sharp & Li (1987) Nucleic Acids Res 15:1281-1295.
+    # Per-thousand values derived from the high-expression gene set, NOT genome-wide.
+    # Key signatures of the high-expression set (vs. genome average):
+    #   - TTG dominant for Leu (genome-wide: CTG dominant)
+    #   - AGA dominant for Arg (genome-wide: more balanced)
+    #   - ATA, GTA, GTG very rare (genome-wide: moderate frequency)
+    #   - Strong A/T-ending codon preference throughout
+    "F": {"TTT": 20.5, "TTC": 10.5},
+    "L": {"TTA": 9.1, "TTG": 32.7, "CTT": 3.8, "CTC": 0.7, "CTA": 0.6, "CTG": 0.4},
+    "I": {"ATT": 34.8, "ATC": 9.6, "ATA": 0.2},
     "M": {"ATG": 20.8},
-    "V": {"GTT": 18.2, "GTC": 9.8, "GTA": 8.0, "GTG": 10.4},
-    "S": {"TCT": 14.7, "TCC": 9.0, "TCA": 11.9, "TCG": 5.6, "AGT": 8.5, "AGC": 6.8},
-    "P": {"CCT": 13.2, "CCC": 6.4, "CCA": 17.9, "CCG": 5.1},
-    "T": {"ACT": 16.1, "ACC": 10.1, "ACA": 13.8, "ACG": 6.0},
-    "A": {"GCT": 18.4, "GCC": 11.2, "GCA": 14.8, "GCG": 6.6},
-    "Y": {"TAT": 15.2, "TAC": 11.9},
-    "H": {"CAT": 13.2, "CAC": 7.4},
-    "Q": {"CAA": 27.2, "CAG": 12.2},
-    "N": {"AAT": 17.7, "AAC": 12.3},
-    "K": {"AAA": 30.3, "AAG": 21.9},
-    "D": {"GAT": 33.4, "GAC": 18.8},
-    "E": {"GAA": 45.3, "GAG": 19.4},
-    "C": {"TGT": 7.7, "TGC": 4.5},
+    "V": {"GTT": 30.1, "GTC": 6.5, "GTA": 6.5, "GTG": 3.2},
+    "S": {"TCT": 33.1, "TCC": 9.7, "TCA": 7.5, "TCG": 0.4, "AGT": 4.2, "AGC": 1.6},
+    "P": {"CCT": 11.5, "CCC": 3.4, "CCA": 27.2, "CCG": 0.4},
+    "T": {"ACT": 27.4, "ACC": 9.8, "ACA": 8.5, "ACG": 0.3},
+    "A": {"GCT": 31.2, "GCC": 7.0, "GCA": 12.3, "GCG": 0.5},
+    "Y": {"TAT": 17.7, "TAC": 9.4},
+    "H": {"CAT": 15.3, "CAC": 5.3},
+    "Q": {"CAA": 35.2, "CAG": 4.2},
+    "N": {"AAT": 20.1, "AAC": 9.9},
+    "K": {"AAA": 38.6, "AAG": 13.6},
+    "D": {"GAT": 37.1, "GAC": 15.1},
+    "E": {"GAA": 50.5, "GAG": 14.2},
+    "C": {"TGT": 8.1, "TGC": 4.1},
     "W": {"TGG": 10.3},
-    "R": {"CGT": 6.8, "CGC": 2.7, "CGA": 3.2, "CGG": 1.8, "AGA": 21.5, "AGG": 9.0},
-    "G": {"GGT": 18.3, "GGC": 7.3, "GGA": 8.0, "GGG": 4.6},
+    "R": {"CGT": 2.7, "CGC": 0.5, "CGA": 0.1, "CGG": 0.1, "AGA": 39.9, "AGG": 1.7},
+    "G": {"GGT": 24.8, "GGC": 3.6, "GGA": 8.4, "GGG": 1.4},
 }
 
 # Mouse (Mus musculus) codon usage from Kazusa

@@ -29,6 +29,7 @@ __all__ = [
     "CodonVariable",
     "ConstraintSpec",
     "ConstraintViolation",
+    "InfeasibilityReport",
     "MUSReport",
     "SolverConfig",
     "SolverResult",
@@ -112,6 +113,10 @@ class ConstraintType(str, Enum):
 
     # Restriction site constraints
     RESTRICTION_SITE = "restriction_site"
+
+    # Pattern enforcement constraints (DNA-Chisel-style)
+    PATTERN_ENFORCEMENT = "pattern_enforcement"   # Pattern MUST appear
+    PATTERN_AVOIDANCE = "pattern_avoidance"       # Pattern MUST NOT appear
 
     # mRNA structure constraints
     MRNA_STABILITY = "mrna_stability"
@@ -451,6 +456,36 @@ class ConstraintSpec:
         if self.ctype == ConstraintType.NO_GT_DINUCLEOTIDE:
             return "GT" not in seq
 
+        # ── Pattern avoidance (AvoidPattern) ──────────────────
+        if self.ctype == ConstraintType.PATTERN_AVOIDANCE:
+            pattern = self.params.get("pattern", "")
+            strand = self.params.get("strand", "both")
+            scope = self.params.get("scope", "dna")
+            if not pattern:
+                return True
+            from ..pattern_enforcement import PatternConstraint, check_pattern
+            constraint = PatternConstraint(
+                pattern=pattern, action="avoid", scope=scope, strand=strand,
+            )
+            target = seq if scope == "dna" else self.params.get("protein", "")
+            result = check_pattern(target, constraint)
+            return result.passed
+
+        # ── Pattern enforcement (EnforcePattern) ──────────────
+        if self.ctype == ConstraintType.PATTERN_ENFORCEMENT:
+            pattern = self.params.get("pattern", "")
+            strand = self.params.get("strand", "both")
+            scope = self.params.get("scope", "dna")
+            if not pattern:
+                return True
+            from ..pattern_enforcement import PatternConstraint, check_pattern
+            constraint = PatternConstraint(
+                pattern=pattern, action="enforce", scope=scope, strand=strand,
+            )
+            target = seq if scope == "dna" else self.params.get("protein", "")
+            result = check_pattern(target, constraint)
+            return result.passed
+
         # ── Immunogenicity / MHC / T-cell (no sequence check) ─
         if self.ctype in (
             ConstraintType.MHC_BINDING,
@@ -550,6 +585,105 @@ class MUSReport:
         """Populate conflicting_constraints from mus_constraints if empty."""
         if not self.conflicting_constraints and self.mus_constraints:
             self.conflicting_constraints = [c.name for c in self.mus_constraints]
+
+
+@dataclass
+class InfeasibilityReport:
+    """Structured report for infeasible constraint sets.
+
+    When the solver (or the pre-solve feasibility check) determines that
+    the constraint set is infeasible, this report provides actionable
+    diagnostics: which constraints conflict, a minimal unsatisfiable
+    subset (if available), and suggested relaxations.
+
+    This is the user-facing complement to :class:`MUSReport`, which
+    focuses on the technical MUS extraction.  :class:`InfeasibilityReport`
+    summarises the result for downstream consumers (CLI, API, strict mode).
+
+    Attributes:
+        is_infeasible: Whether the problem is confirmed infeasible.
+            When ``True``, at least one constraint conflict exists.
+        conflicting_constraints: Human-readable names of constraints that
+            participate in the conflict (may be a superset of the UNSAT core).
+        unsat_core: The minimal conflicting subset, if the solver was able
+            to extract one.  ``None`` when MUS extraction was not performed
+            (e.g. pre-solve check detected infeasibility without running
+            the solver).
+        suggested_relaxations: Ordered list of concrete relaxation
+            suggestions, from least impactful to most impactful.
+        explanation: Human-readable summary of *why* the constraints are
+            infeasible.
+        detection_method: How infeasibility was detected — one of
+            ``"presolve_check"``, ``"cp_sat_infeasible"``, ``"z3_unsat"``,
+            or ``"all_backends_failed"``.
+    """
+
+    is_infeasible: bool
+    conflicting_constraints: list[str] = field(default_factory=list)
+    unsat_core: list[str] | None = None
+    suggested_relaxations: list[str] = field(default_factory=list)
+    explanation: str = ""
+    detection_method: str = ""
+
+    @classmethod
+    def from_mus_report(cls, mus_report: MUSReport, detection_method: str = "") -> InfeasibilityReport:
+        """Construct an InfeasibilityReport from an existing MUSReport.
+
+        Parameters
+        ----------
+        mus_report:
+            The MUS analysis result from the solver.
+        detection_method:
+            How infeasibility was detected.
+
+        Returns
+        -------
+        InfeasibilityReport
+            A structured report derived from the MUS analysis.
+        """
+        unsat_core = None
+        if mus_report.mus_constraints:
+            unsat_core = [c.name for c in mus_report.mus_constraints]
+        elif mus_report.conflicting_constraints:
+            unsat_core = mus_report.conflicting_constraints
+
+        return cls(
+            is_infeasible=True,
+            conflicting_constraints=mus_report.conflicting_constraints or [c.name for c in mus_report.mus_constraints],
+            unsat_core=unsat_core,
+            suggested_relaxations=mus_report.suggested_relaxations,
+            explanation=mus_report.explanation,
+            detection_method=detection_method,
+        )
+
+    @classmethod
+    def from_feasibility_report(cls, feasibility_report: "FeasibilityReport") -> InfeasibilityReport:  # noqa: F821
+        """Construct an InfeasibilityReport from a FeasibilityReport.
+
+        Used when the pre-solve feasibility check detects impossibilities
+        before the solver is invoked.
+
+        Parameters
+        ----------
+        feasibility_report:
+            The pre-solve feasibility check result.
+
+        Returns
+        -------
+        InfeasibilityReport
+            A structured report derived from the feasibility check.
+        """
+        return cls(
+            is_infeasible=not feasibility_report.feasible,
+            conflicting_constraints=list(feasibility_report.impossible_constraints),
+            unsat_core=None,  # Pre-solve check doesn't compute MUS
+            suggested_relaxations=list(feasibility_report.suggested_relaxations),
+            explanation=(
+                f"Pre-solve check detected infeasibility: "
+                f"{', '.join(feasibility_report.impossible_constraints)}"
+            ) if feasibility_report.impossible_constraints else "",
+            detection_method="presolve_check",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +935,7 @@ class SolverResult:
     solve_time_seconds: float = 0.0
     violations: list[ConstraintViolation] = field(default_factory=list)
     mus_report: Optional[MUSReport] = None
+    infeasibility_report: Optional[InfeasibilityReport] = None
     objective_value: float = 0.0
     num_constraints: int = 0
     num_variables: int = 0

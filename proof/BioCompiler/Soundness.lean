@@ -100,7 +100,7 @@
   │                         │            │ all_core_if_pass corollary             │
   │ SLOTIndependence.lean   │ FULLY      │ All theorems updated for 32 predicates │
   │                         │            │ isCorePredicate extended to 32;        │
-  │                         │            │ isCore_iff_not_slot theorem added      │
+  │                         │            │ isCore_iff_not_slot theorem PROVED     │
   │ SplicingResolution.lean │ FULLY      │ 0 sorry, 0 axioms; canonical_donor_    │
   │                         │            │ has_gt and canonical_acceptor_has_ag   │
   │                         │            │ now PROVED (vacuously true, since     │
@@ -112,6 +112,14 @@
   │ Mutagenesis.lean       │ FULLY      │ 0 sorry; synonymous mutation theorems; │
   │                         │            │ mandatory GT/AG analysis; codon        │
   │                         │            │ degeneracy; wobble position analysis   │
+  │ SLOTVerification.lean   │ FULLY      │ 0 sorry; SLOT verification conditions; │
+  │                         │            │ conservative/verified/permissive modes │
+  │                         │            │ slot_soundness_verified theorem;      │
+  │                         │            │ verification_conditions_imply_property │
+  │                         │            │ proved (no longer axiom)              │
+  │ Refinement.lean         │ FULLY      │ 0 sorry, 0 new axioms; VERIFIED mode  │
+  │                         │            │ refines CONSERVATIVE mode; simulation │
+  │                         │            │ theorem; progressive assurance        │
   └─────────────────────────┴────────────┴────────────────────────────────────────┘
 
   Trusted Computing Base (axioms that are NOT proved within Lean4):
@@ -167,6 +175,8 @@ import BioCompiler.TypeSystem
 import BioCompiler.Compositional
 import BioCompiler.Certificates
 import BioCompiler.SLOTIndependence
+import BioCompiler.SLOTVerification
+import BioCompiler.Refinement
 
 namespace BioCompiler
 
@@ -195,5 +205,17 @@ def slot_no_pass := @slot_predicates_uncertain
 
 /-- SLOT predicates in the list prevent overall PASS. -/
 def slot_dont_affect := @slot_predicates_dont_affect_pass
+
+/-- Core iff not SLOT: classification is complete and exclusive. -/
+def core_iff_not_slot := @isCore_iff_not_slot
+
+/-- Conservative mode is safe: never returns PASS for SLOT predicates. -/
+def conservative_safe := @conservative_is_safe
+
+/-- VERIFIED mode refines CONSERVATIVE mode. -/
+def verified_refines := @verified_refines_conservative
+
+/-- Simulation: VERIFIED overall verdict refines CONSERVATIVE. -/
+def simulation := @simulation_verified_conservative
 
 end BioCompiler

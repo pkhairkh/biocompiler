@@ -174,20 +174,20 @@ theorem string_eq_of_not_ne (s₁ s₂ : String) (h : ¬(s₁ != s₂)) : s₁ =
       exact h this
   exact LawfulBEq.eq_of_beq h_beq
 
-/-- Rat: ¬(a < b) ↔ b ≤ a. Proved using the underlying Bool-based definitions. -/
+/-- Rat: ¬(a < b) ↔ b ≤ a. Proved using the underlying Bool-based definitions.
+    In Lean4 v4.30.0, (a < b) = (a.blt b = true) and (b ≤ a) = (a.blt b = false),
+    so ¬(a < b) ↔ a.blt b ≠ true ↔ a.blt b = false ↔ b ≤ a. -/
 theorem Rat.not_lt_iff_le (a b : Rat) : ¬(a < b) ↔ b ≤ a := by
   constructor
   · intro h
-    have : a.blt b = false := by
-      cases h_blt : (a.blt b) with
-      | true => exact absurd h_blt h
-      | false => rfl
-    exact this
+    show a.blt b = false
+    have h_blt : a.blt b = false := (bool_ne_true_iff_false _).mp h
+    exact h_blt
   · intro h h_lt
-    have h_blt_false : a.blt b = false := h
-    have h_blt_true : a.blt b = true := h_lt
-    rw [h_blt_false] at h_blt_true
-    cases h_blt_true
+    have h_false : a.blt b = false := by show a.blt b = false; exact h
+    have h_true : a.blt b = true := by show a.blt b = true; exact h_lt
+    rw [h_false] at h_true
+    cases h_true
 
 -- ==============================================================================
 -- Evaluation Function

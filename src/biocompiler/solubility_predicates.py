@@ -505,6 +505,11 @@ def evaluate_soluble_expression(
     net_charge = compute_net_charge(protein, 7.0)
     abs_net_charge = abs(net_charge)
 
+    # Compute charged fraction for downstream adjustments
+    pos_count = sum(1 for aa in protein if aa in {"K", "R", "H"})
+    neg_count = sum(1 for aa in protein if aa in {"D", "E"})
+    charged_fraction = (pos_count + neg_count) / n if n > 0 else 0.0
+
     # --- Organism-specific thresholds ---
     org_charge_offset = _get_org_threshold(organism, "net_charge_min_offset", 0.0)
     effective_net_charge_min = _NET_CHARGE_PASS + org_charge_offset
@@ -517,11 +522,18 @@ def evaluate_soluble_expression(
         verdict = Verdict.LIKELY_PASS
         violation = None
     elif camsol_score >= _CAMSOL_MARGINAL:
-        verdict = Verdict.UNCERTAIN
-        violation = (
-            f"Marginal solubility: CamSol score {camsol_score:.3f} "
-            f"is in the uncertain range [{_CAMSOL_MARGINAL}, 0.0)"
-        )
+        # Marginal CamSol score: use charge composition to refine.
+        # If the protein has adequate net charge, it's more likely soluble
+        # even with a borderline CamSol score → LIKELY_PASS.
+        if abs_net_charge > _NET_CHARGE_WARN:
+            verdict = Verdict.LIKELY_PASS
+            violation = None
+        else:
+            verdict = Verdict.LIKELY_FAIL
+            violation = (
+                f"Marginal solubility: CamSol score {camsol_score:.3f} "
+                f"in [{_CAMSOL_MARGINAL}, 0.0) with low net charge ({net_charge:.1f})"
+            )
     else:
         verdict = Verdict.LIKELY_FAIL
         violation = (
@@ -532,8 +544,10 @@ def evaluate_soluble_expression(
     hydro_warnings: list[str] = []
     if hydrophobic_fraction > _HYDROPHOBIC_FRACTION_FAIL:
         # Strong failure signal (hydrophobic_fraction > 0.55) — downgrade by up to 2 levels
+        # Use LIKELY_FAIL instead of UNCERTAIN since high hydrophobicity
+        # is a meaningful signal, not ambiguous.
         if verdict == Verdict.PASS:
-            verdict = Verdict.UNCERTAIN
+            verdict = Verdict.LIKELY_FAIL
         elif verdict == Verdict.LIKELY_PASS:
             verdict = Verdict.LIKELY_FAIL
         hydro_warnings.append(
@@ -541,35 +555,51 @@ def evaluate_soluble_expression(
             f"{_HYDROPHOBIC_FRACTION_FAIL:.0%})"
         )
     elif hydrophobic_fraction > _HYDROPHOBIC_FRACTION_UNCERTAIN_LO:
-        # Uncertain zone (0.35 < hydrophobic_fraction <= 0.55) — downgrade to UNCERTAIN at most
-        if verdict == Verdict.PASS:
-            verdict = Verdict.UNCERTAIN
-        elif verdict == Verdict.LIKELY_PASS:
-            verdict = Verdict.UNCERTAIN
+        # Elevated hydrophobic zone (0.35 < hydrophobic_fraction <= 0.55)
+        # Use LIKELY_FAIL instead of UNCERTAIN since elevated hydrophobicity
+        # is a meaningful signal. However, if charged fraction is high
+        # (>25%), the charges may compensate → only downgrade by 1 level.
+        if hydrophobic_fraction <= 0.45 and charged_fraction > 0.25:
+            # Moderate hydrophobicity with good charge compensation
+            if verdict == Verdict.PASS:
+                verdict = Verdict.LIKELY_PASS
+            elif verdict == Verdict.LIKELY_PASS:
+                verdict = Verdict.LIKELY_FAIL
+        else:
+            if verdict == Verdict.PASS:
+                verdict = Verdict.LIKELY_FAIL
+            elif verdict == Verdict.LIKELY_PASS:
+                verdict = Verdict.LIKELY_FAIL
         hydro_warnings.append(
             f"Elevated hydrophobic fraction ({hydrophobic_fraction:.1%} > "
             f"{_HYDROPHOBIC_FRACTION_UNCERTAIN_LO:.0%})"
         )
 
     # --- Net charge adjustments ---
+    # Note: net charge alone is not a reliable solubility indicator when the
+    # protein has many charged residues (high charged_fraction). A protein
+    # with balanced K/D pairs (net charge ~0) is perfectly soluble. Only
+    # downgrade when BOTH net charge is low AND charged fraction is low.
     charge_warnings: list[str] = []
-    if abs_net_charge <= _NET_CHARGE_WARN:
-        # Very low charge — downgrade by up to 2 levels (but not below LIKELY_FAIL)
+    if abs_net_charge <= _NET_CHARGE_WARN and charged_fraction < 0.15:
+        # Very low charge AND few charged residues — meaningful signal
         if verdict == Verdict.PASS:
-            verdict = Verdict.UNCERTAIN
+            verdict = Verdict.LIKELY_FAIL
         elif verdict == Verdict.LIKELY_PASS:
             verdict = Verdict.LIKELY_FAIL
         charge_warnings.append(
-            f"Very low net charge at pH 7 (|{net_charge:.1f}| ≤ {_NET_CHARGE_WARN})"
+            f"Very low net charge at pH 7 (|{net_charge:.1f}| ≤ {_NET_CHARGE_WARN}) "
+            f"with low charged fraction ({charged_fraction:.1%})"
         )
-    elif abs_net_charge <= effective_net_charge_min:
-        # Moderate charge — WARN zone, downgrade by 1 level only
+    elif abs_net_charge <= effective_net_charge_min and charged_fraction < 0.15:
+        # Moderate charge AND few charged residues — downgrade by 1 level
         if verdict == Verdict.PASS:
             verdict = Verdict.LIKELY_PASS
         elif verdict == Verdict.LIKELY_PASS:
-            verdict = Verdict.UNCERTAIN
+            verdict = Verdict.LIKELY_FAIL
         charge_warnings.append(
-            f"Low net charge at pH 7 (|{net_charge:.1f}| ≤ {effective_net_charge_min:.1f})"
+            f"Low net charge at pH 7 (|{net_charge:.1f}| ≤ {effective_net_charge_min:.1f}) "
+            f"with low charged fraction ({charged_fraction:.1%})"
         )
 
     # If the score is below the user-specified minimum, that's a stronger
@@ -598,7 +628,7 @@ def evaluate_soluble_expression(
         {"step": "camsol_intrinsic_score", "value": round(camsol_score, 3)},
         {"step": "min_solubility_score", "value": min_solubility_score},
         {"step": "hydrophobic_fraction", "value": round(hydrophobic_fraction, 4)},
-        {"step": "hydrophobic_fraction_pass_threshold", "value": org_hydro_pass},
+        {"step": "hydrophobic_fraction_pass_threshold", "value": _HYDROPHOBIC_FRACTION_UNCERTAIN_LO},
         {"step": "net_charge_pH7", "value": round(net_charge, 2)},
         {"step": "net_charge_pass_threshold", "value": effective_net_charge_min},
         {"step": "organism", "value": organism},
@@ -783,7 +813,9 @@ def evaluate_no_aggregation_prone_region(
             f"{worst_weighted_score:.3f} (mild)"
         )
     elif worst_weighted_score <= _AGG_FAIL_SCORE_CUTOFF:
-        verdict = Verdict.UNCERTAIN
+        # Moderate aggregation score — LIKELY_FAIL (not UNCERTAIN)
+        # since the score provides meaningful evidence
+        verdict = Verdict.LIKELY_FAIL
         violation = (
             f"Aggregation-prone region detected: weighted score "
             f"{worst_weighted_score:.3f} (moderate)"
@@ -949,24 +981,44 @@ def evaluate_charge_composition(
             f"insufficient surface charges for solubility"
         )
     elif high_pI and extreme_charge_ratio:
-        verdict = Verdict.UNCERTAIN
-        violation = (
-            f"High isoelectric point (pI={pI:.2f} > {max_pI}) and extreme "
-            f"charge ratio ({charge_ratio:.3f} outside [{org_ratio_lo}, {org_ratio_hi}])"
-        )
+        # Both high pI and extreme charge ratio → LIKELY_FAIL (not UNCERTAIN)
+        # But if charged fraction is high (>20%), the protein has enough
+        # charges to be soluble despite the imbalance → just UNCERTAIN
+        if charged_fraction > 0.20:
+            verdict = Verdict.UNCERTAIN
+            violation = (
+                f"High pI ({pI:.2f} > {max_pI}) and extreme "
+                f"charge ratio ({charge_ratio:.3f}), but high charged fraction "
+                f"({charged_fraction:.1%}) suggests solubility is maintained"
+            )
+        else:
+            verdict = Verdict.LIKELY_FAIL
+            violation = (
+                f"High isoelectric point (pI={pI:.2f} > {max_pI}) and extreme "
+                f"charge ratio ({charge_ratio:.3f} outside [{org_ratio_lo}, {org_ratio_hi}])"
+            )
     elif high_pI:
+        # High isoelectric point alone is ambiguous — some proteins
+        # naturally have high pI. Keep as UNCERTAIN.
         verdict = Verdict.UNCERTAIN
         violation = (
             f"High isoelectric point (pI={pI:.2f} > {max_pI}): "
             f"protein may precipitate near its pI in typical buffers"
         )
     elif extreme_charge_ratio:
-        verdict = Verdict.UNCERTAIN
-        violation = (
-            f"Extreme charge ratio ({charge_ratio:.3f} outside "
-            f"[{org_ratio_lo}, {org_ratio_hi}]): charge imbalance may "
-            f"affect solubility"
-        )
+        # Extreme charge ratio alone is ambiguous — acidic/basic proteins
+        # naturally have extreme ratios. If charged fraction is high (>20%),
+        # the protein is clearly charged enough to be soluble → PASS.
+        if charged_fraction > 0.20:
+            verdict = Verdict.PASS
+            violation = None
+        else:
+            verdict = Verdict.UNCERTAIN
+            violation = (
+                f"Extreme charge ratio ({charge_ratio:.3f} outside "
+                f"[{org_ratio_lo}, {org_ratio_hi}]) with low charged fraction "
+                f"({charged_fraction:.1%}): charge imbalance may affect solubility"
+            )
     else:
         verdict = Verdict.PASS
         violation = None
@@ -1075,7 +1127,9 @@ def evaluate_no_long_hydrophobic_stretch(
             f"limit of {max_stretch} (borderline)"
         )
     elif excess <= _HYDRO_EXCESS_UNCERTAIN:
-        verdict = Verdict.UNCERTAIN
+        # Moderate excess — LIKELY_FAIL (not UNCERTAIN) since the
+        # quantitative excess provides meaningful evidence
+        verdict = Verdict.LIKELY_FAIL
         violation = (
             f"Hydrophobic stretch of {longest} residues exceeds limit "
             f"of {max_stretch} by {excess}"

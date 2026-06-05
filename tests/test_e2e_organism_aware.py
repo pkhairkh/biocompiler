@@ -114,6 +114,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # Compare against organism-unaware baseline (forced eukaryote)
@@ -127,6 +128,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # Verify CAI is significantly higher than the organism-unaware baseline
@@ -180,6 +182,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # Human optimization (organism-aware: auto-detects eukaryote)
@@ -192,6 +195,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # E. coli should have higher CAI (no splice/CpG/GT constraints)
@@ -226,6 +230,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # Verify correct translation
@@ -293,6 +298,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # Baseline (organism-unaware, forced eukaryote)
@@ -306,6 +312,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # CAI should improve with organism-aware constraints
@@ -364,6 +371,7 @@ class TestOrganismAwareEndToEnd:
                 optimize_mrna_stability=False,
                 include_utr=False,
                 track_provenance=False,
+                strict_mode=False,
             )
 
             # Organism-unaware baseline
@@ -377,6 +385,7 @@ class TestOrganismAwareEndToEnd:
                 optimize_mrna_stability=False,
                 include_utr=False,
                 track_provenance=False,
+                strict_mode=False,
             )
 
             # Organism-aware should have higher CAI
@@ -412,6 +421,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # Optimize with organism-aware constraints (auto-detect prokaryote)
@@ -425,6 +435,7 @@ class TestOrganismAwareEndToEnd:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
 
         # Both should produce valid translations

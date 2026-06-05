@@ -180,6 +180,7 @@ class TestOrganismSpecificOptimization:
                 gc_hi=0.70,
                 optimize_mrna_stability=False,
                 include_utr=False,
+                strict_mode=False,
             )
             results[org] = result.sequence
 
@@ -245,6 +246,7 @@ class TestOrganismSpecificOptimization:
             gc_hi=org_spec.gc_hi,
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         gc = gc_content(result.sequence)
         assert org_spec.gc_lo <= gc <= org_spec.gc_hi, (
@@ -262,6 +264,7 @@ class TestOrganismSpecificOptimization:
             gc_hi=0.70,
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         gc = gc_content(result.sequence)
         # E. coli coding GC is ~50.8%; allow generous range for small proteins
@@ -319,6 +322,7 @@ class TestCodonPairBiasIntegration:
             organism="Escherichia_coli",
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         cpb = compute_codon_pair_bias(result.sequence, "Escherichia_coli")
         assert cpb > 0.0, (
@@ -342,6 +346,7 @@ class TestCodonPairBiasIntegration:
             organism="Escherichia_coli",
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         naive_seq = _make_naive_sequence(INSULIN_PROTEIN, "Escherichia_coli")
         optimized_cpb = compute_codon_pair_bias(result.sequence, "Escherichia_coli")
@@ -371,6 +376,7 @@ class TestCodonPairBiasIntegration:
             organism="Homo_sapiens",
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         cai = compute_cai(result.sequence, "Homo_sapiens")
         # A well-optimized human sequence should have decent CAI
@@ -493,12 +499,14 @@ class TestMRNAStability:
             organism="Homo_sapiens",
             optimize_mrna_stability=True,
             include_utr=False,
+            strict_mode=False,
         )
         result_off = optimize_sequence(
             INSULIN_PROTEIN,
             organism="Homo_sapiens",
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         destab_on = _count_destabilizing_motifs(result_on.sequence, "Homo_sapiens")
         destab_off = _count_destabilizing_motifs(result_off.sequence, "Homo_sapiens")
@@ -516,6 +524,7 @@ class TestMRNAStability:
             organism="Escherichia_coli",
             optimize_mrna_stability=True,
             include_utr=False,
+            strict_mode=False,
         )
         attta_count = result.sequence.upper().count("ATTTA")
         # The optimizer should remove ATTTA motifs when possible
@@ -533,12 +542,14 @@ class TestMRNAStability:
             organism="Homo_sapiens",
             optimize_mrna_stability=True,
             include_utr=False,
+            strict_mode=False,
         )
         result_off = optimize_sequence(
             INSULIN_PROTEIN,
             organism="Homo_sapiens",
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         score_on = score_mrna_stability(result_on.sequence, "Homo_sapiens")
         score_off = score_mrna_stability(result_off.sequence, "Homo_sapiens")
@@ -584,6 +595,7 @@ class TestConstraintSatisfaction:
             gc_hi=0.70,
             optimize_mrna_stability=True,
             include_utr=False,
+            strict_mode=False,
         )
         seq = result.sequence
 
@@ -613,6 +625,7 @@ class TestConstraintSatisfaction:
             gc_hi=0.55,
             optimize_mrna_stability=True,
             include_utr=False,
+            strict_mode=False,
         )
         seq = result.sequence
 
@@ -648,6 +661,7 @@ class TestConstraintSatisfaction:
             gc_hi=0.70,
             optimize_mrna_stability=True,
             include_utr=False,
+            strict_mode=False,
         )
         seq = result.sequence
 
@@ -675,6 +689,7 @@ class TestConstraintSatisfaction:
             gc_hi=0.70,
             optimize_mrna_stability=True,
             include_utr=False,
+            strict_mode=False,
         )
         seq = result.sequence
 
@@ -713,6 +728,7 @@ class TestConstraintSatisfaction:
             gc_hi=org_spec.gc_hi,
             optimize_mrna_stability=False,
             include_utr=False,
+            strict_mode=False,
         )
         seq = result.sequence
 

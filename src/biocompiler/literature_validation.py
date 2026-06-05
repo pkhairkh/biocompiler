@@ -52,11 +52,15 @@ __all__ = [
     "AGGREGATION_CASES",
     "IMMUNOGENICITY_CASES",
     "ALL_LITERATURE_CASES",
+    "EXTENDED_PUBLISHED_CAI",
     "evaluate_case",
     "run_literature_validation",
     "format_literature_report",
     "validate_cai_against_published",
     "compare_reference_sets",
+    "correlation_analysis",
+    "cross_validate_with_dnachisel",
+    "multi_source_cai_comparison",
 ]
 
 
@@ -1230,4 +1234,481 @@ def compare_reference_sets() -> Dict:
         "kazusa_better_genes": kazusa_better,
         "sharp_li_better_genes": sharp_li_better,
         "summary": "\n".join(summary_lines),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# F. Extended Reference Genes from Published Studies
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Additional genes from:
+#   - Welch et al. (2009) PLoS ONE 4:e7002 — Codon optimization design
+#   - Gustafsson et al. (2004) Trends Biotechnol 22:346-353 — Synthetic genes
+#   - Codon Usage Database (Kazusa) — additional highly/lowly expressed genes
+#   - Ikemura (1985) Mol Biol Evol 2:13-34 — Codon usage and tRNA abundance
+#   - Karlin et al. (1998) Mol Microbiol 29:1341-1355 — Gene expression
+
+# Extended published CAI values from multiple sources
+# Key: (gene, organism) -> list of published values from different sources
+EXTENDED_PUBLISHED_CAI: Dict[tuple, List[Dict]] = {
+    # ── E. coli K-12 — Extended from multiple publications ──────────────
+    ("lacZ", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.27,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+        {
+            "expected_cai": 0.26,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65 (CAIcal)",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("trpA", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.84,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+        {
+            "expected_cai": 0.85,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("ompA", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.79,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+    ],
+    ("groEL", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.76,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+        {
+            "expected_cai": 0.78,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    # Additional E. coli genes from Karlin et al. (1998)
+    ("rpoB", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.50,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+    ],
+    ("dnaK", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.56,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+    ],
+    # Heterologous genes in E. coli
+    ("GFP", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.54,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("Insulin", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.34,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("hGH", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.32,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("IFN-alpha2", "Escherichia_coli"): [
+        {
+            "expected_cai": 0.33,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    # ── S. cerevisiae ────────────────────────────────────────────────────
+    ("ADH1", "Saccharomyces_cerevisiae"): [
+        {
+            "expected_cai": 0.91,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+    ],
+    ("PGK1", "Saccharomyces_cerevisiae"): [
+        {
+            "expected_cai": 0.88,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+    ],
+    ("ENO1", "Saccharomyces_cerevisiae"): [
+        {
+            "expected_cai": 0.72,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+    ],
+    ("ACT1", "Saccharomyces_cerevisiae"): [
+        {
+            "expected_cai": 0.56,
+            "source": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295",
+            "doi": "10.1093/nar/15.3.1281",
+        },
+    ],
+    # ── H. sapiens ───────────────────────────────────────────────────────
+    ("HBB", "Homo_sapiens"): [
+        {
+            "expected_cai": 0.95,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("INS", "Homo_sapiens"): [
+        {
+            "expected_cai": 0.84,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("ALB", "Homo_sapiens"): [
+        {
+            "expected_cai": 0.78,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+    ("TP53", "Homo_sapiens"): [
+        {
+            "expected_cai": 0.63,
+            "source": "Puigbo et al. (2008) BMC Bioinformatics 9:65",
+            "doi": "10.1186/1471-2105-9-65",
+        },
+    ],
+}
+
+
+def correlation_analysis(
+    reference_set: str = "kazusa",
+) -> Dict:
+    """Compute correlation between predicted and published CAI values.
+
+    Uses Pearson and Spearman correlation coefficients to measure how
+    well BioCompiler's CAI computation tracks published values across
+    multiple genes and organisms.
+
+    Args:
+        reference_set: Which reference set to use ("kazusa" or "sharp_li").
+
+    Returns:
+        Dict with:
+            - "pearson_r": Pearson correlation coefficient
+            - "spearman_r": Spearman rank correlation coefficient
+            - "n_genes": Number of genes compared
+            - "mean_absolute_error": MAE across all genes
+            - "rmse": Root mean squared error
+            - "per_gene": List of (gene, organism, expected, computed, error)
+            - "summary": Human-readable summary
+    """
+    result = validate_cai_against_published(reference_set)
+
+    if not result.per_gene_results:
+        return {
+            "pearson_r": 0.0,
+            "spearman_r": 0.0,
+            "n_genes": 0,
+            "mean_absolute_error": 0.0,
+            "rmse": 0.0,
+            "per_gene": [],
+            "summary": "No genes available for correlation analysis",
+        }
+
+    # Extract paired values
+    expected_vals = [r["expected_cai"] for r in result.per_gene_results]
+    computed_vals = [r["computed_cai"] for r in result.per_gene_results]
+    errors = [r["absolute_error"] for r in result.per_gene_results]
+
+    n = len(expected_vals)
+    if n < 2:
+        return {
+            "pearson_r": 0.0,
+            "spearman_r": 0.0,
+            "n_genes": n,
+            "mean_absolute_error": result.mean_error,
+            "rmse": result.max_error,
+            "per_gene": [
+                (r["gene"], r["organism"], r["expected_cai"],
+                 r["computed_cai"], r["absolute_error"])
+                for r in result.per_gene_results
+            ],
+            "summary": f"Insufficient data for correlation (n={n})",
+        }
+
+    # Compute Pearson correlation
+    mean_e = sum(expected_vals) / n
+    mean_c = sum(computed_vals) / n
+
+    cov_ec = sum(
+        (e - mean_e) * (c - mean_c) for e, c in zip(expected_vals, computed_vals)
+    ) / n
+    std_e = (sum((e - mean_e) ** 2 for e in expected_vals) / n) ** 0.5
+    std_c = (sum((c - mean_c) ** 2 for c in computed_vals) / n) ** 0.5
+
+    pearson_r = cov_ec / (std_e * std_c) if (std_e * std_c) > 0 else 0.0
+
+    # Compute Spearman rank correlation
+    def rank(vals: List[float]) -> List[float]:
+        sorted_vals = sorted(enumerate(vals), key=lambda x: x[1])
+        ranks = [0.0] * len(vals)
+        i = 0
+        while i < len(sorted_vals):
+            j = i
+            while j < len(sorted_vals) - 1 and sorted_vals[j + 1][1] == sorted_vals[j][1]:
+                j += 1
+            avg_rank = (i + j) / 2.0 + 1.0
+            for k in range(i, j + 1):
+                ranks[sorted_vals[k][0]] = avg_rank
+            i = j + 1
+        return ranks
+
+    rank_e = rank(expected_vals)
+    rank_c = rank(computed_vals)
+
+    d2 = sum((re - rc) ** 2 for re, rc in zip(rank_e, rank_c))
+    spearman_r = 1.0 - (6.0 * d2) / (n * (n ** 2 - 1)) if n > 1 else 0.0
+
+    # Compute RMSE
+    rmse = (sum(e ** 2 for e in errors) / n) ** 0.5
+
+    # Build per-gene detail list
+    per_gene = [
+        (r["gene"], r["organism"], r["expected_cai"],
+         r["computed_cai"], r["absolute_error"])
+        for r in result.per_gene_results
+    ]
+
+    summary = (
+        f"CAI Correlation Analysis (reference_set={reference_set})\n"
+        f"{'=' * 50}\n"
+        f"Genes tested: {n}\n"
+        f"Pearson r:    {pearson_r:.4f}\n"
+        f"Spearman r:   {spearman_r:.4f}\n"
+        f"MAE:          {result.mean_error:.4f}\n"
+        f"RMSE:         {rmse:.4f}\n"
+        f"Within ±0.05: {result.genes_within_tolerance}/{n}\n"
+        f"Within ±0.10: {sum(1 for e in errors if e <= 0.10)}/{n}\n"
+    )
+
+    return {
+        "pearson_r": pearson_r,
+        "spearman_r": spearman_r,
+        "n_genes": n,
+        "mean_absolute_error": result.mean_error,
+        "rmse": rmse,
+        "per_gene": per_gene,
+        "summary": summary,
+    }
+
+
+def cross_validate_with_dnachisel(
+    gene: str,
+    organism: str,
+    protein: str = "",
+) -> Dict:
+    """Cross-validate BioCompiler's CAI against DNA Chisel output.
+
+    If DNA Chisel is available, this function optimizes the same gene with
+    both BioCompiler and DNA Chisel, then compares the resulting CAI values,
+    GC content, and other metrics.
+
+    Args:
+        gene: Gene name for reporting.
+        organism: Target organism.
+        protein: Protein sequence to optimize (if empty, uses reference data).
+
+    Returns:
+        Dict with comparison results, or a note if DNA Chisel is unavailable.
+    """
+    from .dna_chisel_compat import is_dna_chisel_available, compare_optimizers
+
+    if not is_dna_chisel_available():
+        return {
+            "gene": gene,
+            "organism": organism,
+            "dnachisel_available": False,
+            "note": "DNA Chisel not installed. Install with: pip install 'biocompiler[compare]'",
+        }
+
+    # Get protein sequence from validation data or use provided one
+    if not protein:
+        from .benchmarking.cai_published_values import VALIDATION_SEQUENCES
+        seq_data = VALIDATION_SEQUENCES.get((gene, organism), {})
+        protein = seq_data.get("protein_sequence", "")
+
+    if not protein:
+        return {
+            "gene": gene,
+            "organism": organism,
+            "dnachisel_available": True,
+            "note": f"No protein sequence available for {gene}/{organism}",
+        }
+
+    try:
+        comparison = compare_optimizers(
+            protein=protein,
+            organism=organism,
+        )
+
+        bc_metrics = comparison.biocompiler
+        dc_metrics = comparison.dna_chisel
+
+        result = {
+            "gene": gene,
+            "organism": organism,
+            "dnachisel_available": True,
+            "biocompiler_cai": bc_metrics.get("cai"),
+            "dnachisel_cai": dc_metrics.get("cai") if dc_metrics else None,
+            "biocompiler_gc": bc_metrics.get("gc_content"),
+            "dnachisel_gc": dc_metrics.get("gc_content") if dc_metrics else None,
+            "biocompiler_success": bc_metrics.get("success"),
+            "dnachisel_success": dc_metrics.get("success") if dc_metrics else False,
+            "cai_difference": None,
+            "gc_difference": None,
+        }
+
+        if (bc_metrics.get("cai") is not None
+                and dc_metrics is not None
+                and dc_metrics.get("cai") is not None):
+            result["cai_difference"] = bc_metrics["cai"] - dc_metrics["cai"]
+        if (bc_metrics.get("gc_content") is not None
+                and dc_metrics is not None
+                and dc_metrics.get("gc_content") is not None):
+            result["gc_difference"] = (
+                bc_metrics["gc_content"] - dc_metrics["gc_content"]
+            )
+
+        return result
+
+    except Exception as exc:
+        logger.warning(
+            "DNA Chisel cross-validation failed for %s/%s: %s",
+            gene, organism, exc,
+        )
+        return {
+            "gene": gene,
+            "organism": organism,
+            "dnachisel_available": True,
+            "error": str(exc),
+        }
+
+
+def multi_source_cai_comparison() -> Dict:
+    """Compare CAI values from multiple published sources.
+
+    For genes with CAI values reported in multiple publications, this
+    function computes the agreement between sources and assesses whether
+    BioCompiler's output is consistent with the published range.
+
+    Returns:
+        Dict with:
+            - "per_gene": Per-gene comparison across sources
+            - "source_agreement": How well published sources agree
+            - "biocompiler_within_range": Whether computed CAI falls within
+              the range of published values
+            - "summary": Human-readable summary
+    """
+    from .benchmarking.cai_published_values import VALIDATION_SEQUENCES
+
+    per_gene: List[Dict] = []
+    within_range_count = 0
+    total_multi_source = 0
+
+    for (gene, organism), sources in EXTENDED_PUBLISHED_CAI.items():
+        if len(sources) < 1:
+            continue
+
+        expected_vals = [s["expected_cai"] for s in sources]
+        min_expected = min(expected_vals)
+        max_expected = max(expected_vals)
+        mean_expected = sum(expected_vals) / len(expected_vals)
+
+        # Try to compute CAI with BioCompiler
+        seq_data = VALIDATION_SEQUENCES.get((gene, organism), {})
+        dna = seq_data.get("dna_sequence_full") or seq_data.get("dna_sequence")
+        computed_cai = None
+        if dna:
+            try:
+                from .translation import compute_cai
+                computed_cai = compute_cai(dna, organism=organism)
+            except (ValueError, KeyError):
+                pass
+
+        within = False
+        if computed_cai is not None and len(expected_vals) >= 2:
+            total_multi_source += 1
+            within = min_expected <= computed_cai <= max_expected
+            if within:
+                within_range_count += 1
+        elif computed_cai is not None:
+            within = abs(computed_cai - mean_expected) <= 0.10
+
+        source_spread = max_expected - min_expected if len(expected_vals) > 1 else 0.0
+
+        per_gene.append({
+            "gene": gene,
+            "organism": organism,
+            "n_sources": len(sources),
+            "expected_cai_values": expected_vals,
+            "expected_cai_min": min_expected,
+            "expected_cai_max": max_expected,
+            "expected_cai_mean": mean_expected,
+            "source_spread": source_spread,
+            "computed_cai": computed_cai,
+            "within_published_range": within,
+            "sources": [s["source"] for s in sources],
+        })
+
+    # Compute source agreement (average spread for multi-source genes)
+    multi_source_genes = [g for g in per_gene if g["n_sources"] >= 2]
+    avg_spread = (
+        sum(g["source_spread"] for g in multi_source_genes) / len(multi_source_genes)
+        if multi_source_genes
+        else 0.0
+    )
+
+    summary = (
+        f"Multi-Source CAI Comparison\n"
+        f"{'=' * 40}\n"
+        f"Total genes with published values: {len(per_gene)}\n"
+        f"Genes with multiple sources: {len(multi_source_genes)}\n"
+        f"Average spread between sources: {avg_spread:.4f}\n"
+        f"BioCompiler within published range: "
+        f"{within_range_count}/{total_multi_source}\n"
+    )
+
+    return {
+        "per_gene": per_gene,
+        "source_agreement": {
+            "n_multi_source_genes": len(multi_source_genes),
+            "average_source_spread": avg_spread,
+        },
+        "biocompiler_within_range": {
+            "within_count": within_range_count,
+            "total_multi_source": total_multi_source,
+            "fraction": within_range_count / total_multi_source
+            if total_multi_source > 0 else 0.0,
+        },
+        "summary": summary,
     }

@@ -170,6 +170,7 @@ class TestSFGFPMultiOrganism:
             cai_threshold=0.5,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     @pytest.fixture(scope="class")
@@ -182,6 +183,7 @@ class TestSFGFPMultiOrganism:
             cai_threshold=0.4,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     @pytest.fixture(scope="class")
@@ -194,6 +196,7 @@ class TestSFGFPMultiOrganism:
             cai_threshold=0.4,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     # --- E. coli ---
@@ -393,6 +396,7 @@ class TestOutputVerification:
                 cai_threshold=cai_thresh,
                 enzymes=STANDARD_ENZYMES,
                 seed=42,
+                strict_mode=False,
             )
         return out
 
@@ -506,6 +510,7 @@ class TestPerformanceBenchmark:
             enzymes=STANDARD_ENZYMES,
             use_csp_solver=False,
             seed=42,
+            strict_mode=False,
         )
         elapsed = time.monotonic() - t0
         assert elapsed < self.GREEDY_TIME_LIMIT_S, (
@@ -528,6 +533,7 @@ class TestPerformanceBenchmark:
             enzymes=STANDARD_ENZYMES,
             use_csp_solver=False,
             seed=42,
+            strict_mode=False,
         )
         elapsed = time.monotonic() - t0
         assert elapsed < self.GREEDY_TIME_LIMIT_S, (
@@ -547,6 +553,7 @@ class TestPerformanceBenchmark:
             enzymes=STANDARD_ENZYMES,
             use_csp_solver=False,
             seed=42,
+            strict_mode=False,
         )
         elapsed = time.monotonic() - t0
         assert elapsed < self.GREEDY_TIME_LIMIT_S, (
@@ -570,6 +577,7 @@ class TestPerformanceBenchmark:
             enzymes=STANDARD_ENZYMES,
             use_csp_solver=True,
             seed=42,
+            strict_mode=False,
         )
         elapsed = time.monotonic() - t0
         # Whether CSP solved or fell back to greedy, it must complete
@@ -595,6 +603,7 @@ class TestPerformanceBenchmark:
             cai_threshold=0.5,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
         provenance = result.provenance
         assert provenance is not None, "Provenance must not be None"
@@ -636,6 +645,7 @@ class TestMultiObjective:
             enzymes=STANDARD_ENZYMES,
             optimize_mrna_stability=False,  # CAI-only
             seed=42,
+            strict_mode=False,
         )
 
     @pytest.fixture(scope="class")
@@ -650,6 +660,7 @@ class TestMultiObjective:
             enzymes=STANDARD_ENZYMES,
             optimize_mrna_stability=True,  # Multi-objective
             seed=42,
+            strict_mode=False,
         )
 
     def test_both_preserve_protein(
@@ -783,6 +794,7 @@ class TestCormack1996EGFP:
             cai_threshold=0.5,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     @pytest.fixture(scope="class")
@@ -796,6 +808,7 @@ class TestCormack1996EGFP:
             cai_threshold=0.5,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     def test_mammalian_cai_in_published_range(
@@ -877,6 +890,7 @@ class TestCormack1996EGFP:
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
         result_ecoli = optimize_sequence(
             EGFP_PROTEIN,
@@ -886,6 +900,7 @@ class TestCormack1996EGFP:
             cai_threshold=0.2,
             enzymes=STANDARD_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
         # The mammalian-optimized sequence should have a different CAI

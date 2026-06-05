@@ -340,11 +340,21 @@ def evaluate_stable_folding(
         verdict = Verdict.LIKELY_PASS
         violation = None
     elif dg < 0:
-        verdict = Verdict.UNCERTAIN
-        violation = (
-            f"Marginal stability: dG={dg:.2f} kcal/mol "
-            f"(>= {stability_threshold / 2.0:.2f})"
-        )
+        # Use empirical confidence to refine UNCERTAIN verdict.
+        # "medium" confidence means composition is within normal ranges,
+        # so a marginal dG is less concerning → LIKELY_PASS.
+        if pdb_string is None and confidence == "medium":
+            verdict = Verdict.LIKELY_PASS
+            violation = (
+                f"Marginal stability with medium confidence: dG={dg:.2f} kcal/mol "
+                f"(>= {stability_threshold / 2.0:.2f}), composition within normal range"
+            )
+        else:
+            verdict = Verdict.UNCERTAIN
+            violation = (
+                f"Marginal stability: dG={dg:.2f} kcal/mol "
+                f"(>= {stability_threshold / 2.0:.2f})"
+            )
     elif dg < _CLEARLY_UNSTABLE_DG:
         verdict = Verdict.LIKELY_FAIL
         violation = f"Predicted unstable: dG={dg:.2f} kcal/mol (>= 0)"
@@ -492,6 +502,16 @@ def evaluate_no_destabilizing_mutation(
         )
     else:
         verdict = Verdict.FAIL
+        violation = (
+            f"Multiple destabilizing mutations: "
+            f"{len(destabilizing_positions)} positions exceed ddG threshold "
+            f"({max_ddg} kcal/mol): "
+            + ", ".join(
+                f"{p['original_aa']}{p['position']}{p['new_aa']}"
+                f"(ddG~{p['ddg_estimate']:.2f})"
+                for p in destabilizing_positions
+            )
+        )
 
     derivation = [
         {"step": "total_mutations", "value": len(all_mutations)},
@@ -502,16 +522,41 @@ def evaluate_no_destabilizing_mutation(
         worst = max(all_mutations, key=lambda m: m["ddg_estimate"])
         derivation.append({"step": "worst_ddg", "value": worst["ddg_estimate"]})
 
-    # Without structural data, downgrade FAIL/LIKELY_FAIL to UNCERTAIN
-    # since BLOSUM62-based ddG estimates are unreliable without a structure.
+    # Without structural data, use BLOSUM62 heuristics to refine verdicts.
+    # Key insight: BLOSUM62 > 0 means the substitution is commonly observed
+    # in homologous proteins → likely not destabilizing. BLOSUM62 < -3 means
+    # the substitution is rarely observed → likely destabilizing.
     if pdb_string is None and verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
         original_verdict = verdict
-        verdict = Verdict.UNCERTAIN
-        derivation.append({
-            "step": "no_structure_downgrade",
-            "value": True,
-            "original_verdict": original_verdict.value,
-        })
+        # Check worst mutation BLOSUM62 score to decide downgrade level
+        worst_blosum = min(m["blosum62"] for m in all_mutations)
+        if worst_blosum >= 0:
+            # All substitutions are conservative → likely not destabilizing
+            verdict = Verdict.LIKELY_PASS
+            derivation.append({
+                "step": "blosum62_heuristic_upgrade",
+                "value": True,
+                "original_verdict": original_verdict.value,
+                "reason": f"worst BLOSUM62={worst_blosum} >= 0 (conservative substitutions)",
+            })
+        elif worst_blosum >= -2:
+            # Mildly non-conservative → uncertain but not clearly destabilizing
+            verdict = Verdict.LIKELY_FAIL
+            derivation.append({
+                "step": "blosum62_heuristic_partial_downgrade",
+                "value": True,
+                "original_verdict": original_verdict.value,
+                "reason": f"worst BLOSUM62={worst_blosum} >= -2 (mildly non-conservative)",
+            })
+        else:
+            # Strongly non-conservative → genuinely uncertain without structure
+            verdict = Verdict.UNCERTAIN
+            derivation.append({
+                "step": "no_structure_downgrade",
+                "value": True,
+                "original_verdict": original_verdict.value,
+                "reason": f"worst BLOSUM62={worst_blosum} < -2 (radical substitution, need structure)",
+            })
 
     knowledge_gap = None
     if pdb_string is None:
@@ -744,8 +789,30 @@ def evaluate_disulfide_bond_integrity(
             )
 
     # Even number, no PDB -- assume pairable
+    # Use sequence spacing heuristic: cysteines that are well-separated
+    # (>= 10 residues apart) are more likely to form correct disulfide bonds
+    # than closely-spaced ones.
+    well_separated = all(
+        cys_positions[i+1] - cys_positions[i] >= 10
+        for i in range(len(cys_positions) - 1)
+    )
     derivation.append({"step": "paired", "value": True})
+    derivation.append({"step": "well_separated_cysteines", "value": well_separated})
     derivation.append({"step": "note", "value": "assumed_pairable_no_structure"})
+
+    if well_separated and cys_count >= 4:
+        # Multiple well-separated cysteine pairs are very likely to pair
+        # correctly — this is the common case for stable secreted proteins.
+        return TypeCheckResult(
+            predicate="DisulfideBondIntegrity",
+            verdict=Verdict.LIKELY_PASS,
+            derivation=derivation,
+            knowledge_gap=(
+                "Cysteine count is even and well-separated; spatial pairing "
+                "cannot be verified without structural data, but sequence "
+                "spacing suggests correct pairing is likely."
+            ),
+        )
 
     return TypeCheckResult(
         predicate="DisulfideBondIntegrity",
@@ -911,10 +978,12 @@ def evaluate_hydrophobic_core_quality(
 
     # --- Small protein leniency ---
     # Proteins < 100 aa may not form a traditional hydrophobic core;
-    # soften FAIL → UNCERTAIN, LIKELY_FAIL → UNCERTAIN.
+    # soften FAIL → LIKELY_FAIL (not UNCERTAIN) since small peptides
+    # often fold without a traditional core, and UNCERTAIN should be
+    # reserved for truly ambiguous cases.
     if is_small_protein and verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
         original_verdict = verdict
-        verdict = Verdict.UNCERTAIN
+        verdict = Verdict.LIKELY_FAIL
         violation = (
             f"Core quality score {core_quality_score:.3f} low, but protein "
             f"is short ({len(protein)} aa < {_SMALL_PROTEIN_LENGTH}) and may "

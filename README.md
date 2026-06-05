@@ -1,4 +1,4 @@
-# BioCompiler v10.0.0
+# BioCompiler v12.0.0
 
 A compiler framework for human protein synthesis using intermediate representations — with a machine-verified soundness proof.
 
@@ -22,11 +22,148 @@ For safety-critical gene design — gene therapy, clinical-grade synthetic biolo
 
 ---
 
-## What's New in v10
+## What's New in v12
+
+### Biosecurity Screening
+
+Automated screening of input protein sequences against known pathogen-associated and toxin-related databases. Every optimization now runs biosecurity checks by default, flagging sequences with homology to dangerous agents before any gene synthesis work begins.
+
+```python
+result = optimize_sequence(protein, organism='Escherichia_coli')
+print(f"Biosecurity flags: {result.biosecurity_flags}")
+```
+
+### Protein Verification
+
+Post-optimization protein verification ensures the optimized DNA sequence translates back to the exact target protein. This catches silent bugs caused by codon-table edge cases, IUPAC ambiguity resolution, or mutagenesis side effects.
+
+```python
+result = optimize_sequence(protein, organism='Homo_sapiens')
+assert result.protein_verified  # Always True unless mutagenesis was applied
+```
+
+### Strict Mode
+
+A new `strict_mode` parameter makes every warning a hard failure. In strict mode, any unresolved constraint violation, uncertain predicate, or biosecurity flag causes the optimizer to raise an exception rather than return a potentially unsafe result. Recommended for clinical and production pipelines.
+
+```python
+result = optimize_sequence(protein, organism='Homo_sapiens', strict_mode=True)
+```
+
+### Sliding-Window GC Content
+
+In addition to global GC%, BioCompiler now computes GC content over a configurable sliding window (default 50 bp). This catches local GC extremes — AT-rich or GC-rich islands — that global averages hide and that can cause expression failures in vivo.
+
+```python
+result = optimize_sequence(protein, organism='Escherichia_coli', gc_window_size=50)
+print(f"Max local GC: {result.max_local_gc:.2%}")
+print(f"Min local GC: {result.min_local_gc:.2%}")
+```
+
+### Custom Objectives
+
+Users can now define custom optimization objectives beyond the built-in CAI, GC, and constraint predicates. Custom objectives are scored alongside native objectives and influence codon selection during the hill-climbing phase.
+
+```python
+from biocompiler.objectives import CustomObjective
+
+my_obj = CustomObjective(name="avoid_homopolymers", weight=0.5, evaluate_fn=...)
+result = optimize_sequence(protein, organism='Escherichia_coli', custom_objectives=[my_obj])
+```
+
+### Multi-Gene Constructs
+
+First-class support for optimizing multiple genes as a single construct — with shared promoter/terminator regions, per-gene constraint tracking, and construct-level GC and restriction-site management.
+
+```python
+from biocompiler.multigene import optimize_construct
+
+result = optimize_construct(
+    genes={"gene_a": protein_a, "gene_b": protein_b},
+    organism='Homo_sapiens',
+)
+```
+
+### IUPAC Ambiguity Support
+
+Input sequences may now contain IUPAC ambiguity codes (e.g., `N`, `R`, `Y`). BioCompiler resolves ambiguity codes deterministically during back-translation, selecting the highest-CAI codon compatible with each ambiguous position.
+
+### Pattern Enforcement
+
+Arbitrary sequence patterns can be enforced or avoided in the optimized output. This generalizes restriction-site avoidance to any user-defined motif — Kozak sequences, TATA boxes, cryptic promoter elements, etc.
+
+```python
+result = optimize_sequence(
+    protein, organism='Homo_sapiens',
+    avoid_patterns=['TATAAA', 'TATATA'],
+    enforce_patterns=[('Kozak', 'GCCACC')],
+)
+```
+
+### Part Libraries
+
+A composable part library system for standard biological parts (promoters, RBS, terminators, tags). Parts are assembled into constructs with automatic constraint propagation across junction boundaries.
+
+```python
+from biocompiler.parts import PartLibrary, AssemblySpec
+
+lib = PartLibrary.from_default()
+parts = [lib.get("T7_promoter"), lib.get("His_tag"), lib.get("T7_terminator")]
+```
+
+### Assembly Planning
+
+Automated assembly plan generation given a set of parts and a target construct. BioCompiler selects optimal restriction enzymes, generates fragment boundaries, and produces step-by-step assembly protocols compatible with Golden Gate, Gibson, and traditional restriction-ligation methods.
+
+```python
+from biocompiler.assembly import plan_assembly
+
+plan = plan_assembly(parts, method='golden_gate')
+print(plan.protocol_steps)
+```
+
+### SBOL Support
+
+Import and export designs in SBOL (Synthetic Biology Open Language) format. This enables interoperability with SBOL-compliant tools and registries.
+
+```python
+from biocompiler.sbol_export import export_sbol
+from biocompiler.sbol_import import import_sbol
+
+# Export
+sbol_doc = export_sbol(result, gene_name="GFP")
+
+# Import
+design = import_sbol("design.xml")
+```
+
+### LIMS Integration
+
+A built-in LIMS (Laboratory Information Management System) integration module for tracking optimization runs, storing results, and managing sample metadata. Supports SQLite (default) and PostgreSQL backends.
+
+```python
+from biocompiler.lims import LIMSClient
+
+lims = LIMSClient()  # SQLite by default
+run_id = lims.record_optimization(result, metadata={"project": "gene_therapy_v2"})
+```
+
+### tAI Metric
+
+Transfer RNA Adaptation Index (tAI) is now available as an alternative to CAI. tAI accounts for tRNA gene copy numbers and wobble pairing rules, providing a more biologically grounded measure of codon optimality for organisms with well-characterized tRNA pools.
+
+```python
+result = optimize_sequence(protein, organism='Homo_sapiens', metric='tai')
+print(f"tAI: {result.tai:.4f}")
+```
+
+---
+
+## What Was New in v10
 
 ### HybridOptimizer — 3-Phase Gene Optimization
 
-The **HybridOptimizer** is a new high-performance optimizer combining greedy initialization, priority-based local search, and CAI hill climbing:
+The **HybridOptimizer** is a high-performance optimizer combining greedy initialization, priority-based local search, and CAI hill climbing:
 
 | Phase | Strategy | Purpose |
 |-------|----------|---------|
@@ -38,18 +175,18 @@ Key innovation: instead of sequential constraint resolution that can undo previo
 
 Performance target: **<1.5ms** for GFP (714bp), **CAI > 0.98**.
 
-### CAI Table Unification (Breaking Change)
+### CAI Table Unification (Breaking Change in v10)
 
-v10 unifies the CAI computation tables across all optimizer backends. Previously, different optimizers could use slightly different codon adaptiveness values, leading to inconsistent CAI results. Now, all paths use the same unified table from `organisms.CODON_ADAPTIVENESS_TABLES`.
+v10 unified the CAI computation tables across all optimizer backends. Previously, different optimizers could use slightly different codon adaptiveness values, leading to inconsistent CAI results. All paths now use the same unified table from `organisms.CODON_ADAPTIVENESS_TABLES`.
 
 **Migration impact**: CAI values may differ slightly from v9. In particular, v9 CAI values for some genes were **inflated** due to a table mismatch — v10 values are the correct ones.
 
 ### `species` → `organism` Parameter Migration
 
-The `species` parameter (e.g., `'ecoli'`, `'human'`) is now deprecated in favor of the more explicit `organism` parameter (e.g., `'Escherichia_coli'`, `'Homo_sapiens'`). Both forms still work, and `species` will continue to be supported for backward compatibility.
+The `species` parameter (e.g., `'ecoli'`, `'human'`) is deprecated in favor of the more explicit `organism` parameter (e.g., `'Escherichia_coli'`, `'Homo_sapiens'`). Both forms still work, and `species` will continue to be supported for backward compatibility.
 
 ```python
-# Both forms work in v10:
+# Both forms work:
 result = optimize_sequence(protein, species='ecoli')
 result = optimize_sequence(protein, organism='Escherichia_coli')
 ```
@@ -122,13 +259,22 @@ pip install -e ".[compare]"      # DNAchisel comparison
 ```python
 from biocompiler.api import optimize_sequence
 
-# Both parameter forms work:
-result = optimize_sequence(protein, species='ecoli')
-result = optimize_sequence(protein, organism='Escherichia_coli')
+# Recommended: strict_mode + biosecurity (default in v12)
+result = optimize_sequence(
+    protein="MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQR...",
+    organism='Escherichia_coli',
+    strict_mode=True,          # Fail fast on any constraint violation
+)
 
 print(f"Optimized DNA: {result.sequence}")
 print(f"CAI: {result.cai:.4f}")
 print(f"GC: {result.gc_content:.2%}")
+print(f"Protein verified: {result.protein_verified}")
+print(f"Biosecurity flags: {result.biosecurity_flags}")
+
+# Legacy parameter forms still work:
+result = optimize_sequence(protein, species='ecoli')
+result = optimize_sequence(protein, organism='Escherichia_coli')
 ```
 
 ### Full Optimization with Certificates
@@ -197,6 +343,39 @@ A successful build confirms all proofs machine-check with 0 `sorry` and 0 axioms
 
 ---
 
+## Safety Features
+
+BioCompiler v12 ships with **safety-by-default** — new features that protect against common gene-design hazards are enabled out of the box:
+
+| Feature | Default | What It Does |
+|---------|---------|-------------|
+| **Biosecurity screening** | ✅ On | Screens input sequences against pathogen/toxin databases before optimization |
+| **Protein verification** | ✅ On | Verifies optimized DNA translates back to the target protein |
+| **Strict mode** | Off (opt-in) | Makes every warning a hard failure — ideal for clinical pipelines |
+| **Sliding-window GC** | ✅ On (50 bp) | Detects local GC extremes that global averages miss |
+| **Restriction-site avoidance** | ✅ On | Removes recognition sites for common restriction enzymes |
+| **Cryptic splice-site avoidance** | ✅ On (eukaryotes) | Avoids GT/AG donor/acceptor motifs in eukaryotic targets |
+| **CpG island avoidance** | ✅ On (eukaryotes) | Reduces CpG dinucleotides to prevent epigenetic silencing |
+| **Provenance tracking** | ✅ On | Records every optimization decision for audit and reproducibility |
+
+### Why Safety-By-Default?
+
+In gene therapy and clinical synthetic biology, a silently unsafe optimization — wrong protein, pathogen homology, hidden splice site — can have catastrophic consequences. BioCompiler's type system already provides a machine-verified soundness guarantee; the v12 safety defaults extend that philosophy from the formal model into the engineering defaults.
+
+```python
+# Safety defaults are active even in the simplest call:
+result = optimize_sequence(protein, organism='Homo_sapiens')
+
+# For maximum safety in clinical use:
+result = optimize_sequence(
+    protein, organism='Homo_sapiens',
+    strict_mode=True,           # Fail on any unresolved issue
+    gc_window_size=30,          # Tighter local GC window
+)
+```
+
+---
+
 ## Breaking Changes in v10
 
 ### 1. CAI Values Now Correctly Computed
@@ -225,8 +404,18 @@ Codon usage frequencies for Ala, Arg, Gly, Leu, and Val in E. coli have been upd
 | **HBB full pass** — 8 optimizer predicates pass simultaneously | HBB CAI=0.97 |
 | **28-predicate type system** — 12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity | 13 core + 19 SLOT |
 | **HybridOptimizer** — 3-phase optimizer with priority-based local search | CAI 0.999, 2ms (GFP) |
+| **Biosecurity screening** — pathogen/toxin homology checks on by default | v12 safety-by-default |
+| **Protein verification** — post-opt back-translation check on by default | v12 safety-by-default |
+| **Strict mode** — warnings become hard failures | v12 opt-in |
+| **Sliding-window GC** — local GC extremes detected automatically | v12 on by default |
+| **tAI metric** — tRNA-based codon optimality alternative to CAI | v12 |
+| **Multi-gene constructs** — per-gene constraint tracking in shared construct | v12 |
+| **IUPAC support** — ambiguity codes resolved deterministically | v12 |
+| **Part libraries + assembly planning** — Golden Gate, Gibson, restriction-ligation | v12 |
+| **SBOL import/export** — interoperability with SBOL tools and registries | v12 |
+| **LIMS integration** — SQLite and PostgreSQL backends for run tracking | v12 |
 | **Type-directed mutagenesis** — V→I substitutions make HBB feasible (BLOSUM62=+3) | Proof of concept |
-| **SE specification** — 11 IEEE/ISO-standard documents + 14 ADRs | Complete |
+| **SE specification** — 11 IEEE/ISO-standard documents + 16 ADRs | Complete |
 
 ---
 
@@ -260,12 +449,25 @@ The pipeline processes gene sequences through typed intermediate representations
 biocompiler/
 ├── proof/              # Lean4 soundness proof
 ├── src/biocompiler/    # Production Python package
-│   ├── hybrid_optimizer.py   # HybridOptimizer (new in v10)
+│   ├── hybrid_optimizer.py   # HybridOptimizer (3-phase)
 │   ├── optimization.py       # BioOptimizer + optimize_sequence API
+│   ├── biosecurity.py        # Pathogen/toxin screening (v12)
+│   ├── protein_verification.py # Post-opt verification (v12)
+│   ├── sliding_gc.py         # Sliding-window GC (v12)
+│   ├── objectives.py         # Custom objectives (v12)
+│   ├── multigene.py          # Multi-gene constructs (v12)
+│   ├── iupac.py              # IUPAC ambiguity support (v12)
+│   ├── pattern_enforcement.py # Pattern enforce/avoid (v12)
+│   ├── parts.py              # Part libraries (v12)
+│   ├── assembly.py           # Assembly planning (v12)
+│   ├── sbol_export.py        # SBOL export (v12)
+│   ├── sbol_import.py        # SBOL import (v12)
+│   ├── lims.py               # LIMS integration (v12)
 │   ├── api.py                # FastAPI REST API
 │   └── ...
+├── scripts/            # Benchmark and utility scripts
 ├── tests/              # Test suite (420+ tests)
-├── docs/               # Full SE specification (14 docs + 14 ADRs)
+├── docs/               # Full SE specification (14 docs + 16 ADRs)
 └── paper/              # LaTeX manuscript
 ```
 
@@ -351,7 +553,7 @@ Full technical documentation is in [`docs/`](docs/):
                Using Intermediate Representations with a Machine-Verified Soundness Proof},
   author    = {Khairkhah, Pouya},
   year      = {2026},
-  note      = {v10.0.0 — HybridOptimizer, unified CAI tables, organism parameter, 28-predicate type system},
+  note      = {v12.0.0 — Safety-by-default, biosecurity screening, protein verification, strict mode, multi-gene, tAI},
   url       = {https://github.com/pkhairkh/biocompiler}
 }
 ```

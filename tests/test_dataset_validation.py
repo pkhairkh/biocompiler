@@ -483,6 +483,7 @@ class TestCAIComputation:
             gc_lo=0.30,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
 
         assert result.cai > random_cai, (
@@ -550,6 +551,7 @@ class TestSpecificGeneCorrectness:
             gc_lo=0.30,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         # High-expression genes should optimize to high CAI (optimizer picks preferred codons)
         assert result.cai >= 0.5, (
@@ -565,6 +567,7 @@ class TestSpecificGeneCorrectness:
             gc_lo=0.20,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         assert result.cai >= 0.5, (
             f"ADH1 (high-expression yeast gene) should optimize to CAI >= 0.5, got {result.cai:.4f}"
@@ -587,6 +590,7 @@ class TestDatasetEdgeCases:
             gc_lo=0.20,
             gc_hi=0.80,
             cai_threshold=0.1,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == bh3["protein"], (
@@ -602,6 +606,7 @@ class TestDatasetEdgeCases:
             gc_lo=0.30,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         # Should produce a valid optimized sequence
         assert len(result.sequence) > 0, "TP53 optimization produced empty sequence"
@@ -625,6 +630,7 @@ class TestDatasetEdgeCases:
                 organism=gene["organism"],
                 gc_lo=0.30,
                 gc_hi=0.70,
+                strict_mode=False,
             )
             assert result.sequence.startswith("ATG"), (
                 f"{gene_name}: optimized sequence for Met-starting protein should start with ATG, "
@@ -641,6 +647,7 @@ class TestDatasetEdgeCases:
             gc_lo=0.30,
             gc_hi=0.70,
             cai_threshold=0.2,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein, (
@@ -655,28 +662,29 @@ class TestDatasetEdgeCases:
             organism="Homo_sapiens",
             gc_lo=0.20,
             gc_hi=0.80,
+            strict_mode=False,
         )
         translated = translate(result.sequence, to_stop=True).rstrip("*")
         assert translated == protein
 
 
 # ============================================================================
-# NoCpGIsland Validation Tests (Informational — best-effort)
+# NoCpGIsland Validation Tests
 # ============================================================================
 
 class TestNoCpGIsland:
     """Validate that optimized sequences avoid CpG islands where possible.
 
-    CpG island avoidance is best-effort. GC-rich genes may inevitably
-    contain CpG islands regardless of codon optimization. A 50% pass
-    rate threshold reflects this reality.
+    CpG island avoidance is now a systematic optimization pass (not just
+    best-effort). For prokaryotes (E. coli), CpG islands are biologically
+    irrelevant so the check is automatically skipped. For eukaryotes,
+    the optimizer systematically eliminates CG dinucleotides that
+    contribute to CpG islands. GC-rich genes may still contain CG
+    dinucleotides if no synonymous substitution can eliminate them
+    without creating restriction sites or other violations.
     """
 
     @pytest.mark.parametrize("gene_name", list(HUMAN_REFERENCE_GENES.keys()))
-    @pytest.mark.xfail(
-        reason="CpG island avoidance is best-effort; GC-rich genes may inevitably contain CpG islands",
-        strict=False,
-    )
     def test_human_no_cpg_island(self, gene_name):
         """Optimized human genes should avoid CpG islands where possible."""
         gene = HUMAN_REFERENCE_GENES[gene_name]
@@ -686,19 +694,11 @@ class TestNoCpGIsland:
             gene_name=gene_name,
             dataset_name="human",
         )
-        # CpG island avoidance is best-effort for GC-rich proteins.
-        # Individual gene failures appear as XFAIL (visible, not hidden).
-        # The aggregate threshold in test_no_cpg_island_aggregate_pass_rate
-        # is the real gate — it requires >= 50% of genes to pass.
         assert result.passed, f"CpG island found in {gene_name}: {result.actual}"
 
     @pytest.mark.parametrize("gene_name", list(ECOLI_REFERENCE_GENES.keys()))
-    @pytest.mark.xfail(
-        reason="CpG island avoidance is best-effort; GC-rich genes may inevitably contain CpG islands",
-        strict=False,
-    )
     def test_ecoli_no_cpg_island(self, gene_name):
-        """Optimized E. coli genes should avoid CpG islands where possible."""
+        """Optimized E. coli genes pass CpG check (automatically skipped for prokaryotes)."""
         gene = ECOLI_REFERENCE_GENES[gene_name]
         result = validate_no_cpg_island(
             protein=gene["protein"],
@@ -706,13 +706,11 @@ class TestNoCpGIsland:
             gene_name=gene_name,
             dataset_name="ecoli",
         )
+        # CpG islands are biologically irrelevant for prokaryotes,
+        # so the check is automatically skipped and always passes.
         assert result.passed, f"CpG island found in {gene_name}: {result.actual}"
 
     @pytest.mark.parametrize("gene_name", list(SYNTHETIC_BENCHMARKS.keys()))
-    @pytest.mark.xfail(
-        reason="CpG island avoidance is best-effort; GC-rich proteins may inevitably contain CpG islands",
-        strict=False,
-    )
     def test_synthetic_no_cpg_island(self, gene_name):
         """Optimized synthetic proteins should avoid CpG islands where possible."""
         gene = SYNTHETIC_BENCHMARKS[gene_name]
@@ -725,7 +723,7 @@ class TestNoCpGIsland:
         assert result.passed, f"CpG island found in {gene_name}: {result.actual}"
 
     def test_no_cpg_island_aggregate_pass_rate(self):
-        """At least 15% of genes should avoid CpG islands (informational, best-effort)."""
+        """At least 80% of genes should avoid CpG islands."""
         report = run_dataset_validation(
             include_cross_organism=False,
             include_optimization_improvement=False,
@@ -735,8 +733,8 @@ class TestNoCpGIsland:
         assert len(cpg_results) > 0, "No CpG island tests were run"
         cpg_passed = sum(1 for r in cpg_results if r.passed)
         cpg_rate = cpg_passed / len(cpg_results)
-        assert cpg_rate >= 0.15, (
-            f"CpG island avoidance rate {cpg_rate:.1%} is below 15% threshold. "
+        assert cpg_rate >= 0.80, (
+            f"CpG island avoidance rate {cpg_rate:.1%} is below 80% threshold. "
             f"Passed: {cpg_passed}/{len(cpg_results)}"
         )
 

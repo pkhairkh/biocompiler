@@ -375,6 +375,8 @@ ORGANISM_ALIASES: dict[str, str] = {
     "s. cerevisiae": "Saccharomyces_cerevisiae",
     "Saccharomyces_cerevisiae": "Saccharomyces_cerevisiae",
     "Saccharomyces cerevisiae": "Saccharomyces_cerevisiae",
+    "saccharomyces_cerevisiae": "Saccharomyces_cerevisiae",
+    "saccharomyces cerevisiae": "Saccharomyces_cerevisiae",
 }
 
 # ────────────────────────────────────────────────────────────

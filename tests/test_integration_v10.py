@@ -91,6 +91,7 @@ class TestCAIConsistency:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         independent_cai = compute_cai(result.sequence, organism="Escherichia_coli")
         assert abs(result.cai - independent_cai) < 0.02, (
@@ -106,6 +107,7 @@ class TestCAIConsistency:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         independent_cai = compute_cai(result.sequence, organism="Homo_sapiens")
         assert abs(result.cai - independent_cai) < 0.02, (
@@ -122,6 +124,7 @@ class TestCAIConsistency:
                 gc_lo=0.30,
                 gc_hi=0.70,
                 strategy="hybrid",
+                strict_mode=False,
             )
             independent_cai = compute_cai(result.sequence, organism=organism)
             assert abs(result.cai - independent_cai) < 0.02, (
@@ -146,6 +149,7 @@ class TestProkaryoteOptimization:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         # Verify no splice-related predicates in failed list
         splice_predicates = [
@@ -167,6 +171,7 @@ class TestProkaryoteOptimization:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         # Optimize same protein for Human (eukaryote — with splice constraints)
         result_euk = optimize_sequence(
@@ -175,6 +180,7 @@ class TestProkaryoteOptimization:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         # E. coli should achieve higher or equal CAI because it doesn't
         # have to avoid GT/AG dinucleotides for splice site elimination
@@ -198,6 +204,7 @@ class TestProkaryoteOptimization:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         # E. coli optimization without splice constraints should achieve
         # very high CAI for a typical protein
@@ -222,6 +229,7 @@ class TestHybridOptimizer:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         result_legacy = optimize_sequence(
             target_protein=_SHORT_PROTEIN,
@@ -229,6 +237,7 @@ class TestHybridOptimizer:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="constraint_first",
+            strict_mode=False,
         )
         # Hybrid should be at least as good as legacy (or very close)
         assert result_hybrid.cai >= result_legacy.cai - 0.05, (
@@ -249,6 +258,7 @@ class TestHybridOptimizer:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         hybrid_time = time.monotonic() - t0
 
@@ -260,6 +270,7 @@ class TestHybridOptimizer:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="constraint_first",
+            strict_mode=False,
         )
         legacy_time = time.monotonic() - t0
 
@@ -279,6 +290,7 @@ class TestHybridOptimizer:
                 gc_lo=0.30,
                 gc_hi=0.70,
                 strategy="hybrid",
+                strict_mode=False,
             )
             translated = _translate_dna(result.sequence)
             assert translated == _SHORT_PROTEIN, (
@@ -536,6 +548,7 @@ class TestDNADchiselComparison:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
 
         # Run DNAchisel
@@ -567,6 +580,7 @@ class TestDNADchiselComparison:
             gc_lo=0.30,
             gc_hi=0.70,
             strategy="hybrid",
+            strict_mode=False,
         )
         our_time = time.monotonic() - t0
 
@@ -639,6 +653,7 @@ class TestOrganismNameResolution:
                 gc_lo=0.30,
                 gc_hi=0.70,
                 strategy="hybrid",
+                strict_mode=False,
             )
             assert result.cai > 0.0, (
                 f"Optimization with alias '{alias}' produced CAI={result.cai:.4f}"
@@ -654,6 +669,7 @@ class TestOrganismNameResolution:
                 gc_lo=0.30,
                 gc_hi=0.70,
                 strategy="hybrid",
+                strict_mode=False,
             )
             assert result.cai > 0.0, (
                 f"Optimization with alias '{alias}' produced CAI={result.cai:.4f}"

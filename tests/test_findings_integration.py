@@ -126,6 +126,7 @@ class TestAllFindingsIntegration:
             gc_hi=0.60,
             enzymes=DEFAULT_ENZYMES,
             track_provenance=True,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert result.sequence, "Optimised sequence must not be empty"
@@ -281,6 +282,7 @@ class TestAllFindingsIntegration:
             protein,
             organism="Escherichia_coli",
             track_provenance=True,
+            strict_mode=False,
         )
         assert result.decision_trail is not None, (
             "Decision trail should be populated when track_provenance=True"
@@ -354,6 +356,7 @@ class TestAllFindingsIntegration:
             GFP_SHORT,
             organism="Escherichia_coli",
             enzymes=DEFAULT_ENZYMES,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         translated = translate(result.sequence)
@@ -384,6 +387,7 @@ class TestAllFindingsIntegration:
             gc_hi=0.60,
             enzymes=DEFAULT_ENZYMES,
             track_provenance=True,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert result.sequence, "Optimised sequence must not be empty"
@@ -482,6 +486,7 @@ class TestAllFindingsIntegration:
             gc_hi=0.70,
             enzymes=DEFAULT_ENZYMES,
             track_provenance=True,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
         assert result.sequence, "Optimised sequence must not be empty"
@@ -610,6 +615,7 @@ class TestAllFindingsIntegration:
             gc_hi=0.70,
             enzymes=DEFAULT_ENZYMES,
             track_provenance=True,
+            strict_mode=False,
         )
         assert result.decision_trail is not None, (
             "Decision trail must be populated when track_provenance=True"

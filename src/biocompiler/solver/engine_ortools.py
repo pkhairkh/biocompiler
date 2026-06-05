@@ -37,6 +37,7 @@ from typing import Any, Optional
 
 from .types import (
     CodonVariable,
+    InfeasibilityReport,
     MUSReport,
     SolverBackend,
     SolverConfig,
@@ -558,12 +559,17 @@ class ORTOOLSEngine:
         elif status == ortools_cp.INFEASIBLE:
             # Compute MUS report
             mus = self._compute_mus(protein, organism, codon_domains)
+            # Build InfeasibilityReport from MUS for user-facing diagnostics
+            infeasibility = InfeasibilityReport.from_mus_report(
+                mus, detection_method="cp_sat_infeasible"
+            )
             return SolverResult(
                 sequence="",
                 solved=False,
                 backend_used=SolverBackend.ORTOOLS,
                 solve_time_seconds=solve_time,
                 mus_report=mus,
+                infeasibility_report=infeasibility,
                 num_constraints=num_constraints,
                 num_variables=n_codons,
                 warnings=["Problem is INFEASIBLE — conflicting constraints detected"],

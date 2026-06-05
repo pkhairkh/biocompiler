@@ -81,8 +81,10 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -92,6 +94,7 @@ __all__ = [
     "ConstraintDecision",
     "OptimizationDecisionTrail",
     "DecisionProvenanceCollector",
+    "ProvenanceStore",
 ]
 
 
@@ -808,3 +811,224 @@ class DecisionProvenanceCollector:
             f"constraint_decisions={len(self._constraint_decisions)}, "
             f"iterations={len(self._iteration_log)})"
         )
+
+
+# ---------------------------------------------------------------------------
+# ProvenanceStore — Persistent storage for optimization provenance records
+# ---------------------------------------------------------------------------
+
+_logger = logging.getLogger(__name__)
+
+
+class ProvenanceStore:
+    """Persistent storage for optimization provenance records.
+
+    Saves and loads :class:`OptimizationDecisionTrail` instances as JSON
+    files on disk, one per optimization run.  Supports querying by
+    protein name, organism, and date range, as well as exporting a
+    full audit trail.
+
+    The default store directory is ``~/.biocompiler/provenance/``.
+    Each record is stored as a JSON file named ``<record_id>.json``.
+
+    Usage::
+
+        store = ProvenanceStore()
+        record_id = store.save(trail)
+        loaded = store.load(record_id)
+        results = store.query(organism="Homo_sapiens")
+        audit_json = store.export_audit_trail(record_id)
+    """
+
+    def __init__(self, store_dir: str | None = None) -> None:
+        self._store_dir = Path(store_dir or Path.home() / ".biocompiler" / "provenance")
+        self._store_dir.mkdir(parents=True, exist_ok=True)
+        _logger.debug("ProvenanceStore initialized at %s", self._store_dir)
+
+    @property
+    def store_dir(self) -> Path:
+        """Return the store directory path."""
+        return self._store_dir
+
+    def save(self, record: OptimizationDecisionTrail) -> str:
+        """Save a provenance record, return its ID.
+
+        Generates a UUID-based record ID and persists the record as a
+        JSON file in the store directory.
+
+        Args:
+            record: An :class:`OptimizationDecisionTrail` to persist.
+
+        Returns:
+            The generated record ID string.
+        """
+        record_id = str(uuid.uuid4())
+        filepath = self._store_dir / f"{record_id}.json"
+        data = record.to_dict()
+        # Inject the record_id so it's self-describing
+        data["_record_id"] = record_id
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        _logger.info(
+            "Saved provenance record %s (%d codon decisions, organism=%s)",
+            record_id, len(record.codon_decisions), record.organism,
+        )
+        return record_id
+
+    def load(self, record_id: str) -> OptimizationDecisionTrail:
+        """Load a provenance record by ID.
+
+        Args:
+            record_id: The record ID returned by :meth:`save`.
+
+        Returns:
+            The deserialized :class:`OptimizationDecisionTrail`.
+
+        Raises:
+            FileNotFoundError: If no record with the given ID exists.
+            ValueError: If the stored file is corrupted or cannot be
+                deserialized.
+        """
+        filepath = self._store_dir / f"{record_id}.json"
+        if not filepath.exists():
+            raise FileNotFoundError(
+                f"Provenance record not found: {record_id}"
+            )
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Remove the injected _record_id before deserialization
+            data.pop("_record_id", None)
+            return OptimizationDecisionTrail.from_dict(data)
+        except (json.JSONDecodeError, ValueError) as exc:
+            _logger.error("Failed to load provenance record %s: %s", record_id, exc)
+            raise ValueError(
+                f"Corrupted provenance record: {record_id}"
+            ) from exc
+
+    def query(
+        self,
+        protein_name: str | None = None,
+        organism: str | None = None,
+        date_range: tuple[str, str] | None = None,
+    ) -> list[OptimizationDecisionTrail]:
+        """Query provenance records.
+
+        Scans all stored records and returns those matching all
+        specified filters.  Filters are combined with AND logic —
+        only records matching *all* non-None criteria are returned.
+
+        Args:
+            protein_name: If provided, match records whose
+                ``gene_name`` equals this value (case-sensitive).
+            organism: If provided, match records whose ``organism``
+                equals this value (case-sensitive).
+            date_range: If provided, a ``(start_iso, end_iso)`` tuple.
+                Only records whose ``timestamp`` falls within the
+                inclusive range are returned.  ISO 8601 format
+                (e.g. ``"2026-01-01T00:00:00+00:00"``).
+
+        Returns:
+            List of matching :class:`OptimizationDecisionTrail` instances.
+        """
+        results: list[OptimizationDecisionTrail] = []
+
+        for filepath in sorted(self._store_dir.glob("*.json")):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                _logger.warning("Skipping corrupted file %s: %s", filepath, exc)
+                continue
+
+            # Apply protein_name filter
+            if protein_name is not None:
+                if data.get("gene_name") != protein_name:
+                    continue
+
+            # Apply organism filter
+            if organism is not None:
+                if data.get("organism") != organism:
+                    continue
+
+            # Apply date_range filter
+            if date_range is not None:
+                start_iso, end_iso = date_range
+                ts = data.get("timestamp", "")
+                if not ts:
+                    continue
+                try:
+                    ts_dt = datetime.fromisoformat(ts)
+                    start_dt = datetime.fromisoformat(start_iso)
+                    end_dt = datetime.fromisoformat(end_iso)
+                    if not (start_dt <= ts_dt <= end_dt):
+                        continue
+                except (ValueError, TypeError) as exc:
+                    _logger.warning(
+                        "Skipping record with unparseable timestamp %s: %s",
+                        ts, exc,
+                    )
+                    continue
+
+            # Remove injected _record_id before deserialization
+            data.pop("_record_id", None)
+            try:
+                results.append(OptimizationDecisionTrail.from_dict(data))
+            except ValueError as exc:
+                _logger.warning("Skipping invalid record %s: %s", filepath, exc)
+
+        _logger.debug(
+            "Query returned %d records (protein_name=%s, organism=%s, "
+            "date_range=%s)",
+            len(results), protein_name, organism, date_range,
+        )
+        return results
+
+    def export_audit_trail(self, record_id: str, format: str = "json") -> str:
+        """Export full audit trail for a record.
+
+        Loads the record by ID and returns it in the specified format.
+
+        Args:
+            record_id: The record ID returned by :meth:`save`.
+            format: Output format — ``"json"`` (default) returns an
+                indented JSON string.  ``"text"`` returns a compact
+                human-readable summary.
+
+        Returns:
+            The audit trail in the requested format as a string.
+
+        Raises:
+            FileNotFoundError: If no record with the given ID exists.
+            ValueError: If the format is not supported.
+        """
+        record = self.load(record_id)
+
+        if format == "json":
+            return record.to_json()
+        elif format == "text":
+            lines: list[str] = []
+            lines.append(f"Audit Trail: {record.gene_name or '(unnamed)'}")
+            lines.append(f"Organism:    {record.organism}")
+            lines.append(f"Backend:     {record.solver_backend}")
+            lines.append(f"Timestamp:   {record.timestamp}")
+            lines.append(f"CAI:         {record.total_cai:.4f}")
+            lines.append(f"GC:          {record.total_gc:.3f}")
+            lines.append(f"Codon decisions: {len(record.codon_decisions)}")
+            for cd in record.codon_decisions:
+                lines.append(
+                    f"  [{cd.position}] {cd.amino_acid} -> {cd.chosen_codon} "
+                    f"(reason={cd.constraint_reason}, confidence={cd.confidence:.3f})"
+                )
+            lines.append(f"Constraint decisions: {len(record.constraint_decisions)}")
+            for cd in record.constraint_decisions:
+                lines.append(
+                    f"  {cd.constraint_name}: {cd.action_taken} "
+                    f"(CAI impact={cd.impact_on_cai:.4f})"
+                )
+            return "\n".join(lines)
+        else:
+            raise ValueError(
+                f"Unsupported audit trail format: {format!r}. "
+                "Use 'json' or 'text'."
+            )

@@ -122,6 +122,7 @@ class TestInsulinEcoliFullPipeline:
             cai_threshold=CAI_THRESHOLD,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
         self.elapsed = time.monotonic() - self.start_time
 
@@ -234,6 +235,7 @@ class TestInsulinMultiOrganism:
                 cai_threshold=0.3,  # Low threshold — just need valid output
                 enzymes=AVOID_ENZYMES,
                 seed=42,
+                strict_mode=False,
             )
 
     def test_protein_preserved_all_organisms(self):
@@ -347,6 +349,7 @@ class TestConstraintTradeoffs:
             cai_threshold=0.0,
             enzymes=[],  # No restriction site avoidance
             seed=42,
+            strict_mode=False,
         )
         # All constraints
         self.constrained = optimize_sequence(
@@ -357,6 +360,7 @@ class TestConstraintTradeoffs:
             cai_threshold=CAI_THRESHOLD,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     def test_both_preserve_protein(self):
@@ -447,6 +451,7 @@ class TestSolverBackends:
             enzymes=AVOID_ENZYMES,
             seed=42,
             use_csp_solver=False,  # Explicitly use greedy
+            strict_mode=False,
         )
         _assert_valid_optimization(result, INSULIN_PROTEIN)
         assert gc_content(result.sequence) >= GC_LO
@@ -467,6 +472,7 @@ class TestSolverBackends:
             enzymes=AVOID_ENZYMES,
             seed=42,
             use_csp_solver=True,
+            strict_mode=False,
         )
         _assert_valid_optimization(result, INSULIN_PROTEIN)
 
@@ -529,6 +535,7 @@ class TestSolverBackends:
             gc_hi=GC_HI,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
         gc = gc_content(greedy_result.sequence)
         assert GC_LO <= gc <= GC_HI, f"Greedy: GC {gc:.4f} out of range"
@@ -554,6 +561,7 @@ class TestSolverBackends:
             enzymes=AVOID_ENZYMES,
             seed=42,
             use_csp_solver=False,
+            strict_mode=False,
         )
 
         # Try CSP if available
@@ -566,6 +574,7 @@ class TestSolverBackends:
                 enzymes=AVOID_ENZYMES,
                 seed=42,
                 use_csp_solver=True,
+                strict_mode=False,
             )
             # If CSP succeeded (not fallback), sequences may differ
             if not csp_result.fallback_used:
@@ -596,6 +605,7 @@ class TestInsulinProvenance:
             cai_threshold=CAI_THRESHOLD,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
 
     def test_provenance_record_exists(self):
@@ -751,6 +761,7 @@ class TestTotalRuntime:
             cai_threshold=CAI_THRESHOLD,
             enzymes=AVOID_ENZYMES,
             seed=42,
+            strict_mode=False,
         )
         assert translate(result_ecoli.sequence) == INSULIN_PROTEIN
 
@@ -764,6 +775,7 @@ class TestTotalRuntime:
                 cai_threshold=0.3,
                 enzymes=AVOID_ENZYMES,
                 seed=42,
+                strict_mode=False,
             )
             assert translate(r.sequence) == INSULIN_PROTEIN
 
@@ -771,10 +783,12 @@ class TestTotalRuntime:
         optimize_sequence(
             INSULIN_PROTEIN, organism=E_COLI,
             gc_lo=0.0, gc_hi=1.0, enzymes=[], seed=42,
+            strict_mode=False,
         )
         optimize_sequence(
             INSULIN_PROTEIN, organism=E_COLI,
             gc_lo=GC_LO, gc_hi=GC_HI, enzymes=AVOID_ENZYMES, seed=42,
+            strict_mode=False,
         )
 
         elapsed = time.monotonic() - start

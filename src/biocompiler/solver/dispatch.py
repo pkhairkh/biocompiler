@@ -45,6 +45,7 @@ from .types import (
     ConstraintType,
     ConstraintViolation,
     CSPModel,
+    InfeasibilityReport,
     SolverBackend,
     SolverConfig,
     SolverResult,
@@ -256,7 +257,9 @@ def _try_backend(
             return None, f"returned fallback: {reason}"
         else:
             logger.info("%s returned infeasible; trying next backend.", backend_name)
-            return None, "returned infeasible"
+            # Return the infeasible result alongside the reason so the
+            # dispatch layer can extract the InfeasibilityReport later.
+            return result, "returned infeasible"
     except Exception as e:
         reason = f"raised {type(e).__name__}: {e}"
         logger.warning("%s backend %s", backend_name, reason)
@@ -378,6 +381,8 @@ def solve_with_csp(
                 )
 
         result = _make_fallback_result(protein, organism, time.monotonic() - start, reason)
+        # Attach InfeasibilityReport so callers get structured diagnostics
+        result.infeasibility_report = InfeasibilityReport.from_feasibility_report(report)
         if provenance_records:
             result.metadata["conflict_provenance"] = provenance_records
         return result
@@ -406,6 +411,9 @@ def solve_with_csp(
     # Track failure reasons for provenance — each backend that fails gets
     # a short reason string recorded alongside its name.
     backend_failure_reasons: dict[str, str] = {}
+    # Track the last infeasible SolverResult from a backend that reported
+    # INFEASIBLE, so we can extract its InfeasibilityReport for the caller.
+    last_infeasible_result: SolverResult | None = None
 
     # If the user explicitly requested GREEDY_FALLBACK, skip OR-Tools and Z3
     skip_csp_backends = config.backend == SolverBackend.GREEDY_FALLBACK
@@ -418,58 +426,108 @@ def solve_with_csp(
     if config.backend == SolverBackend.Z3:
         # User explicitly requested Z3 — try it first
         if not skip_csp_backends and _z3_engine is not None:
-            result, fail_reason = _try_backend(
+            backend_result, fail_reason = _try_backend(
                 _z3_engine, model, config, "Z3", SolverBackend.Z3,
                 attempted_backends=attempted_backends if attempted_backends else None,
             )
-            if result is None:
+            if backend_result is None or not backend_result.solved:
+                if backend_result is not None and not backend_result.solved:
+                    last_infeasible_result = backend_result
                 attempted_backends.append("Z3")
                 backend_failure_reasons["Z3"] = fail_reason or "returned infeasible"
+                backend_result = None  # Reset so we try next backend
+            else:
+                result = backend_result
         if result is None and not skip_csp_backends and _ortools_engine is not None:
-            result, fail_reason = _try_backend(
+            backend_result, fail_reason = _try_backend(
                 _ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS,
                 attempted_backends=attempted_backends if attempted_backends else None,
             )
-            if result is None:
+            if backend_result is None or not backend_result.solved:
+                if backend_result is not None and not backend_result.solved:
+                    last_infeasible_result = backend_result
                 attempted_backends.append("OR-Tools")
                 backend_failure_reasons["OR-Tools"] = fail_reason or "returned infeasible"
+            else:
+                result = backend_result
     else:
         # Default priority: OR-Tools → Z3
         if not skip_csp_backends and _ortools_engine is not None:
-            result, fail_reason = _try_backend(
+            backend_result, fail_reason = _try_backend(
                 _ortools_engine, model, config, "OR-Tools", SolverBackend.ORTOOLS,
                 attempted_backends=None,
             )
-            if result is None:
+            if backend_result is None or not backend_result.solved:
+                if backend_result is not None and not backend_result.solved:
+                    last_infeasible_result = backend_result
                 attempted_backends.append("OR-Tools")
                 backend_failure_reasons["OR-Tools"] = fail_reason or "returned infeasible"
+            else:
+                result = backend_result
         if not skip_csp_backends and result is None and _z3_engine is not None:
-            result, fail_reason = _try_backend(
+            backend_result, fail_reason = _try_backend(
                 _z3_engine, model, config, "Z3", SolverBackend.Z3,
                 attempted_backends=attempted_backends if attempted_backends else None,
             )
-            if result is None:
+            if backend_result is None or not backend_result.solved:
+                if backend_result is not None and not backend_result.solved:
+                    last_infeasible_result = backend_result
                 attempted_backends.append("Z3")
                 backend_failure_reasons["Z3"] = fail_reason or "returned infeasible"
+            else:
+                result = backend_result
 
     # If CSP backends failed or were skipped, try greedy fallback engine
-    if result is None:
+    # ── Warm-start: If Z3 (or OR-Tools) returned a partial solution ──
+    # before failing, pass it to the greedy engine as a starting point.
+    # This preserves any constraint-satisfying choices the CSP solver
+    # already made, giving the greedy optimizer a "warm start" instead
+    # of starting from scratch.
+    warm_start_sequence: str | None = None
+    if result is not None and not result.solved:
+        warm_start_sequence = result.metadata.get("z3_partial_sequence")
+        if warm_start_sequence:
+            logger.info(
+                "Passing Z3 partial solution (length=%d) as warm-start "
+                "to greedy fallback engine",
+                len(warm_start_sequence),
+            )
+
+    if result is None or not result.solved:
         logger.info(
-            "Attempting greedy fallback engine for organism=%s protein_len=%d",
+            "Attempting greedy fallback engine for organism=%s protein_len=%d "
+            "(warm_start=%s)",
             organism, len(protein),
+            warm_start_sequence is not None,
         )
         try:
             from .engine_greedy import GreedyEngine
             greedy_engine = GreedyEngine(config)
-            result = greedy_engine.solve(model)
+            result = greedy_engine.solve(model, warm_start_sequence=warm_start_sequence)
             if result is not None and result.solved:
                 result.fallback_used = True
                 result.metadata["fallback_chain"] = attempted_backends + ["greedy"]
+                if warm_start_sequence:
+                    result.metadata["warm_start_from"] = "z3_partial"
+                # Propagate InfeasibilityReport from the CSP solver so
+                # callers can see that the original constraints were
+                # infeasible even though greedy found a relaxed solution.
+                if last_infeasible_result is not None and last_infeasible_result.infeasibility_report is not None:
+                    result.infeasibility_report = last_infeasible_result.infeasibility_report
+                    result.metadata["csp_infeasible"] = True
+                elif last_infeasible_result is not None and last_infeasible_result.mus_report is not None:
+                    result.infeasibility_report = InfeasibilityReport.from_mus_report(
+                        last_infeasible_result.mus_report,
+                        detection_method="cp_sat_infeasible",
+                    )
+                    result.metadata["csp_infeasible"] = True
                 logger.info(
                     "Greedy fallback engine solved successfully for organism=%s "
-                    "(fell back from: %s)",
+                    "(fell back from: %s, warm_start=%s, csp_infeasible=%s)",
                     organism,
                     ", ".join(attempted_backends) if attempted_backends else "N/A",
+                    warm_start_sequence is not None,
+                    result.metadata.get("csp_infeasible", False),
                 )
             else:
                 logger.warning("Greedy fallback engine returned unsolved result")
@@ -491,6 +549,27 @@ def solve_with_csp(
             protein, organism, time.monotonic() - start,
             "All solver backends (including greedy) unavailable or infeasible",
         )
+        # Propagate InfeasibilityReport from the last backend result
+        # that had one (e.g. OR-Tools reported INFEASIBLE)
+        if last_infeasible_result is not None and last_infeasible_result.infeasibility_report is not None:
+            result.infeasibility_report = last_infeasible_result.infeasibility_report
+        elif last_infeasible_result is not None and last_infeasible_result.mus_report is not None:
+            result.infeasibility_report = InfeasibilityReport.from_mus_report(
+                last_infeasible_result.mus_report,
+                detection_method="all_backends_failed",
+            )
+        else:
+            result.infeasibility_report = InfeasibilityReport(
+                is_infeasible=True,
+                conflicting_constraints=attempted_backends,
+                unsat_core=None,
+                suggested_relaxations=[],
+                explanation=(
+                    f"All solver backends ({', '.join(attempted_backends)}) "
+                    f"failed to find a solution"
+                ),
+                detection_method="all_backends_failed",
+            )
         if provenance_records:
             result.metadata["conflict_provenance"] = provenance_records
         # Record attempted backends in metadata for debugging

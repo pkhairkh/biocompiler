@@ -20,6 +20,10 @@ This directory contains the Architectural Decision Records (ADRs) for the BioCom
 | ADR-0012 | CpG Avoidance in Greedy Optimizer | Accepted | 2026-03-05 |
 | ADR-0013 | Mutagenesis GT-Mandatory vs Optimizer Weakness Distinction | Accepted | 2026-03-05 |
 | ADR-0014 | Predicate Checking Delegation (Separation of Concerns) | Accepted | 2026-05-31 |
+| ADR-0015 | Biosecurity Sequence Screening | Accepted | 2026-03-05 |
+| ADR-0016 | Default Safety Measures | Accepted | 2026-03-05 |
+| ADR-0017 | Feature Parity with DNAchisel | Accepted | 2026-03-05 |
+| ADR-0018 | tRNA Adaptation Index (tAI) | Accepted | 2026-03-05 |
 
 ## Relationship to DOC-06 (Design Rationale)
 

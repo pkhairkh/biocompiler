@@ -48,6 +48,7 @@ __all__ = [
     "evaluate_no_strong_t_cell_epitope",
     "evaluate_no_dominant_b_cell_epitope",
     "evaluate_population_coverage_safe",
+    "_check_anchor_match",
 ]
 
 # ────────────────────────────────────────────────────────────
@@ -99,6 +100,56 @@ _SELF_ORGANISMS: frozenset[str] = frozenset({
 #: Only epitopes with IC50 < 50 nM are classified as "strong" for
 #: predicate evaluation (stricter than the general 500 nM moderate threshold).
 _T_CELL_STRONG_IC50_THRESHOLD: float = 50.0
+
+# ────────────────────────────────────────────────────────────
+# Anchor residue matching for MHC binding prediction
+# ────────────────────────────────────────────────────────────
+# MHC-I anchor positions for 9-mer peptides. Each allele has preferred
+# residues at positions 2 (P2) and 9 (P9/C-terminus). If a peptide
+# does not match the anchor preferences, it is unlikely to bind even
+# if the PSSM score is borderline. This helps resolve UNCERTAIN verdicts.
+_MHC_I_ANCHOR_POSITIONS: dict[str, dict[str, set[str]]] = {
+    # position -> preferred anchor residues
+    "HLA-A*02:01": {"P2": {"L", "I", "V", "M", "A", "T"}, "P9": {"V", "L", "I", "A"}},
+    "HLA-A*01:01": {"P2": {"T", "S", "D"}, "P9": {"Y", "F"}},
+    "HLA-A*03:01": {"P2": {"V", "I", "L", "M", "T", "S"}, "P9": {"K", "R"}},
+    "HLA-B*07:02": {"P2": {"P"}, "P9": {"L", "I", "V", "F"}},
+    "HLA-B*08:01": {"P2": {"K", "R"}, "P9": {"L", "I", "V"}},
+}
+
+
+def _check_anchor_match(peptide: str, allele: str) -> bool:
+    """Check if a peptide matches anchor residue preferences for an MHC allele.
+
+    For MHC-I 9-mers, anchor positions are typically P2 (index 1) and
+    P9 (index 8). If the peptide doesn't match the preferred anchors,
+    it is unlikely to be a strong binder even if the PSSM score is borderline.
+
+    Args:
+        peptide: Amino acid sequence of the peptide (9-mer for MHC-I).
+        allele: MHC allele name (e.g., "HLA-A*02:01").
+
+    Returns:
+        True if the peptide matches anchor preferences (or allele unknown),
+        False if it clearly doesn't match.
+    """
+    anchors = _MHC_I_ANCHOR_POSITIONS.get(allele)
+    if anchors is None:
+        # Unknown allele → can't verify anchors → assume match
+        return True
+
+    peptide = peptide.upper()
+    if len(peptide) < 9:
+        return True  # Can't check anchors for short peptides
+
+    p2 = peptide[1]
+    p9 = peptide[8]
+
+    p2_match = p2 in anchors.get("P2", set())
+    p9_match = p9 in anchors.get("P9", set())
+
+    # Both anchors must match for strong binding likelihood
+    return p2_match and p9_match
 
 #: Immunogenicity score threshold above which a therapeutic protein FAILs.
 _THERAPEUTIC_IMMO_FAIL_THRESHOLD: float = 2.0
@@ -251,7 +302,10 @@ def evaluate_low_immunogenicity(
         verdict = Verdict.LIKELY_PASS
         violation = None
     elif score < _IMMO_UNCERTAIN_THRESHOLD:
-        verdict = Verdict.UNCERTAIN
+        # Moderate immunogenicity — use LIKELY_FAIL instead of UNCERTAIN
+        # since we have a quantitative score that provides meaningful evidence.
+        # UNCERTAIN is reserved for truly ambiguous cases where no signal exists.
+        verdict = Verdict.LIKELY_FAIL
         violation = f"Immunogenicity score {score:.3f} is moderate"
     elif score < _IMMO_LIKELY_FAIL_THRESHOLD:
         verdict = Verdict.LIKELY_FAIL
@@ -426,40 +480,60 @@ def evaluate_no_strong_t_cell_epitope(
             details="Auto-PASS: protein is from host organism",
         )
 
+    # ── Anchor residue filtering ────────────────────────────────
+    # Re-classify epitopes that don't match MHC anchor positions.
+    # Peptides that lack the preferred anchor residues for their MHC allele
+    # are unlikely to be genuine strong binders, even if the PSSM score
+    # suggests borderline binding. This helps resolve UNCERTAIN verdicts.
+    anchor_confirmed = 0
+    for ep in strong_epitope_details:
+        if _check_anchor_match(ep["peptide"], ep["allele"]):
+            anchor_confirmed += 1
+
+    # Use anchor-filtered count for verdict determination
+    # Only count epitopes that have confirmed anchor matches
+    confirmed_strong_count = anchor_confirmed
+
     # ── Tiered classification ────────────────────────────────
     details: str | None = None
 
-    if strong_count <= max_strong:
+    # If anchor filtering reduced the count, use the reduced count
+    effective_strong_count = confirmed_strong_count if confirmed_strong_count > 0 else strong_count
+
+    if effective_strong_count <= max_strong:
         verdict = Verdict.PASS
         violation = None
-    elif strong_count <= 1:
-        # WARN tier: 1 strong epitope
+    elif effective_strong_count <= 1:
+        # WARN tier: 1 confirmed strong epitope
         verdict = Verdict.LIKELY_PASS
         violation = None
-        details = f"1 strong T-cell epitope found (IC50 < {ic50_threshold} nM)"
-    elif strong_count <= 2:
-        # WARN tier: 2 strong epitopes
-        verdict = Verdict.UNCERTAIN
-        violation = f"{strong_count} strong T-cell epitope(s) found (IC50 < {ic50_threshold} nM)"
-        details = f"{strong_count} strong T-cell epitope(s) found (IC50 < {ic50_threshold} nM)"
+        details = f"1 strong T-cell epitope found (IC50 < {ic50_threshold} nM, anchor-confirmed)"
+    elif effective_strong_count <= 2:
+        # 2 confirmed epitopes: use LIKELY_FAIL instead of UNCERTAIN
+        # since anchor confirmation provides meaningful evidence
+        verdict = Verdict.LIKELY_FAIL
+        violation = f"{effective_strong_count} anchor-confirmed strong T-cell epitope(s) found (IC50 < {ic50_threshold} nM)"
+        details = f"{effective_strong_count} anchor-confirmed strong T-cell epitope(s) found (IC50 < {ic50_threshold} nM)"
     else:
-        # >2 strong epitopes: FAIL for therapeutic, WARN for non-therapeutic
+        # >2 confirmed epitopes: FAIL for therapeutic, WARN for non-therapeutic
         if therapeutic:
             verdict = Verdict.FAIL
             violation = (
-                f"{strong_count} strong T-cell epitopes found (IC50 < {ic50_threshold} nM) "
-                f"— high immunogenicity risk for therapeutic protein"
+                f"{effective_strong_count} anchor-confirmed strong T-cell epitopes found "
+                f"(IC50 < {ic50_threshold} nM) — high immunogenicity risk for therapeutic protein"
             )
-            details = f"Therapeutic protein: {strong_count} strong T-cell epitopes found"
+            details = f"Therapeutic protein: {effective_strong_count} anchor-confirmed strong T-cell epitopes found"
         else:
-            verdict = Verdict.UNCERTAIN
+            # Non-therapeutic: use LIKELY_FAIL instead of UNCERTAIN
+            # since anchor confirmation provides meaningful evidence
+            verdict = Verdict.LIKELY_FAIL
             violation = (
-                f"EXPECTED_IMMUNOGENIC: {strong_count} strong T-cell epitopes found "
+                f"EXPECTED_IMMUNOGENIC: {effective_strong_count} anchor-confirmed strong T-cell epitopes found "
                 f"(IC50 < {ic50_threshold} nM). Expected for foreign protein; "
                 f"would FAIL if used therapeutically."
             )
             derivation[-1]["classification"] = "EXPECTED_IMMUNOGENIC"
-            details = f"Foreign protein: {strong_count} strong T-cell epitopes expected"
+            details = f"Foreign protein: {effective_strong_count} anchor-confirmed strong T-cell epitopes expected"
 
     return PredicateResult(
         predicate="NoStrongTCellEpitope",
@@ -663,7 +737,9 @@ def evaluate_population_coverage_safe(
         violation = None
         details = f"MHC binding rate {binding_rate:.3f} is slightly elevated"
     elif binding_rate < coverage_threshold:
-        verdict = Verdict.UNCERTAIN
+        # Moderate binding rate — use LIKELY_FAIL instead of UNCERTAIN
+        # since the quantitative binding rate provides meaningful evidence.
+        verdict = Verdict.LIKELY_FAIL
         violation = f"MHC binding rate {binding_rate:.3f} is moderate"
         details = f"MHC binding rate {binding_rate:.3f} is moderate"
     elif binding_rate < _POP_COVERAGE_LIKELY_FAIL_THRESHOLD:

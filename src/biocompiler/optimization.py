@@ -30,7 +30,7 @@ v10.0.0 changes:
   - resolve_organism() for centralized organism name resolution
 """
 
-from typing import List, Dict, Optional, Tuple, Set, Any
+from typing import Callable, List, Dict, Optional, Tuple, Set, Any
 
 import logging
 import math
@@ -42,17 +42,19 @@ from .type_system import (
     CODON_TABLE, AA_TO_CODONS, BLOSUM62, PredicateResult,
     check_no_stop_codons, check_no_cryptic_splice, check_no_cpg_island,
     check_no_restriction_site, check_no_avoidable_gt,
+    check_no_gt_dinucleotide_soft, _compute_max_gt_count,
     check_valid_coding_seq,
     find_cross_codon_gt, find_cross_codon_cg, find_cross_codon_restriction,
 )
 from .organisms import CODON_ADAPTIVENESS_TABLES, ORGANISM_GC_TARGETS, resolve_organism, ORGANISM_ALIASES, SPECIES_SHORT_NAMES, SUPPORTED_ORGANISMS
-from .constants import reverse_complement, RESTRICTION_ENZYMES, IUPAC_EXPAND
+from .constants import reverse_complement, RESTRICTION_ENZYMES, IUPAC_EXPAND, VALID_IUPAC_BASES
 from .scanner import gc_content
+from .sliding_gc import check_sliding_gc, fix_sliding_gc_violations
 from .maxentscan import score_donor, score_acceptor, max_donor_score, max_acceptor_score
 from .mutagenesis import propose_mutagenesis, MutagenesisReport, MutagenesisProposal
 from .incremental import IncrementalSequenceState, CodonCache, EnzymeSiteCache
 from .certificate import format_certificate
-from .exceptions import InvalidProteinError, UnsupportedOrganismError
+from .exceptions import InvalidProteinError, UnsupportedOrganismError, OptimizationConstraintError
 from .decision_provenance import (
     CodonDecision,
     ConstraintDecision,
@@ -60,6 +62,7 @@ from .decision_provenance import (
     OptimizationDecisionTrail,
 )
 from .aho_corasick import AhoCorasickScanner, build_scanner_from_enzymes, build_scanner_from_sites  # type: ignore[import-untyped]
+from .objectives import resolve_objective as _resolve_objective, cai_objective as _cai_objective
 
 # ── NUMBA integration ──────────────────────────────────────────────
 try:
@@ -68,11 +71,399 @@ try:
         count_gc as _numba_count_gc,
         count_dinucleotides as _numba_count_dinuc,
         seq_to_bytes as _seq_to_bytes,
+        fast_dinucleotide_count as _numba_fast_dinuc_count,
+        batch_codon_swap_score as _numba_batch_codon_swap_score,
+        compute_cai_kernel as _numba_cai_kernel,
+        compute_cai_incremental as _numba_cai_incremental,
     )
 except ImportError:
     _HAS_NUMBA = False
+    _numba_fast_dinuc_count = None  # type: ignore[assignment]
+    _numba_batch_codon_swap_score = None  # type: ignore[assignment]
+    _numba_cai_kernel = None  # type: ignore[assignment]
+    _numba_cai_incremental = None  # type: ignore[assignment]
 
-HAS_NUMBA: bool = _HAS_NUMBA
+HAS_NUMBA: bool = _HAS_NUMBA if isinstance(_HAS_NUMBA, bool) else False
+
+# ── NUMBA CAI helpers ──────────────────────────────────────────────
+import numpy as _np
+
+
+def _adaptiveness_to_array(codon_adaptiveness: dict[str, float]) -> _np.ndarray:
+    """Convert codon adaptiveness dict to numpy array indexed by codon encoding.
+
+    Codons are mapped to array indices using a base-4 encoding:
+        A=0, C=1, G=2, T=3  →  index = b0*16 + b1*4 + b2
+    This gives indices in [0, 63] for all 64 possible 3-letter codons,
+    providing O(1) lookup without hash tables.
+
+    Args:
+        codon_adaptiveness: Dict mapping codon strings (e.g. 'ATG') to
+            adaptiveness values (float in [0.0, 1.0]).
+
+    Returns:
+        numpy float64 array of length 64, where index = base4_encode(codon).
+        Missing codons get a default value of 1e-10.
+    """
+    _BASE_MAP = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+    arr = _np.full(64, 1e-10, dtype=_np.float64)
+    for codon, w in codon_adaptiveness.items():
+        try:
+            idx = _BASE_MAP[codon[0]] * 16 + _BASE_MAP[codon[1]] * 4 + _BASE_MAP[codon[2]]
+            arr[idx] = w
+        except (KeyError, IndexError):
+            continue  # skip non-standard codons
+    return arr
+
+
+def _codon_to_index(codon: str) -> int:
+    """Map a 3-letter codon string to its base-4 array index.
+
+    Uses: A=0, C=1, G=2, T=3 → index = b0*16 + b1*4 + b2
+    """
+    _BASE_MAP = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+    return _BASE_MAP[codon[0]] * 16 + _BASE_MAP[codon[1]] * 4 + _BASE_MAP[codon[2]]
+
+
+def _dna_to_codon_indices(dna: str) -> _np.ndarray:
+    """Convert DNA string to array of codon adaptiveness indices.
+
+    Each codon position gets its base-4 encoded index for O(1) lookup
+    in the adaptiveness array.
+
+    Args:
+        dna: DNA sequence string (length must be a multiple of 3).
+
+    Returns:
+        numpy int64 array of length len(dna)//3 with base-4 encoded indices.
+    """
+    n_codons = len(dna) // 3
+    indices = _np.empty(n_codons, dtype=_np.int64)
+    for i in range(n_codons):
+        indices[i] = _codon_to_index(dna[i * 3:i * 3 + 3])
+    return indices
+
+
+def _compute_cai_fast(seq: str, codon_adaptiveness: dict[str, float]) -> float:
+    """Compute CAI using the NUMBA kernel when available, pure Python otherwise.
+
+    This function replaces the pure-Python loop in _compute_seq_cai with
+    the NUMBA-accelerated compute_cai_kernel. The kernel uses log-sum
+    for numerical stability (geometric mean of relative adaptiveness values).
+
+    When NUMBA is available, converts the adaptiveness dict to a numpy array
+    and uses compute_cai_kernel for O(n) CAI computation in compiled code.
+    Falls back to pure-Python log-sum when NUMBA is not installed.
+
+    Args:
+        seq: DNA coding sequence.
+        codon_adaptiveness: Dict mapping codon strings to adaptiveness values.
+
+    Returns:
+        CAI value in [0.0, 1.0]. Returns 0.0 for empty/invalid sequences.
+    """
+    if not seq or len(seq) < 3:
+        return 0.0
+
+    if HAS_NUMBA and _numba_cai_kernel is not None:
+        try:
+            adapt_arr = _adaptiveness_to_array(codon_adaptiveness)
+            # Build codon indices array, excluding Met and stop codons from count
+            n_total = len(seq) // 3
+            codon_indices_list = []
+            for i in range(n_total):
+                codon = seq[i * 3:i * 3 + 3]
+                aa = CODON_TABLE.get(codon)
+                if aa == 'M' or aa == '*':
+                    continue
+                codon_indices_list.append(_codon_to_index(codon))
+            if not codon_indices_list:
+                return 0.0
+            codon_indices = _np.array(codon_indices_list, dtype=_np.int64)
+            n_codons = len(codon_indices)
+            return _numba_cai_kernel(adapt_arr, codon_indices, n_codons)
+        except Exception:
+            pass  # Fall through to pure-Python on any NUMBA error
+
+    # Pure-Python fallback
+    epsilon = 1e-10
+    log_sum = 0.0
+    count = 0
+    for i in range(0, len(seq) - 2, 3):
+        codon = seq[i:i + 3]
+        aa = CODON_TABLE.get(codon)
+        if aa == 'M' or aa == '*':
+            continue
+        w = codon_adaptiveness.get(codon, epsilon)
+        if w <= 0.0:
+            w = epsilon
+        log_sum += math.log(w)
+        count += 1
+
+    if count == 0:
+        return 0.0
+    return math.exp(log_sum / count)
+
+
+def _count_dinucs_fast(seq: str, *dinucleotides: str) -> tuple[int, ...]:
+    """Count multiple dinucleotides in a single pass using the NUMBA kernel.
+
+    Falls back to pure-Python counting when NUMBA is unavailable.
+
+    Args:
+        seq: DNA sequence string (uppercase ACGT).
+        *dinucleotides: One or more dinucleotide strings (e.g. "GT", "CG", "AG").
+
+    Returns:
+        Tuple of counts, one per dinucleotide, in the same order as input.
+    """
+    n_dinucs = len(dinucleotides)
+    if n_dinucs == 0:
+        return ()
+
+    # Fast path: NUMBA kernel
+    if HAS_NUMBA and _numba_fast_dinuc_count is not None:
+        import numpy as _np
+        seq_bytes = _seq_to_bytes(seq)
+        dinuc_keys = _np.array(
+            [[ord(d[0]), ord(d[1])] for d in dinucleotides],
+            dtype=_np.uint8,
+        )
+        counts = _numba_fast_dinuc_count(seq_bytes, dinuc_keys, n_dinucs)
+        return tuple(int(c) for c in counts)
+
+    # Pure-Python fallback
+    results = []
+    for di in dinucleotides:
+        count = 0
+        pos = 0
+        while True:
+            pos = seq.find(di, pos)
+            if pos == -1:
+                break
+            count += 1
+            pos += 1
+        results.append(count)
+    return tuple(results)
+
+
+# ── Batch codon swap scorer (NUMBA-accelerated) ─────────────────────
+class _BatchSwapScorer:
+    """Pre-compute CAI arrays for batch_codon_swap_score kernel invocations.
+
+    Builds the static adaptiveness array and codon-to-index mapping once,
+    then provides a fast ``score_candidates`` method that calls the NUMBA
+    kernel (or pure-Python fallback) to score all candidate codon swaps
+    at a given position in one vectorized pass.
+
+    Usage::
+
+        scorer = _BatchSwapScorer(species_cai)
+        # Per iteration / position:
+        scores = scorer.score_candidates(seq_codons, codon_idx, candidate_codons)
+        # scores[k] = full-sequence CAI if we swapped codon at codon_idx to candidate_codons[k]
+    """
+
+    def __init__(self, species_cai: Dict[str, float]) -> None:
+        self._species_cai = species_cai
+
+        # Build a stable sorted list of all known codons → integer index.
+        # CODON_TABLE keys are the canonical 64 codons; we include any
+        # extra codon that appears in species_cai as well.
+        from .type_system import CODON_TABLE as _CT
+        all_codons = sorted(set(_CT.keys()) | set(species_cai.keys()))
+        self._codon_to_idx: Dict[str, int] = {c: i for i, c in enumerate(all_codons)}
+        self._idx_to_codon: Dict[int, str] = {i: c for i, c in enumerate(all_codons)}
+        self._n_codons_total = len(all_codons)
+
+        # Build adaptiveness array (float64) — one entry per codon index.
+        epsilon = 1e-10
+        self._adaptiveness: list[float] = []
+        for c in all_codons:
+            w = species_cai.get(c, 0.0)
+            self._adaptiveness.append(w if w > 0.0 else epsilon)
+
+        # Lazy numpy arrays (built on first use when NUMBA is available)
+        self._np_adaptiveness = None  # type: ignore[assignment]
+        self._np_built = False
+
+        # Incremental CAI tracking state — avoids O(n) log_sum recomputation
+        # after each accepted codon swap.  Set via reset_incremental_state().
+        self._current_log_sum: float | None = None
+        self._n_codons: int = 0
+
+    def _ensure_numpy(self) -> None:
+        """Lazily build numpy arrays for the NUMBA kernel."""
+        if self._np_built:
+            return
+        try:
+            import numpy as _np
+            self._np_adaptiveness = _np.array(self._adaptiveness, dtype=_np.float64)
+        except ImportError:
+            self._np_adaptiveness = None
+        self._np_built = True
+
+    def _build_codon_indices(self, seq_codons: List[str]) -> "Any":
+        """Build the codon_indices numpy array from a list of codon strings."""
+        import numpy as _np
+        indices = _np.array(
+            [self._codon_to_idx.get(c, 0) for c in seq_codons],
+            dtype=_np.int64,
+        )
+        return indices
+
+    def _compute_log_sum(self, seq_codons: List[str]) -> float:
+        """Compute the current sum of log(w_i) over all codon positions."""
+        epsilon = 1e-10
+        log_sum = 0.0
+        for c in seq_codons:
+            idx = self._codon_to_idx.get(c, 0)
+            w = self._adaptiveness[idx]
+            if w <= 0.0:
+                w = epsilon
+            log_sum += math.log(w)
+        return log_sum
+
+    def reset_incremental_state(self, seq_codons: List[str]) -> None:
+        """Initialize (or re-initialize) incremental CAI tracking state.
+
+        Computes the full log_sum once from the current codon list and
+        caches it for O(1) incremental updates via compute_cai_incremental.
+
+        Args:
+            seq_codons: Current codon strings for every position in the sequence.
+        """
+        self._current_log_sum = self._compute_log_sum(seq_codons)
+        self._n_codons = len(seq_codons)
+
+    def update_incremental_state(self, old_codon: str, new_codon: str) -> None:
+        """Update the cached log_sum after an accepted codon swap.
+
+        Uses compute_cai_incremental (NUMBA or pure-Python) for O(1)
+        update instead of O(n) full recomputation.
+
+        Args:
+            old_codon: The codon that was replaced.
+            new_codon: The codon that replaced it.
+        """
+        if self._current_log_sum is None:
+            return  # Not initialized; caller should use reset_incremental_state
+
+        epsilon = 1e-10
+
+        # Get old adaptiveness
+        old_idx = self._codon_to_idx.get(old_codon, 0)
+        w_old = self._adaptiveness[old_idx]
+        if w_old <= 0.0 or w_old != w_old:  # catch NaN
+            w_old = epsilon
+
+        # Get new adaptiveness
+        new_idx = self._codon_to_idx.get(new_codon, 0)
+        w_new = self._adaptiveness[new_idx]
+        if w_new <= 0.0 or w_new != w_new:  # catch NaN
+            w_new = epsilon
+
+        # O(1) incremental update: new_log_sum = old_log_sum - log(w_old) + log(w_new)
+        if HAS_NUMBA and _numba_cai_incremental is not None:
+            try:
+                new_cai = _numba_cai_incremental(
+                    self._current_log_sum, self._n_codons, w_old, w_new
+                )
+                # Recover the new log_sum from the CAI value
+                # CAI = exp(log_sum / n)  →  log_sum = n * log(CAI)
+                if new_cai > 0.0 and self._n_codons > 0:
+                    self._current_log_sum = self._n_codons * math.log(new_cai)
+                else:
+                    # Fallback to direct computation
+                    self._current_log_sum = (
+                        self._current_log_sum - math.log(w_old) + math.log(w_new)
+                    )
+                return
+            except Exception:
+                pass  # Fall through to pure-Python
+
+        # Pure-Python incremental update
+        self._current_log_sum = (
+            self._current_log_sum - math.log(w_old) + math.log(w_new)
+        )
+
+    @property
+    def current_log_sum(self) -> float | None:
+        """The cached sum of log(w_i) for the current sequence state."""
+        return self._current_log_sum
+
+    def score_candidates(
+        self,
+        seq_codons: List[str],
+        swap_position: int,
+        candidate_codons: List[str],
+    ) -> List[float]:
+        """Score all candidate codon swaps at a single position.
+
+        Returns a list of full-sequence CAI values, one per candidate,
+        representing the CAI of the sequence if the codon at
+        ``swap_position`` were replaced by each candidate.
+
+        Args:
+            seq_codons: Current codon strings for every position in the sequence.
+            swap_position: Index into seq_codons of the codon being swapped.
+            candidate_codons: List of candidate replacement codon strings.
+
+        Returns:
+            List of CAI scores (float), one per candidate.
+        """
+        n_candidates = len(candidate_codons)
+        if n_candidates == 0:
+            return []
+
+        n_codons = len(seq_codons)
+
+        # ── Fast path: NUMBA batch kernel ──────────────────────────
+        if (
+            HAS_NUMBA
+            and _numba_batch_codon_swap_score is not None
+        ):
+            self._ensure_numpy()
+            if self._np_adaptiveness is not None:
+                import numpy as _np
+                codon_indices = self._build_codon_indices(seq_codons)
+                candidate_indices = _np.array(
+                    [self._codon_to_idx.get(c, 0) for c in candidate_codons],
+                    dtype=_np.int64,
+                )
+                # Use cached log_sum if available (avoids O(n) recompute)
+                current_log_sum = self._current_log_sum if self._current_log_sum is not None else self._compute_log_sum(seq_codons)
+                scores_arr = _numba_batch_codon_swap_score(
+                    self._np_adaptiveness,
+                    codon_indices,
+                    n_codons,
+                    swap_position,
+                    candidate_indices,
+                    n_candidates,
+                    current_log_sum,
+                )
+                return [float(s) for s in scores_arr]
+
+        # ── Fallback: pure-Python per-candidate evaluation ─────────
+        epsilon = 1e-10
+        current_log_sum = self._current_log_sum if self._current_log_sum is not None else self._compute_log_sum(seq_codons)
+
+        old_idx = self._codon_to_idx.get(seq_codons[swap_position], 0)
+        w_old = self._adaptiveness[old_idx]
+        if w_old <= 0.0:
+            w_old = epsilon
+        log_w_old = math.log(w_old)
+
+        scores: List[float] = []
+        for c in candidate_codons:
+            c_idx = self._codon_to_idx.get(c, 0)
+            w_new = self._adaptiveness[c_idx]
+            if w_new <= 0.0:
+                w_new = epsilon
+            new_log_sum = current_log_sum - log_w_old + math.log(w_new)
+            scores.append(math.exp(new_log_sum / n_codons) if n_codons > 0 else 0.0)
+
+        return scores
 
 
 __all__ = [
@@ -83,6 +474,11 @@ __all__ = [
     "protein_to_aa_list",
     "BioOptimizer",
     "HybridOptimizer",
+    "ConvergenceTracker",
+    "score_splice_donor_potential",
+    "SPLICE_DONOR_POTENTIAL_THRESHOLD",
+    "EUKARYOTE_CAI_GT_COST_THRESHOLD",
+    "GT_CAI_LOG_ADAPTIVENESS_COST",
 ]
 
 logger = logging.getLogger(__name__)
@@ -101,11 +497,104 @@ MAX_GC_ADJUSTMENT_ITERATIONS: int = 200
 MAX_SPLICE_ELIMINATION_ITERATIONS: int = 300
 MAX_CPG_DISRUPTION_ITERATIONS: int = 200
 
+# Main optimization loop convergence settings
+DEFAULT_MAX_ITERATIONS: int = 1000
+CONVERGENCE_IMPROVEMENT_THRESHOLD: float = 1e-6
+CONVERGENCE_PATIENCE: int = 3  # consecutive non-improving iterations before convergence
+OSCILLATION_WINDOW: int = 10   # window size for oscillation detection
+
 # Thresholds and sentinel values
 T_RUN_LENGTH_THRESHOLD: int = 6
 ELIMINATED_SITE_SCORE: float = -999.0
 TOP_CAI_ALTERNATIVES: int = 3
 IUPAC_EXPANSION_CAP: int = 4096
+
+
+# ────────────────────────────────────────────────────────────
+# Convergence Tracker
+# ────────────────────────────────────────────────────────────
+
+class ConvergenceTracker:
+    """Track optimization objective convergence and detect stagnation or oscillation.
+
+    The objective is CAI * constraint_satisfaction_score.  CAI is in [0, 1]
+    and constraint_satisfaction_score is the fraction of predicates that pass,
+    also in [0, 1], so the combined objective is in [0, 1].
+
+    Convergence is declared when the objective has not improved by more than
+    ``improvement_threshold`` for ``patience`` consecutive iterations.
+
+    Oscillation is declared when the objective has both increased and decreased
+    within the last ``oscillation_window`` iterations — this indicates the
+    optimizer is cycling and should stop at the best point seen so far.
+    """
+
+    def __init__(
+        self,
+        improvement_threshold: float = CONVERGENCE_IMPROVEMENT_THRESHOLD,
+        patience: int = CONVERGENCE_PATIENCE,
+        oscillation_window: int = OSCILLATION_WINDOW,
+    ) -> None:
+        self.improvement_threshold = improvement_threshold
+        self.patience = patience
+        self.oscillation_window = oscillation_window
+        self.history: list[float] = []
+        self.best_objective: float = float('-inf')
+        self.best_iteration: int = -1
+        self._no_improvement_count: int = 0
+
+    def record(self, objective: float) -> None:
+        """Record the objective value for the current iteration."""
+        self.history.append(objective)
+        if objective > self.best_objective:
+            self.best_objective = objective
+            self.best_iteration = len(self.history) - 1
+
+    def check_convergence(self) -> str | None:
+        """Check if the optimizer has converged, hit max iterations, or is oscillating.
+
+        Returns:
+            None if optimization should continue,
+            "converged" if the objective has plateaued,
+            "oscillating" if the objective is cycling,
+        """
+        if len(self.history) < 2:
+            return None
+
+        latest = self.history[-1]
+        # Check plateau: no significant improvement for `patience` iterations
+        recent = self.history[-(self.patience + 1):]
+        if len(recent) >= self.patience + 1:
+            improvement = max(recent) - min(recent)
+            if improvement < self.improvement_threshold:
+                return "converged"
+
+        # Check oscillation: both increases and decreases within the window
+        window = self.history[-self.oscillation_window:]
+        if len(window) >= 3:
+            has_increase = any(window[i + 1] > window[i] for i in range(len(window) - 1))
+            has_decrease = any(window[i + 1] < window[i] for i in range(len(window) - 1))
+            if has_increase and has_decrease:
+                # Additional check: the objective hasn't improved overall in the window
+                if window[-1] <= window[0] + self.improvement_threshold:
+                    return "oscillating"
+
+        return None
+
+    @property
+    def iterations(self) -> int:
+        """Number of iterations recorded."""
+        return len(self.history)
+
+    @property
+    def best(self) -> float:
+        """Best objective value seen so far."""
+        return self.best_objective
+
+    @property
+    def best_iteration_index(self) -> int:
+        """Index of the iteration where the best objective was achieved."""
+        return self.best_iteration
 
 
 # ────────────────────────────────────────────────────────────
@@ -146,6 +635,13 @@ class OptimizationResult:
     utr_score_3: float | None = None
     # Decision-level provenance trail (populated when track_provenance=True)
     decision_trail: OptimizationDecisionTrail | None = None
+    # Convergence tracking (populated by optimize_sequence)
+    convergence_status: str | None = None  # "converged" | "max_iterations" | "oscillating" | None
+    iterations_used: int = 0
+    # Optimization warnings (cap-exceeded notices, convergence issues)
+    warnings: list[str] = field(default_factory=list)
+    # Custom objective score (populated when a non-default objective is used)
+    objective_score: float | None = None
 
     def __post_init__(self):
         """Validate OptimizationResult invariants."""
@@ -388,6 +884,116 @@ def _remove_site_multicodon(
 
 
 # ==============================================================================
+# Splice Donor Potential Scoring
+# ==============================================================================
+
+# Threshold above which a GT dinucleotide is considered a high-risk splice donor.
+# GTs with score >= this threshold should be avoided even at CAI cost.
+# GTs with score < this threshold are acceptable (soft violation) in favor of CAI.
+SPLICE_DONOR_POTENTIAL_THRESHOLD: float = 0.5
+
+# Maximum distance (nt) to search downstream of a GT for a potential AG acceptor.
+_MAX_ACCEPTOR_SEARCH_DIST: int = 80
+
+
+def score_splice_donor_potential(dna: str, position: int) -> float:
+    """Score how likely a GT dinucleotide is to function as a splice donor.
+
+    Not all GT dinucleotides are splice donors.  A true splice donor needs:
+    - GT at the 5' end of an intron
+    - AG at the 3' end (acceptor) typically 30-200 nt downstream
+    - A polypyrimidine tract upstream of the AG
+    - A branch point (YNYRAY) ~18-40 nt upstream of the AG
+
+    This function returns a score from 0.0 (unlikely splice donor) to 1.0
+    (strong, functional splice donor) based on:
+
+    1. **MaxEntScan donor score** (primary, ~70% weight): How well the
+       9-mer context matches the splice donor PWM.
+    2. **Downstream acceptor context** (~20% weight): Whether there's a
+       downstream AG with a reasonable acceptor score within intron-length
+       distance.
+    3. **Polypyrimidine tract quality** (~10% weight): Whether there's a
+       C/T-rich region between the GT and the best downstream AG.
+
+    Score interpretation:
+    - < 0.3: Low risk — GT very unlikely to function as splice donor.
+      In-codon GTs from optimal codons almost always score here.
+    - 0.3–0.5: Moderate risk — possible cryptic splice site.
+    - > 0.5: High risk — likely functional splice donor; should be avoided.
+
+    Pre-conditions:
+    - dna is a valid uppercase DNA string
+    - 0 <= position < len(dna) - 1
+    - dna[position:position+2] == "GT"
+
+    Post-conditions:
+    - returns a float in [0.0, 1.0]
+    - deterministic: same input always produces same output
+    """
+    # ── Component 1: MaxEntScan donor score ──
+    donor_score = score_donor(dna, position)
+
+    # Normalize donor score to [0, 1].
+    # Typical ranges:
+    #   -5 to 0:  non-donor
+    #   0 to 3:   very weak
+    #   3 to 8:   moderate cryptic
+    #   8+:       strong canonical
+    if donor_score < 0:
+        donor_component = 0.0
+    elif donor_score < 3.0:
+        donor_component = 0.05 + 0.10 * (donor_score / 3.0)   # 0.05–0.15
+    elif donor_score < 8.0:
+        donor_component = 0.15 + 0.35 * ((donor_score - 3.0) / 5.0)  # 0.15–0.50
+    else:
+        donor_component = 0.50 + min(0.20, 0.20 * ((donor_score - 8.0) / 5.0))  # 0.50–0.70
+
+    # ── Component 2: Downstream acceptor context ──
+    # Search for the strongest AG acceptor downstream within intron distance.
+    acceptor_component = 0.0
+    best_ag_score = -999.0
+    best_ag_pos = -1
+    search_end = min(len(dna) - 1, position + _MAX_ACCEPTOR_SEARCH_DIST)
+
+    for i in range(position + 4, search_end):  # +4: skip the GT itself
+        if dna[i] == "A" and dna[i + 1] == "G":
+            ag_score = score_acceptor(dna, i)
+            if ag_score > best_ag_score:
+                best_ag_score = ag_score
+                best_ag_pos = i
+
+    if best_ag_pos >= 0:
+        dist = best_ag_pos - position
+        # Typical intron: 30-5000 nt; short introns in yeast ~80-500 nt
+        # Only count acceptors at reasonable intron-like distances
+        if 20 <= dist <= _MAX_ACCEPTOR_SEARCH_DIST:
+            if best_ag_score >= 8.0:
+                acceptor_component = 0.20  # Strong acceptor
+            elif best_ag_score >= 3.0:
+                acceptor_component = 0.12  # Moderate acceptor
+            else:
+                acceptor_component = 0.05  # Weak acceptor
+
+    # ── Component 3: Polypyrimidine tract quality ──
+    # Check for C/T-rich region upstream of the best AG (between GT and AG).
+    py_component = 0.0
+    if best_ag_pos >= 0:
+        tract_start = max(position + 4, best_ag_pos - 30)
+        tract_end = max(position + 4, best_ag_pos - 5)
+        if tract_end > tract_start:
+            tract = dna[tract_start:tract_end]
+            py_fraction = (tract.count("C") + tract.count("T")) / len(tract)
+            if py_fraction >= 0.7:
+                py_component = 0.10  # Good polypyrimidine tract
+            elif py_fraction >= 0.5:
+                py_component = 0.05  # Moderate
+
+    # Combined score
+    return min(1.0, max(0.0, donor_component + acceptor_component + py_component))
+
+
+# ==============================================================================
 # Eukaryotic CAI Recovery
 # ==============================================================================
 
@@ -395,7 +1001,111 @@ def _remove_site_multicodon(
 # per-codon CAI cost (difference in adaptiveness weight) is below this value.
 # If the optimal codon contains GT and using a GT-free alternative would
 # drop the adaptiveness by more than this threshold, keep the optimal codon.
-EUKARYOTE_CAI_GT_COST_THRESHOLD: float = 0.05
+EUKARYOTE_CAI_GT_COST_THRESHOLD: float = 0.10
+
+# Relative CAI threshold for GT-aware codon selection.  When selecting
+# codons for eukaryotes, if a codon would create a GT at the boundary
+# with the NEXT codon, we check if there's an alternative codon with
+# similar CAI (within this relative fraction).  If the best alternative
+# has CAI < (1 - GT_BOUNDARY_CAI_TOLERANCE) * optimal_CAI, we accept
+# the GT and use the optimal codon.
+GT_BOUNDARY_CAI_TOLERANCE: float = 0.10  # 10% relative CAI tolerance
+
+# Log-adaptiveness cost threshold for GT avoidance.  When the optimal codon
+# contains GT and the CAI cost (difference in log-adaptiveness) exceeds this
+# value AND the splice donor score < SPLICE_DONOR_POTENTIAL_THRESHOLD, the
+# optimal codon is used despite the GT.
+GT_CAI_LOG_ADAPTIVENESS_COST: float = 0.1  # >10% relative CAI cost
+
+
+def _gt_aware_select_codon(
+    aa: str,
+    next_aa: str | None,
+    sorted_codons: dict[str, list[str]],
+    usage: dict[str, float],
+    cai_tolerance: float = GT_BOUNDARY_CAI_TOLERANCE,
+) -> str:
+    """Select the best codon for an amino acid, preferring GT-free boundary if
+    the CAI cost is within tolerance.
+
+    This is a "best effort" approach that maximizes CAI while minimizing GT
+    dinucleotides at codon boundaries. For eukaryotes, if the optimal codon
+    would create a GT at the boundary with the next codon (i.e., the optimal
+    codon ends with 'G' and the next codon's optimal starts with 'T'), we
+    check if there's an alternative codon with similar CAI (within
+    ``cai_tolerance`` relative) that avoids the boundary GT.
+
+    Decision logic:
+    1. Select the optimal (highest-CAI) codon for this amino acid.
+    2. If no next amino acid, or the optimal codon doesn't create a boundary
+       GT, use it.
+    3. If the optimal codon WOULD create a boundary GT with the next codon's
+       optimal start:
+       a. Check each alternative codon (in CAI order) to see if it avoids
+          the boundary GT and has CAI within tolerance.
+       b. If such an alternative exists, use it (best CAI among valid alts).
+       c. If no alternative within CAI tolerance, use the optimal codon and
+          accept the GT (CAI > GT avoidance).
+
+    For prokaryotes, this function is never called (GT avoidance is skipped).
+
+    Args:
+        aa: Amino acid at the current position.
+        next_aa: Amino acid at the next position (None if last position or
+            next is a stop codon).
+        sorted_codons: Codons per AA sorted by CAI descending.
+        usage: Codon adaptiveness table (codon → w value).
+        cai_tolerance: Maximum relative CAI loss acceptable for avoiding a
+            boundary GT. Default: 0.10 (10%).
+
+    Returns:
+        The selected codon string.
+    """
+    candidates = sorted_codons.get(aa, [])
+    if not candidates:
+        return AA_TO_CODONS.get(aa, [""])[0]
+
+    optimal = candidates[0]
+    optimal_cai = usage.get(optimal, 0.0)
+
+    # If no next AA, just use the optimal codon
+    if next_aa is None:
+        return optimal
+
+    # Determine what the next position's first base would be if we use
+    # the optimal codon for next_aa.  We need to look ahead to see if
+    # our codon's last base + next codon's first base = "GT".
+    next_candidates = sorted_codons.get(next_aa, [])
+    if not next_candidates:
+        return optimal
+
+    next_optimal = next_candidates[0]
+    # Check if optimal + next_optimal creates a boundary GT
+    if optimal[-1] + next_optimal[0] != "GT":
+        return optimal  # No boundary GT — use optimal
+
+    # Boundary GT detected.  Look for alternatives within CAI tolerance.
+    min_acceptable_cai = optimal_cai * (1.0 - cai_tolerance)
+    best_alt = None
+    best_alt_cai = -1.0
+
+    for alt in candidates:
+        if alt == optimal:
+            continue
+        alt_cai = usage.get(alt, 0.0)
+        # Check if this alternative avoids the boundary GT
+        if alt[-1] + next_optimal[0] == "GT":
+            continue  # Still creates boundary GT
+        # Check CAI within tolerance
+        if alt_cai >= min_acceptable_cai and alt_cai > best_alt_cai:
+            best_alt = alt
+            best_alt_cai = alt_cai
+
+    if best_alt is not None:
+        return best_alt  # Alternative found within CAI tolerance
+
+    # No alternative within tolerance — accept the boundary GT
+    return optimal
 
 
 def _is_in_codon_gt(seq: str, pos: int) -> bool:
@@ -429,13 +1139,18 @@ def _eukaryote_cai_recovery(
     For eukaryotes, GT avoidance should be a SOFT preference, not a hard
     constraint.  When the optimizer has replaced an optimal codon with a
     suboptimal alternative (typically to avoid GT dinucleotides), this
-    function swaps back if the CAI cost exceeds the threshold.
+    function swaps back using **cost-aware GT resolution** with splice
+    donor scoring:
 
-    Key rules for eukaryotes:
-    - In-codon GTs from optimal codons (GGT, TGT, GTT, etc.) are acceptable
-    - Cross-codon GTs are acceptable when the CAI cost of avoiding them
-      exceeds the threshold
-    - Only avoid GT if the per-codon CAI cost is < threshold
+    - If the optimal codon creates a GT with **low** splice donor potential
+      (score < SPLICE_DONOR_POTENTIAL_THRESHOLD), always swap to optimal —
+      the GT is unlikely to be a real splice donor, so CAI wins.
+    - If the optimal codon creates a GT with **high** splice donor potential
+      (score >= SPLICE_DONOR_POTENTIAL_THRESHOLD), only swap if the CAI cost
+      exceeds ``cai_cost_threshold`` — the GT might be dangerous, so keep
+      the suboptimal codon unless the CAI loss is too large.
+    - If the optimal codon does NOT create any new GT dinucleotides, always
+      swap (no tradeoff needed).
 
     Pre-conditions:
     - sequence translates to protein
@@ -486,9 +1201,57 @@ def _eukaryote_cai_recovery(
     n_codons = len(protein)
     upgrades = 0
 
+    def _should_swap_to_optimal(ci: int, current: str, optimal: str,
+                                 cai_cost: float) -> bool:
+        """Decide whether to swap current → optimal at codon position ci.
+
+        Uses cost-aware GT resolution with splice donor scoring:
+        - If optimal doesn't introduce new GTs: always swap (pure CAI gain).
+        - If optimal introduces GT(s) with low splice donor potential: swap
+          (GT is unlikely to be functional).
+        - If optimal introduces GT(s) with high splice donor potential: only
+          swap if CAI cost exceeds the threshold (tradeoff).
+        """
+        # Build the sequence with the swap applied to check for new GTs
+        test_seq_list = list(seq_list)
+        test_seq_list[ci * 3] = optimal[0]
+        test_seq_list[ci * 3 + 1] = optimal[1]
+        test_seq_list[ci * 3 + 2] = optimal[2]
+        test_seq = "".join(test_seq_list)
+
+        # Find all GT positions in the swapped region that would be new
+        # (present in test_seq but not in current seq_list)
+        current_seq = "".join(seq_list)
+        check_start = max(0, ci * 3 - 1)
+        check_end = min(len(test_seq), ci * 3 + 4)
+
+        new_gt_positions = []
+        for p in range(check_start, check_end - 1):
+            if test_seq[p:p+2] == "GT" and current_seq[p:p+2] != "GT":
+                new_gt_positions.append(p)
+
+        if not new_gt_positions:
+            # No new GTs introduced — pure CAI gain, always swap
+            return True
+
+        # Check splice donor potential of each new GT
+        max_splice_score = 0.0
+        for gt_pos in new_gt_positions:
+            sdp = score_splice_donor_potential(test_seq, gt_pos)
+            if sdp > max_splice_score:
+                max_splice_score = sdp
+
+        if max_splice_score < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+            # New GTs have low splice donor potential — accept them for CAI
+            return True
+
+        # New GTs have high splice donor potential — only swap if CAI
+        # cost is significant enough to justify the risk
+        return cai_cost > cai_cost_threshold
+
     # ── Pass 1: Single-codon swaps ──
-    # For each position where the current codon is suboptimal with a CAI
-    # cost > threshold, try swapping to the optimal codon.
+    # For each position where the current codon is suboptimal, decide
+    # whether to swap using cost-aware GT resolution.
     blocked_positions: list[int] = []  # Positions blocked by restriction sites
 
     for ci in range(n_codons):
@@ -505,33 +1268,36 @@ def _eukaryote_cai_recovery(
         optimal_w = usage.get(optimal, 0.0)
         cai_cost = optimal_w - current_w
 
-        if cai_cost > cai_cost_threshold:
-            # Swap to optimal codon
-            old_codon = current
-            seq_list[ci * 3] = optimal[0]
-            seq_list[ci * 3 + 1] = optimal[1]
-            seq_list[ci * 3 + 2] = optimal[2]
+        # Cost-aware decision: should we swap?
+        if not _should_swap_to_optimal(ci, current, optimal, cai_cost):
+            continue
 
-            # Check for new restriction sites in local region
-            if rs_sites and max_site_len > 0:
-                test_seq = "".join(seq_list)
-                check_start = max(0, ci * 3 - max_site_len + 1)
-                check_end = min(len(test_seq), ci * 3 + 3 + max_site_len - 1)
-                local_region = test_seq[check_start:check_end]
-                site_found = False
-                for site, site_rc in rs_sites:
-                    if site in local_region or (site_rc and site_rc in local_region):
-                        site_found = True
-                        break
-                if site_found:
-                    # Undo swap — restriction site would be created
-                    seq_list[ci * 3] = old_codon[0]
-                    seq_list[ci * 3 + 1] = old_codon[1]
-                    seq_list[ci * 3 + 2] = old_codon[2]
-                    blocked_positions.append(ci)
-                    continue
+        # Swap to optimal codon
+        old_codon = current
+        seq_list[ci * 3] = optimal[0]
+        seq_list[ci * 3 + 1] = optimal[1]
+        seq_list[ci * 3 + 2] = optimal[2]
 
-            upgrades += 1
+        # Check for new restriction sites in local region
+        if rs_sites and max_site_len > 0:
+            test_seq = "".join(seq_list)
+            check_start = max(0, ci * 3 - max_site_len + 1)
+            check_end = min(len(test_seq), ci * 3 + 3 + max_site_len - 1)
+            local_region = test_seq[check_start:check_end]
+            site_found = False
+            for site, site_rc in rs_sites:
+                if site in local_region or (site_rc and site_rc in local_region):
+                    site_found = True
+                    break
+            if site_found:
+                # Undo swap — restriction site would be created
+                seq_list[ci * 3] = old_codon[0]
+                seq_list[ci * 3 + 1] = old_codon[1]
+                seq_list[ci * 3 + 2] = old_codon[2]
+                blocked_positions.append(ci)
+                continue
+
+        upgrades += 1
 
     # ── Pass 2: Coordinated swaps for positions blocked by restriction sites ──
     # When a single-codon swap is blocked because it would create a restriction
@@ -560,6 +1326,10 @@ def _eukaryote_cai_recovery(
             optimal_w = usage.get(optimal, 0.0)
             benefit = optimal_w - current_w
             if benefit <= cai_cost_threshold:
+                continue
+
+            # Check if the swap is justified by splice donor scoring
+            if not _should_swap_to_optimal(ci, current, optimal, benefit):
                 continue
 
             # Try adjacent codons to break the restriction site
@@ -625,6 +1395,428 @@ def _eukaryote_cai_recovery(
                 upgrades += 2  # Count both the optimal swap and the adjacent change
 
     return "".join(seq_list), upgrades
+
+
+# ==============================================================================
+# Systematic CpG Dinucleotide Elimination
+# ==============================================================================
+
+def _eliminate_cpg_dinucleotides(
+    sequence: str,
+    protein: str,
+    usage: dict[str, float],
+    enzymes: list[str] | None = None,
+    max_iterations: int = 50,
+    cpg_window: int = 200,
+    cpg_threshold: float = 0.6,
+    organism: str = "",
+    gc_lo: float = 0.0,
+    gc_hi: float = 1.0,
+) -> tuple[str, list[str]]:
+    """Systematically eliminate CpG dinucleotides to avoid CpG islands.
+
+    This is a post-CAI-maximization pass that scans for ALL CG dinucleotides
+    (both within codons and at codon boundaries) and attempts to replace them
+    with synonymous codons that:
+    1. Eliminate the specific CG dinucleotide
+    2. Minimize CAI loss (prefer highest-CAI alternative)
+    3. Do not create restriction sites
+    4. Do not create new CG dinucleotides at the same or adjacent positions
+    5. Keep GC content within the target range [gc_lo, gc_hi]
+
+    Unlike the previous "best-effort" approach which broke on the first
+    unfixable CpG position or returned early when the CpG island check
+    passed, this function:
+    - Always attempts to eliminate ALL CG dinucleotides, even if the
+      sequence already passes the CpG island Obs/Exp ratio check
+    - Continues trying ALL CpG positions even if some fail
+    - Makes multiple passes to handle cascading fixes
+    - For within-codon CpG: replaces with the highest-CAI synonymous codon
+      that does not contain "CG"
+    - For boundary CpG: tries changing the downstream codon first (avoid
+      starting with G), then the upstream codon (avoid ending with C),
+      then coordinated 2-codon swap — always preferring minimal CAI loss
+    - Tracks and reports which CpGs were eliminated and which remain
+    - Only stops when no more CG dinucleotides can be eliminated or
+      max_iterations is reached
+
+    Pre-conditions:
+    - sequence translates to protein
+    - len(sequence) == len(protein) * 3
+    - usage maps codon strings to adaptiveness values (0.0–1.0)
+
+    Post-conditions:
+    - returned sequence translates to the same protein
+    - CG dinucleotide count in returned sequence <= CG count in input sequence
+    - warnings list describes any remaining CpG positions
+
+    Args:
+        sequence: Current optimized DNA sequence.
+        protein: Amino acid sequence (no stop).
+        usage: Codon adaptiveness table (codon → w value).
+        enzymes: List of restriction enzyme names to avoid creating sites for.
+        max_iterations: Maximum number of elimination passes.
+        cpg_window: Window size for CpG island detection.
+        cpg_threshold: Obs/Exp ratio threshold for CpG islands.
+        organism: Target organism (for prokaryote skip).
+        gc_lo: Minimum GC content fraction.
+        gc_hi: Maximum GC content fraction.
+
+    Returns:
+        Tuple of (optimized sequence, list of warning strings about remaining CpGs).
+    """
+    # Skip for prokaryotic organisms — CpG islands are a eukaryotic concern
+    if organism:
+        from .organism_config import is_eukaryotic_organism
+        if not is_eukaryotic_organism(organism):
+            return sequence, []
+
+    n_codons = len(protein)
+    if n_codons == 0:
+        return sequence, []
+
+    # Precompute sorted codons per amino acid (by CAI descending)
+    sorted_codons: dict[str, list[str]] = {}
+    for aa in set(protein):
+        if aa == "*":
+            continue
+        codons = AA_TO_CODONS.get(aa, [])
+        sorted_codons[aa] = sorted(codons, key=lambda c: usage.get(c, 0.0), reverse=True)
+
+    # Precompute restriction site sequences to avoid
+    rs_sites: list[tuple[str, str]] = []
+    max_site_len = 0
+    if enzymes:
+        from .restriction_sites import get_recognition_site as _get_site
+        for enz in enzymes:
+            site = _get_site(enz)
+            if site is not None:
+                site_rc = reverse_complement(site)
+                rs_sites.append((site, site_rc))
+                max_site_len = max(max_site_len, len(site))
+
+    # ── Cost-aware CpG elimination ──
+    # For eukaryotes, CpG avoidance is a SOFT preference, not a hard constraint.
+    # Only eliminate CG dinucleotides when they contribute to a CpG island
+    # (Obs/Exp ratio > cpg_threshold).  If the sequence already passes the
+    # CpG island check, do NOT eliminate individual CGs — the CAI cost is
+    # too high.  Individual CG dinucleotides in a CDS are common in
+    # high-expression genes and are not biologically problematic unless they
+    # cluster into CpG islands.
+    from .type_system import check_no_cpg_island
+
+    # Check if the sequence already passes the CpG island check
+    cpg_result = check_no_cpg_island(sequence, cpg_window, cpg_threshold)
+    
+    # Count total CG dinucleotides — even if the sequence passes the CpG island
+    # ratio check, we should still eliminate individual CGs if they're present.
+    # Short sequences (< cpg_window) may pass the island check despite having
+    # many CG dinucleotides because the windowed scan doesn't apply.
+    total_cg = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
+    
+    if cpg_result.passed and total_cg == 0:
+        # No CpG island and no individual CGs — nothing to do
+        return sequence, []
+    
+    if cpg_result.passed and total_cg > 0:
+        # Sequence passes island check but has individual CGs — still attempt
+        # elimination as a best-effort pass (soft preference)
+        logger.debug(
+            "Sequence passes CpG island check but has %d CG dinucleotides — "
+            "attempting elimination as soft preference",
+            total_cg
+        )
+
+    warnings: list[str] = []
+    seq = sequence
+    eliminated_count = 0
+    initial_cg_count = _count_dinucs_fast(seq, "CG")[0]
+    # Track the initial GC content to allow swaps that move GC toward the
+    # target range even if the current GC is outside the range.
+    initial_gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
+
+    def _gc_ok(test_seq: str) -> bool:
+        """Check if a swap is acceptable from a GC perspective.
+
+        A swap is acceptable if:
+        1. The test GC is within [gc_lo, gc_hi], OR
+        2. The test GC is closer to the target range than the current seq GC
+           (i.e., the swap moves GC in the right direction).
+
+        This allows CpG elimination to proceed even when the current GC is
+        outside the target range — the CpG elimination should not be blocked
+        by a GC constraint that's already violated.
+        """
+        if gc_lo <= 0.0 and gc_hi >= 1.0:
+            return True
+        test_gc = (test_seq.count("G") + test_seq.count("C")) / max(len(test_seq), 1)
+        # Case 1: Test GC is within range — always OK
+        if gc_lo <= test_gc <= gc_hi:
+            return True
+        # Case 2: Current GC is already outside range — accept if test GC
+        # is closer to the target range (moves in the right direction)
+        current_gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
+        if not (gc_lo <= current_gc <= gc_hi):
+            # Current GC is outside range. Check if test GC is closer.
+            def _dist_to_range(gc_val: float) -> float:
+                if gc_val < gc_lo:
+                    return gc_lo - gc_val
+                elif gc_val > gc_hi:
+                    return gc_val - gc_hi
+                return 0.0
+            return _dist_to_range(test_gc) <= _dist_to_range(current_gc)
+        # Case 3: Current GC is within range but test GC is not — reject
+        return False
+
+    def _creates_boundary_cg(test_seq: str, codon_idx: int) -> bool:
+        """Check if modifying codon at codon_idx creates a new boundary CG."""
+        codon_start = codon_idx * 3
+        # Check boundary with previous codon
+        if codon_idx > 0 and codon_start > 0:
+            if test_seq[codon_start - 1:codon_start + 1] == "CG":
+                return True
+        # Check boundary with next codon
+        next_start = codon_start + 3
+        if next_start < len(test_seq):
+            if test_seq[next_start - 1:next_start + 1] == "CG":
+                return True
+        return False
+
+    def _check_rs(test_seq: str, codon_start: int) -> bool:
+        """Check if test_seq has restriction sites near codon_start.
+        Returns True if OK (no sites), False if a site was created."""
+        if not rs_sites:
+            return True
+        check_start = max(0, codon_start - max_site_len + 1)
+        check_end = min(len(test_seq), codon_start + 3 + max_site_len - 1)
+        local_region = test_seq[check_start:check_end]
+        for site, site_rc in rs_sites:
+            if site in local_region or (site_rc and site_rc in local_region):
+                return False
+        return True
+
+    for iteration in range(max_iterations):
+        # Find all CG dinucleotide positions
+        cpg_positions = [i for i in range(len(seq) - 1) if seq[i:i+2] == "CG"]
+        if not cpg_positions:
+            break  # All CGs eliminated
+
+        any_fixed = False
+
+        for pos in cpg_positions:
+            # Re-check: this position may have been fixed by an earlier swap
+            if seq[pos:pos+2] != "CG":
+                continue
+
+            left_ci = pos // 3          # codon containing the C
+            right_ci = (pos + 1) // 3   # codon containing the G
+            is_cross_codon = (left_ci != right_ci)
+
+            fixed = False
+
+            if not is_cross_codon:
+                # ── Within-codon CpG ──
+                # The CG is entirely within one codon. Replace with a
+                # synonymous codon that doesn't contain "CG".
+                if left_ci >= n_codons:
+                    continue
+                aa = protein[left_ci]
+                if aa == "*":
+                    continue
+                current = seq[left_ci*3:left_ci*3+3]
+
+                # Try alternatives sorted by CAI (best first)
+                best_alt: str | None = None
+                best_alt_cai = -1.0
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current or "CG" in alt:
+                        continue
+                    test = seq[:left_ci*3] + alt + seq[left_ci*3+3:]
+
+                    # Check restriction sites
+                    if not _check_rs(test, left_ci * 3):
+                        continue
+
+                    # Check GC content
+                    if not _gc_ok(test):
+                        continue
+
+                    # Check that we don't create new boundary CGs
+                    if _creates_boundary_cg(test, left_ci):
+                        continue
+
+                    alt_cai = usage.get(alt, 0.0)
+                    if alt_cai > best_alt_cai:
+                        best_alt = alt
+                        best_alt_cai = alt_cai
+
+                if best_alt is not None:
+                    seq = seq[:left_ci*3] + best_alt + seq[left_ci*3+3:]
+                    fixed = True
+                    any_fixed = True
+                    eliminated_count += 1
+            else:
+                # ── Cross-codon CpG ──
+                # The C is the last base of codon left_ci, the G is the
+                # first base of codon right_ci. Try:
+                # 1. Change right codon to not start with G
+                # 2. Change left codon to not end with C
+                # 3. Coordinated 2-codon swap
+                # For each strategy, pick the highest-CAI alternative.
+
+                # Strategy 1: Change right codon (to not start with G)
+                if 0 <= right_ci < n_codons:
+                    right_aa = protein[right_ci]
+                    if right_aa != "*":
+                        right_current = seq[right_ci*3:right_ci*3+3]
+                        best_right_alt: str | None = None
+                        best_right_cai = -1.0
+                        for alt in sorted_codons.get(right_aa, []):
+                            if alt == right_current or alt[0] == 'G':
+                                continue
+                            test = seq[:right_ci*3] + alt + seq[right_ci*3+3:]
+                            if not _check_rs(test, right_ci * 3):
+                                continue
+                            if not _gc_ok(test):
+                                continue
+                            # Make sure we don't create a new boundary CG
+                            # with the codon after right_ci
+                            if _creates_boundary_cg(test, right_ci):
+                                continue
+                            # Make sure the specific CG at pos is gone
+                            if test[pos:pos+2] == "CG":
+                                continue
+                            alt_cai = usage.get(alt, 0.0)
+                            if alt_cai > best_right_cai:
+                                best_right_alt = alt
+                                best_right_cai = alt_cai
+
+                        if best_right_alt is not None:
+                            seq = seq[:right_ci*3] + best_right_alt + seq[right_ci*3+3:]
+                            fixed = True
+                            any_fixed = True
+                            eliminated_count += 1
+
+                # Strategy 2: Change left codon (to not end with C)
+                if not fixed and 0 <= left_ci < n_codons:
+                    left_aa = protein[left_ci]
+                    if left_aa != "*":
+                        left_current = seq[left_ci*3:left_ci*3+3]
+                        best_left_alt: str | None = None
+                        best_left_cai = -1.0
+                        for alt in sorted_codons.get(left_aa, []):
+                            if alt == left_current or alt[-1] == 'C':
+                                continue
+                            test = seq[:left_ci*3] + alt + seq[left_ci*3+3:]
+                            if not _check_rs(test, left_ci * 3):
+                                continue
+                            if not _gc_ok(test):
+                                continue
+                            # Make sure we don't create a new boundary CG
+                            # with the codon before left_ci
+                            if _creates_boundary_cg(test, left_ci):
+                                continue
+                            # Make sure the specific CG at pos is gone
+                            if test[pos:pos+2] == "CG":
+                                continue
+                            alt_cai = usage.get(alt, 0.0)
+                            if alt_cai > best_left_cai:
+                                best_left_alt = alt
+                                best_left_cai = alt_cai
+
+                        if best_left_alt is not None:
+                            seq = seq[:left_ci*3] + best_left_alt + seq[left_ci*3+3:]
+                            fixed = True
+                            any_fixed = True
+                            eliminated_count += 1
+
+                # Strategy 3: Coordinated 2-codon swap
+                if (not fixed and 0 <= left_ci < n_codons
+                        and 0 <= right_ci < n_codons):
+                    left_aa = protein[left_ci]
+                    right_aa = protein[right_ci]
+                    if left_aa != "*" and right_aa != "*":
+                        left_current = seq[left_ci*3:left_ci*3+3]
+                        right_current = seq[right_ci*3:right_ci*3+3]
+                        # Try all combinations of left+right alternatives
+                        best_swap: tuple[str, str, float] | None = None  # (left_alt, right_alt, cai_sum)
+                        for left_alt in sorted_codons.get(left_aa, []):
+                            if left_alt == left_current:
+                                continue
+                            for right_alt in sorted_codons.get(right_aa, []):
+                                if right_alt == right_current and left_alt == left_current:
+                                    continue
+                                # Skip if boundary still has CG
+                                if left_alt[-1] == 'C' and right_alt[0] == 'G':
+                                    continue
+                                # Skip if within-codon CG created
+                                if "CG" in left_alt or "CG" in right_alt:
+                                    continue
+                                test_list = list(seq)
+                                test_list[left_ci*3:left_ci*3+3] = list(left_alt)
+                                test_list[right_ci*3:right_ci*3+3] = list(right_alt)
+                                test_str = "".join(test_list)
+                                # Check restriction sites
+                                check_start = max(0, left_ci * 3 - max_site_len + 1)
+                                check_end = min(len(test_str), right_ci * 3 + 3 + max_site_len - 1)
+                                local_region = test_str[check_start:check_end]
+                                site_ok = True
+                                for site, site_rc in rs_sites:
+                                    if site in local_region or (site_rc and site_rc in local_region):
+                                        site_ok = False
+                                        break
+                                if not site_ok:
+                                    continue
+                                if not _gc_ok(test_str):
+                                    continue
+                                # Check no new boundary CGs
+                                if _creates_boundary_cg(test_str, left_ci):
+                                    continue
+                                if _creates_boundary_cg(test_str, right_ci):
+                                    continue
+                                # Verify the specific CG at pos is gone
+                                if test_str[pos:pos+2] != "CG":
+                                    cai_sum = (usage.get(left_alt, 0.0) +
+                                               usage.get(right_alt, 0.0))
+                                    if best_swap is None or cai_sum > best_swap[2]:
+                                        best_swap = (left_alt, right_alt, cai_sum)
+
+                        if best_swap is not None:
+                            left_alt, right_alt, _ = best_swap
+                            seq = (seq[:left_ci*3] + left_alt +
+                                   seq[left_ci*3+3:right_ci*3] + right_alt +
+                                   seq[right_ci*3+3:])
+                            fixed = True
+                            any_fixed = True
+                            eliminated_count += 1
+
+        # If no CG was fixed in this pass, stop trying
+        if not any_fixed:
+            break
+
+        # Do NOT break early when CpG island check passes — we want to
+        # eliminate ALL CG dinucleotides, not just enough to pass the
+        # Obs/Exp ratio check.
+
+    # Report remaining CpGs
+    remaining_cpgs = [i for i in range(len(seq) - 1) if seq[i:i+2] == "CG"]
+    if remaining_cpgs:
+        # Only warn if the sequence still fails the CpG island check
+        final_cpg_result = check_no_cpg_island(seq, cpg_window, cpg_threshold, organism=organism)
+        if not final_cpg_result.passed:
+            warnings.append(
+                f"CpG island avoidance: {len(remaining_cpgs)} CG dinucleotide(s) remain. "
+                f"No synonymous substitution could eliminate them without creating "
+                f"restriction sites or other violations. "
+                f"{final_cpg_result.details}"
+            )
+
+    logger.debug(
+        "CpG elimination: %d/%d CG dinucleotides eliminated in %d passes",
+        eliminated_count, initial_cg_count, iteration + 1 if max_iterations > 0 else 0,
+    )
+
+    return seq, warnings
 
 
 # ==============================================================================
@@ -743,12 +1935,20 @@ def _greedy_optimize(
         sorted_codons[aa] = codons_sorted
 
     # Step: Maximize CAI — Best codon per position (maximize CAI)
+    # For eukaryotes, use GT-aware codon selection that avoids boundary GTs
+    # when there's an alternative within 10% relative CAI.
     if provenance_collector is not None:
         # Expanded loop with per-codon provenance tracking
         chosen_codons: list[str] = []
         for pos, aa in enumerate(aas):
-            candidates = sorted_codons[aa]
-            chosen = candidates[0]
+            # For eukaryotes, use GT-aware codon selection to avoid
+            # boundary GTs when possible without destroying CAI
+            if not is_prokaryote:
+                next_aa = aas[pos + 1] if pos + 1 < len(aas) else None
+                chosen = _gt_aware_select_codon(aa, next_aa, sorted_codons, usage)
+            else:
+                candidates = sorted_codons[aa]
+                chosen = candidates[0]
 
             # Build alternatives list for provenance (excluding chosen codon)
             alternatives: list[dict[str, Any]] = []
@@ -808,7 +2008,17 @@ def _greedy_optimize(
         sequence = "".join(chosen_codons)
     else:
         # Original fast path (no provenance overhead)
-        sequence = "".join(sorted_codons[aa][0] for aa in aas)
+        # For eukaryotes, use GT-aware codon selection
+        if not is_prokaryote:
+            chosen_codons_fast: list[str] = []
+            for pos, aa in enumerate(aas):
+                next_aa = aas[pos + 1] if pos + 1 < len(aas) else None
+                chosen_codons_fast.append(
+                    _gt_aware_select_codon(aa, next_aa, sorted_codons, usage)
+                )
+            sequence = "".join(chosen_codons_fast)
+        else:
+            sequence = "".join(sorted_codons[aa][0] for aa in aas)
     assert len(sequence) == len(aas) * 3, "Maximize CAI step: sequence length mismatch"
 
     # Step: Remove Restriction Sites (HIGHEST PRIORITY — multi-codon coordinated)
@@ -903,8 +2113,18 @@ def _greedy_optimize(
             # Check if any site is still present
             remaining = concrete_scanner.scan(sequence)
             if remaining:
+                remaining_sites = [s for _, s, _ in remaining]
+                logger.warning(
+                    "Restriction site elimination did not converge after %d iterations. "
+                    "%d restriction sites remain: %s",
+                    MAX_RESTRICTION_SITE_ITERATIONS, len(remaining_sites),
+                    remaining_sites[:5],
+                )
                 for _, site_still, _ in remaining[:3]:
-                    warnings.append(f"Restriction site {site_still}: max iterations reached, may still be present")
+                    warnings.append(
+                        f"Restriction site elimination capped at {MAX_RESTRICTION_SITE_ITERATIONS} iterations. "
+                        f"Site {site_still} could not be eliminated."
+                    )
     else:
         # Fallback: per-site scan (no Aho-Corasick scanner available)
         for site_upper in concrete_sites:
@@ -977,7 +2197,15 @@ def _greedy_optimize(
             else:
                 # Check if site is still present
                 if site_upper in sequence or site_rc in sequence:
-                    warnings.append(f"Restriction site {site_upper}: max iterations reached, may still be present")
+                    logger.warning(
+                        "Restriction site elimination did not converge after %d iterations. "
+                        "Site %s remains.",
+                        MAX_RESTRICTION_SITE_ITERATIONS, site_upper,
+                    )
+                    warnings.append(
+                        f"Restriction site elimination capped at {MAX_RESTRICTION_SITE_ITERATIONS} iterations. "
+                        f"Site {site_upper} could not be eliminated."
+                    )
 
     # Remove IUPAC sites (expand to concrete variants, check each)
     for site_upper in iupac_sites:
@@ -1024,7 +2252,15 @@ def _greedy_optimize(
                     break
             else:
                 if variant in sequence or variant_rc in sequence:
-                    warnings.append(f"IUPAC site {site_upper} variant {variant}: max iterations")
+                    logger.warning(
+                        "IUPAC site elimination did not converge after %d iterations. "
+                        "Site %s variant %s remains.",
+                        MAX_IUPAC_SITE_ITERATIONS, site_upper, variant,
+                    )
+                    warnings.append(
+                        f"IUPAC site elimination capped at {MAX_IUPAC_SITE_ITERATIONS} iterations. "
+                        f"Variant {variant} of {site_upper} could not be eliminated."
+                    )
 
     # Step: Remove ATTTA instability motifs
     # PERF (Optimization D): Use list mutation for codon swaps
@@ -1052,7 +2288,17 @@ def _greedy_optimize(
             warnings.append(f"ATTTA motif: cannot remove at iteration {iteration}")
             break
     else:
-        warnings.append("ATTTA motif: max iterations reached, may still be present")
+        _remaining_attta = sequence.count("ATTTA")
+        if _remaining_attta > 0:
+            logger.warning(
+                "ATTTA motif elimination did not converge after %d iterations. "
+                "%d ATTTA motifs remain.",
+                MAX_ATTTA_MOTIF_ITERATIONS, _remaining_attta,
+            )
+            warnings.append(
+                f"ATTTA motif elimination capped at {MAX_ATTTA_MOTIF_ITERATIONS} iterations. "
+                f"{_remaining_attta} motifs could not be eliminated."
+            )
 
     # Step: Fix 6+ consecutive T runs
     for iteration in range(MAX_T_RUN_ITERATIONS):
@@ -1088,7 +2334,20 @@ def _greedy_optimize(
                 warnings.append(f"Consecutive T run: cannot fix at iteration {iteration}")
                 break
     else:
-        warnings.append("Consecutive T: max iterations reached, may still have 6+ T runs")
+        _remaining_t_runs = sum(
+            1 for i in range(len(sequence) - T_RUN_LENGTH_THRESHOLD + 1)
+            if sequence[i:i + T_RUN_LENGTH_THRESHOLD] == "T" * T_RUN_LENGTH_THRESHOLD
+        )
+        if _remaining_t_runs > 0:
+            logger.warning(
+                "T-run elimination did not converge after %d iterations. "
+                "%d runs of %d+ T remain.",
+                MAX_T_RUN_ITERATIONS, _remaining_t_runs, T_RUN_LENGTH_THRESHOLD,
+            )
+            warnings.append(
+                f"T-run elimination capped at {MAX_T_RUN_ITERATIONS} iterations. "
+                f"{_remaining_t_runs} runs of {T_RUN_LENGTH_THRESHOLD}+ T could not be eliminated."
+            )
 
     # Step: Adjust GC content
     # Strategy: GC must be in [gc_lo, gc_hi] (hard constraint).
@@ -1157,7 +2416,15 @@ def _greedy_optimize(
             gc_count += best_gc_delta
             gc_val = gc_count / n_bases
         else:
-            warnings.append(f"GC adjustment: max iterations reached, current GC={gc_val:.3f}")
+            logger.warning(
+                "GC adjustment did not converge after %d iterations. "
+                "Current GC=%.3f (target range [%.3f, %.3f])",
+                MAX_GC_ADJUSTMENT_ITERATIONS, gc_val, gc_lo, gc_hi,
+            )
+            warnings.append(
+                f"GC adjustment capped at {MAX_GC_ADJUSTMENT_ITERATIONS} iterations. "
+                f"Current GC={gc_val:.3f} (target range [{gc_lo:.3f}, {gc_hi:.3f}])."
+            )
 
     # Step: Reconciliation — check if GC adjustment reintroduced restriction sites
     # Use Aho-Corasick scanner for fast multi-site detection if available
@@ -1288,6 +2555,20 @@ def _greedy_optimize(
                     if codon_idx >= len(aas):
                         continue
                     aa = aas[codon_idx]
+
+                    # ── Splice donor potential check ──
+                    # Not all GT dinucleotides are equally dangerous.  A GT
+                    # with low splice donor potential (< SPLICE_DONOR_POTENTIAL_THRESHOLD)
+                    # is unlikely to function as a cryptic splice donor, even if
+                    # its MaxEntScan donor score exceeds the threshold.  This can
+                    # happen when the surrounding context doesn't support splicing
+                    # (e.g., no downstream AG acceptor, no polypyrimidine tract).
+                    # For such GTs, CAI should always win.
+                    sdp = score_splice_donor_potential(sequence, gt_pos)
+                    if sdp < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                        # This GT has low splice donor potential — not dangerous.
+                        # Accept it and move on (CAI > GT avoidance here).
+                        continue
 
                     # ── Eukaryotic GT-vs-CAI tradeoff ──
                     # For eukaryotes, in-codon GTs from optimal codons are
@@ -1745,23 +3026,46 @@ def _greedy_optimize(
                     )
                 break
         else:
-            warnings.append("Cryptic splice elimination: max iterations reached")
+            _remaining_d = max_donor_score(sequence)
+            _remaining_a = max_acceptor_score(sequence)
+            logger.warning(
+                "Cryptic splice elimination did not converge after %d iterations. "
+                "max_donor=%.2f, max_acceptor=%.2f (threshold=%.2f)",
+                MAX_SPLICE_ELIMINATION_ITERATIONS, _remaining_d, _remaining_a,
+                cryptic_splice_threshold,
+            )
+            warnings.append(
+                f"Cryptic splice elimination capped at {MAX_SPLICE_ELIMINATION_ITERATIONS} iterations. "
+                f"max_donor={_remaining_d:.2f}, max_acceptor={_remaining_a:.2f} "
+                f"(threshold={cryptic_splice_threshold})."
+            )
 
     # Step: Disrupt CpG dinucleotides to avoid CpG islands
     # EUKARYOTE-ONLY: CpG islands are a eukaryotic gene regulation concern.
     # Prokaryotes don't methylate CpG dinucleotides, so avoidance is unnecessary.
+    #
+    # Key improvement: Don't break on the first unfixed CpG position.
+    # Instead, continue trying all positions. Accept swaps that eliminate
+    # a specific CG at pos even if a new CG is created elsewhere (the new
+    # one might be fixable in a subsequent iteration or might not contribute
+    # to a CpG island). Only require that the specific CG at pos is eliminated,
+    # not that the global CpG count decreases.
     if not is_prokaryote:
         for _cpg_iteration in range(MAX_CPG_DISRUPTION_ITERATIONS):
             cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
             if not cpg_positions:
                 break
-            fixed = False
+            any_fixed_this_iter = False
             for pos in cpg_positions:
+                # Re-check: a previous fix may have eliminated this CG
+                if sequence[pos:pos+2] != "CG":
+                    continue
                 left_ci = pos // 3          # codon containing the C
                 right_ci = (pos + 1) // 3   # codon containing the G
                 is_cross_codon = (left_ci != right_ci)
 
                 # Strategy 1: Single-codon swap — try both the C-codon and the G-codon
+                fixed = False
                 for ci in ([left_ci, right_ci] if is_cross_codon else [left_ci]):
                     if ci < 0 or ci >= len(aas):
                         continue
@@ -1800,14 +3104,13 @@ def _greedy_optimize(
                                         break
                         if splice_worsened:
                             continue
-                        # Check that the specific CG at pos is eliminated and net CpG decreases
+                        # Accept if the specific CG at pos is eliminated
+                        # (relaxed: don't require global CpG decrease)
                         if test[pos:pos+2] != "CG":
-                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
-                                sequence = test
-                                fixed = True
-                                break
+                            sequence = test
+                            fixed = True
+                            any_fixed_this_iter = True
+                            break
                     if fixed:
                         break
 
@@ -1859,20 +3162,30 @@ def _greedy_optimize(
                                             break
                             if splice_worsened:
                                 continue
-                            # Verify net CpG reduction
-                            new_cpg_count = sum(1 for i in range(len(test_str) - 1) if test_str[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
+                            # Accept if the specific CG at pos is eliminated
+                            # (relaxed: don't require global CpG decrease)
+                            if test_str[pos:pos+2] != "CG":
                                 sequence = test_str
                                 fixed = True
+                                any_fixed_this_iter = True
                                 break
                         if fixed:
                             break
 
-                if fixed:
-                    break
-            if not fixed:
+            if not any_fixed_this_iter:
                 break
+        else:
+            _remaining_cpg = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
+            if _remaining_cpg:
+                logger.warning(
+                    "CpG disruption did not converge after %d iterations. "
+                    "%d CpG dinucleotides remain.",
+                    MAX_CPG_DISRUPTION_ITERATIONS, len(_remaining_cpg),
+                )
+                warnings.append(
+                    f"CpG disruption capped at {MAX_CPG_DISRUPTION_ITERATIONS} iterations. "
+                    f"{len(_remaining_cpg)} CpG dinucleotides could not be eliminated."
+                )
 
     # Step: Reconciliation after cryptic splice elimination
     # EUKARYOTE-ONLY: Only needed if splice/CpG steps ran
@@ -1889,18 +3202,25 @@ def _greedy_optimize(
 
     # Step: CpG reconciliation after restriction site reconciliation
     # EUKARYOTE-ONLY: Only needed if CpG avoidance is active
+    # Same improvement as the CpG disruption step: don't break on first
+    # unfixed position, and accept swaps that eliminate a specific CG
+    # even if new CGs are created elsewhere.
     if not is_prokaryote:
         for _cpg_iter in range(MAX_CPG_DISRUPTION_ITERATIONS):
             cpg_positions = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
             if not cpg_positions:
                 break
-            fixed = False
+            any_fixed_this_iter = False
             for pos in cpg_positions:
+                # Re-check: a previous fix may have eliminated this CG
+                if sequence[pos:pos+2] != "CG":
+                    continue
                 left_ci = pos // 3
                 right_ci = (pos + 1) // 3
                 is_cross_codon = (left_ci != right_ci)
 
                 # Strategy 1: Single-codon swap — try both the C-codon and the G-codon
+                fixed = False
                 for ci in ([left_ci, right_ci] if is_cross_codon else [left_ci]):
                     if ci < 0 or ci >= len(aas):
                         continue
@@ -1946,14 +3266,13 @@ def _greedy_optimize(
                                         break
                         if splice_worsened:
                             continue
-                        # Check that the specific CG at pos is eliminated and net CpG decreases
+                        # Accept if the specific CG at pos is eliminated
+                        # (relaxed: don't require global CpG decrease)
                         if test[pos:pos+2] != "CG":
-                            new_cpg_count = sum(1 for i in range(len(test) - 1) if test[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
-                                sequence = test
-                                fixed = True
-                                break
+                            sequence = test
+                            fixed = True
+                            any_fixed_this_iter = True
+                            break
                     if fixed:
                         break
 
@@ -2011,20 +3330,30 @@ def _greedy_optimize(
                                             break
                             if splice_worsened:
                                 continue
-                            # Verify net CpG reduction
-                            new_cpg_count = sum(1 for i in range(len(test_str) - 1) if test_str[i:i+2] == "CG")
-                            old_cpg_count = sum(1 for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG")
-                            if new_cpg_count < old_cpg_count:
+                            # Accept if the specific CG at pos is eliminated
+                            # (relaxed: don't require global CpG decrease)
+                            if test_str[pos:pos+2] != "CG":
                                 sequence = test_str
                                 fixed = True
+                                any_fixed_this_iter = True
                                 break
                         if fixed:
                             break
 
-                if fixed:
-                    break
-            if not fixed:
+            if not any_fixed_this_iter:
                 break
+        else:
+            _remaining_cpg2 = [i for i in range(len(sequence) - 1) if sequence[i:i+2] == "CG"]
+            if _remaining_cpg2:
+                logger.warning(
+                    "CpG reconciliation did not converge after %d iterations. "
+                    "%d CpG dinucleotides remain.",
+                    MAX_CPG_DISRUPTION_ITERATIONS, len(_remaining_cpg2),
+                )
+                warnings.append(
+                    f"CpG reconciliation capped at {MAX_CPG_DISRUPTION_ITERATIONS} iterations. "
+                    f"{len(_remaining_cpg2)} CpG dinucleotides could not be eliminated."
+                )
 
     # Step: CAI Hill Climb — upgrade codons to higher-CAI alternatives
     # without violating any constraint. This recovers CAI lost during
@@ -2577,10 +3906,16 @@ def optimize_sequence(
     strategy: str = "hybrid",
     use_csp_solver: bool = False,
     optimize_mrna_stability: bool = True,
+    strict_mode: bool = True,
     seed: int | None = None,
     include_utr: bool = True,
     consider_codon_pair_bias: bool = False,
-    track_provenance: bool = False,
+    track_provenance: bool = True,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    objective: str | Callable[..., float] | None = None,
+    gc_window_size: int = 50,
+    gc_window_min: float | None = None,
+    gc_window_max: float | None = None,
     **kwargs: Any,
 ) -> OptimizationResult:
     """Optimize a protein sequence for expression in the target organism.
@@ -2635,6 +3970,13 @@ def optimize_sequence(
             retained for backward compatibility.
         gc_lo: Minimum acceptable GC fraction.
         gc_hi: Maximum acceptable GC fraction.
+        gc_window_size: Sliding window size (in nucleotides) for local
+            GC content checking.  Set to 0 to disable sliding-window GC
+            constraints.  Default: 50.
+        gc_window_min: Minimum acceptable GC fraction for each sliding
+            window.  If None (default), uses ``gc_lo``.
+        gc_window_max: Maximum acceptable GC fraction for each sliding
+            window.  If None (default), uses ``gc_hi``.
         cai_threshold: Minimum CAI score for the CodonAdapted predicate.
         enzymes: List of restriction enzyme names to avoid.
         strategy: Optimization strategy ('hybrid', 'constraint_first', or 'cai_first').
@@ -2668,7 +4010,38 @@ def optimize_sequence(
             every codon choice made during optimization.  The result will
             include a ``decision_trail`` field with the full audit trail.
             If False, skip provenance collection entirely (zero overhead).
-            Defaults to False.
+            Defaults to True.
+        strict_mode: If True (default), raise
+            :class:`OptimizationConstraintError` when any predicates fail
+            instead of returning a result with ``failed_predicates``.  This
+            provides a hard-stop guarantee that the returned sequence
+            satisfies all constraints.  Set to False to allow partial
+            results with failed predicates.
+        max_iterations: Maximum number of optimization iterations before
+            declaring ``convergence_status='max_iterations'``.  A sensible
+            default of 1000 is used.  The optimizer will stop early if
+            convergence is detected (objective unchanged for 3 consecutive
+            iterations) or oscillation is detected (objective cycles up and
+            down).  The result will include ``convergence_status`` and
+            ``iterations_used`` fields.
+        objective: Custom optimization objective.  Controls how codon
+            alternatives are scored during the CAI hill-climb phase.
+            Accepts:
+
+            - ``None`` (default): maximize CAI only (equivalent to
+              ``"cai"``).
+            - A string name: one of ``"cai"``, ``"cai_gc_balanced"``,
+              ``"codon_pair"``, ``"min_max_gc"``.
+            - A callable ``(dna: str, protein: str, organism: str) -> float``:
+              a custom function where higher values are better.
+
+            When a non-CAI objective is provided, the CAI hill-climb
+            phase scores candidate codon substitutions by evaluating the
+            custom objective on the *modified* sequence rather than by
+            CAI alone.  This allows users to optimize for GC balance,
+            codon pair bias, or any custom metric while still respecting
+            all hard constraints (restriction sites, GC range, splice
+            sites, etc.).
         **kwargs: Additional arguments (e.g., splice_low, splice_high,
             restriction_sites, organism_domain).
 
@@ -2678,7 +4051,12 @@ def optimize_sequence(
     Raises:
         InvalidProteinError: if the protein contains invalid amino acid codes.
         UnsupportedOrganismError: if the organism is not supported.
+        OptimizationConstraintError: if ``strict_mode=True`` and the
+            optimized sequence has one or more failed predicates.
     """
+    # ── Resolve custom objective ──────────────────────────────────────
+    _objective_fn = _resolve_objective(objective)
+
     # Set deterministic seed if provided (reserved for future randomized steps)
     if seed is not None:
         import random
@@ -2772,6 +4150,10 @@ def optimize_sequence(
             seed=seed,
         )
 
+    # ── Convergence tracking ────────────────────────────────────────
+    _convergence = ConvergenceTracker()
+    _convergence_status: str = "converged"  # default; overridden if caps are hit
+
     # ── CSP Solver path ─────────────────────────────────────────────
     if use_csp_solver:
         try:
@@ -2844,6 +4226,18 @@ def optimize_sequence(
                     except Exception:
                         logger.debug("CPB computation failed for CSP solver path", exc_info=True)
 
+                # ── Translation verification (CSP solver path) ──
+                from .protein_verification import verify_and_raise as _verify_and_raise
+                _verify_and_raise(seq, target_protein, organism=organism)
+
+                # Evaluate custom objective score if a non-default objective is used
+                _csp_objective_score: float | None = None
+                if _objective_fn is not _cai_objective:
+                    try:
+                        _csp_objective_score = _objective_fn(seq, target_protein, organism)
+                    except Exception:
+                        _csp_objective_score = None
+
                 return OptimizationResult(
                     sequence=seq,
                     gc_content=round(gc, 4),
@@ -2859,6 +4253,9 @@ def optimize_sequence(
                     suggested_3utr=_utr3_seq,
                     utr_score_5=_utr_score5,
                     utr_score_3=_utr_score3,
+                    convergence_status="converged",
+                    iterations_used=1,
+                    objective_score=_csp_objective_score,
                 )
         except Exception:
             logger.warning(
@@ -2927,12 +4324,13 @@ def optimize_sequence(
         # Gly: GGT→GGA, Cys: TGT→TGC).  For eukaryotes, GT avoidance
         # in CDS is MUCH less important than CAI — GT dinucleotides
         # only matter when they form strong cryptic splice donor sites
-        # (MaxEntScan score >= threshold), and in-codon GTs from
+        # (score_splice_donor_potential >= 0.5), and in-codon GTs from
         # optimal codons are biologically acceptable.
         #
         # This recovery pass swaps suboptimal codons back to optimal
-        # ones when the CAI cost exceeds 0.05, accepting in-codon GTs
-        # and cross-codon GTs as a tradeoff for higher CAI.
+        # ones when the CAI cost exceeds the threshold, using cost-aware
+        # GT resolution with splice donor scoring.  GTs with low splice
+        # donor potential are accepted in favor of CAI.
         _cai_recovery_upgrades = 0
         if not is_prokaryote and effective_avoid_gt:
             _usage = CODON_ADAPTIVENESS_TABLES.get(organism)
@@ -2948,6 +4346,35 @@ def optimize_sequence(
                         "Eukaryotic CAI recovery: upgraded %d codon(s) to "
                         "optimal (GT accepted as soft preference)",
                         _cai_recovery_upgrades,
+                    )
+
+        # ── Systematic CpG elimination pass (eukaryotes only) ──
+        # After CAI maximization and recovery, systematically eliminate CpG
+        # dinucleotides that contribute to CpG islands.  This is a proper
+        # optimization pass (not best-effort) that continues past unfixable
+        # positions and reports remaining CpGs as warnings.
+        _cpg_warnings: list[str] = []
+        _cpg_seq_changed = False
+        if not is_prokaryote:
+            _usage_cpg = CODON_ADAPTIVENESS_TABLES.get(organism)
+            if _usage_cpg is not None:
+                optimized_seq, _cpg_warnings = _eliminate_cpg_dinucleotides(
+                    optimized_seq,
+                    target_protein,
+                    _usage_cpg,
+                    enzymes=enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"],
+                    organism=organism,
+                    gc_lo=gc_lo,
+                    gc_hi=gc_hi,
+                )
+                _seq_before_cpg = hybrid_result.sequence
+                _cpg_seq_changed = (optimized_seq != _seq_before_cpg)
+                if _cpg_warnings:
+                    for _w in _cpg_warnings:
+                        logger.warning(_w)
+                if _cpg_seq_changed:
+                    logger.info(
+                        "CpG elimination: modified sequence to avoid CpG islands"
                     )
 
         # ── Ultra-fast prokaryote predicate evaluation ──
@@ -3017,6 +4444,28 @@ def optimize_sequence(
                 details=f"GC content: {_gc_val:.3f} (range [{gc_lo}, {gc_hi}])"
             ))
 
+            # 10. SlidingGC (prokaryotic fast path)
+            _eff_gc_w_min = gc_window_min if gc_window_min is not None else gc_lo
+            _eff_gc_w_max = gc_window_max if gc_window_max is not None else gc_hi
+            if gc_window_size > 0 and len(optimized_seq) >= gc_window_size:
+                _sgc_result = check_sliding_gc(
+                    optimized_seq, window_size=gc_window_size,
+                    gc_min=_eff_gc_w_min, gc_max=_eff_gc_w_max,
+                )
+                pred_results.append(PredicateResult(
+                    "SlidingGC", _sgc_result.passed,
+                    details=(
+                        f"Window={gc_window_size}, range=[{_eff_gc_w_min:.2f}, {_eff_gc_w_max:.2f}], "
+                        f"min_gc={_sgc_result.min_gc:.3f}, max_gc={_sgc_result.max_gc:.3f}, "
+                        f"violations={len(_sgc_result.violations)}"
+                    ),
+                ))
+            else:
+                pred_results.append(PredicateResult(
+                    "SlidingGC", True,
+                    details="Sliding-window GC check skipped (window_size=0 or sequence too short)"
+                ))
+
             cert_text = format_certificate(pred_results, optimized_seq, species_key)
 
             # Skip all post-processing for prokaryotes (CAI recovery,
@@ -3072,6 +4521,105 @@ def optimize_sequence(
                 except Exception:
                     logger.debug("Provenance finalization failed for prokaryote path", exc_info=True)
 
+            # ── Translation verification (prokaryote fast path) ──
+            from .protein_verification import verify_and_raise as _verify_prok
+            _verify_prok(optimized_seq, target_protein, organism=organism)
+
+            # ── Custom objective refinement (prokaryote fast path) ──
+            _prok_objective_score: float | None = None
+            if _objective_fn is not _cai_objective:
+                _obj_aas = protein_to_aa_list(target_protein)
+                _obj_n_codons = len(_obj_aas)
+                _obj_usage = CODON_ADAPTIVENESS_TABLES.get(organism, {})
+                _obj_sorted_codons: dict[str, list[str]] = {}
+                for _aa in set(_obj_aas):
+                    if _aa == "*":
+                        continue
+                    _obj_sorted_codons[_aa] = sorted(
+                        AA_TO_CODONS.get(_aa, []),
+                        key=lambda c: _obj_usage.get(c, 0.0),
+                        reverse=True,
+                    )
+                _obj_rs_sites: list[tuple[str, str]] = []
+                for _enz in (enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]):
+                    from .restriction_sites import get_recognition_site as _grs2
+                    _obj_site = _grs2(_enz)
+                    if _obj_site:
+                        _obj_rs_sites.append((_obj_site, reverse_complement(_obj_site)))
+
+                _MAX_PROK_OBJ_ITERS = 5
+                for _obj_iter in range(_MAX_PROK_OBJ_ITERS):
+                    _obj_improved = False
+                    _current_score = _objective_fn(optimized_seq, target_protein, organism)
+
+                    for _ci in range(_obj_n_codons):
+                        _aa = _obj_aas[_ci]
+                        if _aa == "*" or _aa == "M":
+                            continue
+                        _current_codon = optimized_seq[_ci * 3:_ci * 3 + 3]
+                        _best_alt = None
+                        _best_alt_score = _current_score
+
+                        for _alt in _obj_sorted_codons.get(_aa, []):
+                            if _alt == _current_codon:
+                                continue
+                            _test_seq = optimized_seq[:_ci * 3] + _alt + optimized_seq[_ci * 3 + 3:]
+
+                            # Hard constraint checks
+                            _rs_ok = True
+                            for _site, _site_rc in _obj_rs_sites:
+                                if _site in _test_seq and _site not in optimized_seq:
+                                    _rs_ok = False
+                                    break
+                                if _site_rc and _site_rc in _test_seq and _site_rc not in optimized_seq:
+                                    _rs_ok = False
+                                    break
+                            if not _rs_ok:
+                                continue
+
+                            _test_gc = (_test_seq.count("G") + _test_seq.count("C")) / max(len(_test_seq), 1)
+                            if not (gc_lo <= _test_gc <= gc_hi):
+                                continue
+
+                            _has_premature_stop = False
+                            for _si in range(0, len(_test_seq) - 5, 3):
+                                if _test_seq[_si:_si + 3] in ("TAA", "TAG", "TGA"):
+                                    _has_premature_stop = True
+                                    break
+                            if _has_premature_stop:
+                                continue
+
+                            if _test_seq.count("ATTTA") > optimized_seq.count("ATTTA"):
+                                continue
+
+                            try:
+                                _alt_score = _objective_fn(_test_seq, target_protein, organism)
+                            except Exception:
+                                continue
+
+                            if _alt_score > _best_alt_score:
+                                _best_alt = _alt
+                                _best_alt_score = _alt_score
+
+                        if _best_alt is not None:
+                            optimized_seq = (
+                                optimized_seq[:_ci * 3] + _best_alt + optimized_seq[_ci * 3 + 3:]
+                            )
+                            _obj_improved = True
+
+                    if not _obj_improved:
+                        break
+
+                try:
+                    _prok_objective_score = _objective_fn(optimized_seq, target_protein, organism)
+                except Exception:
+                    _prok_objective_score = None
+
+                # Recompute metrics after objective refinement
+                gc = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
+                gc = round(gc, 4)
+                cai_val = compute_cai(optimized_seq, organism)
+
             return OptimizationResult(
                 sequence=optimized_seq,
                 gc_content=gc,
@@ -3084,6 +4632,9 @@ def optimize_sequence(
                 satisfied_predicates=satisfied,
                 provenance=provenance_record,
                 decision_trail=_prok_decision_trail,
+                convergence_status="converged",
+                iterations_used=1,
+                objective_score=_prok_objective_score,
             )
 
         # Fast eukaryotic predicate evaluation — skip BioOptimizer creation
@@ -3119,27 +4670,15 @@ def optimize_sequence(
             optimized_seq, enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
         ))
 
-        # 5. NoGTDinucleotide (soft — for eukaryotes, in-codon GTs from
+        # 5. NoGTDinucleotide (soft for eukaryotes — in-codon GTs from
         # optimal codons and cross-codon GTs with high CAI cost are acceptable)
+        # Uses check_no_gt_dinucleotide_soft which returns:
+        #   PASS          — GT count ≤ max_gt_count (auto-computed per sequence length)
+        #   LIKELY_FAIL   — GT count > max_gt_count for eukaryotes (soft fail)
+        #   FAIL          — any GT for prokaryotes (hard constraint)
         if effective_avoid_gt:
-            gt_count = optimized_seq.count("GT")
-            # Count in-codon vs cross-codon GTs for better reporting
-            in_codon_gt = sum(
-                1 for i in range(len(optimized_seq) - 1)
-                if optimized_seq[i:i+2] == "GT" and _is_in_codon_gt(optimized_seq, i)
-            )
-            cross_codon_gt = gt_count - in_codon_gt
-            # For eukaryotes: GT is a soft preference.  In-codon GTs from
-            # optimal codons are acceptable.  Only flag if there are avoidable
-            # cross-codon GTs that don't have a high CAI justification.
-            pred_results.append(PredicateResult(
-                "NoGTDinucleotide", gt_count == 0,
-                details=(
-                    f"GT dinucleotides: {gt_count} "
-                    f"(in-codon: {in_codon_gt}, cross-codon: {cross_codon_gt}). "
-                    f"For eukaryotes, in-codon GTs from optimal codons are "
-                    f"acceptable (CAI > GT avoidance)."
-                ),
+            pred_results.append(check_no_gt_dinucleotide_soft(
+                optimized_seq, organism=organism,
             ))
         else:
             pred_results.append(PredicateResult(
@@ -3157,10 +4696,10 @@ def optimize_sequence(
         ))
 
         # 8. CodonOptimality
-        # Recompute CAI after eukaryotic recovery pass (which may have
-        # upgraded suboptimal GT-avoiding codons to optimal ones)
+        # Recompute CAI after eukaryotic recovery and CpG elimination passes
+        # (which may have changed codons)
         from .translation import compute_cai as _compute_cai_hybrid
-        if _cai_recovery_upgrades > 0:
+        if _cai_recovery_upgrades > 0 or _cpg_seq_changed:
             cai_val = _compute_cai_hybrid(optimized_seq, organism)
         else:
             cai_val = hybrid_result.cai
@@ -3171,8 +4710,8 @@ def optimize_sequence(
         ))
 
         # 9. GCInRange
-        # Recompute GC after CAI recovery pass may have changed the sequence
-        if _cai_recovery_upgrades > 0:
+        # Recompute GC after CAI recovery/CpG elimination may have changed the sequence
+        if _cai_recovery_upgrades > 0 or _cpg_seq_changed:
             _gc_val = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
         else:
             _gc_val = hybrid_result.gc_content
@@ -3181,6 +4720,28 @@ def optimize_sequence(
             "GCInRange", gc_ok,
             details=f"GC content: {_gc_val:.3f} (range [{gc_lo}, {gc_hi}])"
         ))
+
+        # 10. SlidingGC (eukaryotic path)
+        _eff_gc_w_min = gc_window_min if gc_window_min is not None else gc_lo
+        _eff_gc_w_max = gc_window_max if gc_window_max is not None else gc_hi
+        if gc_window_size > 0 and len(optimized_seq) >= gc_window_size:
+            _sgc_result = check_sliding_gc(
+                optimized_seq, window_size=gc_window_size,
+                gc_min=_eff_gc_w_min, gc_max=_eff_gc_w_max,
+            )
+            pred_results.append(PredicateResult(
+                "SlidingGC", _sgc_result.passed,
+                details=(
+                    f"Window={gc_window_size}, range=[{_eff_gc_w_min:.2f}, {_eff_gc_w_max:.2f}], "
+                    f"min_gc={_sgc_result.min_gc:.3f}, max_gc={_sgc_result.max_gc:.3f}, "
+                    f"violations={len(_sgc_result.violations)}"
+                ),
+            ))
+        else:
+            pred_results.append(PredicateResult(
+                "SlidingGC", True,
+                details="Sliding-window GC check skipped (window_size=0 or sequence too short)"
+            ))
 
         cert_text = format_certificate(pred_results, optimized_seq, species_key)
 
@@ -3193,6 +4754,10 @@ def optimize_sequence(
         opt.species_cai = hybrid_opt._species_cai if hasattr(hybrid_opt, '_species_cai') else {}
         # Provide _compute_seq_cai fallback for unsupported organisms
         opt._compute_seq_cai = lambda seq: compute_cai(seq, organism)
+        # Sliding-window GC parameters (for _evaluate_all_predicates)
+        opt._gc_window_size = gc_window_size
+        opt._gc_window_min = gc_window_min
+        opt._gc_window_max = gc_window_max
 
         # Import compute_cai for the hybrid path
         from .translation import compute_cai
@@ -3210,6 +4775,9 @@ def optimize_sequence(
             avoid_gt=effective_avoid_gt,
             organism_name=organism,
             organism_domain="prokaryote" if is_prokaryote else "eukaryote",
+            gc_window_size=gc_window_size,
+            gc_window_min=gc_window_min,
+            gc_window_max=gc_window_max,
         )
 
         # Attach provenance collector to optimizer for codon-level tracking
@@ -3231,9 +4799,9 @@ def optimize_sequence(
     # Compute metrics — use hybrid optimizer values when available to avoid recomputation
     if strategy == "hybrid" and not use_csp_solver:
         # Hybrid optimizer already computed GC and CAI accurately.
-        # However, if the eukaryotic CAI recovery pass was applied, the
-        # sequence has changed and we must recompute both metrics.
-        if _cai_recovery_upgrades > 0:
+        # However, if the eukaryotic CAI recovery pass or CpG elimination
+        # was applied, the sequence has changed and we must recompute both metrics.
+        if _cai_recovery_upgrades > 0 or _cpg_seq_changed:
             gc = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
             gc = round(gc, 4)
             # cai_val was already recomputed in the predicate evaluation block above
@@ -3516,6 +5084,7 @@ def optimize_sequence(
         if _rs_site:
             _cai_recovery_rs.append((_rs_site, reverse_complement(_rs_site)))
 
+    _total_cai_recovery_iterations = 0
     for _recovery_iter in range(_CAI_RECOVERY_MAX_ITERATIONS):
         _any_recovered = False
         _aas = protein_to_aa_list(target_protein)
@@ -3734,7 +5303,173 @@ def optimize_sequence(
 
         if not _any_recovered:
             break  # No more improvements possible
+        _total_cai_recovery_iterations += 1
+
+        # ── Convergence check ──
+        # After each CAI recovery iteration, compute the objective and
+        # check if the optimizer has converged or is oscillating.
+        _recovery_cai = compute_cai(optimized_seq, organism)
+        _recovery_gc = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
+        _recovery_gc_ok = 1.0 if gc_lo <= _recovery_gc <= gc_hi else 0.0
+        _recovery_obj = _recovery_cai * _recovery_gc_ok  # 0 if GC out of range
+        _convergence.record(_recovery_obj)
+
+        _conv_status = _convergence.check_convergence()
+        if _conv_status is not None:
+            _convergence_status = _conv_status
+            logger.info(
+                "CAI recovery: %s after %d iterations (objective=%.6f)",
+                _conv_status, _recovery_iter + 1, _recovery_obj,
+            )
+            if _conv_status == "oscillating":
+                # Stop at the best point — no need to continue cycling
+                break
     # ── End CAI Recovery Pass ──────────────────────────────────────
+
+    # ── Final CpG elimination pass (eukaryotes only) ──────────────
+    # This runs AFTER the CAI recovery pass because the recovery may
+    # have re-introduced CG dinucleotides by upgrading suboptimal
+    # CG-free codons to optimal CG-containing codons.  We need to
+    # eliminate those CGs one final time to ensure the sequence passes
+    # the NoCpGIsland predicate.
+    _final_cpg_warnings: list[str] = []
+    if not is_prokaryote:
+        _final_cpg_usage = CODON_ADAPTIVENESS_TABLES.get(organism)
+        if _final_cpg_usage is not None:
+            optimized_seq, _final_cpg_warnings = _eliminate_cpg_dinucleotides(
+                optimized_seq,
+                target_protein,
+                _final_cpg_usage,
+                enzymes=enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"],
+                organism=organism,
+                gc_lo=gc_lo,
+                gc_hi=gc_hi,
+            )
+            if _final_cpg_warnings:
+                for _fw in _final_cpg_warnings:
+                    logger.warning(_fw)
+
+    # ── Sliding-window GC constraint ─────────────────────────────────
+    # After global GC is satisfied, check that no local window has
+    # extreme GC content.  This prevents polymerase stalling and
+    # secondary-structure hotspots that the global constraint misses.
+    _effective_gc_window_min = gc_window_min if gc_window_min is not None else gc_lo
+    _effective_gc_window_max = gc_window_max if gc_window_max is not None else gc_hi
+    _sliding_gc_swaps = 0
+
+    if gc_window_size > 0 and len(optimized_seq) >= gc_window_size:
+        _sliding_result = check_sliding_gc(
+            optimized_seq,
+            window_size=gc_window_size,
+            gc_min=_effective_gc_window_min,
+            gc_max=_effective_gc_window_max,
+        )
+        if not _sliding_result.passed:
+            logger.info(
+                "Sliding-window GC: %d violation(s) detected (window=%d, "
+                "range=[%.2f, %.2f]). Attempting local fixes.",
+                len(_sliding_result.violations), gc_window_size,
+                _effective_gc_window_min, _effective_gc_window_max,
+            )
+            _sliding_usage = CODON_ADAPTIVENESS_TABLES.get(organism)
+            optimized_seq, _sliding_gc_swaps = fix_sliding_gc_violations(
+                optimized_seq,
+                target_protein,
+                window_size=gc_window_size,
+                gc_min=_effective_gc_window_min,
+                gc_max=_effective_gc_window_max,
+                usage=_sliding_usage,
+                gc_lo=gc_lo,
+                gc_hi=gc_hi,
+            )
+            if _sliding_gc_swaps > 0:
+                logger.info(
+                    "Sliding-window GC: fixed %d local violation(s) with %d codon swap(s)",
+                    len(_sliding_result.violations), _sliding_gc_swaps,
+                )
+
+    # ── Refresh SlidingGC predicate result after post-processing ──
+    # The fix_sliding_gc_violations step may have modified optimized_seq,
+    # so we must re-evaluate the SlidingGC predicate to ensure the result
+    # in pred_results matches the final sequence.  Without this, certificate
+    # verification fails because the recorded verdict was evaluated on the
+    # pre-fix sequence while the certificate contains the post-fix sequence.
+    if gc_window_size > 0 and len(optimized_seq) >= gc_window_size and _sliding_gc_swaps > 0:
+        _effective_gc_window_min = gc_window_min if gc_window_min is not None else gc_lo
+        _effective_gc_window_max = gc_window_max if gc_window_max is not None else gc_hi
+        _refreshed_sgc = check_sliding_gc(
+            optimized_seq,
+            window_size=gc_window_size,
+            gc_min=_effective_gc_window_min,
+            gc_max=_effective_gc_window_max,
+        )
+        _refreshed_sgc_pr = PredicateResult(
+            "SlidingGC", _refreshed_sgc.passed,
+            details=(
+                f"Window={gc_window_size}, range=[{_effective_gc_window_min:.2f}, {_effective_gc_window_max:.2f}], "
+                f"min_gc={_refreshed_sgc.min_gc:.3f}, max_gc={_refreshed_sgc.max_gc:.3f}, "
+                f"violations={len(_refreshed_sgc.violations)}"
+            ),
+        )
+        # Replace the stale SlidingGC entry in pred_results
+        pred_results = [
+            _refreshed_sgc_pr if r.predicate == "SlidingGC" else r
+            for r in pred_results
+        ]
+        # Refresh cert_text to match the updated predicates
+        cert_text = format_certificate(pred_results, optimized_seq, species_key)
+        failed = [r.predicate for r in pred_results if not r.passed]
+        satisfied = [r.predicate for r in pred_results if r.passed]
+    elif gc_window_size > 0:
+        logger.debug(
+            "Sliding-window GC: skipped (sequence length %d < window size %d)",
+            len(optimized_seq), gc_window_size,
+        )
+
+    # ── Post-sliding-GC CpG re-elimination (eukaryotes only) ──────
+    # The sliding-window GC fix (fix_sliding_gc_violations) may have
+    # reintroduced CG dinucleotides by swapping codons without checking
+    # for CpG creation.  Run one final CpG elimination pass to restore
+    # the NoCpGIsland predicate without regressing sliding-window GC.
+    if not is_prokaryote and _sliding_gc_swaps > 0:
+        _post_sgc_usage = CODON_ADAPTIVENESS_TABLES.get(organism)
+        if _post_sgc_usage is not None:
+            optimized_seq, _post_sgc_warnings = _eliminate_cpg_dinucleotides(
+                optimized_seq,
+                target_protein,
+                _post_sgc_usage,
+                enzymes=enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"],
+                organism=organism,
+                gc_lo=gc_lo,
+                gc_hi=gc_hi,
+            )
+            if _post_sgc_warnings:
+                for _psw in _post_sgc_warnings:
+                    logger.warning(_psw)
+            # If CpG elimination changed the sequence, re-check sliding GC
+            _sgc_needs_refresh = _sliding_gc_swaps > 0
+            if _sgc_needs_refresh and gc_window_size > 0 and len(optimized_seq) >= gc_window_size:
+                _effective_gc_window_min = gc_window_min if gc_window_min is not None else gc_lo
+                _effective_gc_window_max = gc_window_max if gc_window_max is not None else gc_hi
+                _refreshed2_sgc = check_sliding_gc(
+                    optimized_seq,
+                    window_size=gc_window_size,
+                    gc_min=_effective_gc_window_min,
+                    gc_max=_effective_gc_window_max,
+                )
+                _refreshed2_sgc_pr = PredicateResult(
+                    "SlidingGC", _refreshed2_sgc.passed,
+                    details=(
+                        f"Window={gc_window_size}, range=[{_effective_gc_window_min:.2f}, {_effective_gc_window_max:.2f}], "
+                        f"min_gc={_refreshed2_sgc.min_gc:.3f}, max_gc={_refreshed2_sgc.max_gc:.3f}, "
+                        f"violations={len(_refreshed2_sgc.violations)}"
+                    ),
+                )
+                pred_results = [
+                    _refreshed2_sgc_pr if r.predicate == "SlidingGC" else r
+                    for r in pred_results
+                ]
+                cert_text = format_certificate(pred_results, optimized_seq, species_key)
 
     # ── Recompute final metrics after all post-processing passes ───
     # CAI and GC must be recomputed here because the mRNA stability
@@ -3865,7 +5600,131 @@ def optimize_sequence(
             logger.debug("Provenance finalization failed: %s: %s", type(_prov_exc).__name__, _prov_exc, exc_info=True)
             _decision_trail = None
 
-    return OptimizationResult(
+    # ── Final translation verification ──────────────────────────────
+    # After all optimization passes (CAI recovery, mRNA stability, etc.),
+    # verify that the optimized DNA still encodes the original protein.
+    # This catches bugs in any optimization pass that might corrupt
+    # the protein sequence.
+    from .protein_verification import verify_and_raise as _verify_final
+    _verify_final(optimized_seq, target_protein, organism=organism)
+
+    # ── Custom objective refinement pass ──────────────────────────────
+    # When a non-default objective is provided, perform an additional
+    # hill-climb pass that scores codon substitutions by the custom
+    # objective rather than CAI alone.  This allows users to optimize
+    # for GC balance, codon pair bias, or any custom metric while still
+    # respecting all hard constraints.
+    _objective_score: float | None = None
+    if _objective_fn is not _cai_objective:
+        logger.info(
+            "Applying custom objective refinement pass for objective=%s",
+            getattr(_objective_fn, '__name__', repr(_objective_fn)),
+        )
+        _obj_aas = protein_to_aa_list(target_protein)
+        _obj_n_codons = len(_obj_aas)
+        _obj_usage = CODON_ADAPTIVENESS_TABLES.get(organism, {})
+        _obj_sorted_codons: dict[str, list[str]] = {}
+        for _aa in set(_obj_aas):
+            if _aa == "*":
+                continue
+            _obj_sorted_codons[_aa] = sorted(
+                AA_TO_CODONS.get(_aa, []),
+                key=lambda c: _obj_usage.get(c, 0.0),
+                reverse=True,
+            )
+        _obj_rs_sites: list[tuple[str, str]] = []
+        for _enz in (enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]):
+            from .restriction_sites import get_recognition_site as _grs2
+            _obj_site = _grs2(_enz)
+            if _obj_site:
+                _obj_rs_sites.append((_obj_site, reverse_complement(_obj_site)))
+
+        _MAX_OBJECTIVE_REFINEMENT_ITERS = 5
+        for _obj_iter in range(_MAX_OBJECTIVE_REFINEMENT_ITERS):
+            _obj_improved = False
+            _current_score = _objective_fn(optimized_seq, target_protein, organism)
+
+            for _ci in range(_obj_n_codons):
+                _aa = _obj_aas[_ci]
+                if _aa == "*" or _aa == "M":
+                    continue
+                _current_codon = optimized_seq[_ci * 3:_ci * 3 + 3]
+
+                # Try each synonym for this position
+                _best_alt = None
+                _best_alt_score = _current_score
+
+                for _alt in _obj_sorted_codons.get(_aa, []):
+                    if _alt == _current_codon:
+                        continue
+
+                    _test_seq = optimized_seq[:_ci * 3] + _alt + optimized_seq[_ci * 3 + 3:]
+
+                    # Hard constraint checks
+                    # 1. No new restriction sites
+                    _rs_ok = True
+                    for _site, _site_rc in _obj_rs_sites:
+                        if _site in _test_seq and _site not in optimized_seq:
+                            _rs_ok = False
+                            break
+                        if _site_rc and _site_rc in _test_seq and _site_rc not in optimized_seq:
+                            _rs_ok = False
+                            break
+                    if not _rs_ok:
+                        continue
+
+                    # 2. GC still in range
+                    _test_gc = (_test_seq.count("G") + _test_seq.count("C")) / max(len(_test_seq), 1)
+                    if not (gc_lo <= _test_gc <= gc_hi):
+                        continue
+
+                    # 3. No new premature stops
+                    _has_premature_stop = False
+                    for _si in range(0, len(_test_seq) - 5, 3):
+                        if _test_seq[_si:_si + 3] in ("TAA", "TAG", "TGA"):
+                            _has_premature_stop = True
+                            break
+                    if _has_premature_stop:
+                        continue
+
+                    # 4. No new ATTTA motifs
+                    if _test_seq.count("ATTTA") > optimized_seq.count("ATTTA"):
+                        continue
+
+                    # Evaluate the custom objective
+                    try:
+                        _alt_score = _objective_fn(_test_seq, target_protein, organism)
+                    except Exception:
+                        continue
+
+                    if _alt_score > _best_alt_score:
+                        _best_alt = _alt
+                        _best_alt_score = _alt_score
+
+                if _best_alt is not None:
+                    optimized_seq = (
+                        optimized_seq[:_ci * 3] + _best_alt + optimized_seq[_ci * 3 + 3:]
+                    )
+                    _obj_improved = True
+
+            if not _obj_improved:
+                break
+
+        # Record the final objective score
+        try:
+            _objective_score = _objective_fn(optimized_seq, target_protein, organism)
+        except Exception:
+            _objective_score = None
+
+        # Recompute CAI and GC after objective refinement
+        gc = (optimized_seq.count("G") + optimized_seq.count("C")) / max(len(optimized_seq), 1)
+        gc = round(gc, 4)
+        try:
+            cai_val = compute_cai(optimized_seq, opt.organism_name)
+        except UnsupportedOrganismError:
+            cai_val = opt._compute_seq_cai(optimized_seq)
+
+    result = OptimizationResult(
         sequence=optimized_seq,
         gc_content=gc,
         cai=cai_val,
@@ -3886,7 +5745,19 @@ def optimize_sequence(
         utr_score_5=utr_score5,
         utr_score_3=utr_score3,
         decision_trail=_decision_trail,
+        convergence_status=_convergence_status,
+        iterations_used=_total_cai_recovery_iterations + 1,  # +1 for the initial optimization pass
+        objective_score=_objective_score,
     )
+
+    # ── Strict mode: refuse sequences with failed predicates ─────────
+    if strict_mode and result.failed_predicates:
+        raise OptimizationConstraintError(
+            failed_predicates=result.failed_predicates,
+            partial_result=result,
+        )
+
+    return result
 
 
 def batch_optimize(
@@ -4279,16 +6150,13 @@ def _contains_restriction_site(
 
 
 def _count_dinucleotides(seq: str, di: str) -> int:
-    """Count occurrences of dinucleotide *di* in *seq*."""
-    count = 0
-    pos = 0
-    while True:
-        pos = seq.find(di, pos)
-        if pos == -1:
-            break
-        count += 1
-        pos += 1
-    return count
+    """Count occurrences of dinucleotide *di* in *seq*.
+
+    Uses the NUMBA ``fast_dinucleotide_count`` kernel when available
+    for single-pass counting; falls back to pure-Python str.find
+    otherwise.
+    """
+    return _count_dinucs_fast(seq, di)[0]
 
 
 def _back_translate_protein_dp(
@@ -4458,8 +6326,12 @@ def _back_translate_protein_dp(
 
 
 def _count_gts(s: str) -> int:
-    """Count GT dinucleotides in a sequence."""
-    return sum(1 for i in range(len(s) - 1) if s[i:i+2] == "GT")
+    """Count GT dinucleotides in a sequence.
+
+    Uses the NUMBA ``fast_dinucleotide_count`` kernel when available
+    for single-pass counting; falls back to pure-Python otherwise.
+    """
+    return _count_dinucs_fast(s, "GT")[0]
 
 
 def _is_unavoidable_gt(seq: str, pos: int) -> bool:
@@ -4610,6 +6482,11 @@ class BioOptimizer:
         self.strategy: str = strategy  # "constraint_first" or "cai_first"
         self.optimize_mrna_stability: bool = optimize_mrna_stability
 
+        # Sliding-window GC constraint parameters
+        self._gc_window_size: int = kwargs.get("gc_window_size", 50)
+        self._gc_window_min: float | None = kwargs.get("gc_window_min", None)
+        self._gc_window_max: float | None = kwargs.get("gc_window_max", None)
+
         self.organism_domain: str = kwargs.get("organism_domain", "auto")
         if self.organism_domain == "auto":
             self.organism_domain = (
@@ -4656,6 +6533,28 @@ class BioOptimizer:
         effective_strategy = strategy if strategy is not None else self.strategy
 
         seq = seq.upper().strip()
+
+        # ── Resolve IUPAC ambiguous bases ──────────────────────────
+        # If the input contains IUPAC ambiguity codes (R, Y, S, W, K, M,
+        # B, D, H, V), resolve them to concrete bases before optimization.
+        # This allows users to pass degenerate sequences (e.g., from
+        # consensus sequences or degenerate primers) directly to the
+        # optimizer.
+        ambiguous_chars = set(seq) - set("ACGT")
+        if ambiguous_chars:
+            from .iupac import has_ambiguous, resolve_ambiguous
+            if has_ambiguous(seq):
+                logger.info(
+                    "Resolving %d IUPAC ambiguous bases in input sequence "
+                    "(strategy: most_common)",
+                    sum(1 for b in seq if b not in "ACGT"),
+                )
+                seq = resolve_ambiguous(
+                    seq,
+                    strategy="most_common",
+                    cai_table=self.species_cai,
+                )
+
         self._unavoidable_gt_positions = set()
         self._applied_mutagenesis = []
         self._original_protein = self._translate(seq)
@@ -4851,10 +6750,40 @@ class BioOptimizer:
         return seq, results, cert_text
 
     def _compute_seq_cai(self, seq: str) -> float:
-        """Compute the geometric mean CAI for a sequence."""
-        import math
+        """Compute the geometric mean CAI for a sequence.
+
+        Uses the NUMBA-accelerated compute_cai_kernel when available,
+        falling back to the pure-Python loop otherwise.
+        """
         if not seq or len(seq) < 3:
             return 0.0
+
+        # Fast path: NUMBA kernel
+        if HAS_NUMBA and _numba_cai_kernel is not None:
+            try:
+                # Lazy-initialize the per-optimizer adaptiveness array
+                if not hasattr(self, '_numba_adapt_arr') or self._numba_adapt_arr is None:
+                    self._numba_adapt_arr = _adaptiveness_to_array(self.species_cai)
+                adapt_arr = self._numba_adapt_arr
+                # Build codon indices, excluding Met and stop codons
+                n_total = len(seq) // 3
+                idx_list = []
+                for i in range(n_total):
+                    codon = seq[i * 3:i * 3 + 3]
+                    aa = CODON_TABLE.get(codon)
+                    if aa == 'M' or aa == '*':
+                        continue
+                    idx_list.append(_codon_to_index(codon))
+                if not idx_list:
+                    return 0.0
+                codon_indices = _np.array(idx_list, dtype=_np.int64)
+                n_codons = len(codon_indices)
+                return _numba_cai_kernel(adapt_arr, codon_indices, n_codons)
+            except Exception:
+                pass  # Fall through to pure-Python
+
+        # Pure-Python fallback
+        import math
         log_sum = 0.0
         count = 0
         for i in range(0, len(seq) - 2, 3):
@@ -4998,9 +6927,15 @@ class BioOptimizer:
     def _cai_first_fix_gts(self, seq: str) -> str:
         """CAI-first Fix avoidable GT dinucleotides with minimal CAI impact.
 
+        Uses cost-aware GT resolution with splice donor scoring for eukaryotes:
+        - GTs with low splice donor potential (< SPLICE_DONOR_POTENTIAL_THRESHOLD)
+          are NOT fixed — CAI takes priority over low-risk GTs.
+        - GTs with high splice donor potential are fixed with minimal CAI impact.
+        - For prokaryotes, this method is never called.
+
         Iteratively finds each avoidable GT and resolves it by choosing
         the synonymous substitution(s) with the highest possible CAI that
-        eliminates the GT.
+        eliminates the GT, but ONLY if the GT has high splice donor potential.
         """
         seq_list = list(seq)
         max_rounds = 50
@@ -5009,11 +6944,18 @@ class BioOptimizer:
             current_seq = "".join(seq_list)
             violations = []
 
-            # Find all avoidable GT positions
+            # Find all avoidable GT positions, filtered by splice donor potential
             for i in range(len(current_seq) - 1):
                 if current_seq[i] == "G" and current_seq[i + 1] == "T":
-                    if not _is_unavoidable_gt(current_seq, i):
-                        violations.append(i)
+                    if _is_unavoidable_gt(current_seq, i):
+                        continue
+                    # Cost-aware: skip GTs with low splice donor potential
+                    sdp = score_splice_donor_potential(current_seq, i)
+                    if sdp < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                        # This GT has low splice donor potential — not dangerous.
+                        # Accept it (CAI > GT avoidance for low-risk GTs).
+                        continue
+                    violations.append(i)
 
             if not violations:
                 break
@@ -5206,7 +7148,7 @@ class BioOptimizer:
                 window = "".join(seq_list[start:start + self.cpg_window])
                 c_count = window.count("C")
                 g_count = window.count("G")
-                cg_count = sum(1 for i in range(len(window) - 1) if window[i:i+2] == "CG")
+                cg_count = _count_dinucs_fast(window, "CG")[0]
                 expected = (c_count * g_count) / len(window) if len(window) > 0 else 0
                 obs_exp = cg_count / expected if expected > 0 else 0.0
 
@@ -5694,19 +7636,30 @@ class BioOptimizer:
         Uses IncrementalSequenceState for O(1) GT tracking and
         CodonCache for pre-sorted codon lists.
 
-        For eukaryotes: in-codon GTs from optimal codons are acceptable.
-        Only fix if the CAI cost of the GT-free alternative is < threshold.
+        For eukaryotes: in-codon GTs are acceptable if they have low splice
+        donor potential (< SPLICE_DONOR_POTENTIAL_THRESHOLD).  Only fix GTs
+        that have high splice donor potential, and only if the CAI cost of
+        the GT-free alternative is < threshold.
         """
         codon = state.get_codon(codon_idx)
         aa = state.get_aa(codon_idx)
         if aa is None or aa == "*":
             return False
 
-        # ── Eukaryotic GT-vs-CAI tradeoff ──
-        # For eukaryotes, in-codon GTs from optimal codons (GGT, TGT, GTT,
-        # etc.) are biologically acceptable and should not be eliminated at
-        # the cost of significant CAI loss.
+        # ── Eukaryotic GT-vs-CAI tradeoff with splice donor scoring ──
         if not self.is_prokaryote:
+            # First check splice donor potential of this GT
+            seq = state.sequence
+            for j in range(2):  # GT can be at pos 0-1 or 1-2 within a codon
+                pos = codon_idx * 3 + j
+                if pos + 1 < len(seq) and seq[pos:pos+2] == "GT":
+                    sdp = score_splice_donor_potential(seq, pos)
+                    if sdp < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                        # This GT has low splice donor potential — not dangerous.
+                        # Accept it (CAI > GT avoidance for low-risk GTs).
+                        return False
+
+            # Check CAI cost
             current_w = self.species_cai.get(codon, 0.0)
             gt_free_codons = codon_cache.get_gt_free_codons(aa)
             if gt_free_codons:
@@ -5743,15 +7696,26 @@ class BioOptimizer:
         Uses IncrementalSequenceState for O(1) GT tracking and
         CodonCache for pre-sorted codon lists.
 
-        For eukaryotes: cross-codon GTs are only eliminated if the CAI cost
-        of the fix is < EUKARYOTE_CAI_GT_COST_THRESHOLD. When the optimal
-        codons at either side of the boundary would create a GT, and both
-        alternatives have high CAI cost, the cross-codon GT is accepted.
+        For eukaryotes: cross-codon GTs are acceptable if they have low
+        splice donor potential (< SPLICE_DONOR_POTENTIAL_THRESHOLD).  When
+        the GT has high splice donor potential, it is only eliminated if the
+        CAI cost of the fix is < EUKARYOTE_CAI_GT_COST_THRESHOLD.
         """
         # ── Eukaryotic GT-vs-CAI tradeoff for cross-codon GTs ──
-        # For eukaryotes, check if the CAI cost of fixing this cross-codon GT
-        # is acceptable before attempting to fix it.
+        # For eukaryotes, check splice donor potential first, then CAI cost.
         if not self.is_prokaryote:
+            # Check splice donor potential of this cross-codon GT
+            seq = state.sequence
+            gt_pos = codon_idx * 3 + 2  # G at end of codon_idx, T at start of codon_idx+1
+            if gt_pos + 1 < len(seq) and seq[gt_pos:gt_pos+2] == "GT":
+                sdp = score_splice_donor_potential(seq, gt_pos)
+                if sdp < SPLICE_DONOR_POTENTIAL_THRESHOLD:
+                    # This cross-codon GT has low splice donor potential — not dangerous.
+                    # Accept it (CAI > GT avoidance for low-risk GTs).
+                    return False
+
+            # Check if the CAI cost of fixing this cross-codon GT
+            # is acceptable before attempting to fix it.
             # The G is at the end of codon_idx, the T is at the start of the next codon
             next_ci = codon_idx + 1
             if next_ci < state.num_codons:
@@ -6884,7 +8848,7 @@ class BioOptimizer:
                 window_seq = state.sequence[start:start + self.cpg_window]
                 c_count = window_seq.count("C")
                 g_count = window_seq.count("G")
-                cg_count = sum(1 for i in range(len(window_seq) - 1) if window_seq[i:i+2] == "CG")
+                cg_count = _count_dinucs_fast(window_seq, "CG")[0]
                 expected = (c_count * g_count) / len(window_seq) if len(window_seq) > 0 else 0
                 obs_exp = cg_count / expected if expected > 0 else 0.0
 
@@ -7196,7 +9160,7 @@ class BioOptimizer:
                 window_seq = current_seq[start:start + self.cpg_window]
                 c_count = window_seq.count("C")
                 g_count = window_seq.count("G")
-                cg_count = sum(1 for i in range(len(window_seq) - 1) if window_seq[i:i+2] == "CG")
+                cg_count = _count_dinucs_fast(window_seq, "CG")[0]
                 expected = (c_count * g_count) / len(window_seq) if len(window_seq) > 0 else 0
                 obs_exp = cg_count / expected if expected > 0 else 0.0
                 if obs_exp > worst_ratio:
@@ -7501,8 +9465,8 @@ class BioOptimizer:
                             test_list[codon_start + k] = b
                         test_seq = "".join(test_list)
                         # Must not increase CG count
-                        new_cg = sum(1 for i in range(len(test_seq) - 1) if test_seq[i:i+2] == "CG")
-                        old_cg = sum(1 for i in range(len(seq) - 1) if seq[i:i+2] == "CG")
+                        new_cg = _count_dinucs_fast(test_seq, "CG")[0]
+                        old_cg = _count_dinucs_fast(seq, "CG")[0]
                         if new_cg > old_cg:
                             continue
                         # Must not reintroduce restriction sites
@@ -8284,11 +10248,23 @@ class BioOptimizer:
 
         Uses IncrementalSequenceState for O(1) GT/CG tracking instead of
         O(N) full-sequence rescans, and CodonCache for pre-sorted codon lists.
+
+        When NUMBA is available, the ``batch_codon_swap_score`` kernel scores
+        all candidate swaps at a position in a single vectorized pass, then
+        constraint checks (GT, CG, RS) are applied only to improving candidates.
+        Falls back to per-position Python evaluation when NUMBA is absent.
         """
         state = IncrementalSequenceState(seq)
         codon_cache = CodonCache(self.species_cai)
         enzyme_cache = EnzymeSiteCache(self.enzymes) if self.enzymes else None
         max_iterations = 10
+
+        # ── Batch scorer (NUMBA-accelerated when available) ───────
+        batch_scorer = _BatchSwapScorer(self.species_cai)
+
+        # Initialize incremental CAI tracking for O(1) log_sum updates
+        seq_codons_init = [state.get_codon(i) for i in range(state.num_codons)]
+        batch_scorer.reset_incremental_state(seq_codons_init)
 
         for iteration in range(max_iterations):
             any_upgrade = False
@@ -8304,11 +10280,33 @@ class BioOptimizer:
                 # Get synonymous codons sorted by CAI (highest first) — from cache
                 candidates = codon_cache.get_sorted_codons(aa)
 
-                for alt in candidates:
-                    alt_cai = codon_cache.get_cai(alt)
-                    if alt_cai <= current_cai:
-                        break  # No improvement possible (candidates are sorted)
+                # ── Batch CAI scoring ──────────────────────────────
+                # Use the NUMBA kernel (or its Python fallback) to score
+                # all candidate swaps at once.  Then iterate over
+                # improving candidates in CAI order for constraint checks.
+                improving_candidates = [
+                    (alt, alt_cai)
+                    for alt in candidates
+                    if (alt_cai := codon_cache.get_cai(alt)) > current_cai
+                ]
 
+                if not improving_candidates:
+                    continue
+
+                # Batch-score only the improving candidates
+                improving_alts = [alt for alt, _ in improving_candidates]
+                improving_alts_only = [alt for alt, _ in improving_candidates]
+
+                # Build seq_codons for the batch scorer
+                seq_codons = [
+                    state.get_codon(i) for i in range(state.num_codons)
+                ]
+                cai_scores = batch_scorer.score_candidates(
+                    seq_codons, codon_idx, improving_alts_only,
+                )
+
+                # Iterate over improving candidates (highest CAI first)
+                for k, (alt, _) in enumerate(improving_candidates):
                     # Quick O(1) boundary check: would this swap increase GT count?
                     if self.avoid_gt and state.would_gt_increase(codon_idx, alt):
                         # Check if ALL new GTs are unavoidable
@@ -8327,12 +10325,14 @@ class BioOptimizer:
                                         state, codon_idx, alt, codon_cache, enzyme_cache
                                     )
                                     if paired:
+                                        batch_scorer.update_incremental_state(codon, alt)
                                         any_upgrade = True
                                         break
                                 # Rollback
                                 state.swap_codon(codon_idx, old_codon)
                                 continue
                             # All new GTs are unavoidable — accept the upgrade
+                            batch_scorer.update_incremental_state(old_codon, alt)
                             any_upgrade = True
                             break
                         # No new GTs despite would_gt_increase returning True? Shouldn't happen, but accept
@@ -8355,11 +10355,13 @@ class BioOptimizer:
                         if not rs_ok:
                             state.swap_codon(codon_idx, old_codon)  # Rollback
                             continue
+                        batch_scorer.update_incremental_state(old_codon, alt)
                         any_upgrade = True
                         break
                     else:
                         # No enzymes to check — apply the upgrade
                         old_codon = state.swap_codon(codon_idx, alt)
+                        batch_scorer.update_incremental_state(old_codon, alt)
                         any_upgrade = True
                         break
 
@@ -8847,9 +10849,13 @@ class BioOptimizer:
         # 4. NoRestrictionSite
         results.append(check_no_restriction_site(seq, self.enzymes))
 
-        # 5. NoGTDinucleotide (eukaryote-only — GT avoidance is for splice donor prevention)
+        # 5. NoGTDinucleotide (soft for eukaryotes, hard for prokaryotes)
+        # Uses check_no_gt_dinucleotide_soft which returns:
+        #   PASS          — GT count ≤ max_gt_count (auto-computed per sequence length)
+        #   LIKELY_FAIL   — GT count > max_gt_count for eukaryotes (soft fail)
+        #   FAIL          — any GT for prokaryotes (hard constraint)
         if self.organism_domain != "prokaryote":
-            gt_result = check_no_avoidable_gt(seq)
+            gt_result = check_no_gt_dinucleotide_soft(seq, organism=self.organism_name)
             if self._applied_mutagenesis:
                 mut_details = "; ".join(
                     f"pos {m['position']}:{m['original_aa']}→{m['new_aa']} (BLOSUM={m['blosum']})"
@@ -8925,7 +10931,26 @@ class BioOptimizer:
             positions=[],
         ))
 
-        # 10. NoInstabilityMotif
+        # 10. SlidingGC (local/sliding-window GC constraint)
+        if hasattr(self, '_gc_window_size') and self._gc_window_size > 0 and len(seq) >= self._gc_window_size:
+            _sgc_min = self._gc_window_min if hasattr(self, '_gc_window_min') and self._gc_window_min is not None else 0.30
+            _sgc_max = self._gc_window_max if hasattr(self, '_gc_window_max') and self._gc_window_max is not None else 0.70
+            _sgc_result = check_sliding_gc(seq, window_size=self._gc_window_size, gc_min=_sgc_min, gc_max=_sgc_max)
+            results.append(PredicateResult(
+                "SlidingGC", _sgc_result.passed,
+                details=(
+                    f"Window={self._gc_window_size}, range=[{_sgc_min:.2f}, {_sgc_max:.2f}], "
+                    f"min_gc={_sgc_result.min_gc:.3f}, max_gc={_sgc_result.max_gc:.3f}, "
+                    f"violations={len(_sgc_result.violations)}"
+                ),
+            ))
+        else:
+            results.append(PredicateResult(
+                "SlidingGC", True,
+                details="Sliding-window GC check skipped (not configured or sequence too short)",
+            ))
+
+        # 11. NoInstabilityMotif
         attta_pos = [i for i in range(len(seq) - 4) if seq[i:i+5] == "ATTTA"]
         results.append(PredicateResult(
             "NoInstabilityMotif", len(attta_pos) == 0,

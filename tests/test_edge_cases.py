@@ -72,14 +72,14 @@ class TestVeryShortProteins:
 
     def test_single_aa_methionine(self):
         """Single M (methionine) — only one codon (ATG)."""
-        result = optimize_sequence("M")
+        result = optimize_sequence("M", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 3
         assert result.sequence == "ATG"
 
     def test_two_aa_protein(self):
         """Two amino acid protein MW (Met-Trp, both single-codon)."""
-        result = optimize_sequence("MW")
+        result = optimize_sequence("MW", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 6
         assert result.sequence[:3] == "ATG"  # Met
@@ -87,7 +87,7 @@ class TestVeryShortProteins:
 
     def test_three_aa_protein(self):
         """Three amino acid protein — smallest with codon choice."""
-        result = optimize_sequence("MAG")
+        result = optimize_sequence("MAG", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 9
         # Translate back and check protein preserved
@@ -98,7 +98,7 @@ class TestVeryShortProteins:
 
     def test_single_aa_with_codon_choice(self):
         """Single A (alanine) — has multiple codons (GCN)."""
-        result = optimize_sequence("A")
+        result = optimize_sequence("A", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 3
         assert result.sequence in AA_TO_CODONS["A"]
@@ -121,7 +121,7 @@ class TestVeryLongProteins:
         """Optimize a 1000-amino-acid protein (all alanines for speed)."""
         # Using poly-A because it's fast to optimize
         protein = "A" * 1000
-        return optimize_sequence(protein, organism="Homo_sapiens")
+        return optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
 
     def test_long_protein_returns_result(self, long_result):
         assert isinstance(long_result, OptimizationResult)
@@ -162,7 +162,7 @@ class TestAllTwentyAminoAcids:
     @pytest.fixture(scope="class")
     def all20_result(self):
         protein = STANDARD_AAS  # "ACDEFGHIKLMNPQRSTVWY"
-        return optimize_sequence(protein, organism="Homo_sapiens")
+        return optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
 
     def test_all20_returns_result(self, all20_result):
         assert isinstance(all20_result, OptimizationResult)
@@ -203,14 +203,14 @@ class TestRepetitivePatterns:
 
     def test_poly_alanine(self):
         """Poly-A (alanine): GCC has high CAI, all codons are GCN."""
-        result = optimize_sequence("A" * 50)
+        result = optimize_sequence("A" * 50, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 150
         assert result.gc_content > 0.5  # Alanine codons are GC-rich
 
     def test_poly_glycine(self):
         """Poly-G (glycine): all codons start with GG — GT-free but many Gs."""
-        result = optimize_sequence("G" * 50)
+        result = optimize_sequence("G" * 50, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 150
         # Glycine codons: GGT, GGC, GGA, GGG — all start with GG
@@ -219,33 +219,33 @@ class TestRepetitivePatterns:
 
     def test_poly_leucine(self):
         """Poly-L (leucine): has 6 codons, good diversity for optimization."""
-        result = optimize_sequence("L" * 50)
+        result = optimize_sequence("L" * 50, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 150
 
     def test_poly_serine(self):
         """Poly-S (serine): 6 codons in two groups (TCN and AGY)."""
-        result = optimize_sequence("S" * 50)
+        result = optimize_sequence("S" * 50, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 150
 
     def test_alternating_AG(self):
         """Alternating A-G pattern: creates interesting codon boundary effects."""
         protein = "AG" * 30  # 60 amino acids
-        result = optimize_sequence(protein)
+        result = optimize_sequence(protein, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 180
 
     def test_poly_proline(self):
         """Poly-P (proline): CCN codons, C-rich."""
-        result = optimize_sequence("P" * 50)
+        result = optimize_sequence("P" * 50, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 150
 
     def test_repetitive_triplet(self):
         """Repeating 'MAG' triplet."""
         protein = "MAG" * 34  # 102 amino acids
-        result = optimize_sequence(protein)
+        result = optimize_sequence(protein, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
 
@@ -260,7 +260,7 @@ class TestManyValines:
 
     def test_all_valine_protein(self):
         """100% valine: every codon is GTN, so GT is unavoidable."""
-        result = optimize_sequence("V" * 30)
+        result = optimize_sequence("V" * 30, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 90
         # Valine codons: GTT, GTC, GTA, GTG — all contain GT
@@ -271,7 +271,7 @@ class TestManyValines:
     def test_valine_heavy_protein(self):
         """Protein with 50% valine + 50% alanine."""
         protein = "VA" * 40  # 80 amino acids
-        result = optimize_sequence(protein)
+        result = optimize_sequence(protein, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 240
 
@@ -287,7 +287,7 @@ class TestManyValines:
     def test_valine_splice_challenge(self):
         """Valine creates GT dinucleotide — test NoCrypticSplice handling."""
         protein = "MVMVMVMVMV" * 5  # 50 amino acids with many valines
-        result = optimize_sequence(protein)
+        result = optimize_sequence(protein, strict_mode=False)
         assert isinstance(result, OptimizationResult)
         # Even if some GTs remain, the optimizer should produce a result
         assert len(result.sequence) == 150
@@ -302,7 +302,7 @@ class TestEmptyWhitespaceErrors:
 
     def test_empty_string_raises(self):
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("")
+            optimize_sequence("", strict_mode=False)
 
     def test_whitespace_only_raises(self):
         """Whitespace-only input: optimize_sequence checks emptiness before stripping.
@@ -312,12 +312,12 @@ class TestEmptyWhitespaceErrors:
         # It may raise InvalidProteinError or crash internally.
         # Either way, it should NOT silently produce a result.
         with pytest.raises((InvalidProteinError, ZeroDivisionError, ValueError)):
-            optimize_sequence("   ")
+            optimize_sequence("   ", strict_mode=False)
 
     def test_tab_newline_only_raises(self):
         """Tab/newline-only input should not silently succeed."""
         with pytest.raises((InvalidProteinError, ZeroDivisionError, ValueError)):
-            optimize_sequence("\t\n  ")
+            optimize_sequence("\t\n  ", strict_mode=False)
 
     def test_validate_protein_empty_raises(self):
         with pytest.raises(ValueError):
@@ -345,29 +345,29 @@ class TestInvalidCharacters:
 
     def test_numeric_characters(self):
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("M123")
+            optimize_sequence("M123", strict_mode=False)
 
     def test_lowercase_not_in_standard(self):
         """Lowercase in optimize_sequence is converted to uppercase, so this should pass."""
         # optimize_sequence converts to uppercase before validation
-        result = optimize_sequence("mag")
+        result = optimize_sequence("mag", strict_mode=False)
         assert isinstance(result, OptimizationResult)
 
     def test_special_characters(self):
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("M@G!")
+            optimize_sequence("M@G!", strict_mode=False)
 
     def test_dna_characters_are_valid_aas(self):
         """A, T, C, G are also valid amino acid codes (Ala, Thr, Cys, Gly).
         Passing 'ATCG' as a protein is valid — these are real AAs."""
-        result = optimize_sequence("ATCG")
+        result = optimize_sequence("ATCG", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == 12
 
     def test_stop_codon_asterisk(self):
         """Asterisk (*) is NOT a valid amino acid for optimization input."""
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("M*G")
+            optimize_sequence("M*G", strict_mode=False)
 
     def test_validate_protein_invalid_char(self):
         with pytest.raises(ValueError, match="invalid amino acids"):
@@ -386,7 +386,7 @@ class TestInvalidCharacters:
         # optimize_sequence does target_protein.strip().upper(), which removes
         # outer whitespace but not inner. Inner space ' ' is not a valid AA.
         with pytest.raises(InvalidProteinError):
-            optimize_sequence("M A G")
+            optimize_sequence("M A G", strict_mode=False)
 
 
 # ────────────────────────────────────────────────────────────
@@ -401,13 +401,13 @@ class TestMultipleOrganisms:
         return "MAGTHIVKLMN"
 
     def test_homo_sapiens(self, protein):
-        result = optimize_sequence(protein, organism="Homo_sapiens")
+        result = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert result.cai > 0.0
 
     def test_e_coli(self, protein):
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         assert len(result.sequence) == len(protein) * 3
         assert result.cai > 0.0
@@ -415,14 +415,14 @@ class TestMultipleOrganisms:
     def test_unsupported_organism_fallback(self, protein):
         """Unsupported organism falls back to E. coli rather than raising.
         _organism_to_species_key defaults to 'ecoli' for unknown organisms."""
-        result = optimize_sequence(protein, organism="Alien_genome")
+        result = optimize_sequence(protein, organism="Alien_genome", strict_mode=False)
         assert isinstance(result, OptimizationResult)
         # Should still produce a valid result using E. coli codon table
 
     def test_different_organisms_different_sequences(self, protein):
         """Different organisms should generally produce different codon choices."""
-        result_human = optimize_sequence(protein, organism="Homo_sapiens")
-        result_ecoli = optimize_sequence(protein, organism="Escherichia_coli")
+        result_human = optimize_sequence(protein, organism="Homo_sapiens", strict_mode=False)
+        result_ecoli = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         # They may produce different sequences due to different codon preferences
         # (not guaranteed for all proteins, but typical)
         assert isinstance(result_human, OptimizationResult)
@@ -430,7 +430,7 @@ class TestMultipleOrganisms:
 
     def test_cai_computed_for_correct_organism(self, protein):
         """CAI should be computed for the specified organism."""
-        result = optimize_sequence(protein, organism="Escherichia_coli")
+        result = optimize_sequence(protein, organism="Escherichia_coli", strict_mode=False)
         assert result.cai > 0.0
         # E. coli CAI should be reasonable for its own codon table
         assert result.cai <= 1.0
@@ -925,7 +925,7 @@ class TestOptimizerStressConsistency:
         """Optimized sequence length always equals 3 × protein length."""
         proteins = ["M", "MW", "MAG", "ACDEFGHIKLMNPQRSTVWY", "A" * 100]
         for protein in proteins:
-            result = optimize_sequence(protein)
+            result = optimize_sequence(protein, strict_mode=False)
             assert len(result.sequence) == len(protein) * 3, (
                 f"Length mismatch for {protein[:20]}: "
                 f"got {len(result.sequence)}, expected {len(protein) * 3}"
@@ -935,7 +935,7 @@ class TestOptimizerStressConsistency:
         """GC content is always between 0 and 1."""
         proteins = ["A" * 10, "M" * 10, "ACDEFGHIKLMNPQRSTVWY", "V" * 10]
         for protein in proteins:
-            result = optimize_sequence(protein)
+            result = optimize_sequence(protein, strict_mode=False)
             assert 0.0 <= result.gc_content <= 1.0, (
                 f"GC out of range for {protein[:20]}: {result.gc_content}"
             )
@@ -944,7 +944,7 @@ class TestOptimizerStressConsistency:
         """CAI is always between 0 and 1."""
         proteins = ["A" * 10, "ACDEFGHIKLMNPQRSTVWY"]
         for protein in proteins:
-            result = optimize_sequence(protein)
+            result = optimize_sequence(protein, strict_mode=False)
             assert 0.0 <= result.cai <= 1.0, (
                 f"CAI out of range for {protein[:20]}: {result.cai}"
             )
@@ -953,7 +953,7 @@ class TestOptimizerStressConsistency:
         """Optimized sequences never have internal stop codons."""
         proteins = ["MAG", "ACDEFGHIKLMNPQRSTVWY", "A" * 50]
         for protein in proteins:
-            result = optimize_sequence(protein)
+            result = optimize_sequence(protein, strict_mode=False)
             stop_check = check_no_stop_codons(result.sequence)
             assert stop_check.passed, (
                 f"Internal stop in optimized sequence for {protein[:20]}"
@@ -963,7 +963,7 @@ class TestOptimizerStressConsistency:
         """All optimized sequences pass ValidCodingSeq."""
         proteins = ["MAG", "ACDEFGHIKLMNPQRSTVWY", "A" * 50]
         for protein in proteins:
-            result = optimize_sequence(protein)
+            result = optimize_sequence(protein, strict_mode=False)
             valid_check = check_valid_coding_seq(result.sequence)
             assert valid_check.passed, (
                 f"Invalid coding sequence for {protein[:20]}: {valid_check.details}"
@@ -991,7 +991,7 @@ class TestOptimizerStressConsistency:
     def test_optimize_result_invariants(self):
         """OptimizationResult invariants hold for various inputs."""
         for protein in ["M", "MAG", "ACDEFGHIKLMNPQRSTVWY"]:
-            result = optimize_sequence(protein)
+            result = optimize_sequence(protein, strict_mode=False)
             assert 0.0 <= result.gc_content <= 1.0
             assert 0.0 <= result.cai <= 1.0
             if result.protein and result.sequence:

@@ -115,6 +115,7 @@ class TestMultiOrganismOptimization:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         assert result is not None
         assert result.sequence
@@ -131,6 +132,7 @@ class TestMultiOrganismOptimization:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         independent_cai = compute_cai(result.sequence, organism=organism)
         assert math.isclose(result.cai, independent_cai, abs_tol=0.001), (
@@ -149,6 +151,7 @@ class TestMultiOrganismOptimization:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         translated = translate(result.sequence)
         assert translated == INSULIN_PROTEIN, (
@@ -169,6 +172,7 @@ class TestMultiOrganismOptimization:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         actual_gc = gc_content(result.sequence)
         # The optimizer was asked for [0.30, 0.70]
@@ -193,6 +197,7 @@ class TestMultiOrganismOptimization:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         assert not _has_internal_stop_codons(result.sequence), (
             f"{organism}: optimized sequence contains in-frame stop codons"
@@ -214,6 +219,7 @@ class TestMultiOrganismOptimization:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         assert not _has_restriction_site(result.sequence, DEFAULT_ENZYME_NAMES), (
             f"{organism}: optimized sequence contains one or more "
@@ -251,6 +257,7 @@ def test_organism_alias(alias: str, canonical: str):
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         result2 = optimize_sequence(
             INSULIN_PROTEIN,
@@ -261,6 +268,7 @@ def test_organism_alias(alias: str, canonical: str):
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
     assert result1.cai == result2.cai, (
         f"Alias '{alias}' → CAI {result1.cai:.6f} != "
@@ -288,6 +296,7 @@ class TestCrossOrganismSanity:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         assert result.cai > 0.0, (
             f"{organism}: CAI must be positive, got {result.cai:.6f}"
@@ -305,6 +314,7 @@ class TestCrossOrganismSanity:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         for i, aa in enumerate(INSULIN_PROTEIN):
             codon = result.sequence[i * 3: i * 3 + 3]
@@ -326,6 +336,7 @@ class TestCrossOrganismSanity:
             optimize_mrna_stability=False,
             include_utr=False,
             track_provenance=False,
+            strict_mode=False,
         )
         assert result.protein == INSULIN_PROTEIN, (
             f"{organism}: result.protein does not match input protein"

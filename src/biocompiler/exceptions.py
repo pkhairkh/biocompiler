@@ -13,6 +13,7 @@ Extended with:
 - ESMFoldError, FoldXError refactored to inherit from EngineError
 - CamSolError for CamSol solubility engine errors
 - ImmunogenicityError for immunogenicity engine errors
+- BiosecurityError for biosecurity screening hazards that block optimization
 """
 
 from typing import Any
@@ -234,3 +235,192 @@ class ImmunogenicityError(EngineError):
 
     def __str__(self) -> str:
         return self._message
+
+
+class OptimizationConstraintError(BioCompilerError):
+    """Raised when optimization cannot satisfy all constraints in strict mode.
+
+    In strict mode (the default), the optimizer refuses to return sequences
+    that have failed predicates.  This exception provides the caller with
+    the list of failed predicates, the partial result (for inspection), and
+    a suggestion to relax the mode.
+
+    Attributes:
+        failed_predicates: List of predicate names that could not be satisfied.
+        partial_result: The :class:`OptimizationResult` that was produced but
+            not returned, so callers can still inspect it if desired.
+    """
+
+    def __init__(self, failed_predicates: list[str], partial_result: Any = None):
+        self.failed_predicates = failed_predicates
+        self.partial_result = partial_result
+        super().__init__(
+            f"Optimization failed {len(failed_predicates)} predicate(s) in strict mode: "
+            f"{', '.join(failed_predicates)}. "
+            f"Set strict_mode=False to allow partial results."
+        )
+
+
+# ==============================================================================
+# Safety-specific errors
+# ==============================================================================
+
+class BiosecurityError(BioCompilerError):
+    """Raised when a biosecurity screen flags a hazardous sequence.
+
+    This covers detection of known toxins, virulence factors,
+    or other hazardous biological sequences during optimization
+    or screening. Carries structured information about the
+    risk level, flagged categories, and individual matches.
+
+    Supports two calling conventions:
+
+    1. **Report form** (recommended): pass a :class:`BiosecurityReport`
+       object as the first argument.  The report's attributes are
+       automatically extracted for the error message.
+    2. **Legacy form**: pass ``reason`` (str) plus optional
+       ``risk_level``, ``flagged_categories``, and ``matches``.
+
+    Attributes:
+        report: The :class:`BiosecurityReport` that triggered the error
+            (only set when the report-form constructor is used).
+        reason: Human-readable description of the hazard.
+        risk_level: One of "none", "low", "medium", "high", "critical".
+        flagged_categories: Categories that were flagged.
+        matches: Individual hazard matches.
+    """
+
+    def __init__(
+        self,
+        reason_or_report: "str | BiosecurityReport",  # noqa: F821
+        risk_level: str | None = None,
+        flagged_categories: list[str] | None = None,
+        matches: list[Any] | None = None,
+    ):
+        # Detect report-form: if the first argument is a BiosecurityReport
+        # (has is_hazardous, risk_level attributes), extract info from it.
+        report = None
+        if hasattr(reason_or_report, "is_hazardous") and hasattr(reason_or_report, "risk_level"):
+            report = reason_or_report
+            self.reason = f"risk_level={report.risk_level}"
+            self.risk_level = report.risk_level
+            self.flagged_categories = report.flagged_categories
+            self.matches = report.matches
+        else:
+            self.reason = reason_or_report  # type: ignore[assignment]
+            self.risk_level = risk_level
+            self.flagged_categories = flagged_categories or []
+            self.matches = matches or []
+
+        self.report = report
+
+        detail = f" (risk_level={self.risk_level})" if self.risk_level else ""
+        if self.flagged_categories:
+            detail += f" categories={self.flagged_categories}"
+        super().__init__(
+            f"Biosecurity screening blocked optimization: "
+            f"{self.reason}{detail}"
+        )
+
+
+class TranslationVerificationError(BioCompilerError):
+    """Raised when optimized DNA does not encode the expected protein.
+
+    This is a critical safety check: after optimization, the translated
+    protein must match the original input exactly.  Any mismatch indicates
+    a bug in the optimizer, the codon table, or the constraint resolution
+    pipeline.
+
+    Supports two calling conventions:
+
+    1. **Rich form** (from :func:`verify_and_raise`): pass structured
+       position-level mismatch data, premature stop flag, length info, etc.
+    2. **Simple form** (backward compat): pass a reason string and optional
+       mismatch list.
+
+    Attributes:
+        mismatches: List of position-level mismatches between the translated
+            and expected protein.  Each element is either a
+            :class:`~biocompiler.protein_verification.PositionMismatch`
+            instance or a dict with keys ``position``, ``expected``,
+            ``actual``, ``codon_used``.
+        has_premature_stop: True if a stop codon was found before the end
+            of the expected protein.
+        has_stop_codon: True if the DNA ends with a stop codon.
+        length_correct: True if the DNA length is consistent with the
+            expected protein length.
+        translated_protein: The protein obtained by translating the DNA.
+        expected_protein: The protein that was expected.
+        dna_sequence: The DNA sequence that failed verification.
+    """
+
+    def __init__(
+        self,
+        mismatches: list[Any] | None = None,
+        has_premature_stop: bool = False,
+        has_stop_codon: bool = False,
+        length_correct: bool = True,
+        translated_protein: str = "",
+        expected_protein: str = "",
+        dna_sequence: str = "",
+        *,
+        # Backward compat: allow simple (reason, mismatches, translated_protein) form
+        reason: str | None = None,
+    ):
+        # Support simple form: TranslationVerificationError("message", mismatches=..., translated_protein=...)
+        if reason is not None:
+            # Simple form called with positional reason
+            self.mismatches = mismatches or []
+            self.has_premature_stop = has_premature_stop
+            self.has_stop_codon = has_stop_codon
+            self.length_correct = length_correct
+            self.translated_protein = translated_protein
+            self.expected_protein = expected_protein
+            self.dna_sequence = dna_sequence
+            n = len(self.mismatches)
+            detail = f" ({n} mismatch(es))" if n else ""
+            super().__init__(f"Translation verification failed: {reason}{detail}")
+            return
+
+        # Rich form: from verify_and_raise
+        self.mismatches = mismatches or []
+        self.has_premature_stop = has_premature_stop
+        self.has_stop_codon = has_stop_codon
+        self.length_correct = length_correct
+        self.translated_protein = translated_protein
+        self.expected_protein = expected_protein
+        self.dna_sequence = dna_sequence
+
+        # Build a human-readable message
+        parts: list[str] = []
+        if self.mismatches:
+            n = len(self.mismatches)
+            parts.append(f"{n} amino acid mismatch(es)")
+            for mm in self.mismatches[:5]:
+                if isinstance(mm, dict):
+                    parts.append(
+                        f"  pos {mm['position']}: expected '{mm['expected']}', "
+                        f"got '{mm['actual']}' (codon {mm['codon_used']})"
+                    )
+                else:
+                    parts.append(f"  {mm}")
+            if n > 5:
+                parts.append(f"  ... and {n - 5} more")
+        if has_premature_stop:
+            parts.append("premature stop codon detected")
+        if not length_correct:
+            expected_len = len(expected_protein) * 3
+            parts.append(
+                f"DNA length {len(dna_sequence)} != expected "
+                f"{expected_len} or {expected_len + 3}"
+            )
+
+        message = (
+            f"Translation verification failed: {'; '.join(parts)}. "
+            f"Translated: '{translated_protein[:50]}{'...' if len(translated_protein) > 50 else ''}', "
+            f"Expected: '{expected_protein[:50]}{'...' if len(expected_protein) > 50 else ''}'"
+        )
+        super().__init__(message)
+
+
+

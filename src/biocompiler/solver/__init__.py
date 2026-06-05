@@ -64,6 +64,7 @@ from .types import (
     ConstraintViolation,
     CrossCodonSpliceConstraint,
     CSPModel,
+    InfeasibilityReport,
     MUSReport,
     SolverBackend,
     SolverBackendProtocol,
@@ -373,6 +374,7 @@ __all__ = [
     "ConstraintType",
     "ConstraintViolation",
     "CrossCodonSpliceConstraint",
+    "InfeasibilityReport",
     "MUSReport",
     "SpliceConstraint",
 

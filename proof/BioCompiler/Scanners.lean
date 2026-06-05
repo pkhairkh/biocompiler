@@ -235,7 +235,7 @@ class CpGIslandScanner where
       hasCpGIsland seq = true →
         ∃ (pos : Nat), pos + cpgIslandWindowSize ≤ seq.length
 
-/-- PROVED CONCRETE CpG island scanner is in BioCompiler.ScannerProofs.
+/- PROVED CONCRETE CpG island scanner is in BioCompiler.ScannerProofs.
     This module provides the CpGIslandScanner instance with proved
     completeness and soundness, eliminating axioms 4-5. -/
 

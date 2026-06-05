@@ -154,7 +154,6 @@ class TestZ3SimpleSolve:
         result = z3_engine.solve(model)
         assert isinstance(result, SolverResult)
 
-    @pytest.mark.skip(reason="Z3 solver UNSAT for 20aa proteins due to excessive default constraints")
     def test_solve_solved_flag(self, z3_engine: Z3Engine):
         """A feasible problem should be marked as solved."""
         model = _make_model(HBB_PROTEIN_SHORT)
@@ -163,7 +162,6 @@ class TestZ3SimpleSolve:
             f"Simple protein solve failed"
         )
 
-    @pytest.mark.skip(reason="Z3 solver UNSAT for 20aa proteins due to excessive default constraints")
     def test_solve_correct_length(self, z3_engine: Z3Engine):
         """Output DNA length must equal protein_length * 3."""
         model = _make_model(HBB_PROTEIN_SHORT)
@@ -171,7 +169,6 @@ class TestZ3SimpleSolve:
         assert result.solved
         assert len(result.sequence) == len(HBB_PROTEIN_SHORT) * 3
 
-    @pytest.mark.skip(reason="Z3 solver UNSAT for 20aa proteins due to excessive default constraints")
     def test_solve_translates_correctly(self, z3_engine: Z3Engine):
         """Output DNA should translate back to the original protein."""
         model = _make_model(HBB_PROTEIN_SHORT)
@@ -182,7 +179,6 @@ class TestZ3SimpleSolve:
             f"Got: {translate(result.sequence, to_stop=True)}"
         )
 
-    @pytest.mark.skip(reason="Z3 solver UNSAT for 20aa proteins due to excessive default constraints")
     def test_solve_gc_in_range(self, z3_engine: Z3Engine):
         """Default GC bounds [0.30, 0.70] should be respected."""
         model = _make_model(HBB_PROTEIN_SHORT)
@@ -201,7 +197,6 @@ class TestZ3SimpleSolve:
                 "Solution contains a restriction site from the enzyme list"
             )
 
-    @pytest.mark.skip(reason="Z3 solver UNSAT for 20aa proteins due to excessive default constraints")
     def test_solve_valid_codons_no_internal_stops(self, z3_engine: Z3Engine):
         """All codons must be valid and no internal stop codons."""
         model = _make_model(HBB_PROTEIN_SHORT)
@@ -222,7 +217,6 @@ class TestZ3SimpleSolve:
 class TestZ3GCConstraint:
     """GC content constraint: tight and infeasible bounds."""
 
-    @pytest.mark.skip(reason="Z3 solver UNSAT for 20aa proteins due to excessive default constraints")
     def test_moderate_tight_gc_bounds(self, z3_engine: Z3Engine):
         """Moderate tight bounds [0.45, 0.55] should be feasible."""
         model = _make_model(HBB_PROTEIN_SHORT, gc_lo=0.45, gc_hi=0.55)
@@ -242,29 +236,55 @@ class TestZ3GCConstraint:
             pytest.skip("Tight GC bounds infeasible for this short protein (acceptable)")
 
     def test_infeasible_gc_bounds(self, z3_engine: Z3Engine):
-        """Completely infeasible GC bounds [0.99, 1.00] should return unsolved or with violations."""
+        """Completely infeasible GC bounds [0.99, 1.00] — solver relaxes soft constraints.
+
+        With soft GC constraints, the solver should find a solution that
+        translates correctly even though GC is out of range. The violation
+        is reported as a warning (soft_violations) rather than a hard
+        violation, since GC constraints are Tier 2 (soft).
+        """
         model = _make_model(HBB_PROTEIN_SHORT, gc_lo=0.99, gc_hi=1.00)
         result = z3_engine.solve(model)
-        # Solver may return solved=True with violations, or solved=False
+        # With soft GC constraints, the solver should still find a solution
+        # but with GC out of range (reported as soft violation / warning)
         if result.solved:
-            assert len(result.violations) > 0, "Should have violations for impossible GC"
-        else:
-            assert not result.solved
+            has_soft_violation = (
+                len(result.violations) > 0
+                or len(result.warnings) > 0
+                or result.metadata.get("soft_violations")
+            )
+            assert has_soft_violation, (
+                "Should have soft violation for impossible GC bounds"
+            )
 
     def test_infeasible_gc_has_diagnostic(self, z3_engine: Z3Engine):
-        """An infeasible problem should have a non-empty violations or mus_report."""
+        """An infeasible GC problem should have warnings or soft_violations."""
         model = _make_model(HBB_PROTEIN_SHORT, gc_lo=0.99, gc_hi=1.00)
         result = z3_engine.solve(model)
-        has_diag = len(result.violations) > 0 or result.mus_report is not None
+        has_diag = (
+            len(result.violations) > 0
+            or result.mus_report is not None
+            or len(result.warnings) > 0
+            or result.metadata.get("soft_violations")
+        )
         assert has_diag or not result.solved, "Infeasible solve should provide diagnostics"
 
     def test_zero_gc_infeasible(self, z3_engine: Z3Engine):
-        """GC [0.0, 0.0] is infeasible (M requires ATG which has G)."""
+        """GC [0.0, 0.0] is infeasible (M requires ATG which has G).
+
+        With soft GC constraints, the solver should still find a solution
+        but with GC out of range.
+        """
         model = _make_model(HBB_PROTEIN_SHORT, gc_lo=0.0, gc_hi=0.0)
         result = z3_engine.solve(model)
-        # May be solved with violations or unsolved
+        # May be solved with soft violations or unsolved
         if result.solved:
-            assert len(result.violations) > 0
+            has_soft_violation = (
+                len(result.violations) > 0
+                or len(result.warnings) > 0
+                or result.metadata.get("soft_violations")
+            )
+            assert has_soft_violation
 
 
 # ======================================================================
@@ -275,13 +295,23 @@ class TestZ3UnsatCore:
     """UNSAT core / MUS extraction for infeasible problems."""
 
     def test_mus_returned_on_infeasible(self, z3_engine: Z3Engine):
-        """An infeasible problem should produce a MUS report or violations."""
+        """An infeasible problem should produce a MUS report, violations, or warnings.
+
+        With soft GC constraints, the solver may still find a solution
+        but report soft violations.
+        """
         model = _make_model(HBB_PROTEIN_SHORT, gc_lo=0.99, gc_hi=1.00)
         result = z3_engine.solve(model)
         if not result.solved:
             assert result.mus_report is not None or len(result.violations) > 0
         else:
-            assert len(result.violations) > 0
+            # With soft constraints, the solver finds a solution with warnings
+            has_diag = (
+                len(result.violations) > 0
+                or len(result.warnings) > 0
+                or result.metadata.get("soft_violations")
+            )
+            assert has_diag
 
     def test_mus_identifies_conflicting_constraints(self, z3_engine: Z3Engine):
         """MUS should contain at least one constraint related to infeasibility."""
@@ -290,7 +320,6 @@ class TestZ3UnsatCore:
         if not result.solved and result.mus_report is not None:
             assert len(result.mus_report.conflicting_constraints) >= 1
 
-    @pytest.mark.skip(reason="Z3 solver UNSAT for 20aa proteins due to excessive default constraints")
     def test_sat_problem_no_mus(self, z3_engine: Z3Engine):
         """A feasible (SAT) problem should have no MUS."""
         model = _make_model(HBB_PROTEIN_SHORT)
@@ -452,3 +481,128 @@ class TestZ3EdgeCases:
         result = z3_engine.solve(model)
         assert result.solved, "100aa protein should solve"
         assert len(result.sequence) == len(protein_100) * 3
+
+
+# ======================================================================
+# 7. Constraint Tiering
+# ======================================================================
+
+class TestZ3ConstraintTiering:
+    """Tests for Z3 constraint tiering (soft constraint relaxation).
+
+    Validates that the Z3 Optimize solver correctly handles constraint
+    tiering where:
+      - Tier 1 (Hard): Translation fidelity (codon domains) — never relaxed
+      - Tier 2 (Soft): GC range, restriction sites — relaxed after Tier 3
+      - Tier 3 (Preference): CpG, ATTTA, T-runs, splice — relaxed first
+
+    The key fix: constraints are only added via optimizer.add_soft() for
+    Tier 2/3, NOT also via optimizer.add() (hard). This allows the solver
+    to relax them when they conflict, avoiding UNSAT for small proteins.
+    """
+
+    def test_tier1_always_satisfied(self, z3_engine: Z3Engine):
+        """Tier 1 constraints (translation fidelity) must always hold.
+
+        Even when Tier 2/3 constraints are relaxed, the solution must
+        translate back to the correct protein.
+        """
+        model = _make_model(HBB_PROTEIN_SHORT, gc_lo=0.99, gc_hi=1.00)
+        result = z3_engine.solve(model)
+        # With soft GC constraints, the solver should find a solution
+        # that translates correctly (Tier 1) even if GC is out of range
+        if result.solved:
+            assert _translates_to(result.sequence, HBB_PROTEIN_SHORT), (
+                "Tier 1 violated: solution doesn't translate to target protein"
+            )
+
+    def test_soft_constraints_preferred(self, z3_engine: Z3Engine):
+        """Soft constraints should be satisfied when possible.
+
+        With default (feasible) GC bounds, the solution should have
+        GC content within [0.30, 0.70].
+        """
+        model = _make_model(HBB_PROTEIN_SHORT)
+        result = z3_engine.solve(model)
+        assert result.solved, "Default constraints should be feasible"
+        gc = _gc_content(result.sequence)
+        # GC should be within the soft bounds when feasible
+        assert 0.30 <= gc <= 0.70, (
+            f"Soft GC constraint violated: GC={gc:.4f} outside [0.30, 0.70]"
+        )
+
+    def test_infeasible_gc_still_produces_sequence(self, z3_engine: Z3Engine):
+        """When GC bounds are infeasible, solver still finds a sequence.
+
+        With soft GC constraints, the solver should relax them and
+        produce a valid translation even if GC is out of range.
+        """
+        model = _make_model(HBB_PROTEIN_SHORT, gc_lo=0.0, gc_hi=0.01)
+        result = z3_engine.solve(model)
+        # The solver should find a solution since GC is soft
+        if result.solved:
+            assert len(result.sequence) == len(HBB_PROTEIN_SHORT) * 3
+            assert _translates_to(result.sequence, HBB_PROTEIN_SHORT)
+
+    def test_constraint_tier_classification(self):
+        """Verify that _get_constraint_tier classifies constraints correctly."""
+        from biocompiler.solver.engine_z3 import _get_constraint_tier, ConstraintTier
+
+        # Tier 1: Translation fidelity
+        assert _get_constraint_tier("translation_0") == ConstraintTier.TIER1_HARD
+        assert _get_constraint_tier("amino_acid_0") == ConstraintTier.TIER1_HARD
+        assert _get_constraint_tier("stop_codon_0") == ConstraintTier.TIER1_HARD
+
+        # Tier 2: GC and restriction sites
+        assert _get_constraint_tier("gc_lo_0_3") == ConstraintTier.TIER2_SOFT
+        assert _get_constraint_tier("gc_hi_0_7") == ConstraintTier.TIER2_SOFT
+        assert _get_constraint_tier("no_EcoRI") == ConstraintTier.TIER2_SOFT
+
+        # Tier 3: Preferences
+        assert _get_constraint_tier("no_within_cpg_5") == ConstraintTier.TIER3_PREFERENCE
+        assert _get_constraint_tier("no_cross_cpg_3") == ConstraintTier.TIER3_PREFERENCE
+        assert _get_constraint_tier("no_ATTTA") == ConstraintTier.TIER3_PREFERENCE
+        assert _get_constraint_tier("no_trun_6") == ConstraintTier.TIER3_PREFERENCE
+        assert _get_constraint_tier("no_donor_splice_10") == ConstraintTier.TIER3_PREFERENCE
+        assert _get_constraint_tier("no_acceptor_splice_10") == ConstraintTier.TIER3_PREFERENCE
+
+    def test_tier_weights(self):
+        """Verify that soft constraint weights are correctly defined."""
+        from biocompiler.solver.engine_z3 import _TIER2_SOFT_WEIGHT, _TIER3_SOFT_WEIGHT
+
+        # Tier 2 should have higher weight (more important to satisfy)
+        assert _TIER2_SOFT_WEIGHT > _TIER3_SOFT_WEIGHT
+        # Both should be positive
+        assert _TIER2_SOFT_WEIGHT > 0
+        assert _TIER3_SOFT_WEIGHT > 0
+
+    def test_20aa_protein_solves(self, z3_engine: Z3Engine):
+        """The original failing case: 20aa protein should now solve.
+
+        This was the root cause of the 7 skipped tests — the Z3 solver
+        returned UNSAT for 20aa proteins because Tier 2/3 constraints
+        were added both as hard (optimizer.add) AND soft (optimizer.add_soft),
+        making them impossible to relax.
+        """
+        model = _make_model(HBB_PROTEIN_SHORT)
+        result = z3_engine.solve(model)
+        assert result.solved, (
+            "20aa protein should solve with tiered constraints. "
+            f"Got: solved={result.solved}, fallback_used={result.fallback_used}"
+        )
+        assert len(result.sequence) == len(HBB_PROTEIN_SHORT) * 3
+        assert _translates_to(result.sequence, HBB_PROTEIN_SHORT)
+
+    def test_restriction_sites_soft(self, z3_engine: Z3Engine):
+        """Restriction site constraints should be soft (Tier 2).
+
+        When restriction sites conflict with other constraints, the
+        solver should be able to relax them.
+        """
+        enzymes = ["EcoRI", "BamHI"]
+        model = _make_model(HBB_PROTEIN_SHORT, enzymes=enzymes)
+        result = z3_engine.solve(model)
+        # Should solve — restriction sites are soft constraints
+        assert result.solved, "Should solve with restriction site soft constraints"
+        if result.solved:
+            assert _translates_to(result.sequence, HBB_PROTEIN_SHORT)

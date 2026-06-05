@@ -13,6 +13,8 @@ Endpoints:
 - GET  /organisms        — List supported organisms
 - GET  /predicates       — List registered predicates
 - GET  /health           — Health check
+- GET  /provenance       — Query/list provenance records
+- GET  /provenance/{id}  — Retrieve a specific provenance record
 
 Batch Endpoints:
 - POST /batch/check      — Type-check multiple sequences in one request (max 50)
@@ -35,7 +37,15 @@ Protein Analysis Endpoints (mounted at /protein/):
 - POST /protein/assessment/full           — Full protein assessment
 
 Security:
-- API key authentication (optional, set BIOCOMPILER_API_KEY env var)
+- API key authentication (default: enabled, auto-generated if BIOCOMPILER_API_KEY is not set)
+- BIOCOMPILER_AUTH_MODE: "required" (default), "optional", "disabled"
+  - "required": Unauthenticated requests get HTTP 401
+  - "optional": Unauthenticated requests allowed with X-Auth-Warning response header
+  - "disabled": Auth completely disabled (DANGEROUS — use only with BIOCOMPILER_API_KEY=disabled or --no-auth)
+- If BIOCOMPILER_API_KEY is not set, a random key is generated on first startup,
+  printed to console, and saved to ~/.biocompiler/api_key for reuse
+- If BIOCOMPILER_API_KEY=disabled, auth is explicitly disabled with a warning
+- --no-auth CLI flag disables auth for local development (with warning)
 - Rate limiting (60 requests/minute by default, configurable)
   Batch requests consume rate-limit units per item (e.g., 50 sequences = 50 units)
 - CORS with configurable origins
@@ -53,10 +63,11 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
 import uuid
-from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Security, Depends
@@ -78,12 +89,17 @@ from .organism_config import is_eukaryotic_organism
 from .exceptions import (
     BioCompilerError, InvalidSequenceError, CertificateGenerationError,
     CertificateVerificationError, UnsupportedOrganismError, InvalidProteinError,
+    OptimizationConstraintError,
 )
 from .provenance import (
     ProvenanceTracker,
     OptimizationProvenance,
     OptimizationRecord,
     generate_provenance_report,
+)
+from .decision_provenance import (
+    ProvenanceStore,
+    OptimizationDecisionTrail,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,6 +117,11 @@ __all__ = [
     "BATCH_EXPORT_MAX",
     "BATCH_ITEM_TIMEOUT_S",
     "ESMFOLD_TIMEOUT_S",
+    # Input size limits
+    "MAX_PROTEIN_LENGTH",
+    "MAX_BATCH_SIZE",
+    "MAX_REQUEST_SIZE",
+    "OPTIMIZE_TIMEOUT_S",
     # Batch optimization (programmatic API)
     "batch_optimize",
     # Pydantic input models
@@ -118,6 +139,7 @@ __all__ = [
     "OrganismResponse",
     "PredicateResponse",
     "HealthResponse",
+    "InfoResponse",
     # Protein analysis input models
     "StructurePredictInput",
     "QualityAssessInput",
@@ -143,10 +165,20 @@ __all__ = [
     #  prevent AttributeError on `from biocompiler.api import *`)
     # Organism domain resolution
     "resolve_organism_domain",
+    # Auth mode
+    "set_no_auth_flag",
+    "get_auth_mode",
+    "get_configured_api_keys",
+    "is_auth_enabled",
     # Provenance
     "ProvenanceResponse",
     "ProvenanceExplainResponse",
     "ProvenanceReportResponse",
+    # Persistent provenance store
+    "ProvenanceStore",
+    "_provenance_store",
+    # Persistent rate limiter
+    "_rate_limiter",
 ]
 
 # ─── API Key Authentication ─────────────────────────────────────────
@@ -154,9 +186,93 @@ __all__ = [
 API_KEY_NAME = "X-API-Key"
 _api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-# The API key is optional: if BIOCOMPILER_API_KEY is not set, auth is disabled.
-# Supports multiple keys via comma-separated BIOCOMPILER_API_KEYS env var,
-# or single key via BIOCOMPILER_API_KEY for backward compatibility.
+# ── Auth mode: "required" (default), "optional", "disabled" ──────────
+# BIOCOMPILER_AUTH_MODE controls how authentication is enforced:
+#   "required"  — unauthenticated requests get 401 (default, safe)
+#   "optional"  — auth is checked but unauthenticated requests are
+#                  allowed with a warning response header
+#   "disabled"  — auth is completely disabled (DANGEROUS for production)
+#
+# BIOCOMPILER_API_KEY can be:
+#   - A specific key string (recommended for production)
+#   - "disabled" to explicitly disable auth (with warning)
+#   - Not set → auto-generate a random key and persist to
+#     ~/.biocompiler/api_key for reuse across restarts
+#
+# BIOCOMPILER_API_KEYS supports comma-separated keys for rotation.
+# --no-auth CLI flag (for `biocompiler serve`) sets auth mode to "disabled".
+
+_AUTH_MODE = os.environ.get("BIOCOMPILER_AUTH_MODE", "required").lower()
+if _AUTH_MODE not in ("required", "optional", "disabled"):
+    logger.warning(
+        "Invalid BIOCOMPILER_AUTH_MODE=%r, falling back to 'required'",
+        _AUTH_MODE,
+    )
+    _AUTH_MODE = "required"
+
+# Global flag set by --no-auth CLI flag (see cli.py)
+_NO_AUTH_CLI_FLAG = False
+
+
+def set_no_auth_flag() -> None:
+    """Enable --no-auth mode from the CLI. Emits a warning."""
+    global _NO_AUTH_CLI_FLAG, _AUTH_MODE
+    _NO_AUTH_CLI_FLAG = True
+    _AUTH_MODE = "disabled"
+    logger.warning(
+        "⚠ --no-auth flag: API authentication is DISABLED. "
+        "Do not use in production!"
+    )
+
+
+def _get_api_key_file_path() -> Path:
+    """Return the path to the persisted API key file."""
+    return Path.home() / ".biocompiler" / "api_key"
+
+
+def _generate_and_persist_api_key() -> str:
+    """Generate a random API key, persist it, and return it.
+
+    The key is saved to ~/.biocompiler/api_key for reuse across restarts.
+    On first startup, the key is printed to the console as a one-time message.
+    """
+    key_file = _get_api_key_file_path()
+    is_new = not key_file.exists()
+
+    if key_file.exists():
+        try:
+            existing_key = key_file.read_text().strip()
+            if existing_key:
+                if is_new:
+                    # Shouldn't happen, but handle gracefully
+                    pass
+                return existing_key
+        except (OSError, UnicodeDecodeError):
+            logger.warning("Could not read API key from %s, generating new one", key_file)
+
+    # Generate a new 32-byte hex key (64 chars)
+    new_key = secrets.token_hex(32)
+
+    # Persist to disk
+    try:
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(new_key)
+        # Set restrictive permissions (owner read/write only)
+        key_file.chmod(0o600)
+    except OSError as exc:
+        logger.warning("Could not persist API key to %s: %s", key_file, exc)
+
+    # One-time message to console
+    print(
+        f"\nGenerated API key: {new_key} (save this!)\n"
+        f"Key saved to {key_file} for reuse across restarts.\n"
+    )
+    logger.info("Generated and persisted API key to %s", key_file)
+
+    return new_key
+
+
+# ── Resolve configured API keys ────────────────────────────────────
 _CONFIGURED_API_KEYS: set[str] = set()
 
 _single_key = os.environ.get("BIOCOMPILER_API_KEY", "")
@@ -164,29 +280,45 @@ _multi_keys = os.environ.get("BIOCOMPILER_API_KEYS", "")
 
 if _multi_keys:
     _CONFIGURED_API_KEYS = {k.strip() for k in _multi_keys.split(",") if k.strip()}
+elif _single_key == "disabled":
+    # Explicit BIOCOMPILER_API_KEY=disabled → disable auth with warning
+    logger.warning(
+        "⚠ BIOCOMPILER_API_KEY=disabled: API authentication is DISABLED. "
+        "This is dangerous for a tool that designs DNA. "
+        "Use only in isolated development environments."
+    )
+    _AUTH_MODE = "disabled"
 elif _single_key:
     _CONFIGURED_API_KEYS = {_single_key}
+else:
+    # No BIOCOMPILER_API_KEY set → auto-generate and persist a random key
+    # This is the secure-by-default behavior
+    auto_key = _generate_and_persist_api_key()
+    _CONFIGURED_API_KEYS = {auto_key}
 
 # ─── Rate Limiting ──────────────────────────────────────────────────
 
 RATE_LIMIT_RPM = int(os.environ.get("BIOCOMPILER_RATE_LIMIT", "60"))  # requests per minute
-_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+
+from .rate_limiter import PersistentRateLimiter
+
+_rate_limiter = PersistentRateLimiter(
+    db_path=os.environ.get("BIOCOMPILER_RATE_LIMIT_DB", "~/.biocompiler/rate_limits.db"),
+    max_requests=RATE_LIMIT_RPM,
+    window_seconds=60,
+)
 
 
 def _check_rate_limit(client_id: str) -> None:
-    """Enforce per-client rate limiting (sliding window)."""
-    now = time.monotonic()
-    window = _rate_limit_store[client_id]
-    # Remove timestamps older than 60 seconds
-    _rate_limit_store[client_id] = [t for t in window if now - t < 60.0]
-    window = _rate_limit_store[client_id]
-    if len(window) >= RATE_LIMIT_RPM:
+    """Enforce per-client rate limiting (sliding window, SQLite-backed)."""
+    allowed, remaining = _rate_limiter.check(client_id)
+    if not allowed:
         raise HTTPException(
             status_code=429,
             detail=f"Rate limit exceeded: {RATE_LIMIT_RPM} requests/minute. "
-                   f"Retry after {60.0 - (now - window[0]):.0f} seconds.",
+                   f"Retry after {_rate_limiter.window_seconds} seconds.",
         )
-    window.append(now)
+    _rate_limiter.record(client_id)
 
 
 def _check_batch_rate_limit(client_id: str, item_count: int) -> None:
@@ -197,12 +329,7 @@ def _check_batch_rate_limit(client_id: str, item_count: int) -> None:
     whether the entire batch can be accommodated, then record all units.
     This prevents partial batch execution when rate-limited mid-way.
     """
-    now = time.monotonic()
-    window = _rate_limit_store[client_id]
-    # Remove timestamps older than 60 seconds
-    _rate_limit_store[client_id] = [t for t in window if now - t < 60.0]
-    window = _rate_limit_store[client_id]
-    remaining = RATE_LIMIT_RPM - len(window)
+    allowed, remaining = _rate_limiter.check(client_id)
     if item_count > remaining:
         raise HTTPException(
             status_code=429,
@@ -210,27 +337,70 @@ def _check_batch_rate_limit(client_id: str, item_count: int) -> None:
                    f"{remaining} rate-limit units remaining this minute. "
                    f"Limit: {RATE_LIMIT_RPM} requests/minute.",
         )
-    # Record all items
-    window.extend([now] * item_count)
+    _rate_limiter.record_batch(client_id, item_count)
+
+
+def _is_auth_enabled() -> bool:
+    """Return True if authentication is currently enabled."""
+    return _AUTH_MODE != "disabled" and bool(_CONFIGURED_API_KEYS)
+
+
+def get_auth_mode() -> str:
+    """Return the current auth mode string: 'required', 'optional', or 'disabled'."""
+    return _AUTH_MODE
+
+
+def get_configured_api_keys() -> set[str]:
+    """Return a copy of the configured API keys set (for testing/inspection)."""
+    return set(_CONFIGURED_API_KEYS)
+
+
+def is_auth_enabled() -> bool:
+    """Public API: Return True if authentication is currently enabled."""
+    return _is_auth_enabled()
 
 
 async def verify_api_key(api_key: str = Security(_api_key_header)) -> str:
     """
-    Verify the API key if authentication is configured.
+    Verify the API key based on the current auth mode.
 
-    If BIOCOMPILER_API_KEY / BIOCOMPILER_API_KEYS is not set, auth is disabled.
-    If set, the request must include a matching X-API-Key header.
-    Supports multiple API keys for key rotation scenarios.
+    Auth modes (controlled by BIOCOMPILER_AUTH_MODE):
+    - "required" (default): Unauthenticated requests get HTTP 401.
+    - "optional": Auth is checked; unauthenticated requests are allowed
+      but receive a warning header (added by middleware).
+    - "disabled": Auth is completely disabled (DANGEROUS).
+
+    API key resolution:
+    - BIOCOMPILER_API_KEYS (comma-separated) for key rotation
+    - BIOCOMPILER_API_KEY for a single key
+    - BIOCOMPILER_API_KEY=disabled explicitly disables auth
+    - No env var → auto-generated key persisted to ~/.biocompiler/api_key
     """
-    if not _CONFIGURED_API_KEYS:
-        return "anonymous"  # Auth disabled
+    # Disabled mode: no auth required
+    if _AUTH_MODE == "disabled":
+        return "anonymous"
 
-    if api_key is None or api_key not in _CONFIGURED_API_KEYS:
+    # No keys configured (shouldn't happen with auto-generation, but guard)
+    if not _CONFIGURED_API_KEYS:
+        if _AUTH_MODE == "required":
+            # This is an unusual state — no keys but auth required.
+            # Allow through (the key auto-generation should have handled this).
+            return "anonymous"
+        return "anonymous"  # optional mode, no keys
+
+    # Valid key provided
+    if api_key is not None and api_key in _CONFIGURED_API_KEYS:
+        return api_key
+
+    # No key or invalid key
+    if _AUTH_MODE == "required":
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key. Set X-API-Key header.",
         )
-    return api_key
+
+    # Optional mode: allow through (middleware adds warning header)
+    return "anonymous"
 
 
 # ─── Pydantic Models ──────────────────────────────────────────────
@@ -318,7 +488,7 @@ class ProteinInput(BaseModel):
     cai_threshold: float = Field(0.2, description="Minimum CAI threshold")
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to avoid")
     cryptic_splice_threshold: float = Field(3.0, description="Cryptic splice site threshold")
-    track_provenance: bool = Field(False, description="Track provenance for this optimization")
+    track_provenance: bool = Field(True, description="Track provenance for this optimization (default: enabled)")
     organism_domain: str = Field(
         "auto",
         description=(
@@ -354,6 +524,14 @@ class ProteinInput(BaseModel):
             "auto-detected from source_organism vs organism."
         ),
     )
+    strict_mode: bool = Field(
+        True,
+        description=(
+            "If True (default), refuse to return sequences with failed predicates — "
+            "the endpoint returns HTTP 422 instead. Set to False to allow partial "
+            "results that have some unsatisfied constraints."
+        ),
+    )
 
     @field_validator("organism_domain")
     @classmethod
@@ -369,11 +547,21 @@ class ProteinInput(BaseModel):
     @field_validator("protein")
     @classmethod
     def validate_protein(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Protein sequence must not be empty.")
         v = v.upper()
         valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
         invalid = set(v) - valid_aas
         if invalid:
-            raise ValueError(f"Invalid amino acids: {invalid}")
+            raise ValueError(
+                f"Invalid amino acids: {sorted(invalid)}. "
+                f"Allowed: {sorted(valid_aas)}"
+            )
+        if len(v) > MAX_PROTEIN_LENGTH:
+            raise ValueError(
+                f"Protein sequence too long ({len(v)} aa). "
+                f"Maximum: {MAX_PROTEIN_LENGTH} aa."
+            )
         return v
 
     @field_validator("organism")
@@ -383,7 +571,7 @@ class ProteinInput(BaseModel):
         if resolved not in SUPPORTED_ORGANISMS:
             raise ValueError(
                 f"Unsupported organism: {v} (resolved to {resolved!r}). "
-                f"Supported: {SUPPORTED_ORGANISMS}"
+                f"Supported: {sorted(set(SUPPORTED_ORGANISMS))}"
             )
         return resolved
 
@@ -395,7 +583,7 @@ class ProteinInput(BaseModel):
             if resolved not in SUPPORTED_ORGANISMS:
                 raise ValueError(
                     f"Unsupported species: {v} (resolved to {resolved!r}). "
-                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                    f"Supported: {sorted(set(ORGANISM_ALIASES.keys()))}"
                 )
         return v
 
@@ -407,7 +595,7 @@ class ProteinInput(BaseModel):
             if resolved not in SUPPORTED_ORGANISMS:
                 raise ValueError(
                     f"Unsupported source_organism: {v} (resolved to {resolved!r}). "
-                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                    f"Supported: {sorted(set(ORGANISM_ALIASES.keys()))}"
                 )
             return resolved
         return v
@@ -498,6 +686,17 @@ class ScanResponse(BaseModel):
 
 class OrganismResponse(BaseModel):
     organisms: list[dict]
+
+
+class InfoResponse(BaseModel):
+    """Response from the /info endpoint."""
+    max_protein_length: int = Field(..., description="Maximum protein sequence length in amino acids")
+    max_batch_size: int = Field(..., description="Maximum number of items per batch request")
+    max_request_size: int = Field(..., description="Maximum request body size in bytes")
+    optimize_timeout_s: int = Field(..., description="Optimization timeout in seconds")
+    supported_organisms: list[str] = Field(..., description="List of supported organism names")
+    api_version: str = Field(..., description="API version")
+    safety_version: str = Field(..., description="Safety/biosecurity version")
 
 
 class PredicateResponse(BaseModel):
@@ -638,11 +837,21 @@ class BatchOptimizeItem(BaseModel):
     @field_validator("protein")
     @classmethod
     def validate_protein(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Protein sequence must not be empty.")
         v = v.upper()
         valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
         invalid = set(v) - valid_aas
         if invalid:
-            raise ValueError(f"Invalid amino acids: {invalid}")
+            raise ValueError(
+                f"Invalid amino acids: {sorted(invalid)}. "
+                f"Allowed: {sorted(valid_aas)}"
+            )
+        if len(v) > MAX_PROTEIN_LENGTH:
+            raise ValueError(
+                f"Protein sequence too long ({len(v)} aa). "
+                f"Maximum: {MAX_PROTEIN_LENGTH} aa."
+            )
         return v
 
     @field_validator("organism")
@@ -652,7 +861,7 @@ class BatchOptimizeItem(BaseModel):
         if resolved not in SUPPORTED_ORGANISMS:
             raise ValueError(
                 f"Unsupported organism: {v} (resolved to {resolved!r}). "
-                f"Supported: {SUPPORTED_ORGANISMS}"
+                f"Supported: {sorted(set(SUPPORTED_ORGANISMS))}"
             )
         return resolved
 
@@ -664,7 +873,7 @@ class BatchOptimizeItem(BaseModel):
             if resolved not in SUPPORTED_ORGANISMS:
                 raise ValueError(
                     f"Unsupported source_organism: {v} (resolved to {resolved!r}). "
-                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                    f"Supported: {sorted(set(ORGANISM_ALIASES.keys()))}"
                 )
             return resolved
         return v
@@ -780,11 +989,21 @@ class FastBatchOptimizeInput(BaseModel):
             raise ValueError("Proteins list must not be empty.")
         valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
         for i, protein in enumerate(v):
+            if not protein or not protein.strip():
+                raise ValueError(
+                    f"Protein at index {i} must not be empty."
+                )
             protein_upper = protein.upper()
             invalid = set(protein_upper) - valid_aas
             if invalid:
                 raise ValueError(
-                    f"Invalid amino acids in protein at index {i}: {invalid}"
+                    f"Invalid amino acids in protein at index {i}: {sorted(invalid)}. "
+                    f"Allowed: {sorted(valid_aas)}"
+                )
+            if len(protein_upper) > MAX_PROTEIN_LENGTH:
+                raise ValueError(
+                    f"Protein at index {i} too long ({len(protein_upper)} aa). "
+                    f"Maximum: {MAX_PROTEIN_LENGTH} aa."
                 )
         return [p.upper() for p in v]
 
@@ -1033,21 +1252,32 @@ class ProvenanceReportResponse(BaseModel):
     report: str = Field(..., description="Generated report content")
 
 
-# ─── In-Memory Provenance Store ─────────────────────────────────────
+# ─── Persistent Provenance Store ─────────────────────────────────────
 
-_provenance_store: dict[str, ProvenanceTracker] = {}
+_PROVENANCE_DIR = os.environ.get("BIOCOMPILER_PROVENANCE_DIR")
+_provenance_store = ProvenanceStore(store_dir=_PROVENANCE_DIR)
 
 
-def _store_provenance(tracker: ProvenanceTracker) -> str:
-    """Store a provenance tracker and return its ID."""
-    prov_id = str(uuid.uuid4())
-    _provenance_store[prov_id] = tracker
-    return prov_id
+def _store_provenance(trail: OptimizationDecisionTrail) -> str:
+    """Persist a decision-level provenance trail and return its record ID.
+
+    Uses the :class:`ProvenanceStore` from :mod:`decision_provenance`
+    for file-based persistence so records survive process restarts.
+    """
+    record_id = _provenance_store.save(trail)
+    return record_id
 
 
 # ─── Protein Analysis Constants ─────────────────────────────────────
 
 ESMFOLD_TIMEOUT_S = 120  # Default timeout for ESMFold structure prediction
+
+# ─── Input Size Limits ────────────────────────────────────────────
+
+MAX_PROTEIN_LENGTH = int(os.environ.get("BIOCOMPILER_MAX_PROTEIN_LENGTH", "10000"))  # aa
+MAX_BATCH_SIZE = int(os.environ.get("BIOCOMPILER_MAX_BATCH_SIZE", "50"))  # sequences per batch
+MAX_REQUEST_SIZE = int(os.environ.get("BIOCOMPILER_MAX_REQUEST_SIZE", str(10_000_000)))  # bytes
+OPTIMIZE_TIMEOUT_S = int(os.environ.get("BIOCOMPILER_OPTIMIZE_TIMEOUT", "300"))  # seconds
 
 _PROTEIN_VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 
@@ -1059,17 +1289,20 @@ def validate_protein_input(protein: str) -> str | None:
     Validate a protein sequence string.
 
     Returns an error message string if invalid, or None if valid.
-    Checks: non-empty, only standard amino acid single-letter codes.
+    Checks: non-empty, only standard amino acid single-letter codes,
+    length within MAX_PROTEIN_LENGTH.
     """
     if not protein:
+        return "Protein sequence must not be empty."
+    if not protein.strip():
         return "Protein sequence must not be empty."
     protein_upper = protein.upper()
     invalid = set(protein_upper) - _PROTEIN_VALID_AMINO_ACIDS
     if invalid:
-        return f"Invalid amino acids in protein: {invalid}. " \
+        return f"Invalid amino acids in protein: {sorted(invalid)}. " \
                f"Allowed: {sorted(_PROTEIN_VALID_AMINO_ACIDS)}"
-    if len(protein_upper) > 5000:
-        return f"Protein sequence too long ({len(protein_upper)} aa). Maximum: 5000 aa."
+    if len(protein_upper) > MAX_PROTEIN_LENGTH:
+        return f"Protein sequence too long ({len(protein_upper)} aa). Maximum: {MAX_PROTEIN_LENGTH} aa."
     return None
 
 
@@ -2851,6 +3084,45 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Request body size middleware
+    @app.middleware("http")
+    async def request_size_limit_middleware(request: Request, call_next) -> Any:
+        """Reject requests whose body exceeds MAX_REQUEST_SIZE bytes."""
+        if request.method in ("POST", "PUT", "PATCH"):
+            content_length = request.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > MAX_REQUEST_SIZE:
+                        from fastapi.responses import JSONResponse
+                        return JSONResponse(
+                            status_code=413,
+                            content={
+                                "detail": (
+                                    f"Request body too large ({int(content_length)} bytes). "
+                                    f"Maximum: {MAX_REQUEST_SIZE} bytes."
+                                ),
+                            },
+                        )
+                except (ValueError, TypeError):
+                    pass
+        response = await call_next(request)
+        return response
+
+    # Auth-mode middleware: add warning header when auth is optional
+    # and the request is unauthenticated
+    @app.middleware("http")
+    async def auth_mode_middleware(request: Request, call_next) -> Any:
+        response = await call_next(request)
+        # In optional mode, add a warning header if no API key was provided
+        if _AUTH_MODE == "optional":
+            api_key = request.headers.get(API_KEY_NAME)
+            if not api_key or api_key not in _CONFIGURED_API_KEYS:
+                response.headers["X-Auth-Warning"] = (
+                    "Authentication is optional but recommended. "
+                    "Unauthenticated access may be restricted in future versions."
+                )
+        return response
+
     # Rate limiting middleware
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next) -> Any:
@@ -2872,8 +3144,38 @@ def create_app() -> FastAPI:
             status="healthy",
             version=__version__,
             timestamp=datetime.now(timezone.utc).isoformat(),
-            auth_enabled=bool(_CONFIGURED_API_KEYS),
+            auth_enabled=_is_auth_enabled(),
             rate_limit_rpm=RATE_LIMIT_RPM,
+        )
+
+    @app.get("/info", response_model=InfoResponse)
+    async def api_info() -> InfoResponse:
+        """
+        Return API configuration and limits.
+
+        Provides runtime limits, supported organisms, and version info
+        so clients can validate inputs before making requests.
+        """
+        # Try to get safety version from biosecurity module
+        try:
+            from .biosecurity import __version__ as safety_ver
+        except (ImportError, AttributeError):
+            safety_ver = __version__
+
+        # Get the unique canonical organism names (filter out aliases)
+        canonical_organisms = sorted(set(
+            name for name in SUPPORTED_ORGANISMS
+            if not name.islower()  # aliases are lowercase shortcuts
+        ))
+
+        return InfoResponse(
+            max_protein_length=MAX_PROTEIN_LENGTH,
+            max_batch_size=MAX_BATCH_SIZE,
+            max_request_size=MAX_REQUEST_SIZE,
+            optimize_timeout_s=OPTIMIZE_TIMEOUT_S,
+            supported_organisms=canonical_organisms,
+            api_version=__version__,
+            safety_version=safety_ver,
         )
 
     @app.get("/organisms", response_model=OrganismResponse)
@@ -2902,6 +3204,82 @@ def create_app() -> FastAPI:
             "enzymes": {
                 name: site for name, site in RESTRICTION_ENZYMES.items()
             }
+        }
+
+    # ─── Provenance Endpoints ────────────────────────────────────
+
+    @app.get("/provenance/{record_id}")
+    async def get_provenance(record_id: str, client_id: str = Depends(verify_api_key)) -> dict:
+        """
+        Retrieve a stored provenance record by ID.
+
+        Returns the full decision-level provenance trail for a previously
+        run optimization.  Records are persisted on disk and survive
+        process restarts.
+
+        The ``record_id`` is the UUID returned in the ``provenance_id``
+        field of an ``/optimize`` response.
+        """
+        try:
+            trail = _provenance_store.load(record_id)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Provenance record not found: {record_id}",
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Corrupted provenance record: {record_id}",
+            )
+        return {
+            "id": record_id,
+            "trail": trail.to_dict(),
+        }
+
+    @app.get("/provenance")
+    async def query_provenance(
+        protein_name: Optional[str] = None,
+        organism: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        client_id: str = Depends(verify_api_key),
+    ) -> dict:
+        """
+        Query/list stored provenance records.
+
+        Supports filtering by gene/protein name, organism, and date range.
+        All filters are optional and combined with AND logic.
+
+        Query parameters:
+        - ``protein_name`` — match records whose gene_name equals this value
+        - ``organism`` — match records whose organism equals this value
+        - ``date_from`` — ISO 8601 start timestamp (inclusive)
+        - ``date_to`` — ISO 8601 end timestamp (inclusive)
+        """
+        date_range = None
+        if date_from and date_to:
+            date_range = (date_from, date_to)
+
+        trails = _provenance_store.query(
+            protein_name=protein_name,
+            organism=organism,
+            date_range=date_range,
+        )
+        return {
+            "count": len(trails),
+            "records": [
+                {
+                    "gene_name": t.gene_name,
+                    "organism": t.organism,
+                    "timestamp": t.timestamp,
+                    "total_cai": t.total_cai,
+                    "total_gc": t.total_gc,
+                    "codon_decision_count": len(t.codon_decisions),
+                    "constraint_decision_count": len(t.constraint_decisions),
+                }
+                for t in trails
+            ],
         }
 
     @app.post("/check", response_model=TypeCheckResponse)
@@ -3011,19 +3389,45 @@ def create_app() -> FastAPI:
                 input_data.organism, input_data.organism_domain
             )
 
-            result = optimize_sequence(
-                target_protein=input_data.protein,
-                organism=input_data.organism,
-                gc_lo=input_data.gc_lo,
-                gc_hi=input_data.gc_hi,
-                cai_threshold=input_data.cai_threshold,
-                restriction_sites=input_data.enzymes,
-                cryptic_splice_threshold=input_data.cryptic_splice_threshold,
-                organism_domain=resolved_domain,
-                source_organism=input_data.source_organism,
-                therapeutic=input_data.therapeutic,
-                self_protein=input_data.self_protein,
-            )
+            # Run optimization with timeout
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        optimize_sequence,
+                        target_protein=input_data.protein,
+                        organism=input_data.organism,
+                        gc_lo=input_data.gc_lo,
+                        gc_hi=input_data.gc_hi,
+                        cai_threshold=input_data.cai_threshold,
+                        restriction_sites=input_data.enzymes,
+                        cryptic_splice_threshold=input_data.cryptic_splice_threshold,
+                        organism_domain=resolved_domain,
+                        source_organism=input_data.source_organism,
+                        therapeutic=input_data.therapeutic,
+                        self_protein=input_data.self_protein,
+                        track_provenance=input_data.track_provenance,
+                        strict_mode=input_data.strict_mode,
+                    ),
+                    timeout=OPTIMIZE_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        f"Optimization timed out after {OPTIMIZE_TIMEOUT_S} seconds. "
+                        f"Try a shorter protein or relax constraints."
+                    ),
+                )
+
+            # Persist decision-level provenance trail if tracking is enabled
+            provenance_id = None
+            if input_data.track_provenance and result.decision_trail is not None:
+                try:
+                    provenance_id = _store_provenance(result.decision_trail)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to persist provenance trail: %s", exc
+                    )
 
             return OptimizeResponse(
                 sequence=result.sequence,
@@ -3033,6 +3437,7 @@ def create_app() -> FastAPI:
                 satisfied_predicates=result.satisfied_predicates,
                 failed_predicates=result.failed_predicates,
                 fallback_used=result.fallback_used,
+                provenance_id=provenance_id,
                 organism_domain=resolved_domain,
                 source_organism=input_data.source_organism,
                 therapeutic=input_data.therapeutic,
@@ -3040,8 +3445,30 @@ def create_app() -> FastAPI:
             )
         except (InvalidProteinError, UnsupportedOrganismError) as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except OptimizationConstraintError as e:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "OptimizationConstraintError",
+                    "message": str(e),
+                    "failed_predicates": e.failed_predicates,
+                    "suggestion": "Set strict_mode=False to allow partial results, "
+                                  "or relax constraints (e.g., widen GC range, "
+                                  "remove restriction enzymes).",
+                    "partial_result": {
+                        "sequence": e.partial_result.sequence if e.partial_result else None,
+                        "protein": e.partial_result.protein if e.partial_result else None,
+                        "cai": e.partial_result.cai if e.partial_result else None,
+                        "gc_content": e.partial_result.gc_content if e.partial_result else None,
+                        "failed_predicates": e.partial_result.failed_predicates if e.partial_result else None,
+                        "satisfied_predicates": e.partial_result.satisfied_predicates if e.partial_result else None,
+                    } if e.partial_result else None,
+                },
+            )
         except BioCompilerError as e:
             raise HTTPException(status_code=422, detail=str(e))
+        except HTTPException:
+            raise  # Re-raise HTTPExceptions (including our 504 timeout)
         except Exception as e:
             logger.exception("Unexpected error during optimization")
             raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")
