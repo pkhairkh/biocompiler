@@ -62,6 +62,8 @@ from .visualization import (  # noqa: F401
     generate_latex_table,
 )
 
+from .metrics import compute_cai_validated  # noqa: F401
+
 __all__ = [
     # Runner & report
     "BenchmarkRunner",
@@ -73,6 +75,7 @@ __all__ = [
     "compare_results",
     # Validated CAI
     "compute_cai_sharp_li",
+    "compute_cai_validated",
     # DNAchisel adapter
     "DNAchiselAdapter",
     # Reference-set benchmarks

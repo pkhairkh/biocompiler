@@ -69,11 +69,11 @@ from .translation import translate, compute_cai, find_orfs
 from .splicing import compute_splice_isoforms
 from .type_system import evaluate_all_predicates
 from .certificate import generate_certificate, verify_certificate
-from .optimization import optimize_sequence
+from .optimization import optimize_sequence, batch_optimize
 from .export import export_fasta, export_genbank
 from .types import Verdict, Certificate
 from .constants import RESTRICTION_ENZYMES
-from .organisms import SUPPORTED_ORGANISMS, CODON_USAGE_TABLES
+from .organisms import SUPPORTED_ORGANISMS, CODON_USAGE_TABLES, resolve_organism, ORGANISM_ALIASES
 from .organism_config import is_eukaryotic_organism
 from .exceptions import (
     BioCompilerError, InvalidSequenceError, CertificateGenerationError,
@@ -101,6 +101,8 @@ __all__ = [
     "BATCH_EXPORT_MAX",
     "BATCH_ITEM_TIMEOUT_S",
     "ESMFOLD_TIMEOUT_S",
+    # Batch optimization (programmatic API)
+    "batch_optimize",
     # Pydantic input models
     "SequenceInput",
     "ProteinInput",
@@ -239,7 +241,21 @@ async def verify_api_key(api_key: str = Security(_api_key_header)) -> str:
 class SequenceInput(BaseModel):
     """DNA sequence input."""
     sequence: str = Field(..., description="DNA sequence (ACGTN)")
-    organism: str = Field("Homo_sapiens", description="Target organism")
+    organism: str = Field(
+        "Homo_sapiens",
+        description=(
+            "Target organism. Accepts canonical names (e.g. 'Escherichia_coli'), "
+            "short keys ('ecoli', 'human'), abbreviated binomials ('E_coli', "
+            "'h_sapiens'), or display names ('E. coli')."
+        ),
+    )
+    species: Optional[str] = Field(
+        None,
+        description=(
+            "Alias for organism (deprecated). Accepts the same values. "
+            "If both species and organism are provided, species takes precedence."
+        ),
+    )
     exon_boundaries: Optional[list[tuple[int, int]]] = Field(
         None, description="Exon boundaries as [(start, end), ...]"
     )
@@ -261,21 +277,51 @@ class SequenceInput(BaseModel):
     @field_validator("organism")
     @classmethod
     def validate_organism(cls, v: str) -> str:
-        if v not in SUPPORTED_ORGANISMS:
-            raise ValueError(f"Unsupported organism: {v}. Supported: {SUPPORTED_ORGANISMS}")
+        resolved = resolve_organism(v, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
+            raise ValueError(
+                f"Unsupported organism: {v} (resolved to {resolved!r}). "
+                f"Supported: {SUPPORTED_ORGANISMS}"
+            )
+        return resolved
+
+    @field_validator("species")
+    @classmethod
+    def validate_species(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            resolved = resolve_organism(v, strict=False)
+            if resolved not in SUPPORTED_ORGANISMS:
+                raise ValueError(
+                    f"Unsupported species: {v} (resolved to {resolved!r}). "
+                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                )
         return v
 
 
 class ProteinInput(BaseModel):
     """Protein sequence input for optimization."""
     protein: str = Field(..., description="Target protein sequence (single-letter codes)")
-    organism: str = Field("Homo_sapiens", description="Target organism")
+    organism: str = Field(
+        "Homo_sapiens",
+        description=(
+            "Target organism. Accepts canonical names (e.g. 'Escherichia_coli'), "
+            "short keys ('ecoli', 'human'), abbreviated binomials ('E_coli', "
+            "'h_sapiens'), or display names ('E. coli')."
+        ),
+    )
+    species: Optional[str] = Field(
+        None,
+        description=(
+            "Alias for organism (deprecated). Accepts the same values. "
+            "If both species and organism are provided, species takes precedence."
+        ),
+    )
     gc_lo: float = Field(0.30, description="Minimum GC content")
     gc_hi: float = Field(0.70, description="Maximum GC content")
     cai_threshold: float = Field(0.2, description="Minimum CAI threshold")
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to avoid")
     cryptic_splice_threshold: float = Field(3.0, description="Cryptic splice site threshold")
-    track_provenance: bool = Field(True, description="Track provenance for this optimization")
+    track_provenance: bool = Field(False, description="Track provenance for this optimization")
     organism_domain: str = Field(
         "auto",
         description=(
@@ -305,6 +351,29 @@ class ProteinInput(BaseModel):
         invalid = set(v) - valid_aas
         if invalid:
             raise ValueError(f"Invalid amino acids: {invalid}")
+        return v
+
+    @field_validator("organism")
+    @classmethod
+    def validate_organism(cls, v: str) -> str:
+        resolved = resolve_organism(v, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
+            raise ValueError(
+                f"Unsupported organism: {v} (resolved to {resolved!r}). "
+                f"Supported: {SUPPORTED_ORGANISMS}"
+            )
+        return resolved
+
+    @field_validator("species")
+    @classmethod
+    def validate_species(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            resolved = resolve_organism(v, strict=False)
+            if resolved not in SUPPORTED_ORGANISMS:
+                raise ValueError(
+                    f"Unsupported species: {v} (resolved to {resolved!r}). "
+                    f"Supported: {list(ORGANISM_ALIASES.keys())}"
+                )
         return v
 
 
@@ -406,7 +475,13 @@ BATCH_ITEM_TIMEOUT_S = int(os.environ.get("BIOCOMPILER_BATCH_ITEM_TIMEOUT", "30"
 class BatchCheckItem(BaseModel):
     """Single item in a batch type-check request."""
     sequence: str = Field(..., description="DNA sequence (ACGTN)")
-    organism: str = Field("Homo_sapiens", description="Target organism")
+    organism: str = Field(
+        "Homo_sapiens",
+        description=(
+            "Target organism. Accepts canonical names, short keys, "
+            "abbreviated binomials, or display names."
+        ),
+    )
     exon_boundaries: Optional[list[tuple[int, int]]] = Field(
         None, description="Exon boundaries as [(start, end), ...]"
     )
@@ -428,9 +503,13 @@ class BatchCheckItem(BaseModel):
     @field_validator("organism")
     @classmethod
     def validate_organism(cls, v: str) -> str:
-        if v not in SUPPORTED_ORGANISMS:
-            raise ValueError(f"Unsupported organism: {v}. Supported: {SUPPORTED_ORGANISMS}")
-        return v
+        resolved = resolve_organism(v, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
+            raise ValueError(
+                f"Unsupported organism: {v} (resolved to {resolved!r}). "
+                f"Supported: {SUPPORTED_ORGANISMS}"
+            )
+        return resolved
 
 
 class BatchCheckInput(BaseModel):
@@ -460,7 +539,13 @@ class BatchCheckResponse(BaseModel):
 class BatchOptimizeItem(BaseModel):
     """Single item in a batch optimize request."""
     protein: str = Field(..., description="Target protein sequence (single-letter codes)")
-    organism: str = Field("Homo_sapiens", description="Target organism")
+    organism: str = Field(
+        "Homo_sapiens",
+        description=(
+            "Target organism. Accepts canonical names, short keys, "
+            "abbreviated binomials, or display names."
+        ),
+    )
     gc_lo: float = Field(0.30, description="Minimum GC content")
     gc_hi: float = Field(0.70, description="Maximum GC content")
     cai_threshold: float = Field(0.2, description="Minimum CAI threshold")
@@ -500,9 +585,13 @@ class BatchOptimizeItem(BaseModel):
     @field_validator("organism")
     @classmethod
     def validate_organism(cls, v: str) -> str:
-        if v not in SUPPORTED_ORGANISMS:
-            raise ValueError(f"Unsupported organism: {v}. Supported: {SUPPORTED_ORGANISMS}")
-        return v
+        resolved = resolve_organism(v, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
+            raise ValueError(
+                f"Unsupported organism: {v} (resolved to {resolved!r}). "
+                f"Supported: {SUPPORTED_ORGANISMS}"
+            )
+        return resolved
 
 
 class BatchOptimizeInput(BaseModel):
@@ -524,6 +613,76 @@ class BatchOptimizeResponse(BaseModel):
     """Response for batch optimize endpoint."""
     results: list[dict] = Field(..., description="Per-item results")
     summary: BatchOptimizeSummary = Field(..., description="Aggregate summary")
+
+
+class FastBatchOptimizeInput(BaseModel):
+    """Input for fast batch optimize endpoint (shared organism/parameters).
+
+    All proteins are optimized with the same organism and constraint
+    parameters, allowing the backend to reuse a single HybridOptimizer
+    instance.  This is significantly faster than the per-item batch
+    endpoint when all proteins target the same organism.
+    """
+    proteins: list[str] = Field(
+        ..., description=f"List of protein sequences to optimize (max {BATCH_OPTIMIZE_MAX})"
+    )
+    organism: str = Field(
+        "Homo_sapiens",
+        description=(
+            "Target organism shared by all proteins. Accepts canonical names, "
+            "short keys, abbreviated binomials, or display names."
+        ),
+    )
+    gc_lo: float = Field(0.30, description="Minimum GC content")
+    gc_hi: float = Field(0.70, description="Maximum GC content")
+    cai_threshold: float = Field(0.2, description="Minimum CAI threshold")
+    enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to avoid")
+    organism_domain: str = Field(
+        "auto",
+        description=(
+            "Organism domain for constraint selection. "
+            "'auto' detects from organism name, "
+            "'eukaryote' forces eukaryotic constraints, "
+            "'prokaryote' skips eukaryote-specific constraints."
+        ),
+    )
+
+    @field_validator("organism_domain")
+    @classmethod
+    def validate_organism_domain(cls, v: str) -> str:
+        v = v.lower()
+        if v not in ("auto", "eukaryote", "prokaryote"):
+            raise ValueError(
+                f"Invalid organism_domain: {v!r}. "
+                "Must be one of: auto, eukaryote, prokaryote"
+            )
+        return v
+
+    @field_validator("organism")
+    @classmethod
+    def validate_organism(cls, v: str) -> str:
+        resolved = resolve_organism(v, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
+            raise ValueError(
+                f"Unsupported organism: {v} (resolved to {resolved!r}). "
+                f"Supported: {SUPPORTED_ORGANISMS}"
+            )
+        return resolved
+
+    @field_validator("proteins")
+    @classmethod
+    def validate_proteins(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("Proteins list must not be empty.")
+        valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
+        for i, protein in enumerate(v):
+            protein_upper = protein.upper()
+            invalid = set(protein_upper) - valid_aas
+            if invalid:
+                raise ValueError(
+                    f"Invalid amino acids in protein at index {i}: {invalid}"
+                )
+        return [p.upper() for p in v]
 
 
 class BatchExportItem(BaseModel):
@@ -809,14 +968,18 @@ def validate_organism_input(organism: str) -> str | None:
     Validate an organism string.
 
     Returns an error message string if invalid, or None if valid.
-    Checks: non-empty, supported organism.
+    Checks: non-empty, supported organism (including alias resolution).
+
+    This function resolves organism aliases (e.g. 'ecoli', 'E. coli',
+    'h_sapiens') to canonical names before validation, so that any
+    accepted alias is also valid here.
     """
     if not organism:
         return "Organism must not be empty."
     try:
-        from .organisms import SUPPORTED_ORGANISMS as _SUPPORTED
-        if organism not in _SUPPORTED:
-            return f"Unsupported organism: {organism}. Supported: {_SUPPORTED}"
+        resolved = resolve_organism(organism, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
+            return f"Unsupported organism: {organism} (resolved to {resolved!r}). Supported: {SUPPORTED_ORGANISMS}"
     except ImportError:
         # Fallback: accept any non-empty string if organisms module unavailable
         logger.debug("Organisms module unavailable; skipping organism validation")
@@ -2947,6 +3110,87 @@ def create_app() -> FastAPI:
                     "error": str(e),
                 })
                 error_count += 1
+
+        return BatchOptimizeResponse(
+            results=results,
+            summary=BatchOptimizeSummary(
+                total=n,
+                all_satisfied=all_satisfied_count,
+                partial=partial_count,
+                errors=error_count,
+            ),
+        )
+
+    @app.post("/batch/optimize/fast", response_model=BatchOptimizeResponse)
+    async def fast_batch_optimize(
+        input_data: FastBatchOptimizeInput,
+        client_id: str = Depends(verify_api_key),
+    ) -> BatchOptimizeResponse:
+        """
+        Fast batch optimization with shared organism/parameters.
+
+        All proteins are optimized for the same organism with the same
+        GC range and restriction enzyme settings.  This allows the
+        backend to reuse a single HybridOptimizer instance, avoiding
+        redundant precomputation of codon tables, restriction site
+        lookups, and GC/GT/AG data structures for each protein.
+
+        This endpoint is significantly faster than POST /batch/optimize
+        for high-throughput workflows where all proteins target the
+        same organism.
+
+        Rate limiting: each protein consumes one rate-limit unit.
+        Maximum batch size: 20 proteins.
+        """
+        n = len(input_data.proteins)
+        if n > BATCH_OPTIMIZE_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Batch size {n} exceeds maximum of {BATCH_OPTIMIZE_MAX} proteins",
+            )
+
+        # Per-item rate limiting
+        request_client = client_id
+        _check_batch_rate_limit(request_client, n)
+
+        try:
+            opt_results = batch_optimize(
+                proteins=input_data.proteins,
+                organism=input_data.organism,
+                gc_lo=input_data.gc_lo,
+                gc_hi=input_data.gc_hi,
+                cai_threshold=input_data.cai_threshold,
+                enzymes=input_data.enzymes,
+                organism_domain=input_data.organism_domain,
+            )
+        except Exception as e:
+            logger.warning("Fast batch optimize failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+        # Build response
+        results: list[dict[str, Any]] = []
+        all_satisfied_count = 0
+        partial_count = 0
+        error_count = 0
+
+        for idx, result in enumerate(opt_results):
+            result_dict = {
+                "index": idx,
+                "status": "success",
+                "sequence": result.sequence,
+                "protein": result.protein,
+                "cai": result.cai,
+                "gc_content": result.gc_content,
+                "satisfied_predicates": result.satisfied_predicates,
+                "failed_predicates": result.failed_predicates,
+                "fallback_used": result.fallback_used,
+                "organism_domain": input_data.organism_domain,
+            }
+            results.append(result_dict)
+            if not result.failed_predicates:
+                all_satisfied_count += 1
+            else:
+                partial_count += 1
 
         return BatchOptimizeResponse(
             results=results,

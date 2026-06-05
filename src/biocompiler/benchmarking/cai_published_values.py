@@ -102,13 +102,19 @@ PUBLISHED_CAI_VALUES: Dict[tuple, dict] = {
         ),
     },
     ("recA", "Escherichia_coli"): {
-        "expected_cai": 0.76,
+        "expected_cai": 0.59,
         "citation": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295, Table 1",
         "doi": "10.1093/nar/15.3.1281",
         "organism_display": "E. coli K-12",
         "notes": (
-            "recA (recombinase A) is moderately-to-highly expressed during "
-            "the SOS response; CAI ≈ 0.76."
+            "recA (recombinase A) is a moderately expressed SOS response "
+            "gene; CAI ≈ 0.59 (Sharp & Li 1987, Table 1).  The lower CAI "
+            "reflects recA's non-constitutive expression pattern, using "
+            "fewer optimal codons than ribosomal proteins or elongation "
+            "factors.  WARNING: Values of 0.76 seen in some sources "
+            "may use a different reference set (Kazusa rather than the "
+            "original 24-gene Sharp-Li set).  Use for rank-order "
+            "validation only with the Sharp-Li reference."
         ),
     },
     ("ompA", "Escherichia_coli"): {
@@ -122,13 +128,17 @@ PUBLISHED_CAI_VALUES: Dict[tuple, dict] = {
         ),
     },
     ("groEL", "Escherichia_coli"): {
-        "expected_cai": 0.78,
+        "expected_cai": 0.76,
         "citation": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295, Table 1",
         "doi": "10.1093/nar/15.3.1281",
         "organism_display": "E. coli K-12",
         "notes": (
             "groEL (chaperonin GroEL, a.k.a. mopA) is a highly expressed "
-            "chaperone; CAI ≈ 0.78."
+            "chaperone; CAI ≈ 0.76 (Sharp & Li 1987, Table 1).  Some "
+            "sources report 0.78; the difference depends on whether "
+            "the gene is in the 24-gene reference set.  With our "
+            "Sharp-Li reference set, computed CAI should be close to "
+            "this published value."
         ),
     },
     ("rpoB", "Escherichia_coli"): {
@@ -142,13 +152,19 @@ PUBLISHED_CAI_VALUES: Dict[tuple, dict] = {
         ),
     },
     ("dnaK", "Escherichia_coli"): {
-        "expected_cai": 0.76,
-        "citation": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295, Table 1",
+        "expected_cai": 0.56,
+        "citation": "Sharp & Li (1987) Nucleic Acids Res 15:1281-1295; Ikemura (1985)",
         "doi": "10.1093/nar/15.3.1281",
         "organism_display": "E. coli K-12",
         "notes": (
-            "dnaK (Hsp70 chaperone) is highly expressed, especially under "
-            "heat shock; CAI ≈ 0.76."
+            "dnaK (Hsp70 chaperone) is heat-shock inducible rather than "
+            "constitutively highly expressed; CAI ≈ 0.56.  Although dnaK "
+            "is a chaperone like groEL, it uses fewer optimal codons, "
+            "reflecting its inducible expression pattern.  WARNING: "
+            "Values of 0.76 seen in some sources may use a different "
+            "reference set (Kazusa rather than the original 24-gene "
+            "Sharp-Li set).  Use for rank-order validation only with "
+            "the Sharp-Li reference."
         ),
     },
 

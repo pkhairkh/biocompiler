@@ -15,14 +15,32 @@ Migrated from species.py (v9.2.0):
 - compute_cai_weights, ECOLI_CODON_USAGE, ECOLI_CAI
 - HUMAN_CODON_USAGE_SIMPLE, HUMAN_CAI, SPECIES
 
-v9.2.0 changes:
+v10.0.0 changes (BREAKING):
+- CAI table unification: SPECIES['ecoli']['cai_weights'] now uses
+  E_COLI_CODON_ADAPTIVENESS (from CODON_ADAPTIVENESS_TABLES) instead of
+  the legacy ECOLI_CODON_USAGE. This ensures the optimizer and evaluator
+  agree on optimal codons. CAI values will differ from v9.x (now correct).
+- E. coli optimal codons corrected for 5 amino acids (Phe, Ile, Tyr, His, Arg)
+  where per_thousand data previously identified the wrong codon as optimal.
+- ORGANISM_ALIASES / SPECIES_SHORT_NAMES: centralized name resolution maps.
+- resolve_organism(): single source of truth for organism name resolution.
 - ORGANISM_GC_TARGETS now uses per-organism (gc_lo, gc_hi) ranges
 - SPECIES entries include codon_usage_validation flag
 - All re-exports are explicitly typed
+
+v10.1.0 changes (Task 27 — organisms cleanup):
+- CODON_ADAPTIVENESS_TABLES is now the single source of truth for CAI weights.
+- SPECIES dict is DEPRECATED; derived FROM CODON_ADAPTIVENESS_TABLES.
+- get_species_cai_weights() is DEPRECATED; use CODON_ADAPTIVENESS_TABLES
+  with resolve_organism() instead.
+- ECOLI_CAI, HUMAN_CAI, MOUSE_CAI, CHO_CAI, YEAST_CAI are DEPRECATED;
+  use CODON_ADAPTIVENESS_TABLES directly.
+- validate_cai_tables() verifies SPECIES consistency with CODON_ADAPTIVENESS_TABLES.
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import TypedDict
 
 from .human import HUMAN_CODON_USAGE as HUMAN_CODON_USAGE
@@ -77,7 +95,11 @@ __all__: list[str] = [
     "MOUSE",
     "CHO",
     "YEAST",
-    # Legacy backward-compatible API
+    # Organism name resolution (species ↔ organism)
+    "resolve_organism",
+    "ORGANISM_ALIASES",
+    "SPECIES_SHORT_NAMES",
+    # Legacy backward-compatible API (DEPRECATED)
     "SPECIES",
     "get_species_cai_weights",
     "ECOLI_CAI",
@@ -86,6 +108,8 @@ __all__: list[str] = [
     "CHO_CAI",
     "YEAST_CAI",
     "compute_cai_weights",
+    # Validation
+    "validate_cai_tables",
     # Per-organism re-exports
     "HUMAN_CODON_USAGE",
     "HUMAN_CODON_ADAPTIVENESS",
@@ -120,32 +144,45 @@ __all__: list[str] = [
 
 # ────────────────────────────────────────────────────────────
 # Explicit type annotations for re-exported names
+# These serve as documentation; the actual types come from the
+# imports above.  mypy may flag these as redefinitions, so we
+# suppress that check.
 # ────────────────────────────────────────────────────────────
-HUMAN_CODON_USAGE: dict[str, tuple[str, float, float, int]]
-HUMAN_CODON_ADAPTIVENESS: dict[str, float]
-HUMAN_PREFERRED_CODONS: dict[str, str]
-HUMAN_CODON_USAGE_SIMPLE: dict[str, float]
-HUMAN_CODON_PAIR_BIAS: dict[str, float]
-HUMAN_EXPRESSION_OPTIMIZATION_PARAMS: dict[str, object]
-HUMAN_UTR_MODELS: dict[str, object]
-E_COLI_CODON_USAGE: dict[str, tuple[str, float, float, int]]
-E_COLI_CODON_ADAPTIVENESS: dict[str, float]
-E_COLI_PREFERRED_CODONS: dict[str, str]
-E_COLI_CODON_PAIR_BIAS: dict[str, float]
-E_COLI_EXPRESSION_OPTIMIZATION_PARAMS: dict[str, object]
-ECOLI_CODON_USAGE: dict[str, float]
-MOUSE_CODON_USAGE: dict[str, tuple[str, float, float, int]]
-MOUSE_CODON_ADAPTIVENESS: dict[str, float]
-MOUSE_PREFERRED_CODONS: dict[str, str]
-MOUSE_CODON_PAIR_BIAS: dict[str, float]
-MOUSE_EXPRESSION_OPTIMIZATION_PARAMS: dict[str, object]
-MOUSE_UTR_MODELS: dict[str, object]
-CHO_CODON_USAGE: dict[str, tuple[str, float, float, int]]
-CHO_CODON_ADAPTIVENESS: dict[str, float]
-CHO_PREFERRED_CODONS: dict[str, str]
-YEAST_CODON_USAGE: dict[str, tuple[str, float, float, int]]
-YEAST_CODON_ADAPTIVENESS: dict[str, float]
-YEAST_PREFERRED_CODONS: dict[str, str]
+HUMAN_CODON_USAGE: dict[str, tuple[str, float, float, int]]  # type: ignore[no-redef]
+HUMAN_CODON_ADAPTIVENESS: dict[str, float]  # type: ignore[no-redef]
+HUMAN_PREFERRED_CODONS: dict[str, str]  # type: ignore[no-redef]
+HUMAN_CODON_USAGE_SIMPLE: dict[str, float]  # type: ignore[no-redef]
+HUMAN_CODON_PAIR_BIAS: dict[str, float]  # type: ignore[no-redef]
+HUMAN_EXPRESSION_OPTIMIZATION_PARAMS: dict[str, object]  # type: ignore[no-redef]
+HUMAN_UTR_MODELS: dict[str, object]  # type: ignore[no-redef]
+E_COLI_CODON_USAGE: dict[str, tuple[str, float, float, int]]  # type: ignore[no-redef]
+E_COLI_CODON_ADAPTIVENESS: dict[str, float]  # type: ignore[no-redef]
+E_COLI_PREFERRED_CODONS: dict[str, str]  # type: ignore[no-redef]
+E_COLI_CODON_PAIR_BIAS: dict[str, float]  # type: ignore[no-redef]
+E_COLI_EXPRESSION_OPTIMIZATION_PARAMS: dict[str, object]  # type: ignore[no-redef]
+ECOLI_CODON_USAGE: dict[str, float]  # type: ignore[no-redef]
+MOUSE_CODON_USAGE: dict[str, tuple[str, float, float, int]]  # type: ignore[no-redef]
+MOUSE_CODON_ADAPTIVENESS: dict[str, float]  # type: ignore[no-redef]
+MOUSE_PREFERRED_CODONS: dict[str, str]  # type: ignore[no-redef]
+MOUSE_CODON_PAIR_BIAS: dict[str, float]  # type: ignore[no-redef]
+MOUSE_EXPRESSION_OPTIMIZATION_PARAMS: dict[str, object]  # type: ignore[no-redef]
+MOUSE_UTR_MODELS: dict[str, object]  # type: ignore[no-redef]
+CHO_CODON_USAGE: dict[str, tuple[str, float, float, int]]  # type: ignore[no-redef]
+CHO_CODON_ADAPTIVENESS: dict[str, float]  # type: ignore[no-redef]
+CHO_PREFERRED_CODONS: dict[str, str]  # type: ignore[no-redef]
+YEAST_CODON_USAGE: dict[str, tuple[str, float, float, int]]  # type: ignore[no-redef]
+YEAST_CODON_ADAPTIVENESS: dict[str, float]  # type: ignore[no-redef]
+YEAST_PREFERRED_CODONS: dict[str, str]  # type: ignore[no-redef]
+
+# ════════════════════════════════════════════════════════════
+# SINGLE SOURCE OF TRUTH: CODON_ADAPTIVENESS_TABLES
+#
+# All CAI weights for codon optimization and evaluation are
+# derived from CODON_ADAPTIVENESS_TABLES.  The legacy SPECIES
+# dict and per-organism _CAI aliases are DEPRECATED and kept
+# only for backward compatibility — they are derived FROM
+# CODON_ADAPTIVENESS_TABLES, never independently maintained.
+# ════════════════════════════════════════════════════════════
 
 # Registry: organism name -> codon data
 CODON_USAGE_TABLES: dict[str, dict[str, tuple[str, float, float, int]]] = {
@@ -253,6 +290,157 @@ CHO: str = "CHO_K1"
 YEAST: str = "Saccharomyces_cerevisiae"
 
 # ────────────────────────────────────────────────────────────
+# Organism name resolution: species ↔ organism aliases
+# ────────────────────────────────────────────────────────────
+
+# Mapping of all known organism name aliases to the canonical name
+# used as a key in CODON_ADAPTIVENESS_TABLES, CODON_USAGE_TABLES, etc.
+#
+# This centralises the alias resolution so that every module in
+# BioCompiler uses the same mapping, instead of each file
+# maintaining its own partial copy.
+#
+# Alias categories:
+#   1. Short informal names:  'ecoli', 'human', 'mouse', 'cho', 'yeast'
+#   2. Abbreviated binomials:  'E_coli', 'e_coli', 'H_sapiens', 'h_sapiens',
+#                               'M_musculus', 'm_musculus', 'S_cerevisiae',
+#                               's_cerevisiae'
+#   3. Display names:          'E. coli', 'H. sapiens', 'M. musculus',
+#                               'S. cerevisiae'
+#   4. Canonical binomials:    'Escherichia_coli', 'Homo_sapiens', etc.
+#   5. Legacy synonyms:        'CHO' (maps to CHO_K1)
+ORGANISM_ALIASES: dict[str, str] = {
+    # ── Escherichia coli ──
+    "ecoli": "Escherichia_coli",
+    "E_coli": "Escherichia_coli",
+    "e_coli": "Escherichia_coli",
+    "E. coli": "Escherichia_coli",
+    "E. Coli": "Escherichia_coli",
+    "e. coli": "Escherichia_coli",
+    "Escherichia_coli": "Escherichia_coli",
+    "Escherichia coli": "Escherichia_coli",
+    # ── Homo sapiens ──
+    "human": "Homo_sapiens",
+    "H_sapiens": "Homo_sapiens",
+    "h_sapiens": "Homo_sapiens",
+    "H. sapiens": "Homo_sapiens",
+    "H. Sapiens": "Homo_sapiens",
+    "h. sapiens": "Homo_sapiens",
+    "Homo_sapiens": "Homo_sapiens",
+    "Homo sapiens": "Homo_sapiens",
+    # ── Mus musculus ──
+    "mouse": "Mus_musculus",
+    "M_musculus": "Mus_musculus",
+    "m_musculus": "Mus_musculus",
+    "M. musculus": "Mus_musculus",
+    "M. Musculus": "Mus_musculus",
+    "m. musculus": "Mus_musculus",
+    "Mus_musculus": "Mus_musculus",
+    "Mus musculus": "Mus_musculus",
+    # ── CHO (Chinese Hamster Ovary) ──
+    "cho": "CHO_K1",
+    "CHO": "CHO_K1",
+    "CHO_K1": "CHO_K1",
+    "Cricetulus_griseus": "CHO_K1",
+    # ── Saccharomyces cerevisiae ──
+    "yeast": "Saccharomyces_cerevisiae",
+    "S_cerevisiae": "Saccharomyces_cerevisiae",
+    "s_cerevisiae": "Saccharomyces_cerevisiae",
+    "S. cerevisiae": "Saccharomyces_cerevisiae",
+    "S. Cerevisiae": "Saccharomyces_cerevisiae",
+    "s. cerevisiae": "Saccharomyces_cerevisiae",
+    "Saccharomyces_cerevisiae": "Saccharomyces_cerevisiae",
+    "Saccharomyces cerevisiae": "Saccharomyces_cerevisiae",
+}
+
+# Reverse mapping: canonical organism name → primary short species key.
+# Used to map from organism names back to the SPECIES dict keys.
+SPECIES_SHORT_NAMES: dict[str, str] = {
+    "Escherichia_coli": "ecoli",
+    "Homo_sapiens": "human",
+    "Mus_musculus": "mouse",
+    "CHO_K1": "cho",
+    "Saccharomyces_cerevisiae": "yeast",
+}
+
+
+def resolve_organism(
+    name: str,
+    *,
+    default: str | None = None,
+    strict: bool = False,
+) -> str:
+    """Resolve any organism name, alias, or short key to the canonical name.
+
+    This is the single source of truth for organism name resolution
+    across BioCompiler.  All public APIs (``optimize_sequence``,
+    ``compute_cai``, REST endpoints, etc.) should call this function
+    instead of maintaining their own partial alias maps.
+
+    Accepted input forms:
+
+    +-------------------------+------------------------+
+    | Example input           | Resolved output        |
+    +=========================+========================+
+    | ``'ecoli'``             | ``'Escherichia_coli'`` |
+    | ``'E. coli'``           | ``'Escherichia_coli'`` |
+    | ``'e_coli'``            | ``'Escherichia_coli'`` |
+    | ``'Escherichia_coli'``  | ``'Escherichia_coli'`` |
+    | ``'human'``             | ``'Homo_sapiens'``     |
+    | ``'H. sapiens'``        | ``'Homo_sapiens'``     |
+    | ``'h_sapiens'``         | ``'Homo_sapiens'``     |
+    | ``'Homo_sapiens'``      | ``'Homo_sapiens'``     |
+    +-------------------------+------------------------+
+
+    Args:
+        name: Any organism identifier — short key, abbreviated
+            binomial, display name with periods, or full canonical
+            binomial with underscores.
+        default: Value to return when *name* cannot be resolved.
+            If ``None`` (the default) and *strict* is ``False``,
+            the function returns ``name`` unchanged as a fallback.
+            If *strict* is ``True`` and no *default* is given, an
+            :class:`~.exceptions.UnsupportedOrganismError` is raised.
+        strict: When ``True``, raise an error instead of falling
+            back to the unresolved *name*.
+
+    Returns:
+        The canonical organism name (e.g. ``'Escherichia_coli'``).
+
+    Raises:
+        UnsupportedOrganismError: If *strict* is ``True`` and
+            *name* is not a known alias.
+    """
+    if not name or not name.strip():
+        if default is not None:
+            return default
+        if strict:
+            from ..exceptions import UnsupportedOrganismError
+            raise UnsupportedOrganismError(
+                name or "", list(ORGANISM_ALIASES.keys())
+            )
+        return "Homo_sapiens"  # sensible default
+
+    canonical = ORGANISM_ALIASES.get(name)
+    if canonical is not None:
+        return canonical
+
+    # If already a canonical name (present in CODON_ADAPTIVENESS_TABLES
+    # but not in the alias dict for some reason), return as-is.
+    if name in CODON_ADAPTIVENESS_TABLES:
+        return name
+
+    # Unresolved name
+    if default is not None:
+        return default
+    if strict:
+        from ..exceptions import UnsupportedOrganismError
+        raise UnsupportedOrganismError(name, list(ORGANISM_ALIASES.keys()))
+
+    # Non-strict: return as-is (backward compat — caller's responsibility)
+    return name
+
+# ────────────────────────────────────────────────────────────
 # Migrated from species.py — backward-compatible API
 # ────────────────────────────────────────────────────────────
 
@@ -284,15 +472,26 @@ def compute_cai_weights(usage: dict[str, float]) -> dict[str, float]:
     return weights
 
 
-ECOLI_CAI: dict[str, float] = compute_cai_weights(ECOLI_CODON_USAGE)
+# ────────────────────────────────────────────────────────────
+# DEPRECATED: Per-organism CAI aliases
+#
+# These are kept for backward compatibility only.
+# Use CODON_ADAPTIVENESS_TABLES directly instead.
+#
+# Previously ECOLI_CAI used the legacy ECOLI_CODON_USAGE (different source)
+# and HUMAN_CAI used HUMAN_CODON_USAGE_SIMPLE, which could produce
+# different optimal codon rankings than CODON_ADAPTIVENESS_TABLES.
+# Now they all point to CODON_ADAPTIVENESS_TABLES entries.
+# ────────────────────────────────────────────────────────────
+ECOLI_CAI: dict[str, float] = E_COLI_CODON_ADAPTIVENESS  # deprecated
 
-HUMAN_CAI: dict[str, float] = compute_cai_weights(HUMAN_CODON_USAGE_SIMPLE)
+HUMAN_CAI: dict[str, float] = HUMAN_CODON_ADAPTIVENESS  # deprecated
 
-MOUSE_CAI: dict[str, float] = MOUSE_CODON_ADAPTIVENESS
+MOUSE_CAI: dict[str, float] = MOUSE_CODON_ADAPTIVENESS  # deprecated
 
-CHO_CAI: dict[str, float] = CHO_CODON_ADAPTIVENESS
+CHO_CAI: dict[str, float] = CHO_CODON_ADAPTIVENESS  # deprecated
 
-YEAST_CAI: dict[str, float] = YEAST_CODON_ADAPTIVENESS
+YEAST_CAI: dict[str, float] = YEAST_CODON_ADAPTIVENESS  # deprecated
 
 
 # TypedDict for SPECIES entries — provides both CAI weights and
@@ -312,27 +511,62 @@ class SpeciesEntry(TypedDict):
     codon_usage_validation: bool
 
 
+# ────────────────────────────────────────────────────────────
+# DEPRECATED: SPECIES dict
+#
+# SPECIES is a legacy structure used by the optimizer for codon selection.
+# Now that we've unified on CODON_ADAPTIVENESS_TABLES, SPECIES is kept
+# for backward compatibility only.  It is derived FROM
+# CODON_ADAPTIVENESS_TABLES, not independently maintained.
+#
+# New code should use CODON_ADAPTIVENESS_TABLES directly:
+#   from biocompiler.organisms import CODON_ADAPTIVENESS_TABLES
+#   weights = CODON_ADAPTIVENESS_TABLES["Escherichia_coli"]
+#
+# To resolve organism names, use resolve_organism():
+#   from biocompiler.organisms import resolve_organism, CODON_ADAPTIVENESS_TABLES
+#   canonical = resolve_organism("ecoli")   # → "Escherichia_coli"
+#   weights = CODON_ADAPTIVENESS_TABLES[canonical]
+# ────────────────────────────────────────────────────────────
 SPECIES: dict[str, SpeciesEntry] = {
-    "ecoli": {"cai_weights": ECOLI_CAI, "codon_usage_validation": True},
-    "human": {"cai_weights": HUMAN_CAI, "codon_usage_validation": True},
-    "mouse": {"cai_weights": MOUSE_CAI, "codon_usage_validation": True},
-    "cho": {"cai_weights": CHO_CAI, "codon_usage_validation": True},
-    "yeast": {"cai_weights": YEAST_CAI, "codon_usage_validation": True},
+    short_key: {
+        "cai_weights": dict(CODON_ADAPTIVENESS_TABLES[canonical_name]),
+        "codon_usage_validation": True,
+    }
+    for canonical_name, short_key in SPECIES_SHORT_NAMES.items()
 }
 
 
 def get_species_cai_weights(species_key: str) -> dict[str, float]:
-    """Return the flat codon→weight dict for *species_key*, falling back to ecoli.
+    """Return CAI weights for a species.  DEPRECATED: use CODON_ADAPTIVENESS_TABLES directly.
+
+    This function is kept for backward compatibility only.  New code
+    should use CODON_ADAPTIVENESS_TABLES with resolve_organism()::
+
+        from biocompiler.organisms import resolve_organism, CODON_ADAPTIVENESS_TABLES
+        organism = resolve_organism("ecoli")
+        weights = CODON_ADAPTIVENESS_TABLES[organism]
 
     Args:
         species_key: Short species name used as a SPECIES dict key
-            (e.g. ``"ecoli"``, ``"human"``).
+            (e.g. ``"ecoli"``, ``"human"``).  Also accepts canonical
+            organism names (e.g. ``"Escherichia_coli"``) and other
+            aliases recognised by resolve_organism().
 
     Returns:
         Dict mapping codon strings to their CAI weight values.
     """
-    entry = SPECIES.get(species_key, SPECIES["ecoli"])
-    return entry["cai_weights"]
+    warnings.warn(
+        "get_species_cai_weights is deprecated — use CODON_ADAPTIVENESS_TABLES "
+        "directly with resolve_organism()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    organism = resolve_organism(species_key)
+    if organism in CODON_ADAPTIVENESS_TABLES:
+        return dict(CODON_ADAPTIVENESS_TABLES[organism])
+    # Fallback to ecoli for unknown organisms
+    return dict(CODON_ADAPTIVENESS_TABLES["Escherichia_coli"])
 
 # ────────────────────────────────────────────────────────────
 # Sharp & Li (1987) CAI reference set (E. coli)
@@ -352,3 +586,121 @@ from .sharp_li_reference import SHARP_LI_CAI_WEIGHTS as SHARP_LI_CAI_WEIGHTS
 from .sharp_li_reference import SHARP_LI_PUBLISHED_CAI as SHARP_LI_PUBLISHED_CAI
 from .sharp_li_reference import get_sharp_li_cai_weights as get_sharp_li_cai_weights
 from .sharp_li_reference import compute_cai_with_reference as compute_cai_with_reference
+
+
+# ────────────────────────────────────────────────────────────
+# CAI Table Validation
+#
+# Validates that all CODON_ADAPTIVENESS_TABLES entries are
+# internally consistent: for each amino acid with multiple
+# synonymous codons, exactly one codon should have w = 1.0
+# (the most frequent), and all others should have w < 1.0.
+# Also validates that the SPECIES dict is consistent with
+# CODON_ADAPTIVENESS_TABLES (since SPECIES is now derived
+# from it, this should always pass, but the check is kept
+# as a safety net).
+# ────────────────────────────────────────────────────────────
+
+def validate_cai_tables() -> list[str]:
+    """Verify all CAI tables are internally consistent.
+
+    For each organism in CODON_ADAPTIVENESS_TABLES, checks that:
+    1. For every amino acid with multiple synonymous codons,
+       exactly one codon has adaptiveness w = 1.0.
+    2. All other synonymous codons have w < 1.0.
+    3. No codon has w > 1.0 or w < 0.
+    4. The CODON_USAGE_TABLES fractions are consistent with
+       the per-thousand values (same ranking within each AA).
+    5. The SPECIES dict (derived from CODON_ADAPTIVENESS_TABLES)
+       is consistent with its source tables.
+
+    Returns:
+        List of error description strings.  An empty list means
+        all tables are valid.
+    """
+    from ..type_system import AA_TO_CODONS
+
+    errors: list[str] = []
+
+    # 1. Validate adaptiveness tables
+    for org_name, adaptiveness in CODON_ADAPTIVENESS_TABLES.items():
+        for aa, codons in AA_TO_CODONS.items():
+            if aa == "*":
+                continue  # skip stop codons
+            if len(codons) == 1:
+                continue  # Met, Trp — only one codon
+
+            # Check that exactly one codon has w=1.0
+            optimal = [c for c in codons if adaptiveness.get(c, 0) == 1.0]
+            if len(optimal) != 1:
+                errors.append(
+                    f"{org_name} {aa}: expected 1 optimal codon with w=1.0, "
+                    f"got {len(optimal)}: {optimal}"
+                )
+
+            # Check no codon exceeds 1.0 or is negative
+            for c in codons:
+                w = adaptiveness.get(c, 0)
+                if w > 1.0:
+                    errors.append(
+                        f"{org_name} {aa} {c}: w={w} > 1.0"
+                    )
+                if w < 0:
+                    errors.append(
+                        f"{org_name} {aa} {c}: w={w} < 0"
+                    )
+
+    # 2. Validate CODON_USAGE_TABLES internal consistency
+    for org_name, usage in CODON_USAGE_TABLES.items():
+        # Group codons by amino acid
+        aa_codons: dict[str, list[tuple[str, float, float]]] = {}
+        for codon, (aa, frac, per_thousand, _count) in usage.items():
+            if aa == "*":
+                continue
+            aa_codons.setdefault(aa, []).append((codon, frac, per_thousand))
+
+        for aa, codon_data in aa_codons.items():
+            if len(codon_data) <= 1:
+                continue
+
+            # Check that the codon with the highest fraction also has
+            # the highest per-thousand value
+            by_frac = sorted(codon_data, key=lambda x: x[1], reverse=True)
+            by_pt = sorted(codon_data, key=lambda x: x[2], reverse=True)
+
+            if by_frac[0][0] != by_pt[0][0]:
+                errors.append(
+                    f"{org_name} {aa}: fraction says {by_frac[0][0]} is optimal "
+                    f"(frac={by_frac[0][1]}) but per_thousand says "
+                    f"{by_pt[0][0]} is optimal (pt={by_pt[0][2]})"
+                )
+
+    # 3. Validate SPECIES dict consistency with CODON_ADAPTIVENESS_TABLES
+    #    (Since SPECIES is now derived FROM CODON_ADAPTIVENESS_TABLES,
+    #     this should always pass, but we keep it as a safety net.)
+    #    SPECIES_SHORT_NAMES maps canonical_name → short_key
+    for canonical_name, short_key in SPECIES_SHORT_NAMES.items():
+        if short_key not in SPECIES:
+            errors.append(f"SPECIES missing key '{short_key}'")
+            continue
+        if canonical_name not in CODON_ADAPTIVENESS_TABLES:
+            errors.append(f"CODON_ADAPTIVENESS_TABLES missing '{canonical_name}'")
+            continue
+
+        species_weights = SPECIES[short_key]["cai_weights"]
+        adapt_weights = CODON_ADAPTIVENESS_TABLES[canonical_name]
+
+        # Check that the optimal codon (w=1.0) for each AA matches
+        for aa, codons in AA_TO_CODONS.items():
+            if aa == "*" or len(codons) <= 1:
+                continue
+            species_optimal = [c for c in codons if species_weights.get(c, 0) == 1.0]
+            adapt_optimal = [c for c in codons if adapt_weights.get(c, 0) == 1.0]
+            if species_optimal != adapt_optimal:
+                errors.append(
+                    f"SPECIES['{short_key}'] {aa}: optimal={species_optimal} "
+                    f"but CODON_ADAPTIVENESS_TABLES['{canonical_name}'] "
+                    f"optimal={adapt_optimal}"
+                )
+
+    return errors

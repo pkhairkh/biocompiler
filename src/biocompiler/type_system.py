@@ -1040,17 +1040,23 @@ _ORGANISM_TO_SPECIES_KEY: Dict[str, str] = {
 def _resolve_species_cai(key: str) -> Dict[str, float]:
     """Resolve an organism name or SPECIES key to a flat codon→CAI-weight dict.
 
-    Tries *key* as a SPECIES key first via :func:`get_species_cai_weights`.
-    If that fails (KeyError), maps common organism names (e.g. ``"Homo_sapiens"``)
-    to their SPECIES key and falls back to ``"ecoli"``.
-    """
-    from .organisms import get_species_cai_weights
+    Uses CODON_ADAPTIVENESS_TABLES with resolve_organism() as the
+    single source of truth for CAI weights.
 
-    try:
-        return get_species_cai_weights(key)
-    except (KeyError, TypeError):
-        species_key = _ORGANISM_TO_SPECIES_KEY.get(key, "ecoli")
-        return get_species_cai_weights(species_key)
+    Args:
+        key: Organism name, alias, or short species key
+            (e.g. ``"ecoli"``, ``"Homo_sapiens"``, ``"human"``).
+
+    Returns:
+        Dict mapping codon strings to CAI adaptiveness values.
+    """
+    from .organisms import CODON_ADAPTIVENESS_TABLES, resolve_organism
+
+    organism = resolve_organism(key)
+    if organism in CODON_ADAPTIVENESS_TABLES:
+        return dict(CODON_ADAPTIVENESS_TABLES[organism])
+    # Fallback to ecoli for unknown organisms
+    return dict(CODON_ADAPTIVENESS_TABLES["Escherichia_coli"])
 
 
 def _compute_codon_ramp_score(seq: str, species_cai: Dict[str, float]) -> Dict[str, Any]:

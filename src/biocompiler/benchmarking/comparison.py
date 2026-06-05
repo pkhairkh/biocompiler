@@ -17,9 +17,10 @@ Provides:
   - ``ALL_CONSTRAINTS``: Standard constraint names for visualization
 
 Design:
-    All metrics are computed using BioCompiler's own evaluators for
+    All metrics are computed using BioCompiler's validated evaluators for
     fairness — both tools' outputs are evaluated with the same CAI
-    computation, GC measurement, and restriction site scanner.
+    computation (``compute_cai_validated``), GC measurement, and restriction
+    site scanner.  DNAchisel's own CAI output is NOT trusted.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..scanner import gc_content
-from ..translation import compute_cai
+from .metrics import compute_cai_validated
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +586,8 @@ def run_comparison(
             gc_hi=gc_hi,
         )
         bc_seq = bc_result.sequence
-        bc_cai = bc_result.cai
+        # Use validated CAI for fair comparison — do NOT trust optimizer's CAI
+        bc_cai = compute_cai_validated(bc_seq, organism)
         bc_gc = bc_result.gc_content
         bc_rs = _count_restriction_sites_both_strands(bc_seq, enzymes)
     except Exception as exc:

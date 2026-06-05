@@ -11,11 +11,12 @@ Provides:
   - ``run_head_to_head``: Run the full benchmark across a gene panel.
   - ``print_head_to_head_report``: Print a formatted comparison table.
 
-Design:
-    All metrics are computed using BioCompiler's own evaluators for fairness.
+    Design:
+    All metrics are computed using BioCompiler's validated evaluators for fairness.
     DNAchisel results are included only when the package is installed; otherwise
     the benchmark runs in BioCompiler-only mode and DNAchisel columns report
-    as unavailable.
+    as unavailable.  CAI is always computed with ``compute_cai_validated`` for
+    both tools — DNAchisel's own CAI output is NOT trusted.
 
 Usage::
 
@@ -276,7 +277,9 @@ def run_head_to_head(
                 track_provenance=True,
             )
             bc_seq = bc_result.sequence
-            bc_cai = bc_result.cai
+            # Use validated CAI for fair comparison — do NOT trust optimizer's CAI
+            from .metrics import compute_cai_validated
+            bc_cai = compute_cai_validated(bc_seq, organism)
             bc_gc = bc_result.gc_content
             bc_success = True
 

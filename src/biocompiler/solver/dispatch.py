@@ -35,7 +35,7 @@ import warnings
 from typing import TYPE_CHECKING, Any
 
 from ..constants import AA_TO_CODONS
-from ..organisms import SPECIES
+from ..organisms import CODON_ADAPTIVENESS_TABLES, resolve_organism
 
 from .types import (
     ConstraintPriority,
@@ -244,15 +244,10 @@ def solve_with_csp(
     invalid = set(ch for ch in protein if ch not in valid_aas)
     if invalid:
         raise ValueError(f"Invalid amino-acid codes in protein: {invalid}.")
-    # Map scientific organism name to SPECIES short key
-    _SPECIES_KEY_MAP = {
-        "Homo_sapiens": "human", "Escherichia_coli": "ecoli",
-        "Mus_musculus": "mouse", "CHO_K1": "cho",
-        "Saccharomyces_cerevisiae": "yeast",
-    }
-    species_key = _SPECIES_KEY_MAP.get(organism, organism)
-    if species_key not in SPECIES:
-        logger.warning("Organism %r not found in SPECIES; using default weights.", organism)
+    # Resolve organism name to canonical form using centralized resolution
+    canonical = resolve_organism(organism)
+    if canonical not in CODON_ADAPTIVENESS_TABLES:
+        logger.warning("Organism %r not found in CODON_ADAPTIVENESS_TABLES; using default weights.", organism)
 
     # Build configuration
     if config is None:
@@ -642,21 +637,32 @@ def validate_csp_solution(
     constraint_model = build_csp_model(protein, organism, config)
 
     # Check hard constraints
+    seen_names: set[str] = set()
     for constraint in constraint_model.hard_constraints:
         violation = _check_constraint(constraint, sequence, ConstraintStrictness.HARD)
         if violation is not None:
             violations.append(violation)
+            seen_names.add(violation.constraint_name)
 
     # Check soft constraints
     for constraint in constraint_model.soft_constraints:
         violation = _check_constraint(constraint, sequence, ConstraintStrictness.SOFT)
         if violation is not None:
             violations.append(violation)
+            seen_names.add(violation.constraint_name)
 
     # Also iterate constraint_model.constraints if present (e.g. types.CSPModel
     # has a list[ConstraintSpec] attribute).  ConstraintSpec objects now have
     # a .check() method that dispatches based on ctype and params.
+    # Skip duplicates — constraints.CSPModel.constraints derives from
+    # hard_constraints and soft_constraints, so the same logical
+    # constraint may appear in both lists.
     for constraint in getattr(constraint_model, "constraints", []):
+        # Deduplicate by constraint name to avoid double-counting
+        constraint_name = getattr(constraint, "name", None)
+        if constraint_name and constraint_name in seen_names:
+            continue
+
         strictness = (
             constraint.strictness
             if isinstance(constraint, ConstraintSpec)
@@ -665,6 +671,7 @@ def validate_csp_solution(
         violation = _check_constraint(constraint, sequence, strictness)
         if violation is not None:
             violations.append(violation)
+            seen_names.add(violation.constraint_name)
 
     # Extra sanity: translation fidelity
     from ..constants import CODON_TABLE

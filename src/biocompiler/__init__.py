@@ -1,5 +1,5 @@
 """
-BioCompiler — Machine-Verified Gene Design  (v9.2.0)
+BioCompiler — Machine-Verified Gene Design  (v10.0.0)
 
 A compiler framework for human protein synthesis using intermediate
 representations. Pipeline:
@@ -8,19 +8,28 @@ representations. Pipeline:
 
 All computation is DETERMINISTIC: same input always produces identical output.
 
-v9.2.0 highlights:
-  - Unified engine API: BaseEngineResult, MutationResult, BatchResult
-    shared across all 6 analysis engines (ESMFold, FoldX, CamSol,
-    Immunogenicity, Deimmunization, Protein Design)
-  - 28-predicate type system: 12 DNA + 4 structure + 4 stability +
-    4 solubility + 4 immunogenicity predicates
-  - SLOT architecture: 13 core predicates (PASS/FAIL) + 19 SLOT-dependent
-    predicates (always UNCERTAIN); Lean4 proof covers all 28 predicates
-  - HBB full pass: all 8 optimizer predicates pass simultaneously
-  - CpG reconciliation, CAI reconciliation, cross-codon coordination
+v10.0.0 highlights (BREAKING — CAI table unification):
+  - **CAI table unification**: Optimizer and evaluator now use the same
+    CODON_ADAPTIVENESS_TABLES. Previously the optimizer used SPECIES tables
+    which disagreed with evaluation tables, causing incorrect CAI values.
+  - **E. coli optimal codons corrected**: Five amino acids had incorrect
+    optimal codons in the per_thousand data (Phe, Ile, Tyr, His, Arg).
+  - **HybridOptimizer**: Greedy init + priority-based constraint satisfaction
+    + CAI hill climbing. 3-5× faster than legacy pipeline with higher CAI.
+  - **Organism name resolution**: Centralized resolve_organism() function.
+    Both ``species`` and ``organism`` parameters accepted everywhere.
+  - **Prokaryote fast path**: E. coli skips eukaryotic constraints (splice
+    sites, CpG islands), recovering ~0.3 CAI and 3× speed improvement.
+  - **Incremental constraint checking**: O(1) GC updates, 2-2000× faster
+    constraint re-checking after codon changes.
+  - **CAI-aware constraint resolution**: All resolution steps prefer
+    higher-CAI alternatives, minimizing CAI loss during constraint fixing.
+  - **CSP solvers fixed**: Both OR-Tools CP-SAT and Z3 SMT backends now
+    produce valid sequences with correct constraints.
+  - E. coli GFP benchmark: CAI 0.67→0.999, Time 20ms→2ms (10× faster)
 """
 
-__version__ = "9.2.0"
+__version__ = "10.0.0"
 
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -84,7 +93,7 @@ from .scanner import (
     scan_sequence,
 )
 
-from .splicing import compute_splice_isoforms, maxent_score, score_splice_sites
+from .splicing import compute_splice_isoforms, maxent_score, maxent_score_v2, score_splice_sites
 
 from .translation import (
     translate,
@@ -141,7 +150,8 @@ except ImportError:
 # Optimization
 # ═══════════════════════════════════════════════════════════════════════
 
-from .optimization import BioOptimizer, optimize_sequence, OptimizationResult, FullConstructResult
+from .optimization import BioOptimizer, optimize_sequence, batch_optimize, OptimizationResult, FullConstructResult
+from .hybrid_optimizer import HybridOptimizer
 
 # ═══════════════════════════════════════════════════════════════════════
 # Incremental sequence state (O(1) constraint tracking for optimization)
@@ -163,14 +173,16 @@ except ImportError:
     list_builtin_grammars = None
 
 try:
-    from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta, export_full_construct
+    from .export import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta, export_batch_fasta, export_full_construct, export_json
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
     export_fasta = None
     export_genbank = None
     export_genbank_with_certificate = None
     export_multi_fasta = None
+    export_batch_fasta = None
     export_full_construct = None
+    export_json = None
 
 try:
     from .report import generate_report
@@ -916,7 +928,7 @@ __all__ = [
     "validate_dna_sequence", "gc_content", "scan_sequence",
 
     # ── Splicing ─────────────────────────────────────────────
-    "compute_splice_isoforms", "maxent_score", "score_splice_sites",
+    "compute_splice_isoforms", "maxent_score", "maxent_score_v2", "score_splice_sites",
 
     # ── Translation ──────────────────────────────────────────
     "translate", "compute_cai", "find_orfs",
@@ -939,6 +951,7 @@ __all__ = [
 
     # ── Optimization ─────────────────────────────────────────
     "BioOptimizer", "optimize_sequence", "OptimizationResult", "FullConstructResult",
+    "HybridOptimizer",
 
     # ── Incremental sequence state ───────────────────────────
     "IncrementalSequenceState", "CodonCache", "EnzymeSiteCache",

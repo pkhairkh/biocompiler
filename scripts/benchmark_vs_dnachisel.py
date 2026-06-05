@@ -14,7 +14,8 @@ Both optimizers target E. coli with equivalent constraints:
   - GC range [0.30, 0.70]
   - Avoid common restriction enzyme sites (EcoRI, BamHI, HindIII, XhoI, XbaI)
 
-Metrics are computed using BioCompiler's own evaluators for fairness.
+Metrics are computed using BioCompiler's validated CAI evaluator (compute_cai_validated)
+for fairness — DNAchisel's own CAI output is NOT trusted.
 """
 
 import sys
@@ -33,7 +34,7 @@ from biocompiler.benchmarking.gene_sets import (
     HUMAN_THERAPEUTIC_GENES,
     VACCINE_ANTIGEN_GENES,
 )
-from biocompiler.translation import compute_cai
+from biocompiler.benchmarking.metrics import compute_cai_validated
 from biocompiler.scanner import gc_content
 from biocompiler.constants import AA_TO_CODONS, RESTRICTION_ENZYMES, reverse_complement
 from biocompiler.optimization import optimize_sequence
@@ -41,13 +42,17 @@ from biocompiler.optimization import optimize_sequence
 # ─── DNAchisel availability ────────────────────────────────────────────
 _DNACHISEL_AVAILABLE = False
 try:
-    from dnachisel import (
-        DnaOptimizationProblem,
-        AvoidPattern,
-        EnforceGCContent,
-        EnforceTranslation,
-    )
-    _DNACHISEL_AVAILABLE = True
+    try:
+        from dnachisel import (
+            DnaOptimizationProblem,
+            AvoidPattern,
+            CodonOptimize,
+            EnforceGCContent,
+            EnforceTranslation,
+        )
+        _DNACHISEL_AVAILABLE = True
+    except ImportError:
+        pass
 except ImportError:
     pass
 
@@ -175,17 +180,24 @@ def optimize_with_dnachisel(protein, organism="Escherichia_coli"):
     if initial_seq is None:
         return None
 
-    specs = [EnforceTranslation(translation=protein)]
-    specs.append(EnforceGCContent(mini=0.30, maxi=0.70, window=50))
+    specs_constraints = [EnforceTranslation(translation=protein)]
+    specs_constraints.append(EnforceGCContent(mini=0.30, maxi=0.70, window=50))
     for enz in STANDARD_ENZYMES:
         site = RESTRICTION_ENZYMES.get(enz, "")
         if site and all(b in "ACGT" for b in site.upper()):
-            specs.append(AvoidPattern(site.upper()))
+            specs_constraints.append(AvoidPattern(site.upper()))
+
+    # Use CodonOptimize objective for species-appropriate optimization
+    species_map = {"Escherichia_coli": "e_coli", "Homo_sapiens": "h_sapiens",
+                   "Saccharomyces_cerevisiae": "s_cerevisiae"}
+    species = species_map.get(organism, "e_coli")
+    objectives = [CodonOptimize(species=species)]
 
     t0 = time.perf_counter()
     try:
-        problem = DnaOptimizationProblem(sequence=initial_seq, constraints=specs)
+        problem = DnaOptimizationProblem(sequence=initial_seq, constraints=specs_constraints, objectives=objectives)
         problem.resolve_constraints()
+        problem.optimize()
         optimized = str(problem.sequence)
         elapsed = time.perf_counter() - t0
     except Exception as e:
@@ -199,7 +211,7 @@ def optimize_with_dnachisel(protein, organism="Escherichia_coli"):
             "time_s": elapsed,
         }
 
-    cai = compute_cai(optimized, organism)
+    cai = compute_cai_validated(optimized, organism)
     gc = gc_content(optimized)
     rs = count_restriction_sites(optimized)
 
@@ -231,7 +243,8 @@ def optimize_with_biocompiler(protein, organism="Escherichia_coli"):
         )
         elapsed = time.perf_counter() - t0
         optimized = result.sequence
-        cai = result.cai
+        # Use validated CAI for fair comparison — do NOT trust optimizer's CAI
+        cai = compute_cai_validated(optimized, organism)
         gc = result.gc_content
         rs = count_restriction_sites(optimized)
         return {

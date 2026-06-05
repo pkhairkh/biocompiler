@@ -369,10 +369,22 @@ class ConstraintSpec:
             if organism and not _is_eukaryotic(organism):
                 return True
             threshold = self.params.get("threshold", 3.0)
+            protein = self.params.get("protein", "")
+
+            # Compute unavoidable GT positions (Valine codons)
+            unavoidable_gt: set[int] = set()
+            if protein:
+                for idx, aa in enumerate(protein):
+                    if aa == "V":  # Valine codons all start with GT
+                        unavoidable_gt.add(idx * 3)
+
             from ..maxentscan import score_donor, score_acceptor
 
             for i in range(len(seq) - 1):
                 if seq[i : i + 2] == "GT":
+                    # Skip GT within unavoidable Valine codons
+                    if i in unavoidable_gt:
+                        continue
                     if score_donor(seq, i) >= threshold:
                         return False
                 if seq[i : i + 2] == "AG":

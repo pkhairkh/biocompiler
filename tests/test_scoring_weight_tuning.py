@@ -13,17 +13,22 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
 import pytest
 
 
 # ── Direct module loading to avoid circular import issues ────────────
 
+_SRC_ROOT = str(Path(__file__).resolve().parent.parent / "src")
+
+
 def _load_module_directly(module_name: str, file_path: str):
     """Load a module directly from file, bypassing package __init__.py."""
-    # Set up biocompiler package if not already present
+    # Set up biocompiler package only if not already properly loaded
     if "biocompiler" not in sys.modules or not hasattr(sys.modules.get("biocompiler"), "__path__"):
-        _pkg = type(sys)("biocompiler")
-        _pkg.__path__ = ["src/biocompiler"]
+        import types as _types
+        _pkg = _types.ModuleType("biocompiler")
+        _pkg.__path__ = [str(Path(__file__).resolve().parent.parent / "src" / "biocompiler")]
         _pkg.__package__ = "biocompiler"
         sys.modules["biocompiler"] = _pkg
 
@@ -39,11 +44,11 @@ def _load_module_directly(module_name: str, file_path: str):
 
 _types_mod = _load_module_directly(
     "biocompiler.solver.types",
-    "src/biocompiler/solver/types.py",
+    f"{_SRC_ROOT}/biocompiler/solver/types.py",
 )
 _organism_config_mod = _load_module_directly(
     "biocompiler.organism_config",
-    "src/biocompiler/organism_config.py",
+    f"{_SRC_ROOT}/biocompiler/organism_config.py",
 )
 
 SolverConfig = _types_mod.SolverConfig

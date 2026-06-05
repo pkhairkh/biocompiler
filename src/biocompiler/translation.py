@@ -5,18 +5,29 @@ FIXES from toy model:
 - Multi-organism CAI support
 - Handles partial codons at end of sequence
 - Detailed translation metadata
+- Consistent species/organism parameter naming via resolve_organism
+
+v10.0.0 changes (BREAKING):
+- CAI table unification: compute_cai() now uses CODON_ADAPTIVENESS_TABLES
+  exclusively (previously the optimizer used SPECIES tables which disagreed,
+  causing incorrect CAI values). CAI values will differ from v9.x — they
+  are now correct.
+- Both 'species' and 'organism' parameters accepted and resolved via
+  resolve_organism(). 'species' emits a DeprecationWarning when used.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import warnings
 from typing import TypedDict
 
 from .constants import CODON_TABLE, START_CODON, reverse_complement
 from .scanner import validate_dna_sequence
 from .organisms import (
     CODON_ADAPTIVENESS_TABLES, SUPPORTED_ORGANISMS,
+    resolve_organism,
 )
 from .exceptions import UnsupportedOrganismError
 
@@ -94,23 +105,84 @@ def translate(sequence: str, to_stop: bool = True) -> str:
     return "".join(protein)
 
 
-def compute_cai(sequence: str, organism: str = "Homo_sapiens") -> float:
+def compute_cai(
+    sequence: str,
+    organism: str = "Homo_sapiens",
+    species: str | None = None,
+) -> float:
     """
     Compute Codon Adaptation Index (CAI) for a coding sequence.
 
     CAI = geometric mean of relative adaptiveness values of codons used.
     This is a DETERMINISTIC computation: same sequence → same CAI.
 
+    Organism Specification:
+
+        The target organism can be specified using **either** the
+        ``organism`` parameter **or** the ``species`` parameter.  Both
+        accept the same set of names — short aliases, abbreviated
+        binomials, display names, or full canonical names — and both
+        map to the same internal representation via
+        :func:`~biocompiler.organisms.resolve_organism`.
+
+        If both ``species`` and ``organism`` are provided, ``species``
+        takes precedence and a :class:`DeprecationWarning` is emitted.
+
     Args:
         sequence: DNA coding sequence (starts with ATG)
-        organism: organism name (must be in SUPPORTED_ORGANISMS)
+        organism: Organism name.  Accepts canonical binomials
+            (e.g., ``'Homo_sapiens'``, ``'Escherichia_coli'``),
+            short keys (``'ecoli'``, ``'human'``), abbreviated
+            binomials (``'E_coli'``, ``'h_sapiens'``), or display
+            names (``'E. coli'``).  All forms are resolved via
+            :func:`~biocompiler.organisms.resolve_organism`.
+        species: Alias for ``organism``.  Accepts the same values.
+            If provided **together with** ``organism``, ``species``
+            takes precedence and a deprecation warning is emitted.
+            Prefer using ``organism`` in new code; ``species`` is
+            retained for backward compatibility.
 
     Returns:
         CAI value in [0.0, 1.0]. Returns 0.0 for empty/invalid sequences.
 
     Raises:
-        UnsupportedOrganismError: if organism is not supported
+        UnsupportedOrganismError: if the organism is not supported.
     """
+    # ── Organism resolution ────────────────────────────────────────
+    if species is not None:
+        resolved = resolve_organism(species, strict=False)
+        if organism != "Homo_sapiens":
+            resolved_explicit = resolve_organism(organism, strict=False)
+            if resolved != resolved_explicit:
+                warnings.warn(
+                    f"Both 'species={species!r}' and 'organism={organism!r}' "
+                    f"were provided but resolve to different organisms "
+                    f"({resolved!r} vs {resolved_explicit!r}). "
+                    f"Using 'species' ({resolved!r}). "
+                    f"Prefer using only 'organism' in new code.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            else:
+                warnings.warn(
+                    f"Both 'species' and 'organism' were provided. "
+                    f"Prefer using only 'organism' in new code; "
+                    f"'species' is retained for backward compatibility.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        else:
+            warnings.warn(
+                f"The 'species' parameter is deprecated in favor of 'organism'. "
+                f"Use organism='{resolved}' instead of "
+                f"species='{species}'. Both accept the same aliases.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        organism = resolved
+    else:
+        organism = resolve_organism(organism, strict=False)
+
     sequence = validate_dna_sequence(sequence)
     if not sequence:
         return 0.0

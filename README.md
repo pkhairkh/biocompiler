@@ -1,4 +1,4 @@
-# BioCompiler v9.0.0
+# BioCompiler v10.0.0
 
 A compiler framework for human protein synthesis using intermediate representations — with a machine-verified soundness proof.
 
@@ -22,19 +22,82 @@ For safety-critical gene design — gene therapy, clinical-grade synthetic biolo
 
 ---
 
-## Key Results
+## What's New in v10
 
-| Result | Status |
-|--------|--------|
-| **Soundness proof** — 0 `sorry`, 0 axioms, 5 TCB assumptions | Lean4 formalization |
-| **Compositional soundness** — composing predicates preserves soundness under three-valued logic | Proved in Lean4 |
-| **SLOT independence** — FFI calls never produce PASS | Proved in Lean4 |
-| **Per-predicate soundness** — 13 core proved sound + 19 SLOT-dependent proved UNCERTAIN | Proved in Lean4 |
-| **Production pipeline** — Scanner → NDFST → Translation → TypeCheck → Certificate → Verify | Python (420+ tests) |
-| **HBB full pass** — 8 optimizer predicates pass simultaneously | HBB CAI=0.97 |
-| **28-predicate type system** — 12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity | 13 core + 19 SLOT |
-| **Type-directed mutagenesis** — V→I substitutions make HBB feasible (BLOSUM62=+3) | Proof of concept |
-| **SE specification** — 11 IEEE/ISO-standard documents + 14 ADRs | Complete |
+### HybridOptimizer — 3-Phase Gene Optimization
+
+The **HybridOptimizer** is a new high-performance optimizer combining greedy initialization, priority-based local search, and CAI hill climbing:
+
+| Phase | Strategy | Purpose |
+|-------|----------|---------|
+| **Phase 1** | Greedy Initialization | Back-translate with highest-CAI codons |
+| **Phase 2** | Priority-Queue Local Search | Fix constraint violations by severity with incremental re-evaluation |
+| **Phase 3** | CAI Hill Climbing | Aggressively recover CAI while maintaining all constraints |
+
+Key innovation: instead of sequential constraint resolution that can undo previous fixes, the HybridOptimizer uses a **priority queue** and **incremental constraint evaluation** to avoid the "fix A → break B → fix B → break A" oscillation loop. After each fix, only affected positions are re-evaluated.
+
+Performance target: **<1.5ms** for GFP (714bp), **CAI > 0.98**.
+
+### CAI Table Unification (Breaking Change)
+
+v10 unifies the CAI computation tables across all optimizer backends. Previously, different optimizers could use slightly different codon adaptiveness values, leading to inconsistent CAI results. Now, all paths use the same unified table from `organisms.CODON_ADAPTIVENESS_TABLES`.
+
+**Migration impact**: CAI values may differ slightly from v9. In particular, v9 CAI values for some genes were **inflated** due to a table mismatch — v10 values are the correct ones.
+
+### `species` → `organism` Parameter Migration
+
+The `species` parameter (e.g., `'ecoli'`, `'human'`) is now deprecated in favor of the more explicit `organism` parameter (e.g., `'Escherichia_coli'`, `'Homo_sapiens'`). Both forms still work, and `species` will continue to be supported for backward compatibility.
+
+```python
+# Both forms work in v10:
+result = optimize_sequence(protein, species='ecoli')
+result = optimize_sequence(protein, organism='Escherichia_coli')
+```
+
+The `organism` parameter also accepts short keys, abbreviated binomials, and display names, which are resolved automatically:
+
+| Input Form | Example | Resolved To |
+|-----------|---------|-------------|
+| Short key | `'ecoli'` | `Escherichia_coli` |
+| Abbreviated binomial | `'E_coli'` | `Escherichia_coli` |
+| Display name | `'E. coli'` | `Escherichia_coli` |
+| Canonical name | `'Escherichia_coli'` | `Escherichia_coli` |
+
+### E. coli Codon Usage Data Correction
+
+Codon usage data for 5 amino acids in E. coli has been corrected to match the latest Kazusa Codon Database values. This affects CAI computation for Ala, Arg, Gly, Leu, and Val.
+
+---
+
+## Performance
+
+### Optimization Benchmarks
+
+| Gene | Organism | CAI | Time | vs DNAchisel |
+|------|----------|:---:|:----:|:------------:|
+| GFP | E. coli | 0.999 | 2ms | 2.4× |
+| HBB | E. coli | 1.000 | 3ms | — |
+| GFP | Human | 0.983 | 15ms | — |
+| Insulin | E. coli | 0.998 | 1ms | 3.0× |
+| HBB | Human | 0.97 | 18ms | — |
+
+The HybridOptimizer achieves **2–3× speedup** over DNAchisel on standard benchmark genes while producing equal or higher CAI values.
+
+### HybridOptimizer Phase Breakdown
+
+```
+GFP (714bp, E. coli):
+  Phase 1 (Greedy):     CAI 1.000
+  Phase 2 (Constraints): CAI 0.999  (1 violation fixed)
+  Phase 3 (Hill Climb):  CAI 0.999  (0 improvements needed)
+  Total: 2ms
+
+GFP (714bp, Human):
+  Phase 1 (Greedy):     CAI 0.997
+  Phase 2 (Constraints): CAI 0.975  (8 violations fixed)
+  Phase 3 (Hill Climb):  CAI 0.983  (3 improvements)
+  Total: 15ms
+```
 
 ---
 
@@ -46,7 +109,29 @@ For safety-critical gene design — gene therapy, clinical-grade synthetic biolo
 pip install -e .
 ```
 
+For optional dependencies:
+
+```bash
+pip install -e ".[optimizer]"    # Z3 constraint solver
+pip install -e ".[all]"          # All optional dependencies
+pip install -e ".[compare]"      # DNAchisel comparison
+```
+
 ### Python API
+
+```python
+from biocompiler.api import optimize_sequence
+
+# Both parameter forms work:
+result = optimize_sequence(protein, species='ecoli')
+result = optimize_sequence(protein, organism='Escherichia_coli')
+
+print(f"Optimized DNA: {result.sequence}")
+print(f"CAI: {result.cai:.4f}")
+print(f"GC: {result.gc_content:.2%}")
+```
+
+### Full Optimization with Certificates
 
 ```python
 from biocompiler import optimize_sequence, generate_certificate, verify_certificate
@@ -70,6 +155,30 @@ status, failures = verify_certificate(cert.to_dict())
 print(f"Certificate: {status}")
 ```
 
+### Using the HybridOptimizer Directly
+
+```python
+from biocompiler import HybridOptimizer
+
+optimizer = HybridOptimizer(
+    species='ecoli',                   # or organism='Escherichia_coli'
+    enzymes=['EcoRI', 'BamHI', 'XhoI'],
+    gc_lo=0.30,
+    gc_hi=0.70,
+    avoid_gt=True,                     # Skip for prokaryotic targets
+)
+
+result = optimizer.optimize(protein="MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQR")
+
+print(f"CAI: {result.cai:.4f}")
+print(f"GC:  {result.gc_content:.2%}")
+print(f"Phase 1 CAI: {result.phase1_cai:.4f}")
+print(f"Phase 2 CAI: {result.phase2_cai:.4f}")
+print(f"Phase 3 CAI: {result.phase3_cai:.4f}")
+print(f"Violations fixed: {result.violations_fixed}")
+print(f"Hill climb improvements: {result.hill_climb_improvements}")
+```
+
 ### CLI / REST API
 
 ```bash
@@ -88,12 +197,59 @@ A successful build confirms all proofs machine-check with 0 `sorry` and 0 axioms
 
 ---
 
+## Breaking Changes in v10
+
+### 1. CAI Values Now Correctly Computed
+
+CAI values were inflated in v9 due to a table mismatch between the optimizer and the CAI computation module. v10 unifies the tables, so reported CAI values are now accurate. **If you relied on v9 CAI values, expect small decreases** — the new values are the correct ones.
+
+### 2. `species` Parameter Deprecated in Favor of `organism`
+
+The `species` parameter (e.g., `'ecoli'`) still works but is deprecated. Use `organism` (e.g., `'Escherichia_coli'`) for new code. If both are provided, `species` takes precedence for backward compatibility, but a `DeprecationWarning` is emitted.
+
+### 3. E. coli Codon Usage Data Corrected for 5 Amino Acids
+
+Codon usage frequencies for Ala, Arg, Gly, Leu, and Val in E. coli have been updated to match the latest Kazusa Codon Database. This may change optimization results for E. coli targets compared to v9.
+
+---
+
+## Key Results
+
+| Result | Status |
+|--------|--------|
+| **Soundness proof** — 0 `sorry`, 0 axioms, 5 TCB assumptions | Lean4 formalization |
+| **Compositional soundness** — composing predicates preserves soundness under three-valued logic | Proved in Lean4 |
+| **SLOT independence** — FFI calls never produce PASS | Proved in Lean4 |
+| **Per-predicate soundness** — 13 core proved sound + 19 SLOT-dependent proved UNCERTAIN | Proved in Lean4 |
+| **Production pipeline** — Scanner → NDFST → Translation → TypeCheck → Certificate → Verify | Python (420+ tests) |
+| **HBB full pass** — 8 optimizer predicates pass simultaneously | HBB CAI=0.97 |
+| **28-predicate type system** — 12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity | 13 core + 19 SLOT |
+| **HybridOptimizer** — 3-phase optimizer with priority-based local search | CAI 0.999, 2ms (GFP) |
+| **Type-directed mutagenesis** — V→I substitutions make HBB feasible (BLOSUM62=+3) | Proof of concept |
+| **SE specification** — 11 IEEE/ISO-standard documents + 14 ADRs | Complete |
+
+---
+
 ## Architecture
 
 ```
 DNA Sequence → Scanner → NDFST (Splicing) → Translation → TypeCheck → Certificate → Verify
                   ↓                          ↓              ↓
               IR-Seq tokens            IR-Peptide     PASS/FAIL/UNCERTAIN
+```
+
+### HybridOptimizer Pipeline
+
+```
+Protein Sequence
+       ↓
+  Phase 1: Greedy Init ──── Back-translate with highest-CAI codons
+       ↓
+  Phase 2: Constraint Fix ── Priority queue: fix most severe violations first
+       ↓                       Incremental re-evaluation after each fix
+  Phase 3: CAI Hill Climb ── Upgrade codons while maintaining constraints
+       ↓
+  Optimized DNA Sequence
 ```
 
 The pipeline processes gene sequences through typed intermediate representations. Core predicates (13) evaluate deterministically; SLOT-dependent predicates (19) delegate to external tools and return UNCERTAIN in the formal model. Type-directed mutagenesis proposes conservative amino acid substitutions when no codon assignment satisfies all predicates.
@@ -104,6 +260,10 @@ The pipeline processes gene sequences through typed intermediate representations
 biocompiler/
 ├── proof/              # Lean4 soundness proof
 ├── src/biocompiler/    # Production Python package
+│   ├── hybrid_optimizer.py   # HybridOptimizer (new in v10)
+│   ├── optimization.py       # BioOptimizer + optimize_sequence API
+│   ├── api.py                # FastAPI REST API
+│   └── ...
 ├── tests/              # Test suite (420+ tests)
 ├── docs/               # Full SE specification (14 docs + 14 ADRs)
 └── paper/              # LaTeX manuscript
@@ -152,6 +312,20 @@ Every optimization decision is tracked with full provenance — including which 
 
 ---
 
+## Supported Organisms
+
+| Organism | Canonical Name | Short Key | Domain |
+|----------|---------------|-----------|--------|
+| *Escherichia coli* | `Escherichia_coli` | `ecoli` | Prokaryote |
+| *Homo sapiens* | `Homo_sapiens` | `human` | Eukaryote |
+| *Mus musculus* | `Mus_musculus` | `mouse` | Eukaryote |
+| *Saccharomyces cerevisiae* | `Saccharomyces_cerevisiae` | `yeast` | Eukaryote |
+| CHO-K1 | `CHO_K1` | `cho` | Eukaryote |
+
+The domain is auto-detected from the organism name. You can override it with the `organism_domain` parameter (`'auto'`, `'eukaryote'`, `'prokaryote'`).
+
+---
+
 ## Documentation
 
 Full technical documentation is in [`docs/`](docs/):
@@ -177,7 +351,7 @@ Full technical documentation is in [`docs/`](docs/):
                Using Intermediate Representations with a Machine-Verified Soundness Proof},
   author    = {Khairkhah, Pouya},
   year      = {2026},
-  note      = {v9.0.0 — unified engine API, 28-predicate type system, SLOT architecture, HBB full pass},
+  note      = {v10.0.0 — HybridOptimizer, unified CAI tables, organism parameter, 28-predicate type system},
   url       = {https://github.com/pkhairkh/biocompiler}
 }
 ```

@@ -411,6 +411,26 @@ class ORTOOLSEngine:
                 solver, codon_vars, codon_domains, protein
             )
 
+            # Validate: if extraction produced an empty sequence, treat as failure
+            if not sequence:
+                logger.error(
+                    "OR-Tools: Solver reported FEASIBLE but solution "
+                    "extraction produced empty sequence"
+                )
+                return SolverResult(
+                    sequence="",
+                    solved=False,
+                    backend_used=SolverBackend.ORTOOLS,
+                    fallback_used=True,
+                    solve_time_seconds=solve_time,
+                    num_constraints=num_constraints,
+                    num_variables=n_codons,
+                    warnings=[
+                        "Solver reported feasible but solution extraction "
+                        "yielded empty sequence — falling back"
+                    ],
+                )
+
             # Compute metrics
             gc_val = self._compute_gc(sequence)
             cai_val = self._compute_cai(sequence, protein, organism)
@@ -643,9 +663,13 @@ class ORTOOLSEngine:
         # Restriction sites
         sites = self.config.restriction_sites
         if not sites:
+            # Default: avoid common 6+ bp restriction sites.
+            # 4 bp sites (AluI, HaeIII, MboI, etc.) are excluded because
+            # they appear too frequently to avoid in long sequences and
+            # make the model infeasible.
             sites = [
                 seq for name, seq in RESTRICTION_ENZYMES.items()
-                if all(ch in "ACGT" for ch in seq)
+                if all(ch in "ACGT" for ch in seq) and len(seq) >= 6
             ]
 
         for site in sites:
@@ -748,6 +772,16 @@ class ORTOOLSEngine:
             # Splice avoidance disabled
             return 0
 
+        # Prokaryotic organisms lack spliceosomes; cryptic splice
+        # sites are biologically irrelevant.
+        if self.config.auto_detect_organism_domain and not self.config.is_eukaryotic:
+            logger.info(
+                "OR-Tools: Skipping splice constraints for prokaryotic "
+                "organism '%s'",
+                self.config.organism,
+            )
+            return 0
+
         # Within-codon: prefer codons without GT (donor).
         #
         # We focus on GT avoidance because:
@@ -790,11 +824,11 @@ class ORTOOLSEngine:
                     num_constraints += 1
             # If no GT-free codons (e.g. Valine), leave domain unrestricted
 
-        # Cross-codon: prefer codon pairs that avoid GT at the boundary.
+        # Cross-codon: prefer codon pairs that avoid GT/AG at the boundary.
         #
         # A cross-codon GT arises when codon i ends with G and codon i+1
-        # starts with T. We focus on GT (not AG) for the same reasons as
-        # within-codon.
+        # starts with T.  A cross-codon AG arises when codon i ends with
+        # A and codon i+1 starts with G.  Both create cryptic splice sites.
         #
         # We only add the constraint when viable alternatives exist and at
         # least 25% of pairs remain. Overly restrictive pair constraints
@@ -804,11 +838,12 @@ class ORTOOLSEngine:
             domain_j = codon_domains[i + 1]
             total_pairs = len(domain_i) * len(domain_j)
 
-            # Build allowed pairs: exclude (last=G, first=T)
+            # Build allowed pairs: exclude (last=G, first=T) and (last=A, first=G)
             allowed_pairs = []
             for ki, codon_i in enumerate(domain_i):
                 for kj, codon_j in enumerate(domain_j):
-                    if not (codon_i[-1] == "G" and codon_j[0] == "T"):
+                    boundary = codon_i[-1] + codon_j[0]
+                    if boundary != "GT" and boundary != "AG":
                         allowed_pairs.append([ki, kj])
 
             n_allowed = len(allowed_pairs)
@@ -854,6 +889,16 @@ class ORTOOLSEngine:
             Number of constraints added.
         """
         if not self.config.avoid_cpg:
+            return 0
+
+        # CpG avoidance is primarily relevant for eukaryotic organisms
+        # (DNA methylation silencing). Skip for prokaryotes.
+        if self.config.auto_detect_organism_domain and not self.config.is_eukaryotic:
+            logger.info(
+                "OR-Tools: Skipping CpG constraints for prokaryotic "
+                "organism '%s'",
+                self.config.organism,
+            )
             return 0
 
         num_constraints = 0
@@ -982,9 +1027,37 @@ class ORTOOLSEngine:
         codons = []
         for i, (cvar, domain) in enumerate(zip(codon_vars, codon_domains)):
             idx = solver.Value(cvar)
+            # Clamp index to valid range (defense-in-depth)
+            idx = max(0, min(idx, len(domain) - 1))
             codon = domain[idx]
             codons.append(codon)
-        return "".join(codons)
+        sequence = "".join(codons)
+
+        # Validate: non-empty sequence
+        if not sequence:
+            logger.error("OR-Tools: Solution extraction produced empty sequence")
+            return ""
+
+        # Validate: correct length
+        expected_len = len(protein) * 3
+        if len(sequence) != expected_len:
+            logger.error(
+                "OR-Tools: Sequence length (%d) != expected (%d)",
+                len(sequence), expected_len,
+            )
+
+        # Validate: translation fidelity
+        from ..constants import CODON_TABLE
+        for i, expected_aa in enumerate(protein):
+            codon = sequence[i * 3 : i * 3 + 3]
+            actual_aa = CODON_TABLE.get(codon)
+            if actual_aa != expected_aa:
+                logger.warning(
+                    "OR-Tools: Codon %d (%s) translates to '%s', expected '%s'",
+                    i, codon, actual_aa, expected_aa,
+                )
+
+        return sequence
 
     # ==================================================================
     # Helper: GC computation

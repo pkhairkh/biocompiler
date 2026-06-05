@@ -85,7 +85,7 @@ from .types import (
     MUSReport,
     ConstraintViolation,
 )
-from ..constants import AA_TO_CODONS, BASE_REV, IUPAC_EXPAND
+from ..constants import AA_TO_CODONS, BASE_REV, IUPAC_EXPAND, RESTRICTION_ENZYMES, INSTABILITY_MOTIF, reverse_complement
 from ..organisms import CODON_ADAPTIVENESS_TABLES
 
 logger = logging.getLogger(__name__)
@@ -299,6 +299,9 @@ class Z3Engine(SolverBackendProtocol):
 
         n = len(protein)
 
+        # Store protein for translation fidelity validation in _extract_solution
+        self._protein_for_validation = protein
+
         # Create optimizer
         optimizer = Optimize()
         optimizer.set("timeout", int(config.timeout_seconds * 1000))
@@ -359,18 +362,45 @@ class Z3Engine(SolverBackendProtocol):
             self._encode_gc_constraint(optimizer, nuc_exprs, protein, config)
         )
 
-        # Restriction site constraints
-        if config.restriction_sites:
+        # Restriction site constraints (use defaults when config list is empty,
+        # matching OR-Tools engine behaviour — only 6+ bp sites to avoid
+        # making long sequences infeasible)
+        restriction_sites = config.restriction_sites
+        if not restriction_sites:
+            restriction_sites = [
+                seq for name, seq in RESTRICTION_ENZYMES.items()
+                if all(ch in "ACGT" for ch in seq) and len(seq) >= 6
+            ]
+        if restriction_sites:
             constraint_names.extend(
                 self._encode_restriction_site_constraints(
-                    optimizer, nuc_exprs, config.restriction_sites
+                    optimizer, nuc_exprs, restriction_sites
                 )
             )
 
-        # Splice site constraints
-        constraint_names.extend(
-            self._encode_splice_constraints(optimizer, nuc_exprs, protein, config)
-        )
+        # ATTTA instability motif avoidance
+        if config.avoid_attta:
+            constraint_names.extend(
+                self._encode_attta_constraints(optimizer, nuc_exprs)
+            )
+
+        # T-run avoidance (no 6+ consecutive T bases)
+        if config.avoid_t_runs:
+            constraint_names.extend(
+                self._encode_trun_constraints(optimizer, nuc_exprs)
+            )
+
+        # CpG dinucleotide avoidance (eukaryotes only)
+        if config.avoid_cpg and config.is_eukaryotic:
+            constraint_names.extend(
+                self._encode_cpg_constraints(optimizer, codon_vars, codon_lists)
+            )
+
+        # Splice site constraints (eukaryotes only)
+        if config.is_eukaryotic:
+            constraint_names.extend(
+                self._encode_splice_constraints(optimizer, nuc_exprs, protein, config)
+            )
 
         # --- Set optimization objective: MAXIMIZE sum of log(CAI) ---
         self._encode_cai_objective(optimizer, codon_vars, codon_lists)
@@ -645,6 +675,25 @@ class Z3Engine(SolverBackendProtocol):
         donor_thresh = config.effective_donor_threshold
         acceptor_thresh = config.effective_acceptor_threshold
 
+        # Skip splice constraints entirely when threshold <= 0 (disabled)
+        # or when the organism is prokaryotic (no spliceosome).
+        # Without this guard, threshold=0 generates constraints like
+        # Implies(GT_detected, score < 0) which forbids ALL GT/AG
+        # dinucleotides — including Valine codons that start with GT —
+        # making the model UNSAT.
+        if donor_thresh <= 0 and acceptor_thresh <= 0:
+            return constraint_names
+
+        # Prokaryotic organisms lack spliceosomes; cryptic splice
+        # sites are biologically irrelevant.
+        if config.auto_detect_organism_domain and not config.is_eukaryotic:
+            logger.info(
+                "Z3: Skipping splice constraints for prokaryotic "
+                "organism '%s'",
+                config.organism,
+            )
+            return constraint_names
+
         # --- Donor site constraints (9-mer context around GT) ---
         for j in range(total_nucs - 1):
             ctx_start = j - 3
@@ -705,6 +754,178 @@ class Z3Engine(SolverBackendProtocol):
             logger.info(
                 "Z3: Added splice constraints (%d donor, %d acceptor positions)",
                 n_donors, n_acceptors,
+            )
+
+        return constraint_names
+
+    # -------------------------------------------------------------------
+    # ATTTA instability motif avoidance
+    # -------------------------------------------------------------------
+
+    def _encode_attta_constraints(
+        self,
+        optimizer: Optimize,
+        nuc_exprs: list[ArithRef],
+    ) -> list[str]:
+        """Encode ATTTA instability motif avoidance constraints.
+
+        Forbids the pattern ATTTA (A=0, T=3, T=3, T=3, A=0) and its
+        reverse complement TAAAT (T=3, A=0, A=0, A=0, T=3) from
+        appearing anywhere in the nucleotide sequence.
+
+        Args:
+            optimizer: Z3 Optimize instance.
+            nuc_exprs: Z3 expressions for each nucleotide position.
+
+        Returns:
+            List of constraint names added.
+        """
+        constraint_names: list[str] = []
+        total_nucs = len(nuc_exprs)
+
+        # ATTTA: A=0, T=3, T=3, T=3, A=0
+        for j in range(total_nucs - 4):
+            optimizer.add(Not(And(
+                nuc_exprs[j] == 0,       # A
+                nuc_exprs[j + 1] == 3,   # T
+                nuc_exprs[j + 2] == 3,   # T
+                nuc_exprs[j + 3] == 3,   # T
+                nuc_exprs[j + 4] == 0,   # A
+            )))
+        constraint_names.append("no_ATTTA")
+
+        # TAAAT (reverse complement of ATTTA): T=3, A=0, A=0, A=0, T=3
+        for j in range(total_nucs - 4):
+            optimizer.add(Not(And(
+                nuc_exprs[j] == 3,       # T
+                nuc_exprs[j + 1] == 0,   # A
+                nuc_exprs[j + 2] == 0,   # A
+                nuc_exprs[j + 3] == 0,   # A
+                nuc_exprs[j + 4] == 3,   # T
+            )))
+        constraint_names.append("no_TAAAT")
+
+        if self.config.verbose:
+            logger.info(
+                "Z3: Added ATTTA motif avoidance (%d windows each direction)",
+                total_nucs - 4,
+            )
+
+        return constraint_names
+
+    # -------------------------------------------------------------------
+    # T-run avoidance (no 6+ consecutive T bases)
+    # -------------------------------------------------------------------
+
+    def _encode_trun_constraints(
+        self,
+        optimizer: Optimize,
+        nuc_exprs: list[ArithRef],
+        max_run: int = 5,
+    ) -> list[str]:
+        """Encode T-run avoidance constraints.
+
+        Forbids any window of (max_run + 1) consecutive T bases.
+        Default max_run=5 means runs of 6+ consecutive T are forbidden.
+
+        Args:
+            optimizer: Z3 Optimize instance.
+            nuc_exprs: Z3 expressions for each nucleotide position.
+            max_run: Maximum allowed consecutive T count (default 5).
+
+        Returns:
+            List of constraint names added.
+        """
+        constraint_names: list[str] = []
+        total_nucs = len(nuc_exprs)
+        run_len = max_run + 1  # Forbidden run length
+
+        for j in range(total_nucs - run_len + 1):
+            # Forbid all bases in window [j, j+run_len) being T (==3)
+            all_t = And(*[nuc_exprs[j + k] == 3 for k in range(run_len)])
+            optimizer.add(Not(all_t))
+
+        constraint_names.append(f"no_trun_{run_len}")
+
+        if self.config.verbose:
+            logger.info(
+                "Z3: Added T-run avoidance (max %d consecutive T, %d windows)",
+                max_run, total_nucs - run_len + 1,
+            )
+
+        return constraint_names
+
+    # -------------------------------------------------------------------
+    # CpG dinucleotide avoidance
+    # -------------------------------------------------------------------
+
+    def _encode_cpg_constraints(
+        self,
+        optimizer: Optimize,
+        codon_vars: list[ArithRef],
+        codon_lists: list[list[str]],
+    ) -> list[str]:
+        """Encode CpG (CG) dinucleotide avoidance constraints.
+
+        Within-codon: Forbid codon assignments containing the CG dinucleotide
+        if CG-free alternatives exist.
+
+        Cross-codon: Forbid adjacent codon pairs where codon i ends with C
+        and codon i+1 starts with G (creating a cross-codon CG dinucleotide),
+        when alternatives exist.
+
+        This matches the OR-Tools engine's CpG constraint encoding.
+
+        Args:
+            optimizer: Z3 Optimize instance.
+            codon_vars: Z3 Int variables for codon choices.
+            codon_lists: Synonymous codon lists per position.
+
+        Returns:
+            List of constraint names added.
+        """
+        constraint_names: list[str] = []
+
+        # Within-codon: forbid codons containing CG
+        for i, (c_var, codons_for_aa) in enumerate(zip(codon_vars, codon_lists)):
+            cg_free = [c for c in codons_for_aa if "CG" not in c]
+            if cg_free and len(cg_free) < len(codons_for_aa):
+                # Some codons contain CG — restrict to CG-free alternatives
+                cg_free_indices = [codons_for_aa.index(c) for c in cg_free]
+                # At least one CG-free codon must be selected
+                optimizer.add(
+                    Or(*[c_var == idx for idx in cg_free_indices])
+                )
+                constraint_names.append(f"no_within_cpg_{i}")
+
+        # Cross-codon: forbid (C-ending codon, G-starting codon) pairs
+        for i in range(len(codon_vars) - 1):
+            domain_i = codon_lists[i]
+            domain_j = codon_lists[i + 1]
+
+            # Find codon pairs that create cross-codon CG
+            c_ending = [k for k, c in enumerate(domain_i) if c[-1] == "C"]
+            g_starting = [k for k, c in enumerate(domain_j) if c[0] == "G"]
+
+            if c_ending and g_starting:
+                # Only add if there are alternatives
+                non_c_ending = [k for k, c in enumerate(domain_i) if c[-1] != "C"]
+                non_g_starting = [k for k, c in enumerate(domain_j) if c[0] != "G"]
+
+                # At least one of the two positions must avoid the CG boundary
+                if non_c_ending or non_g_starting:
+                    # If current codon ends with C, next codon must NOT start with G
+                    for ci in c_ending:
+                        for gi in g_starting:
+                            optimizer.add(Not(And(codon_vars[i] == ci, codon_vars[i + 1] == gi)))
+                    constraint_names.append(f"no_cross_cpg_{i}")
+
+        if self.config.verbose:
+            n_within = sum(1 for name in constraint_names if name.startswith("no_within"))
+            n_cross = sum(1 for name in constraint_names if name.startswith("no_cross"))
+            logger.info(
+                "Z3: Added CpG avoidance constraints (%d within-codon, %d cross-codon)",
+                n_within, n_cross,
             )
 
         return constraint_names
@@ -809,6 +1030,38 @@ class Z3Engine(SolverBackendProtocol):
             chosen_codons.append(codons_for_aa[idx])
 
         sequence = "".join(chosen_codons)
+
+        # ── Validate solution ──────────────────────────────────────────
+        if not sequence:
+            logger.error("Z3: Solution extraction produced empty sequence")
+            return SolverResult(
+                sequence="",
+                solved=False,
+                backend_used=SolverBackend.Z3,
+                solve_time_seconds=solve_time,
+                num_constraints=num_constraints,
+                num_variables=num_variables,
+                fallback_used=True,
+                warnings=["Z3 solution extraction produced empty sequence"],
+            )
+
+        # Verify translation fidelity (defense-in-depth)
+        protein_seq = (
+            self._protein_for_validation
+            if hasattr(self, "_protein_for_validation")
+            else ""
+        )
+        if protein_seq and len(sequence) == len(protein_seq) * 3:
+            from ..constants import CODON_TABLE
+            for i, expected_aa in enumerate(protein_seq):
+                codon = sequence[i * 3 : i * 3 + 3]
+                actual_aa = CODON_TABLE.get(codon)
+                if actual_aa != expected_aa:
+                    logger.warning(
+                        "Z3: Codon %d (%s) translates to '%s', expected '%s'; "
+                        "solution may be incorrect",
+                        i, codon, actual_aa, expected_aa,
+                    )
 
         # Compute GC content
         gc_count = sum(1 for base in sequence if base in ("G", "C"))

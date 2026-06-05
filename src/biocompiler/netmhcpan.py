@@ -522,11 +522,17 @@ def _parse_data_line(line: str) -> dict | None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def is_netmhcpan_available(timeout: float = 10.0) -> bool:
-    """Check whether the NetMHCpan API is reachable.
+    """Check whether NetMHCpan is available (locally installed or web API reachable).
 
-    Returns True if the DTU Health Tech server responds to a HEAD request.
-    Returns False otherwise (network error, timeout, etc.).
+    Returns True if a local NetMHCpan binary is found on PATH, or if the
+    DTU Health Tech server responds to a HEAD request.
+    Returns False otherwise (no local binary and network error/timeout).
     """
+    # Check local installation first (fast, no network)
+    if is_netmhcpan_installed():
+        return True
+
+    # Fall back to web API check
     try:
         req = urllib.request.Request(
             "https://services.healthtech.dtu.dk/services/NetMHCpan-4.1/",
@@ -1186,3 +1192,216 @@ def batch_predict(
     Convenience wrapper around :meth:`NetMHCpanClient.batch_predict`.
     """
     return _get_default_client().batch_predict(protein_sequence, alleles, epitope_lengths)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fallback chain adapter functions
+#
+# These provide a clean interface for the MHC prediction fallback chain.
+# They return None when NetMHCpan is not available, allowing the caller
+# to try the next fallback without raising exceptions.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Names of NetMHCpan binaries to search for on PATH
+_NETMHCPAN_BINARIES: list[str] = ["netMHCpan", "NetMHCpan", "netmhcpan"]
+
+# Cached result for is_netmhcpan_installed
+_netmhcpan_installed_cache: bool | None = None
+
+
+def is_netmhcpan_installed() -> bool:
+    """Check whether a NetMHCpan binary is installed locally.
+
+    Searches the system PATH for any of the known NetMHCpan binary names.
+    The result is cached after the first call.
+
+    Returns
+    -------
+    bool
+        True if a NetMHCpan binary is found on PATH.
+    """
+    global _netmhcpan_installed_cache
+    if _netmhcpan_installed_cache is not None:
+        return _netmhcpan_installed_cache
+    for binary in _NETMHCPAN_BINARIES:
+        if shutil.which(binary) is not None:
+            _netmhcpan_installed_cache = True
+            return True
+    _netmhcpan_installed_cache = False
+    return False
+
+
+def _predict_binding_local(
+    allele: str,
+    peptide: str,
+    epitope_length: int = 9,
+    timeout: float = 120.0,
+) -> MHCBindingResult:
+    """Run a local NetMHCpan binary to predict MHC binding.
+
+    Parameters
+    ----------
+    allele : str
+        MHC allele name.
+    peptide : str
+        Peptide sequence (must not be empty).
+    epitope_length : int
+        Expected peptide length (default 9).
+    timeout : float
+        Maximum runtime in seconds (default 120).
+
+    Returns
+    -------
+    MHCBindingResult
+        Binding prediction result.
+
+    Raises
+    ------
+    NetMHCpanError
+        If the binary is not found, the peptide is empty, or
+        the binary returns a non-zero exit code.
+    """
+    if not peptide:
+        raise NetMHCpanError("Peptide must not be empty", allele=allele)
+
+    # Find binary
+    binary_path = None
+    for binary in _NETMHCPAN_BINARIES:
+        path = shutil.which(binary)
+        if path is not None:
+            binary_path = path
+            break
+
+    if binary_path is None:
+        raise NetMHCpanError(
+            "NetMHCpan binary not found on PATH", allele=allele
+        )
+
+    # Run the binary
+    try:
+        result = subprocess.run(
+            [binary_path, "-a", allele, "-p", peptide, "-l", str(epitope_length)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise NetMHCpanError(
+            f"NetMHCpan timed out after {timeout}s", allele=allele
+        ) from exc
+
+    if result.returncode != 0:
+        raise NetMHCpanError(
+            f"NetMHCpan exited with code {result.returncode}", allele=allele
+        )
+
+    # Parse the output
+    parsed = parse_netmhcpan_output(result.stdout, allele)
+    if parsed:
+        p = parsed[0]
+        rank = p.get("rank", _FALLBACK_RANK)
+        binding_class = p.get("binding_class", classify_binding_rank(rank))
+        binding_score = _rank_to_binding_score(rank)
+        return MHCBindingResult(
+            allele=allele,
+            peptide=peptide,
+            start_position=p.get("position", 0),
+            end_position=p.get("position", 0) + len(peptide) - 1,
+            binding_score=binding_score,
+            ic50_nm=p.get("ic50_nm"),
+            binding_class=binding_class,
+            rank=rank,
+            method="netmhcpan_local",
+        )
+
+    # No parseable data — return non-binder
+    return MHCBindingResult(
+        allele=allele,
+        peptide=peptide,
+        start_position=0,
+        end_position=len(peptide) - 1,
+        binding_score=0.0,
+        binding_class="non_binder",
+        method="netmhcpan_local",
+    )
+
+
+def predict_binding_netmhcpan(
+    allele: str,
+    peptide: str,
+    epitope_length: int = 9,
+    timeout: float = 10.0,
+) -> MHCBindingResult | None:
+    """Adapter for the MHC prediction fallback chain — single peptide.
+
+    Returns None when NetMHCpan is not available (neither locally
+    installed nor web API reachable), allowing the caller to try
+    the next fallback predictor without catching exceptions.
+
+    Parameters
+    ----------
+    allele : str
+        MHC allele name.
+    peptide : str
+        Peptide amino acid sequence.
+    epitope_length : int
+        Expected peptide length (default 9).
+    timeout : float
+        Timeout for availability check (default 10s).
+
+    Returns
+    -------
+    MHCBindingResult or None
+        Binding prediction result, or None if NetMHCpan is unavailable.
+    """
+    if not is_netmhcpan_available(timeout=timeout):
+        return None
+
+    # Try local binary first, then fall back to web API
+    if is_netmhcpan_installed():
+        try:
+            return _predict_binding_local(allele, peptide, epitope_length)
+        except Exception:
+            return None
+
+    # Use web API
+    try:
+        return predict_mhc_i_binding(peptide, allele, epitope_length)
+    except Exception:
+        return None
+
+
+def batch_predict_binding_netmhcpan(
+    protein_sequence: str,
+    alleles: list[str],
+    epitope_lengths: list[int] | None = None,
+    timeout: float = 10.0,
+) -> list[MHCBindingResult] | None:
+    """Adapter for the MHC prediction fallback chain — batch.
+
+    Returns None when NetMHCpan is not available, allowing the
+    caller to try the next fallback predictor.
+
+    Parameters
+    ----------
+    protein_sequence : str
+        Full protein amino acid sequence.
+    alleles : list[str]
+        MHC alleles to evaluate.
+    epitope_lengths : list[int] or None
+        Peptide lengths to extract (default [8, 9, 10, 11]).
+    timeout : float
+        Timeout for availability check (default 10s).
+
+    Returns
+    -------
+    list[MHCBindingResult] or None
+        Batch binding predictions, or None if NetMHCpan is unavailable.
+    """
+    if not is_netmhcpan_available(timeout=timeout):
+        return None
+
+    try:
+        return batch_predict(protein_sequence, alleles, epitope_lengths)
+    except Exception:
+        return None

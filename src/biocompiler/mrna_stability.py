@@ -304,6 +304,38 @@ _POSITION_WEIGHTS: dict[str, dict[str, float]] = {
 # ────────────────────────────────────────────────────────────
 
 
+# ────────────────────────────────────────────────────────────
+# Precompiled regex patterns (Optimization: avoid re.compile per call)
+# ────────────────────────────────────────────────────────────
+
+_COMPILED_MOTIFS: dict[str, dict[str, list[tuple[Any, str, str]]]] = {}
+
+
+def _get_compiled_motifs(organism: str) -> dict[str, list[tuple[Any, str, str]]]:
+    """Get or build precompiled motif patterns for the given organism.
+
+    Caches compiled regex patterns so they are compiled only once per
+    organism, not once per call to score_mrna_stability.
+    """
+    if organism in _COMPILED_MOTIFS:
+        return _COMPILED_MOTIFS[organism]
+
+    raw = STABILITY_MOTIFS.get(organism, STABILITY_MOTIFS.get("Homo_sapiens", {}))
+    compiled: dict[str, list[tuple[Any, str, str]]] = {"stabilizing": [], "destabilizing": []}
+
+    for effect in ("stabilizing", "destabilizing"):
+        for pattern, description, source in raw.get(effect, []):
+            try:
+                compiled_pattern = re.compile(pattern, re.IGNORECASE)
+            except re.error as exc:
+                logger.debug("Skipping invalid regex '%s': %s", pattern, exc)
+                continue
+            compiled[effect].append((compiled_pattern, description, source))
+
+    _COMPILED_MOTIFS[organism] = compiled
+    return compiled
+
+
 def score_mrna_stability(dna: str, organism: str) -> MRNAStabilityScore:
     """Scan *dna* for stability motifs and return a composite score.
 
@@ -340,28 +372,15 @@ def score_mrna_stability(dna: str, organism: str) -> MRNAStabilityScore:
             destabilizing_count=0,
         )
 
-    # Resolve motif database
-    motifs = STABILITY_MOTIFS.get(organism)
-    if motifs is None:
-        logger.warning(
-            "No stability motifs for organism '%s'; "
-            "falling back to Homo_sapiens",
-            organism,
-        )
-        motifs = STABILITY_MOTIFS["Homo_sapiens"]
+    # Resolve motif database (use precompiled patterns for performance)
+    compiled_motifs = _get_compiled_motifs(organism)
 
     details: list[dict[str, Any]] = []
     stab_weighted_sum = 0.0
     destab_weighted_sum = 0.0
 
     for effect in ("stabilizing", "destabilizing"):
-        for pattern, description, source in motifs.get(effect, []):
-            try:
-                compiled = re.compile(pattern, re.IGNORECASE)
-            except re.error as exc:
-                logger.debug("Skipping invalid regex '%s': %s", pattern, exc)
-                continue
-
+        for compiled, description, source in compiled_motifs.get(effect, []):
             for m in compiled.finditer(dna):
                 pos = m.start()
                 region = _fractional_position(pos, seq_len)

@@ -7,7 +7,10 @@ Comprehensive head-to-head comparison across:
   - 5 human therapeutic genes (eukaryotic optimization)
   - Stress-test genes (extreme GC, long sequences)
   
-Metrics: CAI, GC%, runtime, constraint violations, codon diversity
+Metrics: CAI (validated), GC%, runtime, constraint violations, codon diversity
+
+CAI is computed using compute_cai_validated for BOTH tools — DNAchisel's
+own CAI output is NOT trusted, ensuring fair head-to-head comparison.
 """
 
 import sys
@@ -21,10 +24,11 @@ from typing import Optional
 
 # ── BioCompiler imports ──
 from biocompiler.optimization import optimize_sequence, OptimizationResult
-from biocompiler.translation import compute_cai, translate
+from biocompiler.translation import translate
 from biocompiler.scanner import gc_content, validate_dna_sequence
 from biocompiler.constants import AA_TO_CODONS, CODON_TABLE
 from biocompiler.organisms import CODON_ADAPTIVENESS_TABLES, PREFERRED_CODON_TABLES, SUPPORTED_ORGANISMS
+from biocompiler.benchmarking.metrics import compute_cai_validated
 
 # ── DNAchisel imports ──
 import dnachisel as dc
@@ -109,10 +113,10 @@ def optimize_biocompiler(protein: str, organism: str, gc_lo: float = 0.30, gc_hi
         result.dna_length = len(opt_result.sequence)
         result.gc_content = gc_content(opt_result.sequence)
         result.constraint_violations = list(opt_result.failed_predicates) if opt_result.failed_predicates else []
-        # Compute CAI for all supported organisms
+        # Compute CAI for all supported organisms using validated evaluator
         for org in SUPPORTED_ORGANISMS:
             try:
-                result.cais[org] = compute_cai(opt_result.sequence, org)
+                result.cais[org] = compute_cai_validated(opt_result.sequence, org)
             except Exception:
                 pass
     except Exception as e:
@@ -162,10 +166,11 @@ def optimize_dnachisel(protein: str, organism: str, gc_lo: float = 0.30, gc_hi: 
         result.dna_length = len(problem.sequence)
         result.gc_content = gc_content(problem.sequence)
         
-        # Compute CAI using BioCompiler's evaluator (fair comparison)
+        # Compute CAI using validated evaluator (fair comparison)
+        # DNAchisel's own CAI output is NOT trusted
         for org in SUPPORTED_ORGANISMS:
             try:
-                result.cais[org] = compute_cai(problem.sequence, org)
+                result.cais[org] = compute_cai_validated(problem.sequence, org)
             except Exception:
                 pass
     except Exception as e:
@@ -219,9 +224,11 @@ def optimize_dnachisel_with_re(protein: str, organism: str, gc_lo: float = 0.30,
         result.dna_length = len(problem.sequence)
         result.gc_content = gc_content(problem.sequence)
         
+        # Compute CAI using validated evaluator (fair comparison)
+        # DNAchisel's own CAI output is NOT trusted
         for org in SUPPORTED_ORGANISMS:
             try:
-                result.cais[org] = compute_cai(problem.sequence, org)
+                result.cais[org] = compute_cai_validated(problem.sequence, org)
             except Exception:
                 pass
     except Exception as e:
@@ -262,7 +269,7 @@ def optimize_biocompiler_organism_aware(protein: str, organism: str, gc_lo: floa
         
         for org in SUPPORTED_ORGANISMS:
             try:
-                result.cais[org] = compute_cai(optimized, org)
+                result.cais[org] = compute_cai_validated(optimized, org)
             except Exception:
                 pass
     except Exception as e:
@@ -297,7 +304,7 @@ def run_full_benchmark():
         r.dna_length = len(r.sequence)
         r.gc_content = gc_content(r.sequence)
         for o in SUPPORTED_ORGANISMS:
-            try: r.cais[o] = compute_cai(r.sequence, o)
+            try: r.cais[o] = compute_cai_validated(r.sequence, o)
             except: pass
         all_results.append(r)
         print(f"    naive:          CAI={r.cais.get(org_key, 0):.4f}  GC={r.gc_content:.4f}  t={r.runtime_s*1000:.1f}ms")
@@ -338,7 +345,7 @@ def run_full_benchmark():
         r.dna_length = len(r.sequence)
         r.gc_content = gc_content(r.sequence)
         for o in SUPPORTED_ORGANISMS:
-            try: r.cais[o] = compute_cai(r.sequence, o)
+            try: r.cais[o] = compute_cai_validated(r.sequence, o)
             except: pass
         all_results.append(r)
         print(f"    naive:          CAI={r.cais.get(org_key, 0):.4f}  GC={r.gc_content:.4f}")
@@ -376,7 +383,7 @@ def run_full_benchmark():
         r.dna_length = len(r.sequence)
         r.gc_content = gc_content(r.sequence)
         for o in SUPPORTED_ORGANISMS:
-            try: r.cais[o] = compute_cai(r.sequence, o)
+            try: r.cais[o] = compute_cai_validated(r.sequence, o)
             except: pass
         all_results.append(r)
         print(f"    naive:          CAI={r.cais.get(org_key, 0):.4f}  GC={r.gc_content:.4f}")
@@ -411,7 +418,7 @@ def run_full_benchmark():
         r.dna_length = len(r.sequence)
         r.gc_content = gc_content(r.sequence)
         for o in SUPPORTED_ORGANISMS:
-            try: r.cais[o] = compute_cai(r.sequence, o)
+            try: r.cais[o] = compute_cai_validated(r.sequence, o)
             except: pass
         all_results.append(r)
         print(f"    naive:          CAI={r.cais.get(org, 0):.4f}  GC={r.gc_content:.4f}")

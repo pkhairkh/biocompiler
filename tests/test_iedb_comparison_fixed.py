@@ -42,14 +42,25 @@ if not _MODULE_PATH.exists():
         allow_module_level=True,
     )
 
-# Remove any previously-failed import from sys.modules so we get a clean load
+# Save existing biocompiler modules so we can restore them after loading
+_saved_modules: dict[str, object] = {}
 for _key in list(sys.modules):
     if "biocompiler" in _key:
-        del sys.modules[_key]
+        _saved_modules[_key] = sys.modules.pop(_key)
 
 # Ensure parent packages exist in sys.modules so dataclass resolution works
+_needs_restore: list[str] = []
 for _pkg in ("biocompiler", "biocompiler.validation"):
-    sys.modules[_pkg] = types.ModuleType(_pkg)
+    if _pkg not in sys.modules:
+        _mod = types.ModuleType(_pkg)
+        if _pkg == "biocompiler":
+            _mod.__path__ = [str(Path(__file__).resolve().parent.parent / "src" / "biocompiler")]
+            _mod.__package__ = "biocompiler"
+        elif _pkg == "biocompiler.validation":
+            _mod.__path__ = [str(Path(__file__).resolve().parent.parent / "src" / "biocompiler" / "validation")]
+            _mod.__package__ = "biocompiler.validation"
+        sys.modules[_pkg] = _mod
+        _needs_restore.append(_pkg)
 
 _spec = importlib.util.spec_from_file_location(
     "biocompiler.validation.iedb_comparison", str(_MODULE_PATH)
@@ -57,6 +68,14 @@ _spec = importlib.util.spec_from_file_location(
 iedb_mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 sys.modules["biocompiler.validation.iedb_comparison"] = iedb_mod
 _spec.loader.exec_module(iedb_mod)  # type: ignore[union-attr]
+
+# Restore previously saved modules so other tests aren't affected
+for _key, _mod in _saved_modules.items():
+    sys.modules[_key] = _mod
+# Remove temporary parent packages we created (they were placeholders)
+for _pkg in _needs_restore:
+    if _pkg not in _saved_modules:
+        del sys.modules[_pkg]
 
 IEDBComparisonResult = iedb_mod.IEDBComparisonResult
 IEDBBenchmarkEntry = iedb_mod.IEDBBenchmarkEntry

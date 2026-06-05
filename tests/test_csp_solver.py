@@ -530,6 +530,30 @@ class TestCSPIntegration:
         assert result.solved is True
         assert len(result.sequence) == len(eGFP_protein) * 3
 
+    def test_prokaryotic_organism_solves(self):
+        """CSP solver should handle prokaryotic organisms (E. coli) correctly.
+
+        Regression test: both OR-Tools and Z3 backends were returning
+        empty sequences for prokaryotic organisms because splice constraints
+        were incorrectly applied (prokaryotes have no spliceosomes).
+        """
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        protein = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFIC"
+        cfg = mod_types.SolverConfig(organism="Escherichia_coli")
+        result = mod_dispatch.solve_with_csp(protein, organism="Escherichia_coli", config=cfg)
+        assert result.solved is True, (
+            f"CSP solver should solve for E. coli. "
+            f"Warnings: {result.warnings}"
+        )
+        assert len(result.sequence) == len(protein) * 3, (
+            f"CSP solver returned empty or wrong-length sequence for E. coli"
+        )
+        assert result.cai > 0.5, (
+            f"CSP solver CAI too low for E. coli: {result.cai}"
+        )
+
     def test_sequence_translates_correctly(self, simple_protein):
         """The optimized sequence should translate back to the original protein."""
         mod_types = _import_solver_types()
@@ -605,6 +629,73 @@ class TestZ3Integration:
         )
         result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
         assert result.solved is True
+
+    def test_z3_prokaryotic_organism_no_splice(self):
+        """Z3 should correctly skip splice constraints for prokaryotic organisms.
+
+        Regression test: the Z3 engine used to add MaxEntScan splice
+        constraints even for prokaryotic organisms (which lack spliceosomes)
+        and when cryptic_splice_threshold=0. This made the model UNSAT
+        because Valine codons all contain GT, and the splice constraint
+        effectively forbade all GT dinucleotides.
+        """
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        from biocompiler.solver.constraints import build_csp_model
+        from biocompiler.solver.engine_z3 import Z3Engine
+
+        protein = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFIC"
+        config = mod_types.SolverConfig(organism="Escherichia_coli")
+        model = build_csp_model(protein, "Escherichia_coli", config)
+        engine = Z3Engine(config, organism="Escherichia_coli")
+        result = engine.solve(model)
+        assert result.solved is True, (
+            f"Z3 should solve for prokaryotic organism. "
+            f"Warnings: {result.warnings}"
+        )
+        assert len(result.sequence) == len(protein) * 3, (
+            f"Sequence length mismatch: {len(result.sequence)} != {len(protein) * 3}"
+        )
+
+    def test_z3_splice_threshold_zero(self):
+        """Z3 should skip splice constraints when threshold <= 0.
+
+        Regression test: when cryptic_splice_threshold=0, the Z3 engine
+        generated constraints like Implies(GT_detected, score < 0),
+        which forbade ALL GT dinucleotides including those in Valine
+        codons, making the model UNSAT.
+
+        Note: NoCrypticSpliceConstraint requires threshold > 0, so we
+        use the types.CSPModel directly (without constraint building)
+        and set the threshold on the config that the Z3 engine reads.
+        """
+        mod_types = _import_solver_types()
+        from biocompiler.solver.engine_z3 import Z3Engine
+        from biocompiler.constants import AA_TO_CODONS
+
+        protein = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFIC"
+        # Use types.CSPModel directly to bypass constraint validation
+        codon_domains = {
+            i: list(AA_TO_CODONS.get(aa, []))
+            for i, aa in enumerate(protein)
+        }
+        config = mod_types.SolverConfig(
+            organism="Homo_sapiens",
+            cryptic_splice_threshold=0.0,
+        )
+        model = mod_types.CSPModel(
+            protein_sequence=protein,
+            codon_domains=codon_domains,
+            constraints=[],
+            config=config,
+        )
+        engine = Z3Engine(config, organism="Homo_sapiens")
+        result = engine.solve(model)
+        assert result.solved is True, (
+            f"Z3 should solve with splice_threshold=0. "
+            f"Warnings: {result.warnings}"
+        )
+        assert len(result.sequence) == len(protein) * 3
 
 
 # ────────────────────────────────────────────────────────────

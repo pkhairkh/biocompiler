@@ -38,7 +38,7 @@ import math
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, ClassVar, Sequence
 
 from .types import CodonVariable, ConstraintPriority, ConstraintSpec, SolverConfig, ConstraintStrictness, ConstraintType
 from ..constants import AA_TO_CODONS, CODON_TABLE, RESTRICTION_ENZYMES, INSTABILITY_MOTIF
@@ -559,16 +559,30 @@ class NoCrypticSpliceConstraint(HardConstraint):
     threshold.  Both within-codon and cross-codon dinucleotides
     are considered.
 
+    Amino acids like Valine (V) have only GT-containing codons
+    (GTT, GTC, GTA, GTG), making GT avoidance at those positions
+    impossible.  When a ``protein`` sequence is provided, the
+    constraint automatically skips GT dinucleotides that are within
+    Valine codons — these are *unavoidable* and should not be
+    reported as violations.
+
     Attributes:
         threshold: Maximum allowed MaxEntScan score. Sites scoring
             at or above this threshold are considered cryptic and
             violate the constraint.
+        protein: The amino acid sequence.  When provided, Valine
+            codon positions are excluded from GT scanning since
+            GT within Valine codons is unavoidable.
     """
 
-    def __init__(self, threshold: float = 3.0) -> None:
+    # Amino acids whose codons ALL contain the GT dinucleotide
+    _GT_UNAVOIDABLE_AAS: ClassVar[set[str]] = {"V"}
+
+    def __init__(self, threshold: float = 3.0, protein: str = "") -> None:
         if threshold <= 0:
             raise ValueError(f"Threshold must be positive, got {threshold}")
         self._threshold = threshold
+        self._protein = protein.upper() if protein else ""
 
     @property
     def name(self) -> str:
@@ -582,11 +596,44 @@ class NoCrypticSpliceConstraint(HardConstraint):
     def threshold(self) -> float:
         return self._threshold
 
+    @property
+    def protein(self) -> str:
+        return self._protein
+
+    def _unavoidable_gt_positions(self, sequence: str) -> set[int]:
+        """Compute nucleotide positions where GT is unavoidable (Valine codons).
+
+        For each Valine position in the protein, the GT dinucleotide
+        occupies nucleotide positions [i*3, i*3+1] within the codon.
+        These positions cannot be avoided and should be excluded from
+        violation reporting.
+
+        Args:
+            sequence: DNA sequence (used only for length validation).
+
+        Returns:
+            Set of nucleotide positions where GT is within an unavoidable
+            Valine codon.
+        """
+        positions: set[int] = set()
+        if not self._protein:
+            return positions
+        for i, aa in enumerate(self._protein):
+            if aa in self._GT_UNAVOIDABLE_AAS:
+                # Valine codons are always GTN, so GT is at positions
+                # [i*3, i*3+1] within the codon
+                nuc_start = i * 3
+                positions.add(nuc_start)  # Position of the G in GT
+        return positions
+
     def _scan_splice_sites(self, sequence: str, threshold: float) -> list[int]:
         """Scan for cryptic splice sites at or above *threshold*.
 
         Returns a list of positions (0-based) where GT donor or AG acceptor
         dinucleotides have MaxEntScan scores >= threshold.
+
+        GT dinucleotides at Valine codon positions are excluded from
+        scanning since they are unavoidable.
 
         Note: The canonical sliding-window GT/AG scanning implementation lives
         in :func:`biocompiler.maxentscan.scan_splice_sites`, which returns
@@ -595,9 +642,13 @@ class NoCrypticSpliceConstraint(HardConstraint):
         """
         sequence = sequence.upper()
         positions: list[int] = []
+        unavoidable_gt = self._unavoidable_gt_positions(sequence)
 
         for i in range(len(sequence) - 1):
             if sequence[i : i + 2] == "GT":
+                # Skip GT within unavoidable Valine codons
+                if i in unavoidable_gt:
+                    continue
                 s = score_donor(sequence, i)
                 if s >= threshold:
                     positions.append(i)
@@ -1260,9 +1311,11 @@ def _extract_constraint_params(constraint: HardConstraint | SoftConstraint) -> d
         }
 
     if ctype in (CT.NO_CRYPTIC_SPLICE, CT.SPLICE_DONOR_AVOIDANCE):
-        # NoCrypticSpliceConstraint has threshold
+        # NoCrypticSpliceConstraint has threshold and protein
         return {
             "threshold": getattr(constraint, "threshold", 3.0),
+            "protein": getattr(constraint, "protein", ""),
+            "organism": "",
         }
 
     if ctype == CT.RESTRICTION_SITE:
@@ -1627,8 +1680,14 @@ def build_csp_model(
     # 2b. Restriction sites (from config or all known enzymes)
     sites = config.restriction_sites
     if not sites:
-        # Default: avoid all common restriction enzyme sites
-        sites = list(RESTRICTION_ENZYMES.values())
+        # Default: avoid common 6+ bp restriction enzyme sites.
+        # 4 bp sites (AluI, HaeIII, MboI, etc.) are excluded because
+        # they appear too frequently to avoid in long sequences and
+        # would make the solver model infeasible.
+        sites = [
+            seq for seq in RESTRICTION_ENZYMES.values()
+            if all(b in "ACGT" for b in seq.upper()) and len(seq) >= 6
+        ]
     # Filter to concrete sites (no IUPAC ambiguity codes)
     concrete_sites = [s for s in sites if all(b in "ACGT" for b in s.upper())]
     if concrete_sites:
@@ -1640,7 +1699,7 @@ def build_csp_model(
     # 2d. Cryptic splice sites (eukaryote-only)
     if is_eukaryote:
         hard_constraints.append(
-            NoCrypticSpliceConstraint(threshold=config.cryptic_splice_threshold)
+            NoCrypticSpliceConstraint(threshold=config.cryptic_splice_threshold, protein=protein)
         )
     else:
         logger.info(

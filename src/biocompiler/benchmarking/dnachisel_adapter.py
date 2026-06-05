@@ -42,12 +42,13 @@ DNAchisel Constraint Mapping:
     GC range (gc_lo, gc_hi)      -> EnforceGCContent(mini, maxi, window)
     Restriction site avoidance   -> AvoidPattern(site)
     Amino acid identity          -> EnforceTranslation(translation=protein)
-                                    + AvoidChanges on codon positions that
-                                      must preserve the amino acid
+    Codon optimization           -> CodonOptimize(species=species) [objective]
+                                    (CAI recomputed with compute_cai_validated)
 
-Note: DNAchisel does not have a direct CAI optimization constraint.
-CAI is handled indirectly through codon usage preferences in the
-initial sequence seeding, and checked post-hoc.
+Note: DNAchisel's CodonOptimize objective is used to drive codon selection,
+but CAI is always recomputed post-hoc using ``compute_cai_validated`` from
+the metrics module — DNAchisel's own CAI output is NOT trusted. This ensures
+fair comparison with BioCompiler using a single, consistent CAI evaluator.
 
 References:
   Zulkower, V., Rosas, A., & Pujos, P. (2020). "DNA Chisel: a versatile
@@ -76,6 +77,7 @@ try:
     from dnachisel import (
         DnaOptimizationProblem,
         AvoidPattern,
+        CodonOptimize,
         EnforceGCContent,
         EnforceTranslation,
     )
@@ -185,33 +187,48 @@ def _build_initial_sequence(protein: str, organism: str = "Homo_sapiens") -> str
     return "".join(sequence_chars)
 
 
+# Mapping from BioCompiler organism keys to DNAchisel species names
+_DNACHISEL_SPECIES_MAP: dict[str, str] = {
+    "Escherichia_coli": "e_coli",
+    "Homo_sapiens": "h_sapiens",
+    "Saccharomyces_cerevisiae": "s_cerevisiae",
+    "Mus_musculus": "m_musculus",
+}
+
+
 def _build_dnachisel_spec(
     protein: str,
+    organism: str = "Homo_sapiens",
     gc_lo: float = 0.30,
     gc_hi: float = 0.70,
     restriction_enzymes: list[str] | None = None,
-) -> list[Any]:
+) -> tuple[list[Any], list[Any]]:
     """Convert biocompiler constraints to DNAchisel specification format.
 
-    Creates a list of DNAchisel constraint objects that correspond to
-    biocompiler's type predicates:
+    Creates lists of DNAchisel constraint and objective objects that
+    correspond to biocompiler's type predicates:
 
+    Constraints:
     - EnforceTranslation: ensure the sequence encodes the target protein
     - EnforceGCContent: keep GC content within bounds
     - AvoidPattern: avoid restriction enzyme recognition sites
 
-    Note: DNAchisel does not have a direct CAI optimization constraint.
-    CAI is handled indirectly through codon usage preferences in the
-    initial sequence seeding, and checked post-hoc.
+    Objectives:
+    - CodonOptimize: maximize codon adaptation for the target species
+
+    CAI is also evaluated post-hoc using ``compute_cai_validated`` to
+    ensure metric consistency with BioCompiler.
 
     Args:
         protein: Target protein sequence (single-letter codes).
+        organism: Target organism for codon optimization.
         gc_lo: Minimum GC content fraction.
         gc_hi: Maximum GC content fraction.
         restriction_enzymes: List of enzyme names to avoid.
 
     Returns:
-        List of DNAchisel Specification objects.
+        Tuple of (constraints, objectives) — each a list of DNAchisel
+        Specification objects.
 
     Raises:
         ImportError: If DNAchisel is not installed.
@@ -224,6 +241,7 @@ def _build_dnachisel_spec(
         )
 
     constraints: list[Any] = []
+    objectives: list[Any] = []
 
     # Enforce that the sequence translates to the target protein
     constraints.append(EnforceTranslation(translation=protein))
@@ -250,7 +268,19 @@ def _build_dnachisel_spec(
                     continue
                 constraints.append(AvoidPattern(site))
 
-    return constraints
+    # Add CodonOptimize objective for the target species
+    species = _DNACHISEL_SPECIES_MAP.get(organism)
+    if species:
+        objectives.append(CodonOptimize(species=species))
+        logger.debug("Added CodonOptimize objective for species='%s'", species)
+    else:
+        logger.debug(
+            "No DNAchisel species mapping for organism='%s'; "
+            "skipping CodonOptimize objective",
+            organism,
+        )
+
+    return constraints, objectives
 
 
 def _count_restriction_sites(
@@ -403,33 +433,38 @@ class DNAchiselAdapter:
             # Build initial sequence from preferred codons
             initial_seq = _build_initial_sequence(protein, organism)
 
-            # Build constraint specification
-            specs = _build_dnachisel_spec(
-                protein, gc_lo, gc_hi, enzyme_names
+            # Build constraint and objective specifications
+            constraints, objectives = _build_dnachisel_spec(
+                protein, organism, gc_lo, gc_hi, enzyme_names
             )
 
             # Record constraint class names for provenance
-            constraint_names = [type(s).__name__ for s in specs]
+            constraint_names = [type(s).__name__ for s in constraints]
+            constraint_names += [type(o).__name__ for o in objectives]
 
             # Create and solve the optimization problem
             problem = DnaOptimizationProblem(
                 sequence=initial_seq,
-                constraints=specs,
+                constraints=constraints,
+                objectives=objectives,
             )
 
-            # Resolve constraints
+            # Resolve constraints first, then optimize objectives
             problem.resolve_constraints()
+            if objectives:
+                problem.optimize()
 
             # Extract the optimized sequence
             optimized = str(problem.sequence)
 
             elapsed = time.perf_counter() - t0
 
-            # Compute metrics using BioCompiler's own evaluators for fairness
-            from ..translation import compute_cai
+            # Compute CAI using validated evaluator for fairness —
+            # DNAchisel's own CAI output is NOT trusted.
+            from .metrics import compute_cai_validated
             from ..scanner import gc_content
 
-            cai = compute_cai(optimized, organism)
+            cai = compute_cai_validated(optimized, organism)
             gc = gc_content(optimized)
             rs_count = _count_restriction_sites(optimized, enzyme_names)
 

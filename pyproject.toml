@@ -1,11 +1,11 @@
 [project]
 name = "biocompiler"
-version = "9.2.0"
-description = "A compiler framework for machine-verified gene design with deterministic type checking and certificates"
+version = "10.0.0"
+description = "A compiler framework for machine-verified gene design with unified CAI tables, hybrid optimization, and deterministic type checking"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 readme = "README.md"
-keywords = ["bioinformatics", "gene-design", "synthetic-biology", "compiler", "type-system", "unified-engine-api", "lean4-verified", "28-predicates"]
+keywords = ["bioinformatics", "gene-design", "synthetic-biology", "compiler", "type-system", "unified-engine-api", "hybrid-optimizer", "cai-unification"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",

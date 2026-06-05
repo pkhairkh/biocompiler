@@ -1,11 +1,14 @@
 """
-BioCompiler Export Engine — GenBank & FASTA Sequence Export
+BioCompiler Export Engine — GenBank, FASTA & JSON Sequence Export
 
 Production-grade sequence export with:
-- GenBank format output with full feature annotations
-- FASTA format with metadata headers
+- GenBank format output with full feature annotations (CDS, gene, regulatory)
+- FASTA format with metadata headers and comment lines
+- JSON format for full OptimizationResult serialization
 - Certificate embedding in GenBank comment section
 - Exon/intron/restriction-site feature annotations
+- CAI value as CDS qualifier
+- Organism name and optimization date in records
 - IUPAC-compliant sequence representation
 
 The export transforms internal designed sequences + type-check results
@@ -19,20 +22,24 @@ __all__ = [
     "export_genbank",
     "export_genbank_with_certificate",
     "export_multi_fasta",
+    "export_batch_fasta",
     "export_full_construct",
+    "export_json",
     "GENBANK_MAX_LINE",
     "GENBANK_SEQ_LINE",
     "GENBANK_SEQ_GROUP",
 ]
 
+import json
 import logging
 import uuid
+from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timezone
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 from .types import Certificate, TypeCheckResult, Verdict, combined_verdict
 from .scanner import gc_content
-from .translation import translate
+from .translation import translate, compute_cai
 from . import __version__
 
 logger = logging.getLogger(__name__)
@@ -114,15 +121,18 @@ class _FastaSequenceEntryRequired(TypedDict):
 
 
 class FastaSequenceEntry(_FastaSequenceEntryRequired, total=False):
-    """An entry for :func:`export_multi_fasta`.
+    """An entry for :func:`export_multi_fasta` and :func:`export_batch_fasta`.
 
     Required field: ``sequence``.
-    Optional fields: ``id``, ``description``, ``organism``, ``protein``.
+    Optional fields: ``id``, ``description``, ``organism``, ``protein``,
+    ``cai``, ``gc``.
     """
     id: str
     description: str
     organism: str
     protein: str
+    cai: float
+    gc: float
 
 
 def _format_genbank_header(
@@ -138,25 +148,45 @@ def _format_genbank_header(
     protein: Optional[str],
     type_results: Optional[list[TypeCheckResult]],
     certificate: Optional[Certificate],
+    cai: Optional[float] = None,
+    optimization_date: Optional[str] = None,
 ) -> list[str]:
     """Format the LOCUS, DEFINITION, ACCESSION, VERSION, SOURCE, ORGANISM, and COMMENT sections."""
     lines: list[str] = []
 
     # ── LOCUS / DEFINITION / ACCESSION / VERSION ──
     length_str = f"{seq_len} bp"
-    mol_str = f"{molecule_type}    "
+    # Validate and format molecule type for GenBank compliance
+    mol_type_upper = molecule_type.upper()
+    if mol_type_upper in ("DNA", "RNA", "MRNA"):
+        if mol_type_upper == "MRNA":
+            mol_str = "mRNA    "
+        else:
+            mol_str = f"{molecule_type}    "
+    else:
+        mol_str = f"{molecule_type}    "
+
+    # Validate topology
+    valid_topologies = ("linear", "circular")
+    topo = topology if topology in valid_topologies else "linear"
+
     lines.append(
-        f"LOCUS       {locus:<16} {length_str:>12}   {mol_str} {topology:<8}   SYN"
+        f"LOCUS       {locus:<16} {length_str:>12}   {mol_str} {topo:<8}   SYN"
     )
     lines.append(f"DEFINITION  {definition}.")
 
     lines.append(f"ACCESSION   {acc}")
     lines.append(f"VERSION     {acc}.1")
 
+    # ── KEYWORDS ──
+    lines.append("KEYWORDS    BioCompiler; codon-optimized; synthetic gene.")
+
     # ── SOURCE / ORGANISM ──
     taxonomy = _get_taxonomy(organism)
-    lines.append(f"SOURCE      {organism}")
-    lines.append(f"  ORGANISM  {organism}")
+    # Format organism name nicely: replace underscores with spaces for display
+    organism_display = organism.replace("_", " ")
+    lines.append(f"SOURCE      {organism_display}")
+    lines.append(f"  ORGANISM  {organism_display}")
     for i in range(0, len(taxonomy), 70):
         chunk = taxonomy[i:i + 70]
         indent = "            " if i > 0 else "  "
@@ -169,13 +199,22 @@ def _format_genbank_header(
     comments.append("Designed and verified by BioCompiler — Machine-Verified Gene Design")
     comments.append(f"Version: {__version__}")
     comments.append(f"GC content: {gc:.4f}")
+    if cai is not None:
+        comments.append(f"CAI: {cai:.4f}")
     comments.append(f"Protein length: {len(protein)} aa" if protein else "")
+
+    # Optimization date
+    opt_date = optimization_date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    comments.append(f"Optimization date: {opt_date}")
+
+    comments.append(f"Target organism: {organism_display}")
 
     if type_results:
         overall = combined_verdict([r.verdict for r in type_results])
         comments.append(f"Type-check verdict: {overall.value}")
         for r in type_results:
-            symbol = {"PASS": "+", "FAIL": "X", "UNCERTAIN": "?"}[r.verdict.value]
+            symbol = {"PASS": "+", "FAIL": "X", "UNCERTAIN": "?",
+                      "LIKELY_PASS": "~+", "LIKELY_FAIL": "~X"}.get(r.verdict.value, "?")
             comments.append(f"  [{symbol}] {r.predicate}")
 
     if certificate:
@@ -198,8 +237,14 @@ def _format_genbank_features(
     exon_boundaries: Optional[list[tuple[int, int]]],
     restriction_sites: Optional[list[RestrictionSiteInfo]],
     type_results: Optional[list[TypeCheckResult]],
+    organism: Optional[str] = None,
+    cai: Optional[float] = None,
 ) -> list[str]:
-    """Format the FEATURE TABLE section of a GenBank record."""
+    """Format the FEATURE TABLE section of a GenBank record.
+
+    Includes gene, CDS, regulatory, and exon feature annotations with
+    CAI, organism, and optimization metadata qualifiers.
+    """
     lines: list[str] = []
 
     lines.append("FEATURES             Location/Qualifiers")
@@ -208,7 +253,10 @@ def _format_genbank_features(
     if gene_name:
         lines.append(f"     gene            1..{seq_len}")
         lines.append(f'                     /gene="{gene_name}"')
-        lines.append(f'                     /note="Designed by BioCompiler"')
+        if organism:
+            lines.append(f'                     /organism="{organism.replace("_", " ")}"')
+        lines.append(f'                     /note="Designed by BioCompiler v{__version__}"')
+        lines.append(f'                     /db_xref="BioCompiler:{__version__}"')
 
     # CDS feature
     if protein:
@@ -224,7 +272,12 @@ def _format_genbank_features(
         lines.append(f"     CDS             {location}")
         if gene_name:
             lines.append(f'                     /gene="{gene_name}"')
-        lines.append(f'                     /note="Designed by BioCompiler"')
+        if organism:
+            lines.append(f'                     /organism="{organism.replace("_", " ")}"')
+        lines.append(f'                     /note="Codon-optimized by BioCompiler v{__version__}"')
+        # Add CAI value as a qualifier in the CDS feature
+        if cai is not None:
+            lines.append(f'                     /cai="{cai:.4f}"')
         lines.append(f'                     /codon_start=1')
         lines.append(f'                     /transl_table=1')
         # Protein translation (wrapped)
@@ -234,6 +287,16 @@ def _format_genbank_features(
             for chunk in prot_chunks[1:]:
                 lines.append(f'                     "{chunk}"')
 
+    # Regulatory features (promoters, RBS, terminators, etc.)
+    # For codon-optimized genes, add a regulatory feature noting the
+    # codon optimization and the target organism
+    if organism:
+        lines.append(f"     regulatory      1..{seq_len}")
+        lines.append(f'                     /regulatory_class="codon_optimization"')
+        lines.append(f'                     /note="Codon-optimized for {organism.replace("_", " ")} using BioCompiler"')
+        if gene_name:
+            lines.append(f'                     /gene="{gene_name}"')
+
     # Exon features
     if exon_boundaries:
         for i, (start, end) in enumerate(exon_boundaries):
@@ -242,16 +305,17 @@ def _format_genbank_features(
                 lines.append(f'                     /gene="{gene_name}"')
             lines.append(f'                     /number={i + 1}')
 
-    # Restriction site features
+    # Restriction site features (as regulatory features for production use)
     if restriction_sites:
         for site in restriction_sites[:20]:  # Limit to 20 annotations
             pos = site.get("position", 0)
             enz = site.get("enzyme", site.get("site", "unknown"))
             strand = site.get("strand", "+")
             site_len = len(site.get("site", ""))
-            lines.append(f"     misc_feature    {pos + 1}..{pos + site_len}")
+            lines.append(f"     regulatory      {pos + 1}..{pos + site_len}")
+            lines.append(f'                     /regulatory_class="restriction_site"')
             lines.append(f'                     /note="Restriction site: {enz} ({strand} strand)"')
-            lines.append(f'                     /label={enz}')
+            lines.append(f'                     /label="{enz}"')
 
     # Type-check result features (as misc_feature for failed predicates)
     if type_results:
@@ -288,6 +352,8 @@ def export_fasta(
     description: str = "",
     organism: str = "Homo_sapiens",
     protein: Optional[str] = None,
+    cai: Optional[float] = None,
+    include_comments: bool = True,
 ) -> str:
     """
     Export a designed sequence in FASTA format.
@@ -295,7 +361,11 @@ def export_fasta(
     FASTA is the universal sequence format accepted by BLAST, Clustal,
     Geneious, and virtually all bioinformatics tools. This function
     generates a standards-compliant FASTA record with a rich header
-    that includes organism, GC content, and protein translation.
+    that includes organism, GC content, CAI, and protein translation.
+
+    When ``include_comments=True``, comment lines (prefixed with ``;``)
+    are added before the header with CAI, GC, and organism metadata,
+    following the FASTA comment convention used by many tools.
 
     Args:
         sequence: DNA sequence (designed, verified)
@@ -303,13 +373,18 @@ def export_fasta(
         description: Human-readable description line
         organism: Source organism name
         protein: Optional protein translation (auto-computed if None)
+        cai: Optional CAI value (auto-computed if None)
+        include_comments: If True, add FASTA comment lines with metadata
 
     Returns:
         FASTA-formatted string
 
     Example output::
 
-        >BioCompiler_design|organism=Homo_sapiens|gc=0.523|len=720 eGFP designed sequence
+        ; BioCompiler v10.0.0 — Machine-Verified Gene Design
+        ; Organism: Escherichia coli
+        ; CAI: 0.9990 | GC: 0.5230 | Length: 720 bp
+        >GFP_optimized|organism=Escherichia_coli|gc=0.523|cai=0.999|len=720
         ATGGTGAGCAAGGGCGAGGAGCTGTTCACCGGGGTGGTGCCCATCCTGGTCGAGCTG
         GACGGCGACGTAAACGGCCACAAGTTCAGCGTGTCCGGCGAGGGCGAGGGCGATGCC
         ...
@@ -320,10 +395,32 @@ def export_fasta(
     if protein is None:
         protein = translate(seq)
 
+    # Auto-compute CAI if not provided and sequence is valid
+    if cai is None and len(seq) >= 3 and len(seq) % 3 == 0:
+        try:
+            cai = compute_cai(seq, organism=organism)
+        except Exception:
+            cai = None
+
+    output_parts: list[str] = []
+
+    # Comment lines with metadata (FASTA comment convention)
+    if include_comments:
+        output_parts.append(f"; BioCompiler v{__version__} — Machine-Verified Gene Design")
+        output_parts.append(f"; Organism: {organism.replace('_', ' ')}")
+        meta_parts = [f"GC: {gc:.4f}", f"Length: {len(seq)} bp"]
+        if cai is not None:
+            meta_parts.insert(0, f"CAI: {cai:.4f}")
+        if protein:
+            meta_parts.append(f"Protein: {len(protein)} aa")
+        output_parts.append(f"; {' | '.join(meta_parts)}")
+
     # Build FASTA header with structured metadata
     header_parts = [identifier]
     header_parts.append(f"organism={organism}")
     header_parts.append(f"gc={gc:.3f}")
+    if cai is not None:
+        header_parts.append(f"cai={cai:.4f}")
     header_parts.append(f"len={len(seq)}")
     if protein:
         header_parts.append(f"protein_len={len(protein)}aa")
@@ -332,7 +429,67 @@ def export_fasta(
     if description:
         header += f" {description}"
 
-    return f">{header}\n{_format_fasta_sequence(seq)}\n"
+    output_parts.append(f">{header}")
+    output_parts.append(_format_fasta_sequence(seq))
+
+    return "\n".join(output_parts) + "\n"
+
+
+def export_batch_fasta(
+    results: list[dict],
+    organism: str = "Homo_sapiens",
+) -> str:
+    """
+    Export multiple optimization results as a batch FASTA file.
+
+    Each entry includes comment lines with CAI, GC, and organism metadata,
+    making the output suitable for downstream analysis pipelines that
+    process multiple sequences at once.
+
+    Args:
+        results: List of dicts, each with keys:
+            - ``sequence`` (required): DNA sequence string
+            - ``identifier`` (optional): Sequence ID (default: ``BioCompiler_design_N``)
+            - ``description`` (optional): Description line
+            - ``cai`` (optional): CAI value
+            - ``gc`` (optional): GC content (auto-computed if not provided)
+            - ``protein`` (optional): Protein translation
+        organism: Default organism for all sequences
+
+    Returns:
+        Batch FASTA formatted string with all sequences
+
+    Example::
+
+        results = [
+            {"sequence": "ATGGCC...", "identifier": "gene1", "cai": 0.95},
+            {"sequence": "ATGAAA...", "identifier": "gene2", "cai": 0.88},
+        ]
+        fasta = export_batch_fasta(results, organism="Escherichia_coli")
+    """
+    records: list[str] = []
+    for idx, entry in enumerate(results):
+        seq = entry.get("sequence", "")
+        if not seq:
+            continue
+        ident = entry.get("identifier", f"BioCompiler_design_{idx + 1}")
+        desc = entry.get("description", "")
+        entry_organism = entry.get("organism", organism)
+        entry_cai = entry.get("cai")
+        entry_protein = entry.get("protein")
+
+        record = export_fasta(
+            sequence=seq,
+            identifier=ident,
+            description=desc,
+            organism=entry_organism,
+            protein=entry_protein,
+            cai=entry_cai,
+            include_comments=True,
+        )
+        records.append(record.rstrip("\n"))
+
+    return "\n".join(records) + "\n"
 
 
 def export_genbank(
@@ -348,6 +505,8 @@ def export_genbank(
     type_results: Optional[list[TypeCheckResult]] = None,
     gene_name: Optional[str] = None,
     protein: Optional[str] = None,
+    cai: Optional[float] = None,
+    optimization_date: Optional[str] = None,
 ) -> str:
     """
     Export a designed sequence in GenBank format.
@@ -356,9 +515,12 @@ def export_genbank(
     and is the native format for Benchling, SnapGene, and Geneious. This
     function produces a fully annotated GenBank record with:
 
-    - LOCUS, DEFINITION, ACCESSION, VERSION headers
+    - LOCUS header with correct molecule type and topology
+    - DEFINITION, ACCESSION, VERSION, KEYWORDS headers
     - SOURCE and ORGANISM with taxonomy lineage
-    - FEATURE TABLE with gene, CDS, exon, and misc_feature annotations
+    - COMMENT section with CAI, GC, organism, optimization date, and certificate
+    - FEATURE TABLE with gene, CDS (including CAI qualifier), regulatory,
+      exon, and misc_feature annotations
     - ORIGIN section with numbered sequence
 
     Args:
@@ -375,6 +537,8 @@ def export_genbank(
         type_results: Optional type-check results for FEATURE notes
         gene_name: Optional gene name for the gene feature
         protein: Optional protein translation (auto-computed if None)
+        cai: Optional CAI value (auto-computed if None for valid sequences)
+        optimization_date: Optional ISO 8601 date string for the optimization
 
     Returns:
         GenBank-formatted string
@@ -385,6 +549,13 @@ def export_genbank(
 
     if protein is None:
         protein = translate(seq)
+
+    # Auto-compute CAI if not provided and sequence is valid
+    if cai is None and len(seq) >= 3 and len(seq) % 3 == 0:
+        try:
+            cai = compute_cai(seq, organism=organism)
+        except Exception:
+            cai = None
 
     # Truncate locus name to 16 chars (GenBank requirement)
     locus = locus_name[:16].upper()
@@ -403,8 +574,12 @@ def export_genbank(
     lines.extend(_format_genbank_header(
         locus, len(seq), molecule_type, topology, date_str,
         definition, acc, organism, gc, protein, type_results, certificate,
+        cai=cai, optimization_date=optimization_date,
     ))
-    lines.extend(_format_genbank_features(len(seq), gene_name, protein, exon_boundaries, restriction_sites, type_results))
+    lines.extend(_format_genbank_features(
+        len(seq), gene_name, protein, exon_boundaries, restriction_sites,
+        type_results, organism=organism, cai=cai,
+    ))
     lines.extend(_format_genbank_sequence(seq))
 
     return "\n".join(lines)
@@ -415,6 +590,8 @@ def export_multi_fasta(
 ) -> str:
     """
     Export multiple designed sequences as a multi-FASTA file.
+
+    Each entry includes comment lines with CAI, GC, and organism metadata.
 
     Args:
         sequences: List of :class:`FastaSequenceEntry` dicts
@@ -430,9 +607,11 @@ def export_multi_fasta(
             description=entry.get("description", ""),
             organism=entry.get("organism", "Homo_sapiens"),
             protein=entry.get("protein"),
+            cai=entry.get("cai"),
+            include_comments=True,
         )
-        records.append(record)
-    return "\n".join(records)
+        records.append(record.rstrip("\n"))
+    return "\n".join(records) + "\n"
 
 
 def export_genbank_with_certificate(
@@ -462,6 +641,9 @@ def export_genbank_with_certificate(
     type_results = _reconstruct_type_results(certificate)
     protein = translate(sequence)
 
+    # Extract optimization date from certificate provenance
+    opt_date = certificate.provenance.get("timestamp")
+
     return export_genbank(
         sequence=sequence,
         locus_name=certificate.design_id[:16].upper(),
@@ -472,7 +654,179 @@ def export_genbank_with_certificate(
         type_results=type_results,
         gene_name=gene_name,
         protein=protein,
+        optimization_date=opt_date,
     )
+
+
+# ─── JSON Export ──────────────────────────────────────────────────
+
+def _serialize_for_json(obj: Any) -> Any:
+    """Recursively serialize an object for JSON output.
+
+    Handles dataclasses, datetimes, enums, and nested structures.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, (int, float)):
+        return obj
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, Verdict):
+        return obj.value
+    if is_dataclass(obj) and not isinstance(obj, type):
+        result = {}
+        for f in fields(obj):
+            val = getattr(obj, f.name)
+            result[f.name] = _serialize_for_json(val)
+        return result
+    if isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_serialize_for_json(item) for item in obj]
+    if isinstance(obj, set):
+        return sorted(_serialize_for_json(item) for item in obj)
+    # Fallback: try to convert to string
+    try:
+        return str(obj)
+    except Exception:
+        return None
+
+
+def export_json(
+    result: Any,
+    indent: int = 2,
+    include_certificate: bool = True,
+    include_provenance: bool = True,
+) -> str:
+    """
+    Export a full OptimizationResult as JSON.
+
+    This produces a complete, self-contained JSON representation of an
+    optimization result, including all metrics, provenance data, and
+    certificate information. The output is suitable for API responses,
+    data persistence, and pipeline integration.
+
+    Args:
+        result: An :class:`~biocompiler.optimization.OptimizationResult` object
+            from :func:`~biocompiler.optimization.optimize_sequence`.
+        indent: JSON indentation level (default 2). Use 0 for compact output.
+        include_certificate: If True, include certificate text in the output.
+        include_provenance: If True, include provenance and decision trail data.
+
+    Returns:
+        JSON-formatted string representing the full OptimizationResult
+
+    Example::
+
+        from biocompiler.export import export_json
+        from biocompiler.api import optimize_sequence
+
+        result = optimize_sequence('MSKGEELFTG', organism='Escherichia_coli')
+        json_str = export_json(result)
+
+        # Save to file
+        with open('optimized.json', 'w') as f:
+            f.write(json_str)
+
+    Example output::
+
+        {
+          "biocompiler_version": "10.0.0",
+          "export_timestamp": "2024-01-15T12:00:00+00:00",
+          "sequence": "ATGAGCAAAGGAGAACTGTTT...",
+          "protein": "MSKGEELFTG...",
+          "metrics": {
+            "cai": 0.999,
+            "gc_content": 0.523,
+            "sequence_length": 720,
+            "protein_length": 239
+          },
+          "predicates": {
+            "satisfied": ["GCInRange", "CodonAdapted", ...],
+            "failed": [],
+            "fallback_used": false
+          },
+          "certificate": { ... },
+          "provenance": { ... }
+        }
+    """
+    from .optimization import OptimizationResult
+
+    if not isinstance(result, OptimizationResult):
+        raise TypeError(
+            f"Expected OptimizationResult, got {type(result).__name__}. "
+            f"Use optimize_sequence() to produce an OptimizationResult."
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # Build the structured JSON output
+    output: dict[str, Any] = {
+        "biocompiler_version": __version__,
+        "export_timestamp": now.isoformat(),
+        "sequence": result.sequence,
+        "protein": result.protein,
+        "metrics": {
+            "cai": result.cai,
+            "gc_content": result.gc_content,
+            "sequence_length": len(result.sequence),
+            "protein_length": len(result.protein) if result.protein else 0,
+            "codon_pair_bias": result.codon_pair_bias,
+            "mutagenesis_applied": result.mutagenesis_applied,
+            "fallback_used": result.fallback_used,
+        },
+        "predicates": {
+            "satisfied": result.satisfied_predicates,
+            "failed": result.failed_predicates,
+            "aa_substitutions": result.aa_substitutions,
+        },
+        "organism_info": {
+            "suggested_5utr": result.suggested_5utr,
+            "suggested_3utr": result.suggested_3utr,
+            "utr_score_5": result.utr_score_5,
+            "utr_score_3": result.utr_score_3,
+        },
+    }
+
+    # mRNA stability metrics
+    if result.mrna_stability_score is not None:
+        output["metrics"]["mrna_stability_score"] = _serialize_for_json(
+            result.mrna_stability_score
+        )
+        output["metrics"]["destabilizing_motifs_removed"] = result.destabilizing_motifs_removed
+        if result.stability_improvement is not None:
+            output["metrics"]["stability_improvement"] = _serialize_for_json(
+                result.stability_improvement
+            )
+
+    # Certificate data
+    if include_certificate and result.certificate_text:
+        output["certificate_text"] = result.certificate_text
+
+    # Provenance data
+    if include_provenance:
+        provenance_data: dict[str, Any] = {}
+
+        if result.provenance is not None:
+            provenance_data["optimization_record"] = _serialize_for_json(
+                result.provenance
+            )
+
+        if result.decision_trail is not None:
+            provenance_data["decision_trail"] = _serialize_for_json(
+                result.decision_trail
+            )
+
+        if provenance_data:
+            output["provenance"] = provenance_data
+
+    # indent=0 means compact (no whitespace); None also means compact in json.dumps
+    effective_indent = None if indent == 0 else indent
+    return json.dumps(output, indent=effective_indent, sort_keys=False, default=str)
 
 
 # ─── Helper Functions ──────────────────────────────────────────────
@@ -486,6 +840,12 @@ def _get_taxonomy(organism: str) -> str:
         "E_coli": "Bacteria; Proteobacteria; Gammaproteobacteria; Enterobacterales; Enterobacteriaceae; Escherichia.",
         "CHO_K1": "Eukaryota; Metazoa; Chordata; Craniata; Vertebrata; Mammalia; Eutheria; Euarchontoglires; Rodentia; Cricetidae; Cricetulus.",
         "Saccharomyces_cerevisiae": "Eukaryota; Fungi; Dikarya; Ascomycota; Saccharomycotina; Saccharomycetes; Saccharomycetales; Saccharomycetaceae; Saccharomyces.",
+        "Pichia_pastoris": "Eukaryota; Fungi; Dikarya; Ascomycota; Saccharomycotina; Saccharomycetes; Saccharomycetales; Pichiaceae; Komagataella.",
+        "Danio_rerio": "Eukaryota; Metazoa; Chordata; Craniata; Vertebrata; Actinopterygii; Neopterygii; Teleostei; Cypriniformes; Cyprinidae; Danio.",
+        "Drosophila_melanogaster": "Eukaryota; Metazoa; Arthropoda; Hexapoda; Insecta; Pterygota; Neoptera; Endopterygota; Diptera; Brachycera; Muscomorpha; Drosophilidae; Drosophila.",
+        "Caenorhabditis_elegans": "Eukaryota; Metazoa; Ecdysozoa; Nematoda; Chromadorea; Rhabditida; Rhabditoidea; Rhabditidae; Peloderinae; Caenorhabditis.",
+        "Arabidopsis_thaliana": "Eukaryota; Viridiplantae; Streptophyta; Embryophyta; Tracheophyta; Spermatophyta; Magnoliopsida; eudicotyledons; Gunneridae; Brassicales; Brassicaceae; Arabidopsis.",
+        "Bacillus_subtilis": "Bacteria; Firmicutes; Bacilli; Bacillales; Bacillaceae; Bacillus.",
     }
     return taxonomies.get(organism, "Eukaryota; Metazoa; Unclassified.")
 
@@ -511,6 +871,8 @@ def _format_full_construct_features(
     utr3_len: int,
     gene_name: Optional[str],
     protein: Optional[str],
+    organism: Optional[str] = None,
+    cai: Optional[float] = None,
 ) -> list[str]:
     """Format the FEATURE TABLE for a full expression construct.
 
@@ -526,6 +888,8 @@ def _format_full_construct_features(
         utr3_len: Length of the 3' UTR.
         gene_name: Optional gene name.
         protein: Optional protein translation.
+        organism: Optional organism name for feature qualifiers.
+        cai: Optional CAI value for CDS feature qualifier.
 
     Returns:
         List of GenBank FEATURE TABLE lines.
@@ -546,6 +910,8 @@ def _format_full_construct_features(
     if gene_name:
         lines.append(f"     gene            1..{seq_len}")
         lines.append(f'                     /gene="{gene_name}"')
+        if organism:
+            lines.append(f'                     /organism="{organism.replace("_", " ")}"')
         lines.append(f'                     /note="Full expression construct designed by BioCompiler"')
 
     # 5' UTR feature
@@ -561,7 +927,11 @@ def _format_full_construct_features(
         lines.append(f"     CDS             {cds_start}..{cds_end}")
         if gene_name:
             lines.append(f'                     /gene="{gene_name}"')
+        if organism:
+            lines.append(f'                     /organism="{organism.replace("_", " ")}"')
         lines.append(f'                     /note="Codon-optimized CDS designed by BioCompiler"')
+        if cai is not None:
+            lines.append(f'                     /cai="{cai:.4f}"')
         lines.append(f'                     /codon_start=1')
         lines.append(f'                     /transl_table=1')
         if protein:
@@ -604,6 +974,7 @@ def export_full_construct(
     gene_name: Optional[str] = None,
     molecule_type: str = "DNA",
     topology: str = "linear",
+    cai: Optional[float] = None,
 ) -> str:
     """Export a complete expression construct (5'UTR + CDS + 3'UTR) as GenBank.
 
@@ -611,13 +982,15 @@ def export_full_construct(
     construct — exactly what a biologist would order from a gene synthesis
     company (e.g., IDT, Twist Bioscience, GenScript). The record includes:
 
-    - LOCUS, DEFINITION, ACCESSION, VERSION headers
+    - LOCUS header with correct molecule type and topology
+    - DEFINITION, ACCESSION, VERSION, KEYWORDS headers
     - SOURCE and ORGANISM with taxonomy lineage
     - FEATURE TABLE with 5'UTR, CDS, 3'UTR, and mRNA annotations
     - ORIGIN section with numbered full construct sequence
 
-    The CDS feature includes the protein translation. The UTR features are
-    annotated as suggested elements for expression optimization.
+    The CDS feature includes the protein translation and CAI qualifier.
+    The UTR features are annotated as suggested elements for expression
+    optimization.
 
     Args:
         utr5: 5' UTR sequence (empty string if no 5' UTR).
@@ -629,6 +1002,7 @@ def export_full_construct(
         gene_name: Optional gene name for feature annotations.
         molecule_type: Molecule type (DNA, RNA, mRNA).
         topology: circular or linear.
+        cai: Optional CAI value for the CDS (auto-computed if None).
 
     Returns:
         GenBank-formatted string for the full expression construct.
@@ -664,6 +1038,13 @@ def export_full_construct(
     now = datetime.now(timezone.utc)
     protein = translate(cds_clean)
 
+    # Auto-compute CAI if not provided
+    if cai is None and len(cds_clean) >= 3 and len(cds_clean) % 3 == 0:
+        try:
+            cai = compute_cai(cds_clean, organism=organism)
+        except Exception:
+            cai = None
+
     # Truncate locus name to 16 chars (GenBank requirement)
     locus = locus_name[:16].upper()
 
@@ -680,12 +1061,15 @@ def export_full_construct(
     lines.extend(_format_genbank_header(
         locus, len(full_seq), molecule_type, topology, date_str,
         definition, acc, organism, gc, protein, None, None,
+        cai=cai,
     ))
 
     # UTR-specific comment
     comments: list[str] = []
     comments.append(f"Construct layout: 5'UTR({len(utr5_clean)}bp) + CDS({len(cds_clean)}bp) + 3'UTR({len(utr3_clean)}bp)")
     comments.append(f"Total length: {len(full_seq)} bp")
+    if cai is not None:
+        comments.append(f"CDS CAI: {cai:.4f}")
     if utr5_clean:
         comments.append(f"5' UTR: suggested sequence for {organism} (user should verify before ordering)")
     if utr3_clean:
@@ -704,6 +1088,8 @@ def export_full_construct(
         utr3_len=len(utr3_clean),
         gene_name=gene_name,
         protein=protein,
+        organism=organism,
+        cai=cai,
     ))
 
     # Sequence

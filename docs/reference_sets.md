@@ -1,5 +1,7 @@
 # CAI Reference Sets: Kazusa vs Sharp-Li
 
+> **v10.0.0 Note**: All CAI computation paths now use unified codon adaptiveness tables from `organisms.CODON_ADAPTIVENESS_TABLES`. Previously, different optimizer backends could use slightly different values, leading to inconsistent CAI results. This has been corrected — v10 CAI values are the authoritative ones.
+
 ## Overview
 
 The Codon Adaptation Index (CAI) measures how well a coding sequence's codon usage matches that of highly expressed genes in a target organism. The CAI value depends critically on the **reference set** — the collection of highly expressed genes used to derive the relative adaptiveness values (w) for each codon.

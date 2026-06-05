@@ -1,10 +1,11 @@
 """
-BioCompiler CLI
+BioCompiler CLI v10.0.0
 =======================
 Command-line interface for certified gene optimization and protein analysis.
 
 Commands:
-  optimize            Read FASTA, run full multi-step optimization, write optimized FASTA + certificate
+  optimize            Optimize a protein sequence for a target organism
+  batch               Batch-optimize proteins from a file
   check               Read FASTA, evaluate all 8 predicates, print certificate
   benchmark           Run built-in benchmarks (eGFP, mCherry, LacZ) or named gene sets
   scan                Scan a DNA sequence for features
@@ -37,6 +38,7 @@ __all__ = [
     "build_parser",
     "colorize",
     "cmd_optimize",
+    "cmd_batch",
     "cmd_check",
     "cmd_benchmark",
     "cmd_scan",
@@ -65,6 +67,7 @@ from .type_system import (
     check_valid_coding_seq,
 )
 from .certificate import format_certificate, compute_certificate
+from .scanner import gc_content
 
 # Lazy imports for clear_cache functions — imported inside cmd_optimize
 # to avoid circular import issues:
@@ -244,13 +247,45 @@ def _get_organism(args: argparse.Namespace) -> str:
 
 # ── Command: optimize ────────────────────────────────────────────────────────
 
+def _resolve_organism_arg(args: argparse.Namespace) -> str:
+    """Resolve the organism from --organism or --species (alias).
+
+    --organism takes precedence; --species is kept as a backward-compatible
+    alias.  The value is normalised through ``resolve_organism`` so that
+    shorthand names like 'ecoli' or 'human' are accepted.
+    """
+    from .organisms import resolve_organism as _resolve
+    raw = getattr(args, "organism", None) or getattr(args, "species", None) or "Homo_sapiens"
+    try:
+        return _resolve(raw)
+    except Exception:
+        return raw
+
+
 def cmd_optimize(args: argparse.Namespace) -> None:
-    """Handle the 'optimize' command."""
+    """Handle the 'optimize' command — v10.0.0 unified interface.
+
+    Accepts either a protein sequence as a positional argument or a FASTA
+    file via ``--input``.  The ``--organism`` flag (with ``--species`` as an
+    alias) specifies the target organism.  New v10 flags:
+
+    * ``--strategy``  — choose optimisation backend (hybrid, constraint_first, csp)
+    * ``--no-splice-check`` — skip eukaryotic splice-site constraints (for prokaryotes)
+    * ``--codon-pair-bias`` — optimise codon-pair bias during the run
+    * ``--json`` — machine-readable JSON output
+    * ``--verbose`` — detailed optimisation trace with timing
+    """
+    verbose: bool = getattr(args, "verbose", False)
+
     # Set deterministic seed if provided
     seed: Optional[int] = getattr(args, "seed", None)
     if seed is not None:
         random.seed(seed)
         logger.info("Random seed set to %d for reproducible optimization", seed)
+
+    # Resolve organism (supports --organism and --species alias)
+    organism = _resolve_organism_arg(args)
+    no_splice_check = getattr(args, "no_splice_check", False)
 
     # Clear engine caches for a fresh optimization run
     try:
@@ -269,76 +304,397 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     except ImportError:
         logger.debug("immunogenicity module not available; skipping cache clear")
 
-    seq = _read_fasta(args.input)
+    # ── Obtain input sequence ──────────────────────────────────────────────
+    # v10: accept either a positional PROTEIN arg or --input FASTA file
+    protein_seq: str | None = getattr(args, "protein", None)
+    input_fasta: str | None = getattr(args, "input", None)
 
-    if len(seq) < 3:
-        print("Error: Sequence too short for optimization.", file=sys.stderr)
+    if protein_seq and input_fasta:
+        print(_error_msg("Error: provide PROTEIN positional arg OR --input, not both."), file=sys.stderr)
+        sys.exit(1)
+
+    if protein_seq:
+        # Validate amino-acid characters
+        valid_aa = set("ACDEFGHIKLMNPQRSTVWYX*")
+        cleaned = protein_seq.upper().strip()
+        invalid = set(cleaned) - valid_aa
+        if invalid:
+            print(_error_msg(f"Error: invalid amino-acid characters: {', '.join(sorted(invalid))}"),
+                  file=sys.stderr)
+            sys.exit(1)
+        # Translate protein → DNA via optimisation path
+        protein = cleaned
+        seq = None  # will be back-translated by optimizer
+    elif input_fasta:
+        seq = _read_fasta(input_fasta)
+        if len(seq) < 3:
+            print("Error: Sequence too short for optimization.", file=sys.stderr)
+            sys.exit(1)
+        protein = None
+    else:
+        print(_error_msg("Error: provide PROTEIN positional argument or --input FASTA file."), file=sys.stderr)
         sys.exit(1)
 
     enzymes: List[str] = []
-    if args.enzymes:
+    if getattr(args, "enzymes", None):
         enzymes = [e.strip() for e in args.enzymes.split(",") if e.strip()]
 
-    # Resolve organism domain from --organism-domain
+    # GC bounds
+    gc_lo = getattr(args, "gc_lo", 0.30)
+    gc_hi = getattr(args, "gc_hi", 0.70)
+
+    # ── Strategy selection (v10) ───────────────────────────────────────────
+    strategy = getattr(args, "strategy", "hybrid") or "hybrid"
+
+    # Determine organism domain
     organism_domain_raw = getattr(args, "organism_domain", "auto") or "auto"
+    # If --no-splice-check was set, force prokaryote domain
+    if no_splice_check and organism_domain_raw == "auto":
+        organism_domain_raw = "prokaryote"
+
     from .api import resolve_organism_domain
-    resolved_domain = resolve_organism_domain(args.species, organism_domain_raw)
+    resolved_domain = resolve_organism_domain(organism, organism_domain_raw)
 
-    opt = BioOptimizer(
-        species=args.species,
-        enzymes=enzymes,
-        splice_low=args.splice_low,
-        splice_high=args.splice_high,
-        avoid_gt=args.avoid_gt,
-        organism_domain=resolved_domain,
-    )
+    # ── Choose optimiser backend ───────────────────────────────────────────
+    use_codon_pair_bias = getattr(args, "codon_pair_bias", False)
 
-    optimized, pred_results, cert_text = opt.optimize(seq)
+    if strategy == "csp":
+        # CSP solver backend (OR-Tools / Z3)
+        from .solver.dispatch import csp_optimize, is_solver_available
+        if not is_solver_available():
+            print(_error_msg("Error: CSP solver not available. Install ortools or z3-solver."),
+                  file=sys.stderr)
+            sys.exit(1)
 
-    # Determine output paths
-    input_base = os.path.splitext(args.input)[0]
-    out_fasta = args.output if args.output else f"{input_base}_optimized.fasta"
-    out_cert = args.certificate if args.certificate else f"{input_base}_certificate.txt"
+        if verbose:
+            print(_dim(f"  Strategy: CSP solver"))
+            print(_dim(f"  Organism: {organism} (domain: {resolved_domain})"))
+            if no_splice_check:
+                print(_dim("  Splice check: DISABLED (--no-splice-check)"))
+            if use_codon_pair_bias:
+                print(_dim("  Codon-pair bias: ENABLED"))
 
-    _write_fasta(out_fasta, optimized, header=f"optimized|{args.species}")
-    _write_certificate(out_cert, cert_text)
+        with _ProgressStep("Optimizing (CSP solver)", verbose=verbose):
+            opt_result = csp_optimize(
+                protein if protein else "",
+                organism=organism,
+                gc_lo=gc_lo,
+                gc_hi=gc_hi,
+            )
+        optimized = opt_result.sequence if hasattr(opt_result, "sequence") else str(opt_result)
+        pred_results = []
+        cert_text = ""
 
-    cert_level = compute_certificate(pred_results)
-    print(f"Optimization complete.")
-    print(f"  Input:      {args.input} ({len(seq)} bp)")
-    print(f"  Output:     {out_fasta} ({len(optimized)} bp)")
-    print(f"  Certificate: {out_cert} ({cert_level.value})")
+    elif strategy == "constraint_first":
+        # Constraint-first: resolve constraints before maximising CAI
+        if verbose:
+            print(_dim(f"  Strategy: constraint-first"))
+            print(_dim(f"  Organism: {organism} (domain: {resolved_domain})"))
+            if no_splice_check:
+                print(_dim("  Splice check: DISABLED (--no-splice-check)"))
+            if use_codon_pair_bias:
+                print(_dim("  Codon-pair bias: ENABLED"))
+
+        if protein:
+            # Use optimize_sequence with protein input
+            from .optimization import optimize_sequence
+            with _ProgressStep("Optimizing (constraint-first)", verbose=verbose):
+                opt_result = optimize_sequence(
+                    protein, organism=organism,
+                    gc_lo=gc_lo, gc_hi=gc_hi,
+                    consider_codon_pair_bias=use_codon_pair_bias,
+                )
+            optimized = opt_result.sequence
+            pred_results = opt_result.predicate_results
+            cert_text = opt_result.certificate_text
+        else:
+            # Legacy FASTA-input path
+            splice_low = getattr(args, "splice_low", 3.0)
+            splice_high = getattr(args, "splice_high", 6.0)
+            avoid_gt = getattr(args, "avoid_gt", True)
+
+            opt = BioOptimizer(
+                species=organism,
+                enzymes=enzymes,
+                splice_low=splice_low,
+                splice_high=splice_high,
+                avoid_gt=avoid_gt,
+                organism_domain=resolved_domain,
+            )
+            optimized, pred_results, cert_text = opt.optimize(seq)
+    else:
+        # Default: hybrid (greedy init + CAI hill climbing)
+        if verbose:
+            print(_dim(f"  Strategy: hybrid (default)"))
+            print(_dim(f"  Organism: {organism} (domain: {resolved_domain})"))
+            if no_splice_check:
+                print(_dim("  Splice check: DISABLED (--no-splice-check)"))
+            if use_codon_pair_bias:
+                print(_dim("  Codon-pair bias: ENABLED"))
+
+        if protein:
+            from .optimization import optimize_sequence
+            with _ProgressStep("Optimizing (hybrid)", verbose=verbose):
+                opt_result = optimize_sequence(
+                    protein, organism=organism,
+                    gc_lo=gc_lo, gc_hi=gc_hi,
+                    consider_codon_pair_bias=use_codon_pair_bias,
+                )
+            optimized = opt_result.sequence
+            pred_results = opt_result.predicate_results
+            cert_text = opt_result.certificate_text
+        else:
+            # Legacy FASTA-input path
+            splice_low = getattr(args, "splice_low", 3.0)
+            splice_high = getattr(args, "splice_high", 6.0)
+            avoid_gt = getattr(args, "avoid_gt", True)
+
+            opt = BioOptimizer(
+                species=organism,
+                enzymes=enzymes,
+                splice_low=splice_low,
+                splice_high=splice_high,
+                avoid_gt=avoid_gt,
+                organism_domain=resolved_domain,
+            )
+            optimized, pred_results, cert_text = opt.optimize(seq)
+
+    # ── Codon-pair bias scoring (v10) ──────────────────────────────────────
+    cpb_score: float | None = None
+    if use_codon_pair_bias:
+        try:
+            from .codon_pair_scoring import compute_cpb
+            cpb_score = compute_cpb(optimized)
+        except (ImportError, Exception):
+            cpb_score = None
+
+    # ── JSON output (v10) ──────────────────────────────────────────────────
+    output_json = getattr(args, "json", False)
+
+    if output_json:
+        result_dict: dict = {
+            "version": __version__,
+            "organism": organism,
+            "strategy": strategy,
+            "gc_content": round(gc_content(optimized), 4) if optimized else None,
+            "sequence_length": len(optimized) if optimized else 0,
+            "sequence": optimized,
+            "no_splice_check": no_splice_check,
+            "codon_pair_bias": cpb_score,
+        }
+        if pred_results:
+            result_dict["predicate_results"] = [
+                {"name": p.predicate, "passed": p.passed, "details": p.details}
+                for p in pred_results
+            ]
+        if cert_text:
+            result_dict["certificate_text"] = cert_text
+        print(json.dumps(result_dict, indent=2))
+        return
+
+    # ── Text output ────────────────────────────────────────────────────────
+    if input_fasta:
+        # Legacy FASTA mode: write output files
+        input_base = os.path.splitext(input_fasta)[0]
+        out_fasta = args.output if args.output else f"{input_base}_optimized.fasta"
+        out_cert = args.certificate if args.certificate else f"{input_base}_certificate.txt"
+
+        _write_fasta(out_fasta, optimized, header=f"optimized|{organism}")
+        _write_certificate(out_cert, cert_text)
+
+        cert_level = compute_certificate(pred_results) if pred_results else None
+        print(f"Optimization complete.")
+        print(f"  Input:      {input_fasta} ({len(seq)} bp)")
+        print(f"  Output:     {out_fasta} ({len(optimized)} bp)")
+        if cert_level:
+            print(f"  Certificate: {out_cert} ({cert_level.value})")
+        if cpb_score is not None:
+            print(f"  Codon-pair bias: {cpb_score:.4f}")
+        print()
+        if cert_text:
+            print(cert_text)
+
+        # Provenance tracking
+        if getattr(args, "provenance", False):
+            from .provenance import ProvenanceTracker, DecisionRecord, OptimizationRecord
+            from datetime import datetime, timezone as _tz
+            from . import __version__ as _ver
+
+            tracker = ProvenanceTracker(seed=seed or 0)
+            input_base_pv = os.path.splitext(input_fasta)[0]
+            out_provenance = f"{input_base_pv}_provenance.json"
+
+            opt_record = OptimizationRecord(
+                input_sequence=seq,
+                output_sequence=optimized,
+                organism=organism,
+                constraints_applied=[p.name for p in pred_results] if pred_results else [],
+                mutations_made=[],
+                solver_backend=strategy,
+                solve_time=0.0,
+                seed_used=seed,
+                timestamp=datetime.now(_tz.utc).isoformat(),
+                biocompiler_version=_ver,
+            )
+            tracker.add_optimization_record(opt_record)
+
+            with open(out_provenance, "w") as f:
+                f.write(tracker.to_json())
+
+            print(f"  Provenance:  {out_provenance}")
+    else:
+        # v10 protein mode: print directly
+        print()
+        print(_section_header("═" * 60))
+        print(_section_header("  Optimization Result"))
+        print(_section_header("═" * 60))
+        print(f"  Organism       : {organism}")
+        print(f"  Strategy       : {strategy}")
+        print(f"  Protein length : {len(protein)} aa")
+        print(f"  Sequence length: {len(optimized)} bp")
+        gc_val = gc_content(optimized) if optimized else 0.0
+        print(f"  GC content     : {gc_val:.4f}")
+        if no_splice_check:
+            print(f"  Splice check   : DISABLED")
+        if cpb_score is not None:
+            print(f"  Codon-pair bias: {cpb_score:.4f}")
+
+        if pred_results:
+            cert_level = compute_certificate(pred_results)
+            print()
+            print(_summary_box("Certificate", _verdict_symbol(cert_level.value)))
+
+        if cert_text:
+            print()
+            print(cert_text)
+
+        # Print optimized sequence
+        print()
+        print(_section_header("  Optimized Sequence"))
+        for i in range(0, len(optimized), 80):
+            print(f"  {optimized[i:i+80]}")
+
+        # Save to file if --output given
+        out_path = getattr(args, "output", None)
+        if out_path:
+            _write_fasta(out_path, optimized, header=f"optimized|{organism}")
+            print(_success_msg(f"  Saved to: {out_path}"))
+
+
+# ── Command: batch ─────────────────────────────────────────────────────────
+
+def cmd_batch(args: argparse.Namespace) -> None:
+    """Handle the 'batch' command — optimize multiple proteins from a file.
+
+    v10.0.0: The input file should contain one protein per line (optionally
+    with a header line starting with ``#``).  Each protein is optimized
+    independently for the given ``--organism`` and results are collected.
+    """
+    proteins_file = args.proteins_file
+    organism = _resolve_organism_arg(args)
+    verbose = getattr(args, "verbose", False)
+    output_json = getattr(args, "json", False)
+    strategy = getattr(args, "strategy", "hybrid") or "hybrid"
+    gc_lo = getattr(args, "gc_lo", 0.30)
+    gc_hi = getattr(args, "gc_hi", 0.70)
+    no_splice_check = getattr(args, "no_splice_check", False)
+    use_codon_pair_bias = getattr(args, "codon_pair_bias", False)
+
+    if not os.path.isfile(proteins_file):
+        print(_error_msg(f"Error: File not found: {proteins_file}"), file=sys.stderr)
+        sys.exit(1)
+
+    # Read proteins from file
+    proteins: List[tuple] = []  # (name, sequence)
+    with open(proteins_file, "r") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Support "name<whitespace>SEQUENCE" or just "SEQUENCE"
+            parts = line.split(None, 1)
+            if len(parts) == 2 and all(c in "ACDEFGHIKLMNPQRSTVWYX*" for c in parts[1].upper()):
+                proteins.append((parts[0], parts[1].upper()))
+            else:
+                proteins.append((f"protein_{lineno}", line.upper()))
+
+    if not proteins:
+        print(_error_msg("Error: No valid protein sequences found in file."), file=sys.stderr)
+        sys.exit(1)
+
+    if verbose:
+        print(_dim(f"  Batch mode: {len(proteins)} proteins"))
+        print(_dim(f"  Organism: {organism}"))
+        print(_dim(f"  Strategy: {strategy}"))
+
+    from .optimization import optimize_sequence
+
+    results: List[dict] = []
+    for name, prot_seq in proteins:
+        with _ProgressStep(f"Optimizing {name}", verbose=verbose):
+            try:
+                opt_result = optimize_sequence(
+                    prot_seq, organism=organism,
+                    gc_lo=gc_lo, gc_hi=gc_hi,
+                    consider_codon_pair_bias=use_codon_pair_bias,
+                )
+                results.append({
+                    "name": name,
+                    "status": "ok",
+                    "sequence": opt_result.sequence,
+                    "gc_content": opt_result.gc_content,
+                    "cai": opt_result.cai,
+                    "codon_pair_bias": opt_result.codon_pair_bias if use_codon_pair_bias else None,
+                })
+            except Exception as exc:
+                results.append({
+                    "name": name,
+                    "status": "error",
+                    "error": str(exc),
+                })
+
+    # ── JSON output ────────────────────────────────────────────────────────
+    if output_json:
+        output_dict = {
+            "version": __version__,
+            "organism": organism,
+            "strategy": strategy,
+            "no_splice_check": no_splice_check,
+            "total_proteins": len(proteins),
+            "results": results,
+        }
+        print(json.dumps(output_dict, indent=2))
+        return
+
+    # ── Text output ────────────────────────────────────────────────────────
     print()
-    print(cert_text)
+    print(_section_header("═" * 60))
+    print(_section_header("  Batch Optimization Results"))
+    print(_section_header("═" * 60))
+    print(f"  Organism : {organism}")
+    print(f"  Strategy : {strategy}")
+    print(f"  Total    : {len(proteins)} proteins")
+    print()
 
-    # Provenance tracking
-    if getattr(args, "provenance", False):
-        from .provenance import ProvenanceTracker, DecisionRecord, OptimizationRecord
-        from datetime import datetime, timezone as _tz
-        from . import __version__ as _ver
+    for r in results:
+        if r["status"] == "ok":
+            status = _success_msg("OK")
+            print(f"  {r['name']:<20s} {status}  GC={r['gc_content']:.4f}  CAI={r['cai']:.4f}")
+        else:
+            status = _error_msg("FAIL")
+            print(f"  {r['name']:<20s} {status}  {r.get('error', 'unknown error')}")
 
-        tracker = ProvenanceTracker(seed=seed or 0)
-        input_base_pv = os.path.splitext(args.input)[0]
-        out_provenance = f"{input_base_pv}_provenance.json"
-
-        opt_record = OptimizationRecord(
-            input_sequence=seq,
-            output_sequence=optimized,
-            organism=args.species,
-            constraints_applied=[p.name for p in pred_results],
-            mutations_made=[],
-            solver_backend="greedy",
-            solve_time=0.0,
-            seed_used=seed,
-            timestamp=datetime.now(_tz.utc).isoformat(),
-            biocompiler_version=_ver,
-        )
-        tracker.add_optimization_record(opt_record)
-
-        with open(out_provenance, "w") as f:
-            f.write(tracker.to_json())
-
-        print(f"  Provenance:  {out_provenance}")
+    # Save output file if requested
+    out_path = getattr(args, "output", None)
+    if out_path:
+        with open(out_path, "w") as f:
+            for r in results:
+                if r["status"] == "ok":
+                    f.write(f">{r['name']}|{organism}\n")
+                    seq = r["sequence"]
+                    for i in range(0, len(seq), 80):
+                        f.write(seq[i:i+80] + "\n")
+        print(_success_msg(f"  Saved to: {out_path}"))
 
 
 # ── Command: check ───────────────────────────────────────────────────────────
@@ -372,8 +728,11 @@ def cmd_check(args: argparse.Namespace) -> None:
     ))
 
     # CodonOptimality
-    from .organisms import get_species_cai_weights
-    species_cai = get_species_cai_weights(args.species)
+    from .organisms import CODON_ADAPTIVENESS_TABLES, resolve_organism
+    _canonical = resolve_organism(args.species)
+    species_cai = dict(CODON_ADAPTIVENESS_TABLES.get(
+        _canonical, CODON_ADAPTIVENESS_TABLES["Escherichia_coli"]
+    ))
     import math
     log_sum = 0.0
     count = 0
@@ -474,23 +833,35 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
 
         compare_tools()
 
-    # Save to CSV if requested
+    # Save output if requested
     if output_file:
-        try:
-            from .benchmark import run_structured_benchmarks, format_benchmark_report_json
-            report = run_structured_benchmarks()
-            import csv as csv_mod
-            with open(output_file, "w", newline="") as csvfile:
-                writer = csv_mod.writer(csvfile)
-                writer.writerow(["gene", "test", "passed", "expected", "actual", "time_ms"])
-                for r in report.results:
-                    writer.writerow([
-                        r.gene_name, r.test_name, r.passed,
-                        r.expected, r.actual, r.execution_time_ms,
-                    ])
-            print(_success_msg(f"Benchmark results saved to {output_file}"), file=sys.stderr)
-        except Exception as exc:
-            print(_error_msg(f"Error saving benchmark results: {exc}"), file=sys.stderr)
+        # v10: detect output format from file extension (.json → JSON, else CSV)
+        if output_file.lower().endswith(".json"):
+            try:
+                from .benchmark import run_structured_benchmarks, format_benchmark_report_json
+                report = run_structured_benchmarks()
+                json_data = format_benchmark_report_json(report)
+                with open(output_file, "w") as f:
+                    f.write(json_data)
+                print(_success_msg(f"Benchmark results saved to {output_file}"), file=sys.stderr)
+            except Exception as exc:
+                print(_error_msg(f"Error saving benchmark results: {exc}"), file=sys.stderr)
+        else:
+            try:
+                from .benchmark import run_structured_benchmarks
+                report = run_structured_benchmarks()
+                import csv as csv_mod
+                with open(output_file, "w", newline="") as csvfile:
+                    writer = csv_mod.writer(csvfile)
+                    writer.writerow(["gene", "test", "passed", "expected", "actual", "time_ms"])
+                    for r in report.results:
+                        writer.writerow([
+                            r.gene_name, r.test_name, r.passed,
+                            r.expected, r.actual, r.execution_time_ms,
+                        ])
+                print(_success_msg(f"Benchmark results saved to {output_file}"), file=sys.stderr)
+            except Exception as exc:
+                print(_error_msg(f"Error saving benchmark results: {exc}"), file=sys.stderr)
 
 
 # ── Command: scan ────────────────────────────────────────────────────────────
@@ -1204,19 +1575,61 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # ── optimize ──
+    # ── optimize ── (v10.0.0: positional PROTEIN arg + --input fallback)
     opt_parser = subparsers.add_parser(
         "optimize",
-        help="Optimize a FASTA gene sequence with multi-step optimization pipeline",
+        help="Optimize a protein sequence for a target organism",
+        description="Optimize a protein/DNA sequence for expression in a target organism. "
+                    "Accepts a protein sequence as a positional argument (v10) or a FASTA "
+                    "file via --input (legacy mode).",
     )
     opt_parser.add_argument(
-        "input",
-        help="Input FASTA file path",
+        "protein",
+        nargs="?",
+        default=None,
+        help="Protein sequence in 1-letter amino-acid code (e.g. MSKGEELFTGV...)",
     )
     opt_parser.add_argument(
-        "--species", default="human",
-        choices=["human", "ecoli"],
-        help="Target species for codon optimization (default: human)",
+        "--input", "-i", default=None,
+        help="Input FASTA file path (legacy mode; mutually exclusive with PROTEIN arg)",
+    )
+    opt_parser.add_argument(
+        "--organism", default=None,
+        help="Target organism for codon optimization (e.g., ecoli, human, Homo_sapiens)",
+    )
+    opt_parser.add_argument(
+        "--species", default=None, dest="species",
+        help="Alias for --organism (backward compatible)",
+    )
+    opt_parser.add_argument(
+        "--strategy",
+        choices=["hybrid", "constraint_first", "csp"],
+        default="hybrid",
+        help="Optimization strategy (default: hybrid)",
+    )
+    opt_parser.add_argument(
+        "--gc-lo", type=float, default=0.30, metavar="FLOAT",
+        help="Minimum GC content fraction (default: 0.30)",
+    )
+    opt_parser.add_argument(
+        "--gc-hi", type=float, default=0.70, metavar="FLOAT",
+        help="Maximum GC content fraction (default: 0.70)",
+    )
+    opt_parser.add_argument(
+        "--no-splice-check", action="store_true", default=False,
+        help="Skip eukaryotic splice-site constraints (recommended for prokaryotes)",
+    )
+    opt_parser.add_argument(
+        "--codon-pair-bias", action="store_true", default=False,
+        help="Optimize codon-pair bias during the optimization run",
+    )
+    opt_parser.add_argument(
+        "--json", action="store_true", default=False,
+        help="Output results as JSON (for programmatic use)",
+    )
+    opt_parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Show detailed optimization trace with timing",
     )
     opt_parser.add_argument(
         "--enzymes", default="",
@@ -1265,6 +1678,61 @@ def build_parser() -> argparse.ArgumentParser:
             "'eukaryote' forces eukaryotic constraints (splice sites, CpG), "
             "'prokaryote' skips eukaryote-specific constraints."
         ),
+    )
+
+    # ── batch ── (v10.0.0)
+    batch_parser = subparsers.add_parser(
+        "batch",
+        help="Batch-optimize proteins from a file",
+        description="Optimize multiple protein sequences from a text file. "
+                    "Each line should be a protein sequence (optionally prefixed "
+                    "with a name and whitespace). Lines starting with '#' are ignored.",
+    )
+    batch_parser.add_argument(
+        "proteins_file",
+        help="File containing protein sequences (one per line)",
+    )
+    batch_parser.add_argument(
+        "--organism", default="ecoli",
+        help="Target organism for codon optimization (default: ecoli)",
+    )
+    batch_parser.add_argument(
+        "--species", default=None, dest="species",
+        help="Alias for --organism (backward compatible)",
+    )
+    batch_parser.add_argument(
+        "--strategy",
+        choices=["hybrid", "constraint_first", "csp"],
+        default="hybrid",
+        help="Optimization strategy (default: hybrid)",
+    )
+    batch_parser.add_argument(
+        "--gc-lo", type=float, default=0.30, metavar="FLOAT",
+        help="Minimum GC content fraction (default: 0.30)",
+    )
+    batch_parser.add_argument(
+        "--gc-hi", type=float, default=0.70, metavar="FLOAT",
+        help="Maximum GC content fraction (default: 0.70)",
+    )
+    batch_parser.add_argument(
+        "--no-splice-check", action="store_true", default=False,
+        help="Skip eukaryotic splice-site constraints (recommended for prokaryotes)",
+    )
+    batch_parser.add_argument(
+        "--codon-pair-bias", action="store_true", default=False,
+        help="Optimize codon-pair bias during the optimization run",
+    )
+    batch_parser.add_argument(
+        "--json", action="store_true", default=False,
+        help="Output results as JSON (for programmatic use)",
+    )
+    batch_parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Show detailed optimization trace with timing",
+    )
+    batch_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Output multi-FASTA file path for batch results",
     )
 
     # ── check ──
@@ -1694,6 +2162,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     if args.command == "optimize":
         cmd_optimize(args)
+    elif args.command == "batch":
+        cmd_batch(args)
     elif args.command == "check":
         cmd_check(args)
     elif args.command == "benchmark":
