@@ -183,7 +183,7 @@ theorem isCore_iff_not_slot (P : TypePredicate) :
     | inl h_core => exact h_core
     | inr h_slot_true =>
       rw [h_slot_true] at h_slot_false
-      exact (Bool.true_ne_false h_slot_false).elim
+      exact absurd h_slot_false (by decide)
 
 -- ==============================================================================
 -- SLOT-Independence Theorems

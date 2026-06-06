@@ -194,7 +194,7 @@ theorem verdictRefines_trans (v₁ v₂ v₃ : Verdict)
   · -- v₂ = v₃
     rcases h12 with h2_unc | h12_eq
     · -- v₂ = UNCERTAIN, and v₂ = v₃, so v₃ = UNCERTAIN
-      left; rw [h12_eq] at h2_unc; exact h2_unc
+      left; rw [h23_eq] at h2_unc; exact h2_unc
     · -- v₁ = v₂ = v₃
       right; rw [h12_eq, h23_eq]
 
@@ -237,24 +237,17 @@ theorem and_monotone_refines (v₁ v₂ w₁ w₂ : Verdict)
       -- Any verdict refines UNCERTAIN
       left; simp [Verdict.and, h2_unc, h4_unc]
     · -- w₁ = w₂
-      cases w₂ with <;> simp [Verdict.and, h2_unc] at *
-      -- PASS, UNCERTAIN, FAIL cases for w₂
-      · -- w₂ = PASS: AND(v₁, PASS) vs AND(UNCERTAIN, PASS) = UNCERTAIN
-        left; rfl
-      · -- w₂ = UNCERTAIN: AND(v₁, UNCERTAIN) vs AND(UNCERTAIN, UNCERTAIN) = UNCERTAIN
-        left; rfl
-      · -- w₂ = FAIL: AND(v₁, FAIL) = FAIL vs AND(UNCERTAIN, FAIL) = FAIL
-        right; rfl
+      cases w₂ with
+      | PASS => left; simp [Verdict.and, h2_unc, h34_eq]
+      | UNCERTAIN => left; simp [Verdict.and, h2_unc, h34_eq]
+      | FAIL => right; simp [and_FAIL_right, h2_unc, h34_eq]
   · -- v₁ = v₂
     rcases hw with h4_unc | h34_eq
     · -- w₂ = UNCERTAIN
-      cases v₂ with <;> simp [Verdict.and, h4_unc] at *
-      · -- v₂ = PASS: AND(PASS, w₁) vs AND(PASS, UNCERTAIN) = UNCERTAIN
-        left; rfl
-      · -- v₂ = UNCERTAIN: AND(UNCERTAIN, w₁) vs AND(UNCERTAIN, UNCERTAIN) = UNCERTAIN
-        left; rfl
-      · -- v₂ = FAIL: AND(FAIL, w₁) = FAIL vs AND(FAIL, UNCERTAIN) = FAIL
-        right; rfl
+      cases v₂ with
+      | PASS => left; simp [Verdict.and, h4_unc, h12_eq]
+      | UNCERTAIN => left; simp [Verdict.and, h4_unc, h12_eq]
+      | FAIL => right; simp [and_FAIL_left, h4_unc, h12_eq]
     · -- w₁ = w₂: AND(v₂, w₂) = AND(v₂, w₂)
       right; rw [h12_eq, h34_eq]
 
@@ -391,7 +384,7 @@ theorem verified_soundness_combined [inst_splice : SpliceSiteScanner] [inst_cai 
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) (vctx : VerificationContext) :
     isSLOT P = true →
-    evaluateWithMode SLOTMode.verified vctx P seq ctx = PASS →
+    evaluateWithMode (State := State) SLOTMode.verified vctx P seq ctx = PASS →
     slotPropertySemantics P seq ctx ∧
     @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
       State inst_dec inst_inhab inst_ndfst P seq ctx := by
@@ -426,8 +419,8 @@ def evaluateAllWithMode [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdapt
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext) : Verdict :=
   match predicates with
   | [] => PASS
-  | P :: ps => Verdict.and (evaluateWithMode mode vctx P seq ctx)
-                         (evaluateAllWithMode mode vctx ps seq ctx)
+  | P :: ps => Verdict.and (evaluateWithMode (State := State) mode vctx P seq ctx)
+                         (evaluateAllWithMode (State := State) mode vctx ps seq ctx)
 
 /-- evaluateAllWithMode with empty list returns PASS (vacuously sound). -/
 @[simp] theorem evaluateAllWithMode_nil [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex]
@@ -435,7 +428,7 @@ def evaluateAllWithMode [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdapt
     [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (mode : SLOTMode) (vctx : VerificationContext) (seq : Sequence) (ctx : CellularContext) :
-    evaluateAllWithMode mode vctx [] seq ctx = PASS := rfl
+    evaluateAllWithMode (State := State) mode vctx [] seq ctx = PASS := rfl
 
 /-- evaluateAllWithMode decomposes as AND of head and tail. -/
 @[simp] theorem evaluateAllWithMode_cons [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex]
@@ -444,9 +437,9 @@ def evaluateAllWithMode [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdapt
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (mode : SLOTMode) (vctx : VerificationContext)
     (P : TypePredicate) (ps : List TypePredicate) (seq : Sequence) (ctx : CellularContext) :
-    evaluateAllWithMode mode vctx (P :: ps) seq ctx =
-      Verdict.and (evaluateWithMode mode vctx P seq ctx)
-                  (evaluateAllWithMode mode vctx ps seq ctx) := rfl
+    evaluateAllWithMode (State := State) mode vctx (P :: ps) seq ctx =
+      Verdict.and (evaluateWithMode (State := State) mode vctx P seq ctx)
+                  (evaluateAllWithMode (State := State) mode vctx ps seq ctx) := rfl
 
 -- ==============================================================================
 -- Section 6: Simulation Theorem (Theorem d)
@@ -464,8 +457,8 @@ theorem per_predicate_refinement [inst_splice : SpliceSiteScanner] [inst_cai : C
     [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) (vctx : VerificationContext) :
-    verdictRefines (evaluateWithMode SLOTMode.verified vctx P seq ctx)
-                   (evaluateWithMode SLOTMode.conservative vctx P seq ctx) := by
+    verdictRefines (evaluateWithMode (State := State) SLOTMode.verified vctx P seq ctx)
+                   (evaluateWithMode (State := State) SLOTMode.conservative vctx P seq ctx) := by
   unfold evaluateWithMode
   by_cases h_slot : isSLOT P = true
   · -- SLOT predicate: VERIFIED refines CONSERVATIVE
@@ -505,8 +498,8 @@ theorem simulation_verified_conservative [inst_splice : SpliceSiteScanner] [inst
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (vctx : VerificationContext) :
-    verdictRefines (evaluateAllWithMode SLOTMode.verified vctx predicates seq ctx)
-                   (evaluateAllWithMode SLOTMode.conservative vctx predicates seq ctx) := by
+    verdictRefines (evaluateAllWithMode (State := State) SLOTMode.verified vctx predicates seq ctx)
+                   (evaluateAllWithMode (State := State) SLOTMode.conservative vctx predicates seq ctx) := by
   induction predicates with
   | nil =>
     -- Both evaluate to PASS; PASS refines PASS
@@ -517,10 +510,10 @@ theorem simulation_verified_conservative [inst_splice : SpliceSiteScanner] [inst
     -- CONSERVATIVE: AND(evaluateWithMode CONSERVATIVE P, evaluateAllWithMode CONSERVATIVE ps)
     simp [evaluateAllWithMode]
     exact and_monotone_refines
-      (evaluateWithMode SLOTMode.verified vctx P seq ctx)
-      (evaluateWithMode SLOTMode.conservative vctx P seq ctx)
-      (evaluateAllWithMode SLOTMode.verified vctx ps seq ctx)
-      (evaluateAllWithMode SLOTMode.conservative vctx ps seq ctx)
+      (evaluateWithMode (State := State) SLOTMode.verified vctx P seq ctx)
+      (evaluateWithMode (State := State) SLOTMode.conservative vctx P seq ctx)
+      (evaluateAllWithMode (State := State) SLOTMode.verified vctx ps seq ctx)
+      (evaluateAllWithMode (State := State) SLOTMode.conservative vctx ps seq ctx)
       (per_predicate_refinement P seq ctx vctx)
       ih
 
@@ -546,17 +539,16 @@ theorem conservative_pass_no_downgrade [inst_splice : SpliceSiteScanner] [inst_c
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (vctx : VerificationContext)
-    (h_conservative_pass : evaluateAllWithMode SLOTMode.conservative vctx predicates seq ctx = PASS) :
-    evaluateAllWithMode SLOTMode.verified vctx predicates seq ctx ≠ FAIL := by
+    (h_conservative_pass : evaluateAllWithMode (State := State) SLOTMode.conservative vctx predicates seq ctx = PASS) :
+    evaluateAllWithMode (State := State) SLOTMode.verified vctx predicates seq ctx ≠ FAIL := by
   intro h_fail
-  have h_ref := simulation_verified_conservative predicates seq ctx vctx
+  have h_ref := simulation_verified_conservative (State := State) predicates seq ctx vctx
   unfold verdictRefines at h_ref
-  rw [h_fail] at h_ref
-  -- verdictRefines FAIL PASS means PASS = UNCERTAIN ∨ FAIL = PASS
-  -- Both are false
-  cases h_ref with
-  | inl h => cases h
-  | inr h => cases h
+  rcases h_ref with h_unc | h_eq
+  · -- CONSERVATIVE = UNCERTAIN, but h_conservative_pass says PASS
+    rw [h_conservative_pass] at h_unc; cases h_unc
+  · -- VERIFIED = CONSERVATIVE, but VERIFIED = FAIL and CONSERVATIVE = PASS
+    rw [h_fail, h_conservative_pass] at h_eq; cases h_eq
 
 /-- COROLLARY: If VERIFIED mode produces FAIL for the overall evaluation,
     then CONSERVATIVE mode produces UNCERTAIN or FAIL (never PASS).
@@ -571,16 +563,16 @@ theorem verified_fail_consistent [inst_splice : SpliceSiteScanner] [inst_cai : C
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (vctx : VerificationContext)
-    (h_verified_fail : evaluateAllWithMode SLOTMode.verified vctx predicates seq ctx = FAIL) :
-    evaluateAllWithMode SLOTMode.conservative vctx predicates seq ctx = UNCERTAIN ∨
-    evaluateAllWithMode SLOTMode.conservative vctx predicates seq ctx = FAIL := by
-  have h_ref := simulation_verified_conservative predicates seq ctx vctx
+    (h_verified_fail : evaluateAllWithMode (State := State) SLOTMode.verified vctx predicates seq ctx = FAIL) :
+    evaluateAllWithMode (State := State) SLOTMode.conservative vctx predicates seq ctx = UNCERTAIN ∨
+    evaluateAllWithMode (State := State) SLOTMode.conservative vctx predicates seq ctx = FAIL := by
+  have h_ref := simulation_verified_conservative (State := State) predicates seq ctx vctx
   unfold verdictRefines at h_ref
-  rw [h_verified_fail] at h_ref
-  -- verdictRefines FAIL v_conservative means v_conservative = UNCERTAIN ∨ FAIL = v_conservative
+  -- h_ref : v_cons = UNCERTAIN ∨ v_ver = v_cons
+  -- h_verified_fail : v_ver = FAIL
   rcases h_ref with h_unc | h_eq
   · left; exact h_unc
-  · right; rw [h_eq]; rfl
+  · right; exact h_eq ▸ h_verified_fail
 
 /-- COROLLARY: PERMISSIVE mode also refines CONSERVATIVE mode.
 
@@ -642,10 +634,10 @@ theorem conservative_definite_preserved [inst_splice : SpliceSiteScanner] [inst_
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (predicates : List TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (vctx : VerificationContext)
-    (h_not_uncertain : evaluateAllWithMode SLOTMode.conservative vctx predicates seq ctx ≠ UNCERTAIN) :
-    evaluateAllWithMode SLOTMode.verified vctx predicates seq ctx =
-    evaluateAllWithMode SLOTMode.conservative vctx predicates seq ctx := by
-  have h_ref := simulation_verified_conservative predicates seq ctx vctx
+    (h_not_uncertain : evaluateAllWithMode (State := State) SLOTMode.conservative vctx predicates seq ctx ≠ UNCERTAIN) :
+    evaluateAllWithMode (State := State) SLOTMode.verified vctx predicates seq ctx =
+    evaluateAllWithMode (State := State) SLOTMode.conservative vctx predicates seq ctx := by
+  have h_ref := simulation_verified_conservative (State := State) predicates seq ctx vctx
   unfold verdictRefines at h_ref
   rcases h_ref with h_unc | h_eq
   · -- CONSERVATIVE = UNCERTAIN, contradicting h_not_uncertain
@@ -681,16 +673,16 @@ theorem progressive_assurance [inst_splice : SpliceSiteScanner] [inst_cai : Codo
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) (vctx : VerificationContext) :
     -- Level 0: CONSERVATIVE soundness (unconditional)
-    (evaluateWithMode SLOTMode.conservative vctx P seq ctx = PASS →
+    (evaluateWithMode (State := State) SLOTMode.conservative vctx P seq ctx = PASS →
       @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
         State inst_dec inst_inhab inst_ndfst P seq ctx) ∧
     -- Level 1: VERIFIED soundness (under VC axiom)
     (isSLOT P = true →
-     evaluateWithMode SLOTMode.verified vctx P seq ctx = PASS →
+     evaluateWithMode (State := State) SLOTMode.verified vctx P seq ctx = PASS →
      slotPropertySemantics P seq ctx) ∧
     -- Refinement: VERIFIED refines CONSERVATIVE
-    verdictRefines (evaluateWithMode SLOTMode.verified vctx P seq ctx)
-                   (evaluateWithMode SLOTMode.conservative vctx P seq ctx) := by
+    verdictRefines (evaluateWithMode (State := State) SLOTMode.verified vctx P seq ctx)
+                   (evaluateWithMode (State := State) SLOTMode.conservative vctx P seq ctx) := by
   constructor
   · -- Level 0: CONSERVATIVE soundness
     exact slot_soundness_conservative P seq ctx vctx
@@ -715,8 +707,8 @@ theorem verified_pass_value_add [inst_splice : SpliceSiteScanner] [inst_cai : Co
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) (vctx : VerificationContext)
     (h_slot : isSLOT P = true)
-    (h_verified_pass : evaluateWithMode SLOTMode.verified vctx P seq ctx = PASS)
-    (h_conservative_uncertain : evaluateWithMode SLOTMode.conservative vctx P seq ctx = UNCERTAIN) :
+    (h_verified_pass : evaluateWithMode (State := State) SLOTMode.verified vctx P seq ctx = PASS)
+    (h_conservative_uncertain : evaluateWithMode (State := State) SLOTMode.conservative vctx P seq ctx = UNCERTAIN) :
     slotPropertySemantics P seq ctx := by
   -- VERIFIED PASS + SLOT predicate → property holds (under VC axiom)
   -- CONSERVATIVE UNCERTAIN is guaranteed by the structure (always true for SLOT predicates)
