@@ -1689,15 +1689,30 @@ def check_biosecurity_before_optimize(
                 "organism=%s, protein_len=%d",
                 flagged_pathogens, organism, len(protein),
             )
+            # Pass the BiosecurityReport as the first argument so that
+            # error.report is populated (report-form constructor).
             raise BiosecurityError(
-                "hazardous_sequence_detected",
+                report,
                 protein=protein,
                 flagged_pathogens=flagged_pathogens,
                 risk_levels=risk_levels,
                 match_details=match_details,
             )
 
-    # Warn mode or medium risk: emit warnings
+        # Medium risk in enforce mode: emit UserWarning (proceeds, but alerts)
+        has_medium = any(
+            rl.upper() == "MEDIUM" for rl in risk_levels
+        )
+        if has_medium:
+            warnings.warn(
+                f"Biosecurity screening detected medium-risk hazard(s): "
+                f"{', '.join(flagged_pathogens)}. "
+                f"Optimization is NOT blocked, but review is recommended.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    # Warn mode: emit warnings for any non-passed result
     if not passed and biosecurity_mode == "warn":
         warnings.warn(
             f"Biosecurity screening detected hazard(s): "

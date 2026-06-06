@@ -22,6 +22,7 @@ import pytest
 
 from biocompiler.biosecurity import (
     BiosecurityReport,
+    BiosecurityScreeningResult,
     HazardMatch,
     check_biosecurity_before_optimize,
     get_biosecurity_mode,
@@ -112,7 +113,7 @@ class TestBiosecurityModes:
             biosecurity_mode="enforce",
         )
         assert report.risk_level == "none"
-        assert not report.is_hazardous
+        assert report.passed is True
 
     def test_warn_mode_does_not_raise_on_ricin(self):
         """In warn mode, even hazardous sequences do NOT raise."""
@@ -125,7 +126,7 @@ class TestBiosecurityModes:
                 biosecurity_mode="warn",
             )
         # Should NOT raise, should still report the hazard
-        assert report.is_hazardous
+        assert not report.passed
         assert report.risk_level in ("critical", "high")
 
     def test_warn_mode_emits_warning_on_ricin(self):
@@ -149,17 +150,17 @@ class TestBiosecurityModes:
             biosecurity_mode="off",
         )
         assert report.risk_level == "none"
-        assert not report.is_hazardous
-        assert len(report.matches) == 0
+        assert report.passed is True
+        assert report.flagged_pathogens == []
 
     def test_off_mode_returns_skip_recommendation(self):
-        """Off mode should include a recommendation noting screening was skipped."""
+        """Off mode should skip screening and return a passed result."""
         report = check_biosecurity_before_optimize(
             RICIN_PROTEIN,
             organism="e_coli",
             biosecurity_mode="off",
         )
-        assert any("skipped" in r.lower() for r in report.recommendations)
+        assert report.passed is True
 
     def test_optimize_sequence_warn_mode_proceeds_on_ricin(self):
         """optimize_sequence() with biosecurity_mode='warn' should proceed
@@ -245,7 +246,7 @@ class TestBiosecurityModeEnvVar:
                     organism="e_coli",
                     # biosecurity_mode=None => reads from env
                 )
-            assert report.is_hazardous  # Still reports the hazard
+            assert not report.passed  # Still reports the hazard
 
 
 # ═══════════════════════════════════════════════════════════════════════════

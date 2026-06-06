@@ -21,6 +21,7 @@ import pytest
 
 from biocompiler.biosecurity import (
     BiosecurityReport,
+    BiosecurityScreeningResult,
     HazardMatch,
     HAZARD_SIGNATURE_COUNT,
     screen_hazardous_sequence,
@@ -89,9 +90,13 @@ class TestToxinDetection:
     def test_ricin_a_chain_position(self, ricin_a_chain_protein):
         report = screen_hazardous_sequence(ricin_a_chain_protein)
         ricin_matches = [m for m in report.matches if m.name == "ricin_A_chain_catalytic"]
-        assert len(ricin_matches) == 1
-        assert ricin_matches[0].position == 5  # "MISRDNIRVGLPIIS..."
-        assert ricin_matches[0].matched_sequence == "NIRVGLPIIS"
+        # Fuzzy matching may produce multiple hits; verify at least the
+        # exact match is present at the expected position.
+        assert len(ricin_matches) >= 1
+        exact_matches = [m for m in ricin_matches if m.match_type == "exact"]
+        assert len(exact_matches) >= 1
+        assert exact_matches[0].position == 5  # "MISRDNIRVGLPIIS..."
+        assert exact_matches[0].matched_sequence == "NIRVGLPIIS"
 
     def test_botulinum_detected(self):
         protein = "AAAHEHETQSNLRDLAAAA"
@@ -321,7 +326,7 @@ class TestWarningMedium:
                 result = check_biosecurity_before_optimize(protein)
                 assert len(w) >= 1
                 assert any("Biosecurity" in str(warning.message) for warning in w)
-            assert isinstance(result, BiosecurityReport)
+            assert isinstance(result, BiosecurityScreeningResult)
 
     def test_medium_does_not_raise_error(self):
         # nptII protein motif — medium risk

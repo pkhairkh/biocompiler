@@ -87,7 +87,7 @@ from .constants import RESTRICTION_ENZYMES
 from .organisms import SUPPORTED_ORGANISMS, CODON_USAGE_TABLES, resolve_organism, ORGANISM_ALIASES
 from .organism_config import is_eukaryotic_organism
 from .exceptions import (
-    BioCompilerError, InvalidSequenceError, CertificateGenerationError,
+    BioCompilerError, BiosecurityError, InvalidSequenceError, CertificateGenerationError,
     CertificateVerificationError, UnsupportedOrganismError, InvalidProteinError,
     OptimizationConstraintError,
 )
@@ -729,6 +729,8 @@ class HealthResponse(BaseModel):
     timestamp: str
     auth_enabled: bool = False
     rate_limit_rpm: int = 60
+    cors_origins: list[str] = []
+    cors_allow_credentials: bool = False
 
 
 # ─── Additional Response/Input Models (Task 1.6) ────────────────
@@ -3183,8 +3185,16 @@ def create_app() -> FastAPI:
     """
     from . import __version__
 
-    # CORS origins from environment (default: allow all for development)
-    cors_origins = os.environ.get("BIOCOMPILER_CORS_ORIGINS", "*").split(",")
+    # CORS origins from environment (default: no CORS — restrictive)
+    # SECURITY: Never default to "*" with credentials. If no origins
+    # are explicitly configured, CORS is disabled entirely.
+    _raw_cors = os.environ.get("BIOCOMPILER_CORS_ORIGINS", "").strip()
+    cors_origins = [o.strip() for o in _raw_cors.split(",") if o.strip()] if _raw_cors else []
+
+    # Credentials only when explicitly enabled AND origins are not "*"
+    # (CORS spec forbids allow_credentials=True with allow_origins=["*"])
+    _raw_creds = os.environ.get("BIOCOMPILER_CORS_ALLOW_CREDENTIALS", "").strip().lower()
+    _allow_creds = _raw_creds in ("true", "1", "yes") and cors_origins != ["*"]
 
     app = FastAPI(
         title="BioCompiler API",
@@ -3194,14 +3204,17 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # CORS middleware for cross-origin access from web tools
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # CORS middleware: only added when explicit origins are configured.
+    # SECURITY: Never allow_credentials=True with allow_origins=["*"].
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=_allow_creds,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    # else: no CORS middleware added (most restrictive)
 
     # Request body size middleware
     @app.middleware("http")
@@ -3259,12 +3272,18 @@ def create_app() -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health_check() -> HealthResponse:
         """Health check endpoint (no auth required)."""
+        # Compute CORS configuration for health response
+        _cors_origins_list = cors_origins  # Report actual configured origins
+        _cors_allow_creds = _allow_creds   # Report actual credential setting
+
         return HealthResponse(
             status="healthy",
             version=__version__,
             timestamp=datetime.now(timezone.utc).isoformat(),
             auth_enabled=_is_auth_enabled(),
             rate_limit_rpm=RATE_LIMIT_RPM,
+            cors_origins=_cors_origins_list,
+            cors_allow_credentials=_cors_allow_creds,
         )
 
     @app.get("/info", response_model=InfoResponse)
@@ -3585,6 +3604,29 @@ def create_app() -> FastAPI:
                     } if e.partial_result else None,
                 },
             )
+        except BiosecurityError as e:
+            detail: dict[str, Any] = {
+                "error": "BiosecurityError",
+                "message": str(e),
+                "risk_level": e.risk_level,
+                "flagged_categories": e.flagged_categories,
+                "matches": [
+                    {
+                        "category": m.category,
+                        "name": m.name,
+                        "position": m.position,
+                        "matched_sequence": m.matched_sequence,
+                        "confidence": m.confidence,
+                    }
+                    for m in (e.matches or [])
+                ],
+                "recommendations": (
+                    e.report.recommendations
+                    if e.report is not None and hasattr(e.report, "recommendations")
+                    else []
+                ),
+            }
+            raise HTTPException(status_code=403, detail=detail)
         except BioCompilerError as e:
             raise HTTPException(status_code=422, detail=str(e))
         except HTTPException:
