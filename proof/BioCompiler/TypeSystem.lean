@@ -174,20 +174,20 @@ theorem string_eq_of_not_ne (s₁ s₂ : String) (h : ¬(s₁ != s₂)) : s₁ =
       exact h this
   exact LawfulBEq.eq_of_beq h_beq
 
-/-- Rat: ¬(a < b) ↔ b ≤ a. Proved using the underlying Bool-based definitions.
-    In Lean4 v4.30.0, (a < b) = (a.blt b = true) and (b ≤ a) = (a.blt b = false),
-    so ¬(a < b) ↔ a.blt b ≠ true ↔ a.blt b = false ↔ b ≤ a. -/
+/-- Rat: ¬(a < b) ↔ b ≤ a. Proved using the underlying Bool-based definitions. -/
 theorem Rat.not_lt_iff_le (a b : Rat) : ¬(a < b) ↔ b ≤ a := by
   constructor
   · intro h
-    show a.blt b = false
-    have h_blt : a.blt b = false := (bool_ne_true_iff_false _).mp h
-    exact h_blt
+    have : a.blt b = false := by
+      cases h_blt : (a.blt b) with
+      | true => exact absurd h_blt h
+      | false => rfl
+    exact this
   · intro h h_lt
-    have h_false : a.blt b = false := by show a.blt b = false; exact h
-    have h_true : a.blt b = true := by show a.blt b = true; exact h_lt
-    rw [h_false] at h_true
-    cases h_true
+    have h_blt_false : a.blt b = false := h
+    have h_blt_true : a.blt b = true := h_lt
+    rw [h_blt_false] at h_blt_true
+    cases h_blt_true
 
 -- ==============================================================================
 -- Evaluation Function
@@ -479,7 +479,7 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
       cases h_em_obs with
       | inl h_obs_lt =>
         -- Obs/Exp < threshold: provide the witness
-        exact ⟨(List.zipWith (· == ·) ((seq.drop pos).take cpgIslandWindowSize)
+        refine ⟨(List.zipWith (· == ·) ((seq.drop pos).take cpgIslandWindowSize)
               (((seq.drop pos).take cpgIslandWindowSize).drop 1)).count true, rfl, h_obs_lt⟩
       | inr h_obs_not_lt =>
         -- Obs/Exp ≥ threshold: both conditions hold, contradiction with scanner returning false

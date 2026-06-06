@@ -184,9 +184,9 @@ theorem slot_predicates_dont_affect_pass [inst_splice : SpliceSiteScanner] [inst
   intro ⟨P, hP_mem, hP_slot⟩
   have hP_not_pass := @slot_predicates_uncertain inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
     State inst_dec inst_inhab inst_ndfst P seq ctx hP_slot
-  have h_all_pass : ∀ v ∈ (predicates.map (fun Q =>
+  have h_all_pass : (∀ v ∈ (predicates.map (fun Q =>
       @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
-        State inst_dec inst_inhab inst_ndfst Q seq ctx)), v = PASS →
+        State inst_dec inst_inhab inst_ndfst Q seq ctx)), v = PASS) →
       @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
         State inst_dec inst_inhab inst_ndfst P seq ctx = PASS := by
     intro h_all
@@ -210,15 +210,12 @@ theorem all_core_if_pass [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdap
       State inst_dec inst_inhab inst_ndfst predicates seq ctx = PASS →
     ∀ P ∈ predicates, isSLOT P = false := by
   intro h P hP
-  by_contra h_slot
-  push_neg at h_slot
-  have h_slot_true : isSLOT P = true := by
-    cases h_bool : isSLOT P with
-    | true => rfl
-    | false => exact absurd rfl h_slot
-  have h_not_pass := @slot_predicates_dont_affect_pass inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
-    State inst_dec inst_inhab inst_ndfst predicates seq ctx ⟨P, hP, h_slot_true⟩
-  exact h_not_pass h
+  cases h_bool : isSLOT P with
+  | true =>
+    have h_not_pass := @slot_predicates_dont_affect_pass inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst predicates seq ctx ⟨P, hP, h_bool⟩
+    exact absurd h h_not_pass
+  | false => rfl
 
 -- ==============================================================================
 -- Sequence Concatenation: Constraints Don't Compose

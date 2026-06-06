@@ -400,6 +400,13 @@ private theorem list_all_const_true : ∀ (l : List VerificationCondition),
   | [] => rfl
   | _ :: tl => by simp [List.all, list_all_const_true tl]
 
+/-- For any list, applying a constantly-false predicate via List.any
+    always returns false. -/
+private theorem list_any_const_false : ∀ (l : List VerificationCondition),
+    l.any (fun _ => false) = false
+  | [] => rfl
+  | _ :: tl => by simp [List.any, list_any_const_false tl]
+
 /-- With fullVCtx, all verification conditions in any list hold. -/
 theorem allVCHold_fullVCtx (vcs : List VerificationCondition) :
     allVCHold fullVCtx vcs = true := by
@@ -481,11 +488,7 @@ theorem conservative_is_safe (P : TypePredicate) (seq : Sequence) (ctx : Cellula
     evaluateSLOT SLOTMode.conservative vctx P seq ctx ≠ PASS := by
   intro _
   -- evaluateSLOT conservative always returns UNCERTAIN
-  show (match SLOTMode.conservative with
-        | SLOTMode.conservative => UNCERTAIN
-        | SLOTMode.verified => _
-        | SLOTMode.permissive => _) ≠ PASS
-  intro h; cases h
+  simp [evaluateSLOT]
 
 -- ==============================================================================
 -- Theorem 2: Slot Soundness (Conservative Mode)
@@ -506,17 +509,15 @@ theorem slot_soundness_conservative [inst_splice : SpliceSiteScanner] [inst_cai 
     [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) (vctx : VerificationContext) :
-    evaluateWithMode SLOTMode.conservative vctx P seq ctx = PASS →
+    @evaluateWithMode inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst SLOTMode.conservative vctx P seq ctx = PASS →
     @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
       State inst_dec inst_inhab inst_ndfst P seq ctx := by
   intro h_pass
-  unfold evaluateWithMode at h_pass
+  simp only [evaluateWithMode] at h_pass
   by_cases h_slot : isSLOT P = true
   · -- SLOT predicate: evaluateSLOT conservative returns UNCERTAIN ≠ PASS
-    simp only [if_pos h_slot] at h_pass
-    -- evaluateSLOT conservative = UNCERTAIN, contradiction with PASS
-    have h_uncertain : evaluateSLOT SLOTMode.conservative vctx P seq ctx = UNCERTAIN := rfl
-    rw [h_uncertain] at h_pass
+    simp only [if_pos h_slot, evaluateSLOT] at h_pass
     cases h_pass
   · -- Core predicate: delegate to evaluate, apply type_soundness
     simp only [if_neg h_slot] at h_pass
@@ -551,12 +552,8 @@ theorem slot_soundness_verified (P : TypePredicate) (seq : Sequence) (ctx : Cell
   -- evaluateSLOT verified = if allVCHold vctx (slotVCs P) then PASS else UNCERTAIN
   -- Since this equals PASS, allVCHold must be true
   have h_vcs : allVCHold vctx (slotVCs P) = true := by
-    show (match SLOTMode.verified with
-          | SLOTMode.conservative => _
-          | SLOTMode.verified => if allVCHold vctx (slotVCs P) then PASS else UNCERTAIN
-          | SLOTMode.permissive => _) = PASS at h_pass
-    have : (if allVCHold vctx (slotVCs P) then PASS else UNCERTAIN) = PASS := h_pass
-    exact ite_uncertain_imp this
+    simp only [evaluateSLOT] at h_pass
+    exact ite_uncertain_imp h_pass
   -- Step 2: Apply theorem to get slotPropertySemantics
   exact verification_conditions_imply_property P seq ctx vctx h_slot h_vcs
 
@@ -591,10 +588,7 @@ theorem verified_is_stronger (P : TypePredicate) (seq : Sequence) (ctx : Cellula
     -- evaluateSLOT verified fullVCtx = if allVCHold fullVCtx (slotVCs P) then PASS else UNCERTAIN
     -- allVCHold fullVCtx (slotVCs P) = true (by allVCHold_fullVCtx)
     -- Therefore: PASS
-    show (match SLOTMode.verified with
-          | SLOTMode.conservative => _
-          | SLOTMode.verified => if allVCHold fullVCtx (slotVCs P) then PASS else UNCERTAIN
-          | SLOTMode.permissive => _) = PASS
+    simp only [evaluateSLOT]
     rw [if_pos (allVCHold_fullVCtx (slotVCs P))]
 
 -- ==============================================================================
@@ -676,10 +670,7 @@ theorem verified_mode_completeness (P : TypePredicate) (seq : Sequence) (ctx : C
     allVCHold vctx (slotVCs P) = true →
     evaluateSLOT SLOTMode.verified vctx P seq ctx = PASS := by
   intro h_vcs
-  show (match SLOTMode.verified with
-        | SLOTMode.conservative => _
-        | SLOTMode.verified => if allVCHold vctx (slotVCs P) then PASS else UNCERTAIN
-        | SLOTMode.permissive => _) = PASS
+  simp only [evaluateSLOT]
   rw [if_pos h_vcs]
 
 /-- COROLLARY: Permissive mode with emptyVCtx returns UNCERTAIN for SLOT
@@ -688,23 +679,14 @@ theorem permissive_empty_uncertain (P : TypePredicate) (seq : Sequence) (ctx : C
     (h_slot : isSLOT P = true)
     (h_vcs : slotVCs P ≠ []) :
     evaluateSLOT SLOTMode.permissive emptyVCtx P seq ctx = UNCERTAIN := by
-  show (match SLOTMode.permissive with
-        | SLOTMode.conservative => _
-        | SLOTMode.verified => _
-        | SLOTMode.permissive => if anyVCHold emptyVCtx (slotVCs P) then PASS else UNCERTAIN) = UNCERTAIN
-  rw [if_neg]
-  · rfl
-  · -- anyVCHold emptyVCtx (slotVCs P) ≠ true
+  simp only [evaluateSLOT]
+  have h_not : ¬(anyVCHold emptyVCtx (slotVCs P) = true) := by
     intro h_any
     unfold anyVCHold emptyVCtx at h_any
-    -- emptyVCtx.conditionHolds = fun _ => false
-    -- (slotVCs P).any (fun _ => false) = true is impossible for non-empty lists
-    have : (slotVCs P).any (fun _ => false) = false := by
-      induction slotVCs P with
-      | nil => simp at h_vcs
-      | cons hd tl _ => simp [List.any]
-    rw [this] at h_any
+    -- emptyVCtx.conditionHolds = fun _ => false, so any returns false
+    rw [list_any_const_false (slotVCs P)] at h_any
     cases h_any
+  rw [if_neg h_not]
 
 /-- COROLLARY: evaluateWithMode conservative equals evaluate for core predicates.
     This establishes that conservative mode preserves the behavior of the
@@ -714,24 +696,25 @@ theorem evaluateWithMode_conservative_core [inst_splice : SpliceSiteScanner] [in
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) (vctx : VerificationContext)
     (h_core : isSLOT P = false) :
-    evaluateWithMode SLOTMode.conservative vctx P seq ctx =
+    @evaluateWithMode inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst SLOTMode.conservative vctx P seq ctx =
     @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
       State inst_dec inst_inhab inst_ndfst P seq ctx := by
-  unfold evaluateWithMode
-  rw [if_neg]
-  · rfl
-  · intro h; rw [h] at h_core; cases h_core
+  simp only [evaluateWithMode]
+  have h_not : ¬(isSLOT P = true) := by intro h; rw [h] at h_core; cases h_core
+  rw [if_neg h_not]
 
 /-- COROLLARY: evaluateWithMode conservative equals evaluateSLOT for SLOT predicates.
     For SLOT predicates in conservative mode, evaluateWithMode delegates to
     evaluateSLOT which always returns UNCERTAIN. -/
-theorem evaluateWithMode_conservative_slot (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
+theorem evaluateWithMode_conservative_slot [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
+    [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
+    {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
+    (P : TypePredicate) (seq : Sequence) (ctx : CellularContext)
     (vctx : VerificationContext) (h_slot : isSLOT P = true) :
-    evaluateWithMode SLOTMode.conservative vctx P seq ctx = UNCERTAIN := by
-  unfold evaluateWithMode
-  rw [if_pos h_slot]
-  -- evaluateSLOT conservative = UNCERTAIN
-  rfl
+    @evaluateWithMode inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst SLOTMode.conservative vctx P seq ctx = UNCERTAIN := by
+  simp only [evaluateWithMode, if_pos h_slot, evaluateSLOT]
 
 /-- COROLLARY: Full verified-mode soundness for evaluateWithMode.
     If evaluateWithMode returns PASS in verified mode, then:
@@ -743,18 +726,19 @@ theorem evaluateWithMode_verified_soundness [inst_splice : SpliceSiteScanner] [i
     [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [inst_dec : DecidableEq State] [inst_inhab : Inhabited State] [inst_ndfst : SplicingNDFST State]
     (P : TypePredicate) (seq : Sequence) (ctx : CellularContext) (vctx : VerificationContext) :
-    evaluateWithMode SLOTMode.verified vctx P seq ctx = PASS →
+    @evaluateWithMode inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
+      State inst_dec inst_inhab inst_ndfst SLOTMode.verified vctx P seq ctx = PASS →
     (isSLOT P = true → slotPropertySemantics P seq ctx) ∧
     (isSLOT P = false →
       @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
         State inst_dec inst_inhab inst_ndfst P seq ctx) := by
   intro h_pass
-  unfold evaluateWithMode at h_pass
+  simp only [evaluateWithMode] at h_pass
   by_cases h_slot : isSLOT P = true
   · -- SLOT predicate
     constructor
-    · intro _; exact slot_soundness_verified P seq ctx vctx h_slot (by simp [if_pos h_slot] at h_pass; exact h_pass)
-    · intro h_false; exact absurd h_slot h_false
+    · intro _; exact slot_soundness_verified P seq ctx vctx h_slot (by simp only [if_pos h_slot, evaluateSLOT] at h_pass; exact h_pass)
+    · intro h_false; rw [h_slot] at h_false; cases h_false
   · -- Core predicate
     constructor
     · intro h; exact absurd h h_slot
@@ -778,10 +762,7 @@ theorem verified_pass_implies_all_vcs (P : TypePredicate) (seq : Sequence) (ctx 
     evaluateSLOT SLOTMode.verified vctx P seq ctx = PASS →
     allVCHold vctx (slotVCs P) = true := by
   intro h_pass
-  show (match SLOTMode.verified with
-        | SLOTMode.conservative => _
-        | SLOTMode.verified => if allVCHold vctx (slotVCs P) then PASS else UNCERTAIN
-        | SLOTMode.permissive => _) = PASS at h_pass
+  simp only [evaluateSLOT] at h_pass
   exact ite_uncertain_imp h_pass
 
 /-- THEOREM: Slot VCs are non-empty for SLOT predicates.

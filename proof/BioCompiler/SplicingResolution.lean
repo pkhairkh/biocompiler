@@ -74,45 +74,38 @@ def agCount (seq : Sequence) : Nat := (agPositions seq).length
     In a simple model, these are the exon-intron boundaries.
     For the proof, we define them as positions where the NDFST
     transitions from exon to intron state. -/
-def canonicalDonorPositions {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) : List Nat :=
-  -- In the formal model, canonical donors are those positions where
-  -- the NDFST's unique output includes a splice at that position.
-  -- For simplicity, we define them as positions where the ndfstUniqueOutputSet
-  -- includes a splice donor at that position.
-  -- This is parameterized by the SplicingNDFST instance.
-  []  -- Placeholder: actual implementation depends on NDFST structure
+def canonicalDonorPositions (seq : Sequence) : List Nat :=
+  -- Placeholder: actual implementation depends on NDFST structure.
+  -- Currently empty, so all GT positions are considered cryptic.
+  []
 
 /-- Canonical acceptor positions are those defined by the NDFST splice model. -/
-def canonicalAcceptorPositions {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) : List Nat :=
-  []  -- Placeholder: actual implementation depends on NDFST structure
+def canonicalAcceptorPositions (seq : Sequence) : List Nat :=
+  -- Placeholder: actual implementation depends on NDFST structure.
+  -- Currently empty, so all AG positions are considered cryptic.
+  []
 
 /-- A GT position is "cryptic" if it is not at a canonical donor position.
     Cryptic donor sites can cause aberrant splicing. -/
-def isCrypticDonor {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) (pos : Nat) : Prop :=
-  pos ∉ @canonicalDonorPositions State _ _ _ seq ∧
-  pos + 2 ≤ seq.length ∧
+def isCrypticDonor (seq : Sequence) (pos : Nat) : Bool :=
+  !(canonicalDonorPositions seq).contains pos &&
+  decide (pos + 2 ≤ seq.length) &&
   (seq.drop pos).take 2 = spliceDonorConsensus
 
 /-- An AG position is "cryptic" if it is not at a canonical acceptor position.
     Cryptic acceptor sites can cause aberrant splicing. -/
-def isCrypticAcceptor {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) (pos : Nat) : Prop :=
-  pos ∉ @canonicalAcceptorPositions State _ _ _ seq ∧
-  pos + 2 ≤ seq.length ∧
+def isCrypticAcceptor (seq : Sequence) (pos : Nat) : Bool :=
+  !(canonicalAcceptorPositions seq).contains pos &&
+  decide (pos + 2 ≤ seq.length) &&
   (seq.drop pos).take 2 = spliceAcceptorConsensus
 
 /-- Check if a sequence has any cryptic donor sites. -/
-def hasCrypticDonor {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) : Bool :=
-  (gtPositions seq).any (fun pos => decide (pos ∉ @canonicalDonorPositions State _ _ _ seq))
+def hasCrypticDonor (seq : Sequence) : Bool :=
+  (gtPositions seq).any (fun pos => !(canonicalDonorPositions seq).contains pos)
 
 /-- Check if a sequence has any cryptic acceptor sites. -/
-def hasCrypticAcceptor {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) : Bool :=
-  (agPositions seq).any (fun pos => decide (pos ∉ @canonicalAcceptorPositions State _ _ _ seq))
+def hasCrypticAcceptor (seq : Sequence) : Bool :=
+  (agPositions seq).any (fun pos => !(canonicalAcceptorPositions seq).contains pos)
 
 -- ==============================================================================
 -- PASS Implies No Cryptic Sites
@@ -301,27 +294,27 @@ theorem splice_resolution_deterministic
     the NDFST's exon-intron transition structure), this proof will need to
     be updated to extract the GT consensus from the definition — which, by
     construction, will guarantee that every canonical donor site has GT. -/
-theorem canonical_donor_has_gt {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) (pos : Nat) :
-    pos ∈ @canonicalDonorPositions State _ _ _ seq →
+theorem canonical_donor_has_gt (seq : Sequence) (pos : Nat) :
+    pos ∈ canonicalDonorPositions seq →
     pos + 2 ≤ seq.length ∧
     (seq.drop pos).take 2 = spliceDonorConsensus := by
   intro h
   -- canonicalDonorPositions is defined as [], so membership is impossible
-  simp [canonicalDonorPositions] at h
+  unfold canonicalDonorPositions at h
+  simp at h
 
 /-- THEOREM: Every canonical acceptor position has an AG dinucleotide.
 
     Vacuously true for the same reason as `canonical_donor_has_gt`:
     `canonicalAcceptorPositions` is defined as `[]`. -/
-theorem canonical_acceptor_has_ag {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) (pos : Nat) :
-    pos ∈ @canonicalAcceptorPositions State _ _ _ seq →
+theorem canonical_acceptor_has_ag (seq : Sequence) (pos : Nat) :
+    pos ∈ canonicalAcceptorPositions seq →
     pos + 2 ≤ seq.length ∧
     (seq.drop pos).take 2 = spliceAcceptorConsensus := by
   intro h
   -- canonicalAcceptorPositions is defined as [], so membership is impossible
-  simp [canonicalAcceptorPositions] at h
+  unfold canonicalAcceptorPositions at h
+  simp at h
 
 -- ==============================================================================
 -- Verdict Characterization Corollaries
@@ -367,13 +360,16 @@ theorem no_cryptic_splice_verdicts_exclusive
       · left; rw [if_neg h1, if_neg h2]
   · -- Mutually exclusive
     constructor
-    · intro h; exact ⟨(by intro h2; rw [h2] at h; cases h),
-                       (by intro h2; rw [h2] at h; cases h)⟩
+    · intro h; constructor
+      · intro h2; have := h; rw [h2] at this; cases this
+      · intro h2; have := h; rw [h2] at this; cases this
     · constructor
-      · intro h; exact ⟨(by intro h2; rw [h2] at h; cases h),
-                         (by intro h2; rw [h2] at h; cases h)⟩
-      · intro h; exact ⟨(by intro h2; rw [h2] at h; cases h),
-                         (by intro h2; rw [h2] at h; cases h)⟩
+      · intro h; constructor
+        · intro h2; have := h; rw [h2] at this; cases this
+        · intro h2; have := h; rw [h2] at this; cases this
+      · intro h; constructor
+        · intro h2; have := h; rw [h2] at this; cases this
+        · intro h2; have := h; rw [h2] at this; cases this
 
 -- ==============================================================================
 -- Composition of Splicing Guarantees
@@ -421,12 +417,12 @@ theorem pass_both_implies_canonical_only
 
     Every splice site (canonical or cryptic) has a GT dinucleotide, so
     the total GT count is at least the sum of these two categories. -/
-theorem gt_count_at_least_canonical_plus_cryptic {State : Type} [DecidableEq State] [Inhabited State]
-    [SplicingNDFST State] (seq : Sequence) :
-    gtCount seq ≥ (@canonicalDonorPositions State _ _ _ seq).length := by
-  -- canonicalDonorPositions always returns [], so its length is 0
-  -- and gtCount ≥ 0 always holds
-  simp [canonicalDonorPositions, gtCount, gtPositions]
+theorem gt_count_at_least_canonical_plus_cryptic (seq : Sequence) :
+    gtCount seq ≥ (canonicalDonorPositions seq).length := by
+  -- canonicalDonorPositions is [], so its length is 0
+  unfold gtCount gtPositions canonicalDonorPositions
+  simp only [List.filter_nil, List.length_nil, List.length_range]
+  omega
 
 /-- THEOREM: An empty sequence has no GT or AG dinucleotides. -/
 theorem empty_no_dinucleotides :
@@ -465,30 +461,36 @@ private theorem take_append_of_le {α : Type} {l s : List α} {k : Nat} (h : k �
     | nil => simp at h
     | cons a l' => simp [List.take]; exact ih (Nat.le_of_succ_le_succ h)
 
-/-- Helper: If a pattern exists in a pref, it exists in the extended sequence.
+/-- Helper: If a pattern exists in a prefix, it exists in the extended sequence.
 
-    Proof strategy: extract the witness position from the pref match
+    Proof strategy: extract the witness position from the prefix match
     (using hasPattern_sound), then show the same position works in the
     extended sequence (using hasPattern_complete). The key List-theory
-    fact is that drop/take on (pref ++ suff) at a position entirely
-    within pref gives the same result as on pref alone. -/
-theorem hasPattern_prefix_preserved (pref suff : Sequence) (pattern : Sequence) :
-    hasPattern pref pattern = true → hasPattern (pref ++ suff) pattern = true := by
+    fact is that drop/take on (prefix ++ suffix) at a position entirely
+    within prefix gives the same result as on prefix alone. -/
+theorem hasPattern_prefix_preserved (pfx sfx : Sequence) (pattern : Sequence) :
+    hasPattern pfx pattern = true → hasPattern (pfx ++ sfx) pattern = true := by
   intro h
-  -- Step 1: From hasPattern pref pattern = true, obtain a witness position
-  obtain ⟨pos, h_pos, h_match⟩ := hasPattern_sound pref pattern h
-  -- Step 2: Show the same position witnesses the pattern in pref ++ suff
-  apply hasPattern_complete (pref ++ suff) pattern pos
-  · -- pos + pattern.length ≤ (pref ++ suff).length
+  -- Step 1: From hasPattern pfx pattern = true, obtain a witness position
+  obtain ⟨pos, h_pos, h_match⟩ := hasPattern_sound pfx pattern h
+  -- Step 2: Show the same position witnesses the pattern in pfx ++ sfx
+  apply hasPattern_complete (pfx ++ sfx) pattern pos
+  · -- pos + pattern.length ≤ (pfx ++ sfx).length
     rw [List.length_append]; omega
-  · -- ((pref ++ suff).drop pos).take pattern.length = pattern
-    -- Since pos + pattern.length ≤ pref.length, the pattern is entirely
-    -- within the pref part of pref ++ suff, so drop/take is unchanged
-    have h_pos_le : pos ≤ pref.length := by omega
-    have h_pat_le : pattern.length ≤ (pref.drop pos).length := by
+  · -- ((pfx ++ sfx).drop pos).take pattern.length = pattern
+    -- Since pos + pattern.length ≤ pfx.length, the pattern is entirely
+    -- within the pfx part of pfx ++ sfx, so drop/take is unchanged
+    have h_pos_le : pos ≤ pfx.length := by omega
+    have h_pat_le : pattern.length ≤ (pfx.drop pos).length := by
       rw [List.length_drop]; omega
     rw [drop_append_of_le h_pos_le, take_append_of_le h_pat_le, h_match]
 
+/-- THEOREM: Adding nucleotides to the END of a sequence cannot remove
+    existing GT dinucleotides. This means NoCrypticSplice can only get
+    WORSE (PASS → UNCERTAIN → FAIL) when extending a sequence, never better.
+
+    This is a monotonicity property: the set of cryptic sites grows
+    monotonically as the sequence grows. -/
 theorem extension_cannot_remove_gt (seq : Sequence) (extra : Sequence) :
     hasPattern seq spliceDonorConsensus = true →
     hasPattern (seq ++ extra) spliceDonorConsensus = true := by

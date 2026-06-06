@@ -286,8 +286,8 @@ theorem full_slot_independence [inst_splice : SpliceSiteScanner] [inst_cai : Cod
     (∀ P ∈ predicates, isCorePredicate P = true ∨ isSLOT P = true) ∧
     -- 2. Core predicates are SLOT-independent
     (∀ P ∈ predicates, isCorePredicate P = true →
-      @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx ↔
-      @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx) ∧
+      (@propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx ↔
+      @propertyHolds inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx)) ∧
     -- 3. SLOT-dependent predicates never produce PASS
     (∀ P ∈ predicates, isSLOT P = true →
       @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans State inst_dec inst_inhab inst_ndfst P seq ctx ≠ PASS) ∧
@@ -307,7 +307,7 @@ theorem full_slot_independence [inst_splice : SpliceSiteScanner] [inst_cai : Cod
     intro P hP; exact predicate_is_core_or_slot P
   constructor
   · -- 2. Core predicates are SLOT-independent
-    intro P _ _slots₁ _slots₂; rfl
+    intro P h_mem h_core; exact Iff.rfl
   constructor
   · -- 3. SLOT-dependent predicates never produce PASS
     intro P hP h_slot

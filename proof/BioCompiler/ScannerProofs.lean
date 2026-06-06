@@ -196,12 +196,8 @@ theorem hasCpGIslandConcrete_complete (seq : Sequence) (pos : Nat)
       List.mem_range.mpr h_pos_in_range
     -- Step 3: Show cpgWindowCheck returns true at pos
     have h_window_len : ((seq.drop pos).take cpgIslandWindowSize).length > 0 := by
-      have h_take_len : ((seq.drop pos).take cpgIslandWindowSize).length = min cpgIslandWindowSize (seq.length - pos) := by
-        rw [List.length_take, List.length_drop]
-      rw [h_take_len, Nat.min_def]
-      split
-      · native_decide  -- cpgIslandWindowSize = 200 > 0
-      · omega
+      rw [List.length_take, List.length_drop, Nat.min_eq_left (by omega)]
+      unfold cpgIslandWindowSize; omega
     have h_window_true : cpgWindowCheck ((seq.drop pos).take cpgIslandWindowSize) = true :=
       cpgWindowCheck_true ((seq.drop pos).take cpgIslandWindowSize)
         h_window_len h_gc h_obs_exp
@@ -266,12 +262,7 @@ theorem hasCpGIslandConcrete_sound_window_len (seq : Sequence)
       List.mem_range.mp h_mem
     have h_pos_le : pos + cpgIslandWindowSize ≤ seq.length := by omega
     refine ⟨pos, h_pos_le, ?_⟩
-    have h_take_len : ((seq.drop pos).take cpgIslandWindowSize).length = min cpgIslandWindowSize (seq.length - pos) := by
-      rw [List.length_take, List.length_drop]
-    rw [h_take_len, Nat.min_def]
-    split
-    · native_decide  -- cpgIslandWindowSize = 200 > 0
-    · omega
+    rw [List.length_take, List.length_drop, Nat.min_eq_left (by omega)]
 
 -- ==============================================================================
 -- CpGIslandScanner Instance — Eliminates Axioms 4-5
@@ -492,14 +483,11 @@ theorem hasCrypticPromoterConcrete_sound (seq : Sequence) (organism : String)
       List.mem_range.mp h_mem
     have h_pos_le : pos + promoterMotifSize ≤ seq.length := by omega
     -- From promoterWindowCheck = true, derive the score condition
-    unfold promoterWindowCheck at h_check
-    split at h_check
-    · -- pos + promoterMotifSize ≤ seq.length holds
-      have h_score : promoterScoreAt seq pos ≥ threshold :=
-        prop_of_decide_eq_true h_check
-      exact ⟨pos, h_pos_le, h_score⟩
-    · -- ¬(pos + promoterMotifSize ≤ seq.length): contradicts h_pos_le
-      omega
+    have h_in_range : pos + promoterMotifSize ≤ seq.length := h_pos_le
+    rw [promoterWindowCheck, if_pos h_in_range] at h_check
+    have h_score : promoterScoreAt seq pos ≥ threshold :=
+      prop_of_decide_eq_true h_check
+    exact ⟨pos, h_pos_le, h_score⟩
 
 -- ==============================================================================
 -- Borderline Completeness Proof
@@ -749,33 +737,32 @@ theorem hasTMDomainConcrete_complete (seq : Sequence) (isCytosolic : Bool)
     exact Bool.false_ne_true h_cytosolic
   | true =>
     -- isCytosolic = true: match reduces to the main branch
-    -- Step 2: Show seq.length ≥ tmDomainWindowSize, then simplify the if
-    have h_not_lt : ¬(seq.length < tmDomainWindowSize) := by omega
-    simp only [if_neg h_not_lt] at h_false
-    -- Step 3: Show pos is in the range
-    have h_pos_in_range : pos < seq.length - tmDomainWindowSize + 1 := by omega
-    have h_mem : pos ∈ List.range (seq.length - tmDomainWindowSize + 1) :=
-      List.mem_range.mpr h_pos_in_range
-    -- Step 4: Show tmWindowCheck returns true at pos
-    have h_window_len : ((seq.drop pos).take tmDomainWindowSize).length > 0 := by
-      have h_take_len : ((seq.drop pos).take tmDomainWindowSize).length = min tmDomainWindowSize (seq.length - pos) := by
-        rw [List.length_take, List.length_drop]
-      rw [h_take_len, Nat.min_def]
-      split
-      · native_decide  -- tmDomainWindowSize = 51 > 0
-      · omega
-    have h_window_true :
-        tmWindowCheck ((seq.drop pos).take tmDomainWindowSize) threshold = true :=
-      tmWindowCheck_true ((seq.drop pos).take tmDomainWindowSize) threshold
-        h_window_len h_hydro
-    -- Step 5: By List.any_eq_true, the whole scan returns true
-    have h_any_true :
-        (List.range (seq.length - tmDomainWindowSize + 1)).any
-          (fun p => tmWindowCheck ((seq.drop p).take tmDomainWindowSize) threshold) = true :=
-      List.any_eq_true.mpr ⟨pos, h_mem, h_window_true⟩
-    -- Step 6: Contradiction with h_false
-    rw [h_any_true] at h_false
-    nomatch h_false
+    -- Step 2: Case-split on seq.length < tmDomainWindowSize
+    by_cases h_lt : seq.length < tmDomainWindowSize
+    · -- seq.length < tmDomainWindowSize: contradicts h_pos
+      omega
+    · -- Main branch: seq.length ≥ tmDomainWindowSize
+      rw [if_neg h_lt] at h_false
+      -- Step 3: Show pos is in the range
+      have h_pos_in_range : pos < seq.length - tmDomainWindowSize + 1 := by omega
+      have h_mem : pos ∈ List.range (seq.length - tmDomainWindowSize + 1) :=
+        List.mem_range.mpr h_pos_in_range
+      -- Step 4: Show tmWindowCheck returns true at pos
+      have h_window_len : ((seq.drop pos).take tmDomainWindowSize).length > 0 := by
+        rw [List.length_take, List.length_drop, Nat.min_eq_left (by omega)]
+        unfold tmDomainWindowSize; omega
+      have h_window_true :
+          tmWindowCheck ((seq.drop pos).take tmDomainWindowSize) threshold = true :=
+        tmWindowCheck_true ((seq.drop pos).take tmDomainWindowSize) threshold
+          h_window_len h_hydro
+      -- Step 5: By List.any_eq_true, the whole scan returns true
+      have h_any_true :
+          (List.range (seq.length - tmDomainWindowSize + 1)).any
+            (fun p => tmWindowCheck ((seq.drop p).take tmDomainWindowSize) threshold) = true :=
+        List.any_eq_true.mpr ⟨pos, h_mem, h_window_true⟩
+      -- Step 6: Contradiction with h_false
+      rw [h_any_true] at h_false
+      nomatch h_false
 
 -- ==============================================================================
 -- Soundness Proof
@@ -803,25 +790,22 @@ theorem hasTMDomainConcrete_sound (seq : Sequence) (isCytosolic : Bool)
   cases isCytosolic with
   | false => simp at h_true
   | true =>
-    -- If seq.length < tmDomainWindowSize, scanner returns false, contradiction
     by_cases h_lt : seq.length < tmDomainWindowSize
     · -- seq.length < tmDomainWindowSize: scanner returns false, contradiction
-      simp only [if_pos h_lt] at h_true
-      simp at h_true
-    · -- Main branch: seq.length ≥ tmDomainWindowSize
-      simp only [if_neg h_lt] at h_true
+      rw [if_pos h_lt] at h_true; simp at h_true
+    · -- Main branch
+      rw [if_neg h_lt] at h_true
       obtain ⟨pos, h_mem, h_check⟩ := List.any_eq_true.mp h_true
       have h_pos_in_range : pos < seq.length - tmDomainWindowSize + 1 :=
         List.mem_range.mp h_mem
       have h_pos_le : pos + tmDomainWindowSize ≤ seq.length := by omega
       -- From tmWindowCheck returning true, derive the hydrophobic fraction
-      unfold tmWindowCheck at h_check
       by_cases h_len_zero : ((seq.drop pos).take tmDomainWindowSize).length = 0
       · -- window.length = 0: can't return true
-        simp only [if_pos h_len_zero] at h_check
-        simp at h_check
-      · -- window.length ≠ 0: decide = true, the proposition holds
-        simp only [if_neg h_len_zero] at h_check
+        rw [tmWindowCheck, if_pos h_len_zero] at h_check
+        nomatch h_check
+      · -- decide = true: the proposition holds
+        rw [tmWindowCheck, if_neg h_len_zero] at h_check
         have h_hydro : tmHydrophobicFraction ((seq.drop pos).take tmDomainWindowSize) ≥ threshold :=
           prop_of_decide_eq_true h_check
         exact ⟨pos, h_pos_le, h_hydro⟩
@@ -860,33 +844,32 @@ theorem hasBorderlineTMDomainConcrete_complete (seq : Sequence) (isCytosolic : B
     exact Bool.false_ne_true h_cytosolic
   | true =>
     -- isCytosolic = true: match reduces to the main branch
-    -- Step 2: Show seq.length ≥ tmDomainWindowSize, then simplify the if
-    have h_not_lt : ¬(seq.length < tmDomainWindowSize) := by omega
-    simp only [if_neg h_not_lt] at h_false
-    -- Step 3: Show pos is in the range
-    have h_pos_in_range : pos < seq.length - tmDomainWindowSize + 1 := by omega
-    have h_mem : pos ∈ List.range (seq.length - tmDomainWindowSize + 1) :=
-      List.mem_range.mpr h_pos_in_range
-    -- Step 4: Show tmBorderlineWindowCheck returns true at pos
-    have h_window_len : ((seq.drop pos).take tmDomainWindowSize).length > 0 := by
-      have h_take_len : ((seq.drop pos).take tmDomainWindowSize).length = min tmDomainWindowSize (seq.length - pos) := by
-        rw [List.length_take, List.length_drop]
-      rw [h_take_len, Nat.min_def]
-      split
-      · native_decide  -- tmDomainWindowSize = 51 > 0
-      · omega
-    have h_window_true :
-        tmBorderlineWindowCheck ((seq.drop pos).take tmDomainWindowSize) threshold = true :=
-      tmBorderlineWindowCheck_true ((seq.drop pos).take tmDomainWindowSize) threshold
-        h_window_len h_ge h_not
-    -- Step 5: By List.any_eq_true, the whole scan returns true
-    have h_any_true :
-        (List.range (seq.length - tmDomainWindowSize + 1)).any
-          (fun p => tmBorderlineWindowCheck ((seq.drop p).take tmDomainWindowSize) threshold) = true :=
-      List.any_eq_true.mpr ⟨pos, h_mem, h_window_true⟩
-    -- Step 6: Contradiction with h_false
-    rw [h_any_true] at h_false
-    nomatch h_false
+    -- Step 2: Case-split on seq.length < tmDomainWindowSize
+    by_cases h_lt : seq.length < tmDomainWindowSize
+    · -- seq.length < tmDomainWindowSize: contradicts h_pos
+      omega
+    · -- Main branch
+      rw [if_neg h_lt] at h_false
+      -- Step 3: Show pos is in the range
+      have h_pos_in_range : pos < seq.length - tmDomainWindowSize + 1 := by omega
+      have h_mem : pos ∈ List.range (seq.length - tmDomainWindowSize + 1) :=
+        List.mem_range.mpr h_pos_in_range
+      -- Step 4: Show tmBorderlineWindowCheck returns true at pos
+      have h_window_len : ((seq.drop pos).take tmDomainWindowSize).length > 0 := by
+        rw [List.length_take, List.length_drop, Nat.min_eq_left (by omega)]
+        unfold tmDomainWindowSize; omega
+      have h_window_true :
+          tmBorderlineWindowCheck ((seq.drop pos).take tmDomainWindowSize) threshold = true :=
+        tmBorderlineWindowCheck_true ((seq.drop pos).take tmDomainWindowSize) threshold
+          h_window_len h_ge h_not
+      -- Step 5: By List.any_eq_true, the whole scan returns true
+      have h_any_true :
+          (List.range (seq.length - tmDomainWindowSize + 1)).any
+            (fun p => tmBorderlineWindowCheck ((seq.drop p).take tmDomainWindowSize) threshold) = true :=
+        List.any_eq_true.mpr ⟨pos, h_mem, h_window_true⟩
+      -- Step 6: Contradiction with h_false
+      rw [h_any_true] at h_false
+      nomatch h_false
 
 -- ==============================================================================
 -- TMDomainScanner Instance — Eliminates Axioms 9-11

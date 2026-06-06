@@ -58,23 +58,11 @@ namespace BioCompiler
 open Sequence
 
 -- ==============================================================================
--- Helper Theorems (re-exports and local helpers)
+-- Helper Theorems (imported from ScannerProofs)
 -- ==============================================================================
 
-/-- If a decidable proposition holds, `decide` returns true. -/
-private theorem decide_true_of_prop {p : Prop} [hdec : Decidable p] (h : p) :
-    @decide p hdec = true := by
-  cases hdec with
-  | isTrue _ => rfl
-  | isFalse h' => exfalso; exact h' h
-
-/-- If `decide` returns true, the proposition holds. -/
-private theorem prop_of_decide_true {p : Prop} [Decidable p] (h : decide p = true) : p :=
-  of_decide_eq_true h
-
-/-- Bool: b ≠ true ↔ b = false. -/
-private theorem bool_ne_true_eq_false (b : Bool) : b ≠ true ↔ b = false := by
-  cases b <;> simp
+-- decide_eq_true_of_prop, prop_of_decide_eq_true, and decide_eq_false_of_not_prop
+-- are already declared in ScannerProofs.lean (which is imported).
 
 -- ==============================================================================
 -- PART 1: Concrete mRNA Structure Oracle
@@ -98,7 +86,7 @@ theorem mrnaWindowCheck_complete (window : Sequence) (threshold : Rat)
     omega
   · -- main branch: decide (estimatedDeltaG window ≤ threshold) = true
     have h_decide : decide (estimatedDeltaG window ≤ threshold) = true :=
-      decide_true_of_prop h_deltaG
+      decide_eq_true_of_prop h_deltaG
     exact h_decide
 
 /-- Check if a single window satisfies the borderline structure criterion:
@@ -122,11 +110,9 @@ theorem mrnaBorderlineWindowCheck_complete (window : Sequence) (threshold : Rat)
     omega
   · -- main branch
     have h1 : decide (estimatedDeltaG window ≤ threshold * 7 / 10) = true :=
-      decide_true_of_prop h_borderline
-    have h2 : decide (estimatedDeltaG window ≤ threshold) = false := by
-      by_cases h_dec : decide (estimatedDeltaG window ≤ threshold) = true
-      · exfalso; exact h_not_strong (prop_of_decide_true h_dec)
-      · exact (bool_ne_true_eq_false _).mp h_dec
+      decide_eq_true_of_prop h_borderline
+    have h2 : decide (estimatedDeltaG window ≤ threshold) = false :=
+      decide_eq_false_of_not_prop h_not_strong
     simp [h1, h2, Bool.not_false]
 
 /-- Concrete strong structure scanner: sliding window over all positions. -/
@@ -173,13 +159,8 @@ theorem hasStrongStructureConcrete_complete (seq : Sequence) (threshold : Rat) (
       List.mem_range.mpr h_pos_in_range
     -- Show mrnaWindowCheck returns true at pos
     have h_window_len : ((seq.drop pos).take mrnaStructureWindowSize).length > 0 := by
-      rw [List.length_take]
-      simp [List.length_drop]
-      -- After simplification: min (seq.length - pos) mrnaStructureWindowSize > 0
-      -- Since pos + mrnaStructureWindowSize ≤ seq.length, we have
-      -- seq.length - pos ≥ mrnaStructureWindowSize > 0
-      have : mrnaStructureWindowSize > 0 := by native_decide
-      omega
+      rw [List.length_take, List.length_drop, Nat.min_eq_left (by omega)]
+      unfold mrnaStructureWindowSize; omega
     have h_window_true : mrnaWindowCheck ((seq.drop pos).take mrnaStructureWindowSize) threshold = true :=
       mrnaWindowCheck_complete ((seq.drop pos).take mrnaStructureWindowSize) threshold
         h_window_len h_deltaG
@@ -216,10 +197,13 @@ theorem hasStrongStructureConcrete_sound (seq : Sequence) (threshold : Rat)
     unfold mrnaWindowCheck at h_check
     split at h_check
     · -- window.length = 0: impossible since pos + windowSize ≤ seq.length
-      simp [List.length_take, List.length_drop] at *
+      have h_window_pos : ((seq.drop pos).take mrnaStructureWindowSize).length > 0 := by
+        rw [List.length_take, List.length_drop, Nat.min_eq_left (by omega)]
+        unfold mrnaStructureWindowSize; omega
+      simp_all
     · -- main branch: decide (estimatedDeltaG ... ≤ threshold) = true
       have h_deltaG : estimatedDeltaG ((seq.drop pos).take mrnaStructureWindowSize) ≤ threshold :=
-        prop_of_decide_true h_check
+        prop_of_decide_eq_true h_check
       exact ⟨pos, h_pos_le, h_deltaG⟩
 
 -- ==============================================================================
@@ -245,10 +229,8 @@ theorem hasBorderlineStructureConcrete_complete (seq : Sequence) (threshold : Ra
       List.mem_range.mpr h_pos_in_range
     -- Show mrnaBorderlineWindowCheck returns true at pos
     have h_window_len : ((seq.drop pos).take mrnaStructureWindowSize).length > 0 := by
-      rw [List.length_take]
-      simp [List.length_drop]
-      have : mrnaStructureWindowSize > 0 := by native_decide
-      omega
+      rw [List.length_take, List.length_drop, Nat.min_eq_left (by omega)]
+      unfold mrnaStructureWindowSize; omega
     have h_window_true :
         mrnaBorderlineWindowCheck ((seq.drop pos).take mrnaStructureWindowSize) threshold = true :=
       mrnaBorderlineWindowCheck_complete ((seq.drop pos).take mrnaStructureWindowSize) threshold
@@ -308,7 +290,7 @@ theorem hasFoldingDisruptionConcrete_complete (seq : Sequence) (organism : Strin
     False := by
   unfold hasFoldingDisruptionConcrete at h_false
   have h_decide : decide (rampAdaptationIndex seq ≤ cotransDisruptionThreshold) = true :=
-    decide_true_of_prop h
+    decide_eq_true_of_prop h
   rw [h_decide] at h_false
   cases h_false
 
@@ -321,10 +303,10 @@ theorem hasFoldingDisruptionConcrete_sound (seq : Sequence) (organism : String)
     rampAdaptationIndex seq ≤ cotransBorderlineThreshold := by
   unfold hasFoldingDisruptionConcrete at h_true
   have h_le : rampAdaptationIndex seq ≤ cotransDisruptionThreshold :=
-    prop_of_decide_true h_true
+    prop_of_decide_eq_true h_true
   -- cotransDisruptionThreshold = 3/10 < 5/10 = cotransBorderlineThreshold
-  have h_thres : (cotransDisruptionThreshold : Rat) ≤ cotransBorderlineThreshold := by native_decide
-  exact Rat.le_trans h_le h_thres
+  calc rampAdaptationIndex seq ≤ cotransDisruptionThreshold := h_le
+    _ ≤ cotransBorderlineThreshold := by native_decide
 
 /-- THEOREM (Borderline Folding Completeness): If the ramp adaptation index
     is in the borderline range, the oracle detects it. -/
@@ -334,22 +316,12 @@ theorem hasBorderlineFoldingConcrete_complete (seq : Sequence) (organism : Strin
     (h_false : hasBorderlineFoldingConcrete seq organism = false) :
     False := by
   unfold hasBorderlineFoldingConcrete at h_false
-  let rai := rampAdaptationIndex seq
-  have h1 : decide (rai ≤ cotransBorderlineThreshold) = true :=
-    decide_true_of_prop h_borderline
-  have h2 : decide (rai ≤ cotransDisruptionThreshold) = false := by
-    by_cases h_dec : decide (rai ≤ cotransDisruptionThreshold) = true
-    · exfalso; exact h_not_disruption (prop_of_decide_true h_dec)
-    · exact (bool_ne_true_eq_false _).mp h_dec
-  -- After the unfold above, h_false should have the form:
-  -- (decide(rai ≤ borderline) && !(decide(rai ≤ disruption))) = false
-  -- With h1 and h2, this becomes (true && !false) = false → contradiction
-  -- We construct a contradiction: the expression evaluates to true but h_false says false
-  suffices h : (decide (rai ≤ cotransBorderlineThreshold) && !decide (rai ≤ cotransDisruptionThreshold)) = true by
-    rw [h] at h_false
-    exact absurd h_false (by native_decide : (true : Bool) ≠ false)
-  rw [h1, h2]
-  native_decide
+  have h1 : decide (rampAdaptationIndex seq ≤ cotransBorderlineThreshold) = true :=
+    decide_eq_true_of_prop h_borderline
+  have h2 : decide (rampAdaptationIndex seq ≤ cotransDisruptionThreshold) = false :=
+    decide_eq_false_of_not_prop h_not_disruption
+  -- true && !false = true && true = true, but h_false says false → contradiction
+  simp [h1, h2] at h_false
 
 -- ==============================================================================
 -- Co-Translational Folding Oracle Instance — Eliminates Axioms 14-15
@@ -413,7 +385,7 @@ private theorem ndfstStep_identity_single (accOutput : Sequence) (nuc : Nucleoti
     ndfstStep identitySpliceNDFST [(SpliceState.reading, accOutput)] nuc =
       [(SpliceState.reading, accOutput ++ [nuc])] := by
   unfold ndfstStep identitySpliceNDFST
-  simp [List.flatMap_singleton, List.map_singleton]
+  simp
 
 /-- General lemma: processing a sequence with the identity NDFST extends
     the accumulator by that sequence.
@@ -427,7 +399,7 @@ theorem identitySpliceNDFST_foldl (acc : Sequence) (remaining : Sequence) :
   induction remaining generalizing acc with
   | nil => simp [List.foldl_nil]
   | cons hd tl ih =>
-    simp [List.foldl_cons, ndfstStep_identity_single, ih]
+    simp only [List.foldl_cons, ndfstStep_identity_single, ih, List.append_assoc, List.singleton_append]
 
 /-- THEOREM: The identity NDFST run produces [(reading, input)]. -/
 theorem identitySpliceNDFST_run (input : Sequence) :
@@ -440,8 +412,7 @@ theorem identitySpliceNDFST_output_set (input : Sequence) :
     ndfstOutputSet identitySpliceNDFST input = [input] := by
   unfold ndfstOutputSet
   rw [identitySpliceNDFST_run]
-  simp [List.filterMap_cons, List.filterMap_nil, List.filter_cons, List.filter_nil,
-        identitySpliceNDFST]
+  simp [identitySpliceNDFST]
 
 /-- THEOREM: The identity NDFST unique output set is [input]. -/
 theorem identitySpliceNDFST_unique_output_set (input : Sequence) :
@@ -467,9 +438,8 @@ theorem identitySpliceNDFST_output_is_valid (ctx : CellularContext)
   -- The output set is [preMRNA], so output = preMRNA
   rw [identitySpliceNDFST_output_set] at h
   simp only [List.mem_singleton] at h
-  -- h : output = preMRNA, so we can substitute
-  cases h
-  exact ⟨SpliceIsoform.mk preMRNA [], rfl⟩
+  subst h
+  exact ⟨SpliceIsoform.mk output [], rfl⟩
 
 /-- THEOREM (all_isoforms_produced): Every valid splice isoform is produced
     by the identity NDFST. For the identity NDFST, the only valid isoform
@@ -483,8 +453,10 @@ theorem identitySpliceNDFST_all_isoforms_produced (ctx : CellularContext)
     isoform.sequence ∈ ndfstOutputSet identitySpliceNDFST preMRNA := by
   -- isValidSpliceIsoformConcrete means isoform.sequence = preMRNA
   unfold isValidSpliceIsoformConcrete at h_valid
-  rw [identitySpliceNDFST_output_set, h_valid]
-  exact List.mem_singleton_self preMRNA
+  subst h_valid
+  -- The output set contains isoform.sequence (was preMRNA, eliminated by subst)
+  rw [identitySpliceNDFST_output_set]
+  exact List.mem_singleton_self isoform.sequence
 
 /-- Concrete SplicingNDFST instance with PROVED output validity and completeness.
 
@@ -544,14 +516,10 @@ theorem cotrans_oracle_completeness_eq :
     @CoTranslationalFoldingOracle.oracle_completeness concreteCoTranslationalFoldingOracle =
       hasFoldingDisruptionConcrete_complete := rfl
 
-/-- Verification: SplicingNDFST.output_is_valid is the proved theorem.
-    Universe-level issues in Lean4 v4.30.0 prevent direct field comparison.
-    We verify by checking that both produce the same existential witness. -/
-theorem splice_output_valid_eq (ctx : CellularContext)
-    (preMRNA : Sequence) (output : Sequence)
-    (h : output ∈ ndfstOutputSet identitySpliceNDFST preMRNA) :
-    (∃ (isoform : SpliceIsoform), isoform.sequence = output) := by
-  exact identitySpliceNDFST_output_is_valid ctx preMRNA output h
+/-- Verification: SplicingNDFST.output_is_valid equals the proved theorem. -/
+theorem splice_output_valid_eq :
+    @SplicingNDFST.output_is_valid SpliceState _ _ concreteSplicingNDFST =
+      identitySpliceNDFST_output_is_valid := rfl
 
 /-- Verification: CodonAdaptationIndex.cai_deterministic is reflexivity. -/
 theorem cai_deterministic_eq :

@@ -44,6 +44,8 @@ import BioCompiler.NDFST
 import BioCompiler.Scanners
 import BioCompiler.TypeSystem
 
+set_option maxHeartbeats 4000000
+
 namespace BioCompiler
 
 open Verdict Sequence
@@ -213,8 +215,8 @@ theorem all_valine_codons_have_gt :
     ∀ (codon : List Nucleotide), codon.length = 3 →
     codonToAA codon = 'V' → codonHasGT codon = true := by
   intro codon h_len h_aa
-  -- Decompose codon into [n1, n2, n3]
-  obtain ⟨n1, n2, n3, rfl⟩ : ∃ n1 n2 n3, codon = [n1, n2, n3] := by
+  -- Decompose codon into exactly [n1, n2, n3] by length = 3
+  obtain ⟨n1, ⟨n2, ⟨n3, rfl⟩⟩⟩ : ∃ n1 n2 n3, codon = [n1, n2, n3] := by
     cases codon with
     | nil => simp at h_len
     | cons n1 t1 =>
@@ -227,10 +229,10 @@ theorem all_valine_codons_have_gt :
           cases t3 with
           | nil => exact ⟨n1, n2, n3, rfl⟩
           | cons _ _ => simp at h_len
-  -- Exhaustive case analysis: for Valine codons codonHasGT is true,
-  -- for non-Valine codons codonToAA ≠ 'V' contradicts h_aa
-  cases n1 <;> cases n2 <;> cases n3
-  all_goals (first | (unfold codonHasGT; rfl) | (exfalso; exact absurd h_aa (by native_decide)))
+  -- Now case-split on each nucleotide, use decide for concrete evaluations
+  cases n1 <;> cases n2 <;> cases n3 <;>
+    try { unfold codonToAA at h_aa; cases h_aa } <;>
+    try { unfold codonHasGT; rfl }
 
 /-- THEOREM: Mandatory GT amino acids always have GT in their codons.
     If an amino acid is GT-mandatory, then every codon encoding it
@@ -242,7 +244,8 @@ theorem mandatory_gt_has_gt :
   intro aa h_mand codon h_len h_aa
   -- GT_MANDATORY_AAS = ['V'], so aa = 'V'
   unfold isGTMandatory GT_MANDATORY_AAS at h_mand
-  simp [List.mem_cons, List.not_mem_nil] at h_mand
+  simp only [List.mem_cons] at h_mand
+  simp at h_mand
   subst h_mand
   exact all_valine_codons_have_gt codon h_len h_aa
 
@@ -256,7 +259,7 @@ theorem no_ag_mandatory :
     ∀ (aa : Char), isAGMandatory aa = false := by
   intro aa
   unfold isAGMandatory AG_MANDATORY_AAS
-  simp [List.not_mem_nil]
+  simp
 
 -- ==============================================================================
 -- Unrepairable Cryptic Sites
@@ -271,13 +274,14 @@ theorem no_ag_mandatory :
     This is the KEY negative result: the type system's FAIL verdict for
     NoCrypticSplice at Valine positions is INESCAPABLE. -/
 def isUnrepairableCrypticDonor (seq : Sequence) (pos : Nat) : Bool :=
-  decide (pos + 2 ≤ seq.length) &&
-  (seq.getD pos Nucleotide.A) = Nucleotide.G &&
-  (seq.getD (pos + 1) Nucleotide.A) = Nucleotide.T &&
-  -- pos must be at a codon boundary (pos = codonPos * 3)
-  decide (pos % 3 = 0) &&
-  -- The amino acid at this codon must be GT-mandatory
-  isGTMandatory (codonToAA (seq.drop pos |>.take 3)) = true
+  if h : pos + 2 ≤ seq.length then
+    have h1 : pos < seq.length := by omega
+    have h2 : pos + 1 < seq.length := by omega
+    seq.get ⟨pos, h1⟩ == Nucleotide.G &&
+    seq.get ⟨pos + 1, h2⟩ == Nucleotide.T &&
+    pos % 3 == 0 &&
+    isGTMandatory (codonToAA (seq.drop pos |>.take 3)) == true
+  else false
 
 /-- THEOREM: There exist sequences with unrepairable cryptic donor sites.
     Specifically, the codon GTT (Valine) at position 0 creates a GT
@@ -313,8 +317,8 @@ theorem unrepairable_cryptic_donor_exists :
 theorem limited_ag_synonymous_options :
     ∃ (seq : Sequence) (pos : Nat),
       pos + 2 ≤ seq.length ∧
-      (seq.getD pos Nucleotide.A) = Nucleotide.A ∧
-      (seq.getD (pos + 1) Nucleotide.A) = Nucleotide.G ∧
+      (seq.drop pos).head? = some Nucleotide.A ∧
+      (seq.drop (pos + 1)).head? = some Nucleotide.G ∧
       pos % 3 = 0 ∧
       -- The codon is AGA or AGG (Arginine)
       codonToAA (seq.drop pos |>.take 3) = 'R' := by
@@ -346,8 +350,8 @@ structure SynonymousMutation where
 /-- Apply a synonymous mutation to a sequence at a codon-aligned position. -/
 def applySynonymousMutation (seq : Sequence) (mt : SynonymousMutation) : Sequence :=
   let pref := seq.take (mt.codonPos * 3)
-  let suffix := seq.drop (mt.codonPos * 3 + 3)
-  pref ++ mt.newCodon ++ suffix
+  let suff := seq.drop (mt.codonPos * 3 + 3)
+  pref ++ mt.newCodon ++ suff
 
 /-- THEOREM: Synonymous mutations preserve the amino acid at the mutated position.
     This is the fundamental guarantee that synonymous substitution provides. -/
@@ -363,8 +367,8 @@ theorem synonymous_gc_counterexample :
       codonToAA mt.originalCodon = codonToAA mt.newCodon ∧
       mt.originalCodon ≠ mt.newCodon ∧
       -- AAA has 0 G/C nucleotides, AAG has 1 G nucleotide
-      (mt.originalCodon.filter (fun x => x = Nucleotide.G || x = Nucleotide.C)).length ≠
-      (mt.newCodon.filter (fun x => x = Nucleotide.G || x = Nucleotide.C)).length := by
+      (mt.originalCodon.filter (fun n => n == Nucleotide.G || n == Nucleotide.C)).length ≠
+      (mt.newCodon.filter (fun n => n == Nucleotide.G || n == Nucleotide.C)).length := by
   exact ⟨
     { codonPos := 0
       originalCodon := [Nucleotide.A, Nucleotide.A, Nucleotide.A]
@@ -462,18 +466,18 @@ def isTypeSafeForProteinPredicates (_mt : SynonymousMutation) : Bool := true
     guarantee, as shown by the counterexamples above. -/
 def isTypeSafeForDNAPredicates (mt : SynonymousMutation) : Bool :=
   -- GC content change?
-  let origGC := (mt.originalCodon.filter (fun x => x = Nucleotide.G || x = Nucleotide.C)).length
-  let newGC := (mt.newCodon.filter (fun x => x = Nucleotide.G || x = Nucleotide.C)).length
+  let origGC := (mt.originalCodon.filter (fun n => n == Nucleotide.G || n == Nucleotide.C)).length
+  let newGC := (mt.newCodon.filter (fun n => n == Nucleotide.G || n == Nucleotide.C)).length
   -- No new GT dinucleotide?
-  let noNewGT := codonHasGT mt.originalCodon = true || codonHasGT mt.newCodon = false
+  let noNewGT := codonHasGT mt.originalCodon = true ∨ codonHasGT mt.newCodon = false
   -- No new AG dinucleotide?
-  let noNewAG := codonHasAG mt.originalCodon = true || codonHasAG mt.newCodon = false
+  let noNewAG := codonHasAG mt.originalCodon = true ∨ codonHasAG mt.newCodon = false
   -- No CpG island creation?
   let origCpG := mt.originalCodon.contains Nucleotide.C && mt.originalCodon.contains Nucleotide.G
   let newCpG := mt.newCodon.contains Nucleotide.C && mt.newCodon.contains Nucleotide.G
-  let noNewCpG := origCpG || !newCpG
+  let noNewCpG := origCpG ∨ ¬newCpG
   -- No restriction site creation (conservative check)
-  let noRestriction := !(codonHasAG mt.newCodon && !codonHasAG mt.originalCodon)
+  let noRestriction := ¬(codonHasAG mt.newCodon ∧ ¬codonHasAG mt.originalCodon)
   -- Combine checks
   (origGC = newGC) && noNewGT && noNewAG && noNewCpG && noRestriction
 
@@ -494,26 +498,26 @@ theorem synonymous_safe_for_SLOT_predicates
   intro h_slot
   -- SLOT predicates always evaluate to UNCERTAIN regardless of sequence
   cases P with
-  | ConservationScore _ => simp [evaluate]
-  | NoUnexpectedTMDomain _ _ => simp [evaluate]
-  | mRNASecondaryStructure _ => simp [evaluate]
-  | CoTranslationalFolding _ => simp [evaluate]
-  | StructureConfidence _ => simp [evaluate]
-  | NoMisfoldingRisk => simp [evaluate]
-  | CorrectFoldTopology => simp [evaluate]
-  | NoUnexpectedInteraction => simp [evaluate]
-  | StableFolding _ => simp [evaluate]
-  | NoDestabilizingMutation _ => simp [evaluate]
-  | DisulfideBondIntegrity => simp [evaluate]
-  | HydrophobicCoreQuality _ => simp [evaluate]
-  | SolubleExpression _ => simp [evaluate]
-  | NoAggregationProneRegion => simp [evaluate]
-  | ChargeComposition _ _ => simp [evaluate]
-  | NoLongHydrophobicStretch _ => simp [evaluate]
-  | LowImmunogenicity _ => simp [evaluate]
-  | NoStrongTCellEpitope _ => simp [evaluate]
-  | NoDominantBCellEpitope _ => simp [evaluate]
-  | PopulationCoverageSafe _ => simp [evaluate]
+  | ConservationScore _ => rfl
+  | NoUnexpectedTMDomain _ _ => rfl
+  | mRNASecondaryStructure _ => rfl
+  | CoTranslationalFolding _ => rfl
+  | StructureConfidence _ => rfl
+  | NoMisfoldingRisk => rfl
+  | CorrectFoldTopology => rfl
+  | NoUnexpectedInteraction => rfl
+  | StableFolding _ => rfl
+  | NoDestabilizingMutation _ => rfl
+  | DisulfideBondIntegrity => rfl
+  | HydrophobicCoreQuality _ => rfl
+  | SolubleExpression _ => rfl
+  | NoAggregationProneRegion => rfl
+  | ChargeComposition _ _ => rfl
+  | NoLongHydrophobicStretch _ => rfl
+  | LowImmunogenicity _ => rfl
+  | NoStrongTCellEpitope _ => rfl
+  | NoDominantBCellEpitope _ => rfl
+  | PopulationCoverageSafe _ => rfl
   -- Core predicates: isSLOT = false, contradiction
   | SpliceCorrect _ => simp [isSLOT] at h_slot
   | NoCrypticSplice => simp [isSLOT] at h_slot
@@ -561,13 +565,17 @@ theorem synonymous_unsafe_for_dna_predicates :
 -- ==============================================================================
 
 /-- The number of codons encoding a given amino acid (degeneracy). -/
+def nucFromIdx (i : Nat) (div : Nat) : Nucleotide :=
+  match (i / div) % 4 with
+  | 0 => Nucleotide.A | 1 => Nucleotide.C | 2 => Nucleotide.G | _ => Nucleotide.T
+
+def codonsForAA (aa : Char) : List (List Nucleotide) :=
+  (List.range 64).filterMap (fun i =>
+    let codon : List Nucleotide := [nucFromIdx i 16, nucFromIdx i 4, nucFromIdx i 1]
+    if codonToAA codon == aa then some codon else none)
+
 def codonDegeneracy (aa : Char) : Nat :=
-  List.length ((List.range 64).filter (fun i =>
-    let n1 : Nucleotide := match i / 16 with | 0 => Nucleotide.A | 1 => Nucleotide.C | 2 => Nucleotide.G | _ => Nucleotide.T
-    let n2 : Nucleotide := match (i % 16) / 4 with | 0 => Nucleotide.A | 1 => Nucleotide.C | 2 => Nucleotide.G | _ => Nucleotide.T
-    let n3 : Nucleotide := match i % 4 with | 0 => Nucleotide.A | 1 => Nucleotide.C | 2 => Nucleotide.G | _ => Nucleotide.T
-    decide (codonToAA [n1, n2, n3] = aa)
-  ))
+  (codonsForAA aa).length
 
 /-- THEOREM: Valine has exactly 4 codons (2-fold degenerate at position 3). -/
 theorem valine_degeneracy_4 : codonDegeneracy 'V' = 4 := by
@@ -599,7 +607,7 @@ theorem methionine_degeneracy_1 : codonDegeneracy 'M' = 1 := by
     If true, then a Valine position cannot be made GT-free by synonymous
     substitution; if false, it can potentially be made GT-free. -/
 def hasGTFreeCodon (aa : Char) : Bool :=
-  aa ∈ ['F', 'L', 'I', 'M', 'S', 'P', 'T', 'A', 'Y', 'H', 'Q', 'N', 'K', 'D', 'E', 'W', 'R', 'G']
+  aa ∈ ['F', 'L', 'I', 'M', 'S', 'P', 'T', 'A', 'Y', 'H', 'Q', 'N', 'K', 'D', 'E', 'C', 'W', 'R', 'G']
   -- All amino acids except Valine have at least one GT-free codon
 
 /-- THEOREM: Valine does NOT have any GT-free codon.
@@ -637,78 +645,41 @@ theorem isoleucine_has_gt_free_codon :
 -- AG-Free Synonymous Substitution Analysis
 -- ==============================================================================
 
-/-- The list of 20 standard amino acid characters. -/
-def standardAAs : List Char :=
+/-- List of all 20 standard amino acid characters. -/
+def STANDARD_AAS : List Char :=
   ['F','L','I','M','V','S','P','T','A','Y','H','Q','N','K','D','E','C','W','R','G']
 
-/-- Helper function: returns an AG-free codon for each standard amino acid.
-    For non-standard characters, returns a default codon. -/
-def agFreeCodonFor (aa : Char) : List Nucleotide :=
-  match aa with
-  | 'F' => [Nucleotide.T, Nucleotide.T, Nucleotide.T]
-  | 'L' => [Nucleotide.C, Nucleotide.T, Nucleotide.T]
-  | 'I' => [Nucleotide.A, Nucleotide.T, Nucleotide.T]
-  | 'M' => [Nucleotide.A, Nucleotide.T, Nucleotide.G]
-  | 'V' => [Nucleotide.G, Nucleotide.T, Nucleotide.T]
-  | 'S' => [Nucleotide.T, Nucleotide.C, Nucleotide.T]
-  | 'P' => [Nucleotide.C, Nucleotide.C, Nucleotide.T]
-  | 'T' => [Nucleotide.A, Nucleotide.C, Nucleotide.T]
-  | 'A' => [Nucleotide.G, Nucleotide.C, Nucleotide.T]
-  | 'Y' => [Nucleotide.T, Nucleotide.A, Nucleotide.T]
-  | 'H' => [Nucleotide.C, Nucleotide.A, Nucleotide.T]
-  | 'Q' => [Nucleotide.C, Nucleotide.A, Nucleotide.A]
-  | 'N' => [Nucleotide.A, Nucleotide.A, Nucleotide.T]
-  | 'K' => [Nucleotide.A, Nucleotide.A, Nucleotide.A]
-  | 'D' => [Nucleotide.G, Nucleotide.A, Nucleotide.T]
-  | 'E' => [Nucleotide.G, Nucleotide.A, Nucleotide.A]
-  | 'C' => [Nucleotide.T, Nucleotide.G, Nucleotide.T]
-  | 'W' => [Nucleotide.T, Nucleotide.G, Nucleotide.G]
-  | 'R' => [Nucleotide.C, Nucleotide.G, Nucleotide.T]
-  | 'G' => [Nucleotide.G, Nucleotide.G, Nucleotide.T]
-  | _ => [Nucleotide.A, Nucleotide.A, Nucleotide.A]
-
-theorem agFreeCodonFor_length (aa : Char) : (agFreeCodonFor aa).length = 3 := by
-  unfold agFreeCodonFor; split <;> native_decide
-
-theorem agFreeCodonFor_no_ag (aa : Char) : codonHasAG (agFreeCodonFor aa) = false := by
-  unfold agFreeCodonFor; split <;> native_decide
-
-theorem agFreeCodonFor_encodes (aa : Char) (h : aa ∈ standardAAs) :
-    codonToAA (agFreeCodonFor aa) = aa := by
-  unfold standardAAs at h
-  simp [List.mem_cons, List.not_mem_nil] at h
-  rcases h with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl |
-    rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
-  · native_decide  -- F
-  · native_decide  -- L
-  · native_decide  -- I
-  · native_decide  -- M
-  · native_decide  -- V
-  · native_decide  -- S
-  · native_decide  -- P
-  · native_decide  -- T
-  · native_decide  -- A
-  · native_decide  -- Y
-  · native_decide  -- H
-  · native_decide  -- Q
-  · native_decide  -- N
-  · native_decide  -- K
-  · native_decide  -- D
-  · native_decide  -- E
-  · native_decide  -- C
-  · native_decide  -- W
-  · native_decide  -- R
-  · native_decide  -- G
-
 /-- Check if an amino acid has at least one AG-free codon.
-    All amino acids except none have AG in ALL codons (no amino acid is
-    AG-mandatory), so every amino acid has at least one AG-free codon. -/
+    Every standard amino acid has at least one AG-free codon
+    (no amino acid is AG-mandatory). -/
 theorem every_aa_has_ag_free_codon :
-    ∀ (aa : Char), aa ∈ standardAAs →
+    ∀ (aa : Char), aa ∈ STANDARD_AAS →
     ∃ (codon : List Nucleotide), codon.length = 3 ∧
     codonToAA codon = aa ∧ codonHasAG codon = false := by
   intro aa h_mem
-  exact ⟨agFreeCodonFor aa, agFreeCodonFor_length aa, agFreeCodonFor_encodes aa h_mem, agFreeCodonFor_no_ag aa⟩
+  simp only [STANDARD_AAS, List.mem_cons, List.mem_nil_iff, or_false] at h_mem
+  rcases h_mem with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl |
+                        rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+  · exact ⟨[Nucleotide.T, Nucleotide.T, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.T, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.T, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.T, Nucleotide.G], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.T, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.T, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.T, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.A, Nucleotide.A], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.A, Nucleotide.A], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.A, Nucleotide.A], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.T, Nucleotide.G, Nucleotide.C], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.T, Nucleotide.G, Nucleotide.G], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.G, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.G, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
 
 -- ==============================================================================
 -- Constraint Conflict Theorems
@@ -745,10 +716,9 @@ theorem single_degenerate_no_synonymous_options :
     ∀ (alt : List Nucleotide), alt.length = 3 →
     codonToAA alt = 'W' → alt = codon := by
   intro codon h_len h_aa alt h_alt_len h_alt_aa
-  -- Trp only has one codon: TGG
-  -- So any codon/alt encoding Trp must be TGG
+  -- Trp only has one codon: TGG, so both codon and alt must be TGG
   have h_codon : codon = [Nucleotide.T, Nucleotide.G, Nucleotide.G] := by
-    obtain ⟨n1, n2, n3, rfl⟩ : ∃ n1 n2 n3, codon = [n1, n2, n3] := by
+    obtain ⟨n1, ⟨n2, ⟨n3, rfl⟩⟩⟩ : ∃ n1 n2 n3, codon = [n1, n2, n3] := by
       cases codon with
       | nil => simp at h_len
       | cons n1 t1 =>
@@ -761,10 +731,11 @@ theorem single_degenerate_no_synonymous_options :
             cases t3 with
             | nil => exact ⟨n1, n2, n3, rfl⟩
             | cons _ _ => simp at h_len
-    cases n1 <;> cases n2 <;> cases n3
-    all_goals (first | rfl | (exfalso; exact absurd h_aa (by native_decide)))
+    cases n1 <;> cases n2 <;> cases n3 <;>
+      simp only [codonToAA] at h_aa <;>
+      first | rfl | (exfalso; exact absurd h_aa (by decide))
   have h_alt : alt = [Nucleotide.T, Nucleotide.G, Nucleotide.G] := by
-    obtain ⟨n1, n2, n3, rfl⟩ : ∃ n1 n2 n3, alt = [n1, n2, n3] := by
+    obtain ⟨n1, ⟨n2, ⟨n3, rfl⟩⟩⟩ : ∃ n1 n2 n3, alt = [n1, n2, n3] := by
       cases alt with
       | nil => simp at h_alt_len
       | cons n1 t1 =>
@@ -777,8 +748,9 @@ theorem single_degenerate_no_synonymous_options :
             cases t3 with
             | nil => exact ⟨n1, n2, n3, rfl⟩
             | cons _ _ => simp at h_alt_len
-    cases n1 <;> cases n2 <;> cases n3
-    all_goals (first | rfl | (exfalso; exact absurd h_alt_aa (by native_decide)))
+    cases n1 <;> cases n2 <;> cases n3 <;>
+      simp only [codonToAA] at h_alt_aa <;>
+      first | rfl | (exfalso; exact absurd h_alt_aa (by decide))
   rw [h_codon, h_alt]
 
 -- ==============================================================================
@@ -809,8 +781,9 @@ theorem synonymous_at_least_protein_safe (mt : SynonymousMutation) :
     classifyMutationSafety mt = MutationSafety.PROTEIN_SAFE := by
   unfold classifyMutationSafety isTypeSafeForProteinPredicates
   simp only [if_true]
-  cases h : isTypeSafeForDNAPredicates mt <;> simp <;>
-    { try { left; rfl }; try { right; rfl } }
+  split
+  · left; rfl
+  · right; rfl
 
 -- ==============================================================================
 -- Codon-Position-Specific Analysis
@@ -846,93 +819,48 @@ theorem position12_gt_wobble_can_eliminate :
 -- Summary Statistics
 -- ==============================================================================
 
-/-- Count amino acids with at least one GT-containing codon.
-    Uses a finite enumeration over all 64 codons instead of an existential
-    quantifier, since Lean4 v4.30.0 cannot synthesize Decidable for
-    ∃ codon, codon.length = 3 ∧ codonToAA codon = aa ∧ codonHasGT codon = true. -/
+/-- Check if an amino acid has at least one GT-containing codon. -/
+def hasGTCodonFor (aa : Char) : Bool :=
+  (List.range 64).any (fun i =>
+    codonToAA [nucFromIdx i 16, nucFromIdx i 4, nucFromIdx i 1] == aa && codonHasGT [nucFromIdx i 16, nucFromIdx i 4, nucFromIdx i 1]
+  )
+
+/-- Count amino acids with at least one GT-containing codon. -/
 def aasWithGTCodon : Nat :=
-  let allAAs : List Char := ['F','L','I','M','V','S','P','T','A','Y','H','Q','N','K','D','E','C','W','R','G']
-  allAAs.countP (fun aa =>
-    (List.range 64).any (fun i =>
-      let n1 : Nucleotide := match i / 16 with | 0 => Nucleotide.A | 1 => Nucleotide.C | 2 => Nucleotide.G | _ => Nucleotide.T
-      let n2 : Nucleotide := match (i % 16) / 4 with | 0 => Nucleotide.A | 1 => Nucleotide.C | 2 => Nucleotide.G | _ => Nucleotide.T
-      let n3 : Nucleotide := match i % 4 with | 0 => Nucleotide.A | 1 => Nucleotide.C | 2 => Nucleotide.G | _ => Nucleotide.T
-      decide (codonToAA [n1, n2, n3] = aa && codonHasGT [n1, n2, n3] = true)
-    ))
-
-/-- Helper function: returns a GT-free codon for each standard amino acid (except V).
-    For stop codons and other characters, returns a default codon. -/
-def gtFreeCodonFor (aa : Char) : List Nucleotide :=
-  match aa with
-  | 'F' => [Nucleotide.T, Nucleotide.T, Nucleotide.T]
-  | 'L' => [Nucleotide.C, Nucleotide.T, Nucleotide.T]
-  | 'I' => [Nucleotide.A, Nucleotide.T, Nucleotide.T]
-  | 'M' => [Nucleotide.A, Nucleotide.T, Nucleotide.G]
-  | 'S' => [Nucleotide.T, Nucleotide.C, Nucleotide.T]
-  | 'P' => [Nucleotide.C, Nucleotide.C, Nucleotide.T]
-  | 'T' => [Nucleotide.A, Nucleotide.C, Nucleotide.T]
-  | 'A' => [Nucleotide.G, Nucleotide.C, Nucleotide.T]
-  | 'Y' => [Nucleotide.T, Nucleotide.A, Nucleotide.T]
-  | 'H' => [Nucleotide.C, Nucleotide.A, Nucleotide.T]
-  | 'Q' => [Nucleotide.C, Nucleotide.A, Nucleotide.A]
-  | 'N' => [Nucleotide.A, Nucleotide.A, Nucleotide.T]
-  | 'K' => [Nucleotide.A, Nucleotide.A, Nucleotide.A]
-  | 'D' => [Nucleotide.G, Nucleotide.A, Nucleotide.T]
-  | 'E' => [Nucleotide.G, Nucleotide.A, Nucleotide.A]
-  | 'C' => [Nucleotide.T, Nucleotide.G, Nucleotide.C]
-  | 'W' => [Nucleotide.T, Nucleotide.G, Nucleotide.G]
-  | 'R' => [Nucleotide.C, Nucleotide.G, Nucleotide.C]
-  | 'G' => [Nucleotide.G, Nucleotide.G, Nucleotide.C]
-  | '.' => [Nucleotide.T, Nucleotide.A, Nucleotide.A]
-  | _ => [Nucleotide.A, Nucleotide.A, Nucleotide.A]
-
-theorem gtFreeCodonFor_length (aa : Char) : (gtFreeCodonFor aa).length = 3 := by
-  unfold gtFreeCodonFor; split <;> native_decide
-
-theorem gtFreeCodonFor_no_gt (aa : Char) : codonHasGT (gtFreeCodonFor aa) = false := by
-  unfold gtFreeCodonFor; split <;> native_decide
-
-theorem gtFreeCodonFor_encodes (aa : Char) (h : aa ∈ standardAAs ∧ aa ≠ 'V') :
-    codonToAA (gtFreeCodonFor aa) = aa := by
-  have h_mem := h.1
-  unfold standardAAs at h_mem
-  simp [List.mem_cons, List.not_mem_nil] at h_mem
-  rcases h_mem with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl |
-    rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
-  · native_decide  -- F
-  · native_decide  -- L
-  · native_decide  -- I
-  · native_decide  -- M
-  · exact absurd rfl h.2  -- V: aa = 'V' contradicts h.2
-  · native_decide  -- S
-  · native_decide  -- P
-  · native_decide  -- T
-  · native_decide  -- A
-  · native_decide  -- Y
-  · native_decide  -- H
-  · native_decide  -- Q
-  · native_decide  -- N
-  · native_decide  -- K
-  · native_decide  -- D
-  · native_decide  -- E
-  · native_decide  -- C
-  · native_decide  -- W
-  · native_decide  -- R
-  · native_decide  -- G
+  (['F','L','I','M','V','S','P','T','A','Y','H','Q','N','K','D','E','C','W','R','G']).filter
+    hasGTCodonFor |>.length
 
 /-- THEOREM: Valine is the only amino acid where ALL codons contain GT.
     This is a critical result for the type system: Valine positions are
     the ONLY positions where a cryptic GT donor site is unrepairable
-    through synonymous codon substitution.
-    Note: Cysteine (TGT/TGC) has TGC which is GT-free, so Cysteine
-    also has GT-free codons. The original condition `aa ≠ 'C'` was
-    overly conservative. -/
+    through synonymous codon substitution. -/
 theorem valine_only_mandatory_gt_aa :
-    ∀ (aa : Char), aa ∈ standardAAs → aa ≠ 'V' →
+    ∀ (aa : Char), aa ∈ STANDARD_AAS → aa ≠ 'V' →
     ∃ (codon : List Nucleotide), codon.length = 3 ∧
       codonToAA codon = aa ∧ codonHasGT codon = false := by
   intro aa h_mem h_not_V
-  exact ⟨gtFreeCodonFor aa, gtFreeCodonFor_length aa,
-    gtFreeCodonFor_encodes aa ⟨h_mem, h_not_V⟩, gtFreeCodonFor_no_gt aa⟩
+  simp only [STANDARD_AAS, List.mem_cons, List.mem_nil_iff, or_false] at h_mem
+  rcases h_mem with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl |
+                        rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+  · exact ⟨[Nucleotide.T, Nucleotide.T, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.T, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.T, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.T, Nucleotide.G], by native_decide, by native_decide, by native_decide⟩
+  · exact absurd rfl h_not_V
+  · exact ⟨[Nucleotide.T, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.C, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.T, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.A, Nucleotide.A], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.A, Nucleotide.A, Nucleotide.A], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.A, Nucleotide.T], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.A, Nucleotide.A], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.T, Nucleotide.G, Nucleotide.C], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.T, Nucleotide.G, Nucleotide.G], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.C, Nucleotide.G, Nucleotide.C], by native_decide, by native_decide, by native_decide⟩
+  · exact ⟨[Nucleotide.G, Nucleotide.G, Nucleotide.C], by native_decide, by native_decide, by native_decide⟩
 
 end BioCompiler
