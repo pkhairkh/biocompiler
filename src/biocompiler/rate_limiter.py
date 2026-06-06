@@ -20,7 +20,7 @@ import threading
 import time
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,9 @@ class PersistentRateLimiter:
         Maximum number of requests allowed within the sliding window.
     window_seconds:
         Width of the sliding window in seconds.
+    time_func:
+        Callable returning the current time as a float (seconds since epoch).
+        Defaults to ``time.time``.  Override in tests to control time.
     """
 
     def __init__(
@@ -46,11 +49,13 @@ class PersistentRateLimiter:
         db_path: str = "~/.biocompiler/rate_limits.db",
         max_requests: int = 100,
         window_seconds: int = 3600,
+        time_func: Any | None = None,
     ) -> None:
         self._db_path = Path(db_path).expanduser()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._max_requests = max_requests
         self._window_seconds = window_seconds
+        self._time_func = time_func or time.time
         self._request_counter = 0  # for periodic cleanup
         self._cleanup_every = 100  # clean up after this many record() calls
         self._lock = threading.Lock()
@@ -96,7 +101,7 @@ class PersistentRateLimiter:
             *max_requests* within the current window.  *remaining* is
             the number of requests the client can still make.
         """
-        now = time.time()
+        now = self._time_func()
         cutoff = now - self._window_seconds
         with self._connect() as conn:
             count = conn.execute(
@@ -115,7 +120,7 @@ class PersistentRateLimiter:
 
         Also triggers periodic cleanup of expired entries.
         """
-        now = time.time()
+        now = self._time_func()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -139,7 +144,7 @@ class PersistentRateLimiter:
         Used for batch endpoints where each item consumes one rate-limit
         unit.
         """
-        now = time.time()
+        now = self._time_func()
         with self._connect() as conn:
             conn.executemany(
                 """
@@ -162,7 +167,7 @@ class PersistentRateLimiter:
 
         Returns the number of rows deleted.
         """
-        cutoff = time.time() - self._window_seconds
+        cutoff = self._time_func() - self._window_seconds
         with self._connect() as conn:
             cursor = conn.execute(
                 """

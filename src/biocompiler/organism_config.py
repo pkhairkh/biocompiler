@@ -229,6 +229,34 @@ CONSTRAINT_PROFILES: dict[str, dict[str, bool]] = {
         "mrna_stability": True,
         "codon_pair_bias": True,
     },
+    # ── Plant (Task 2.2) ──────────────────────────────────────────
+    # Plants require CpG avoidance (transgene silencing) and splice
+    # site avoidance (cryptic splicing).  Codon pair bias is relevant
+    # for dicot expression hosts.
+    "plant": {
+        "cai": True,
+        "gc_content": True,
+        "restriction_sites": True,
+        "atttta_motifs": True,
+        "splice_avoidance": True,
+        "cpg_avoidance": True,
+        "mrna_stability": True,
+        "codon_pair_bias": True,
+    },
+    # ── Insect (Task 2.2) ────────────────────────────────────────
+    # Insect cells (Sf9, Hi5) have less stringent splice avoidance
+    # than mammals (insect introns are AT-rich).  CpG methylation
+    # is less of a concern for baculovirus expression.
+    "insect": {
+        "cai": True,
+        "gc_content": True,
+        "restriction_sites": True,
+        "atttta_motifs": True,
+        "splice_avoidance": True,
+        "cpg_avoidance": False,
+        "mrna_stability": True,
+        "codon_pair_bias": True,
+    },
 }
 
 

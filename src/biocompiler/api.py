@@ -121,6 +121,7 @@ __all__ = [
     "MAX_PROTEIN_LENGTH",
     "MAX_BATCH_SIZE",
     "MAX_REQUEST_SIZE",
+    "MAX_DNA_LENGTH",
     "OPTIMIZE_TIMEOUT_S",
     # Batch optimization (programmatic API)
     "batch_optimize",
@@ -140,6 +141,17 @@ __all__ = [
     "PredicateResponse",
     "HealthResponse",
     "InfoResponse",
+    # Task 1.6 response/input models
+    "EnzymeListResponse",
+    "ProvenanceDetailResponse",
+    "ProvenanceListResponse",
+    "ProvenanceRecordSummary",
+    "ExportFastaResponse",
+    "ExportGenbankResponse",
+    "ExportSbol3Input",
+    "ExportSbol3Response",
+    "DatasetValidationResponse",
+    "DatasetValidationResult",
     # Protein analysis input models
     "StructurePredictInput",
     "QualityAssessInput",
@@ -439,6 +451,11 @@ class SequenceInput(BaseModel):
         invalid = set(v) - set("ACGTN")
         if invalid:
             raise ValueError(f"Invalid nucleotides: {invalid}")
+        if len(v) > MAX_DNA_LENGTH:
+            raise ValueError(
+                f"DNA sequence too long ({len(v)} bases). "
+                f"Maximum: {MAX_DNA_LENGTH} bases."
+            )
         return v
 
     @field_validator("organism")
@@ -691,6 +708,7 @@ class OrganismResponse(BaseModel):
 class InfoResponse(BaseModel):
     """Response from the /info endpoint."""
     max_protein_length: int = Field(..., description="Maximum protein sequence length in amino acids")
+    max_dna_length: int = Field(..., description="Maximum DNA sequence length in bases")
     max_batch_size: int = Field(..., description="Maximum number of items per batch request")
     max_request_size: int = Field(..., description="Maximum request body size in bytes")
     optimize_timeout_s: int = Field(..., description="Optimization timeout in seconds")
@@ -709,6 +727,102 @@ class HealthResponse(BaseModel):
     timestamp: str
     auth_enabled: bool = False
     rate_limit_rpm: int = 60
+
+
+# ─── Additional Response/Input Models (Task 1.6) ────────────────
+
+class EnzymeListResponse(BaseModel):
+    """Response model for /enzymes endpoint."""
+    enzymes: dict[str, str] = Field(..., description="Enzyme name to recognition site mapping")
+
+
+class ProvenanceRecordSummary(BaseModel):
+    """Summary of a single provenance record."""
+    gene_name: str = Field(..., description="Gene name")
+    organism: str = Field(..., description="Organism")
+
+
+class ProvenanceDetailResponse(BaseModel):
+    """Response model for /provenance/{id} endpoint."""
+    id: str = Field(..., description="Record ID")
+    trail: dict = Field(..., description="Full provenance trail")
+
+
+class ProvenanceListResponse(BaseModel):
+    """Response model for /provenance endpoint."""
+    count: int = Field(..., description="Number of records")
+    records: list[ProvenanceRecordSummary] = Field(default_factory=list, description="Record summaries")
+
+
+class ExportFastaResponse(BaseModel):
+    """Response model for /export/fasta endpoint."""
+    format: str = Field("fasta", description="Export format")
+    content: str = Field(..., description="FASTA content")
+
+
+class ExportGenbankResponse(BaseModel):
+    """Response model for /export/genbank endpoint."""
+    format: str = Field("genbank", description="Export format")
+    content: str = Field(..., description="GenBank content")
+
+
+class ExportSbol3Input(BaseModel):
+    """Input model for /export/sbol3 endpoint."""
+    sequence: str = Field(..., description="DNA sequence")
+    organism: str = Field("Homo_sapiens", description="Source organism")
+    gene_name: str = Field("optimized_gene", description="Gene name")
+    format: str = Field("sbol3", description="SBOL format: 'sbol3' or 'sbol3json'")
+
+    @field_validator("sequence")
+    @classmethod
+    def validate_sequence(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Sequence must not be empty")
+        v = v.upper()
+        invalid = set(v) - set("ACGT")
+        if invalid:
+            raise ValueError(f"Invalid nucleotides: {invalid}")
+        return v
+
+    @field_validator("organism")
+    @classmethod
+    def validate_organism(cls, v: str) -> str:
+        resolved = resolve_organism(v, strict=False)
+        if resolved not in SUPPORTED_ORGANISMS:
+            raise ValueError(
+                f"Unsupported organism: {v} (resolved to {resolved!r}). "
+                f"Supported: {sorted(set(SUPPORTED_ORGANISMS))}"
+            )
+        return resolved
+
+    @field_validator("format")
+    @classmethod
+    def validate_format(cls, v: str) -> str:
+        v = v.lower()
+        if v not in ("sbol3", "sbol3json"):
+            raise ValueError(f"Unsupported SBOL format: {v}. Supported: sbol3, sbol3json")
+        return v
+
+
+class ExportSbol3Response(BaseModel):
+    """Response model for /export/sbol3 endpoint."""
+    format: str = Field(..., description="Export format")
+    content: str = Field(..., description="SBOL3 content (XML or JSON)")
+
+
+class DatasetValidationResult(BaseModel):
+    """Result of a single dataset validation test."""
+    dataset: str = Field(..., description="Dataset name")
+    test_name: str = Field(..., description="Test name")
+    passed: bool = Field(..., description="Whether the test passed")
+
+
+class DatasetValidationResponse(BaseModel):
+    """Response model for /validate-datasets endpoint."""
+    total_tests: int = Field(..., description="Total number of tests")
+    passed: int = Field(..., description="Number of tests passed")
+    failed: int = Field(..., description="Number of tests failed")
+    results: list[DatasetValidationResult] = Field(default_factory=list, description="Per-test results")
 
 
 # ─── Batch Pydantic Models ────────────────────────────────────────
@@ -1278,6 +1392,7 @@ MAX_PROTEIN_LENGTH = int(os.environ.get("BIOCOMPILER_MAX_PROTEIN_LENGTH", "10000
 MAX_BATCH_SIZE = int(os.environ.get("BIOCOMPILER_MAX_BATCH_SIZE", "50"))  # sequences per batch
 MAX_REQUEST_SIZE = int(os.environ.get("BIOCOMPILER_MAX_REQUEST_SIZE", str(10_000_000)))  # bytes
 OPTIMIZE_TIMEOUT_S = int(os.environ.get("BIOCOMPILER_OPTIMIZE_TIMEOUT", "300"))  # seconds
+MAX_DNA_LENGTH = int(os.environ.get("BIOCOMPILER_MAX_DNA_LENGTH", "100000"))  # bases
 
 _PROTEIN_VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 
@@ -3170,6 +3285,7 @@ def create_app() -> FastAPI:
 
         return InfoResponse(
             max_protein_length=MAX_PROTEIN_LENGTH,
+            max_dna_length=MAX_DNA_LENGTH,
             max_batch_size=MAX_BATCH_SIZE,
             max_request_size=MAX_REQUEST_SIZE,
             optimize_timeout_s=OPTIMIZE_TIMEOUT_S,
@@ -3571,6 +3687,56 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.exception("GenBank export failed unexpectedly")
             raise HTTPException(status_code=500, detail=f"GenBank export failed: {e}")
+
+    # ─── SBOL3 Export Endpoint ────────────────────────────────────
+
+    @app.post("/export/sbol3")
+    async def export_sbol3_endpoint(input_data: ExportSbol3Input, client_id: str = Depends(verify_api_key)) -> dict:
+        """Export a sequence in SBOL3 format."""
+        try:
+            # Generate SBOL3 XML content
+            seq = input_data.sequence.upper()
+            organism = input_data.organism
+            gene_name = input_data.gene_name
+            fmt = input_data.format
+
+            if fmt == "sbol3json":
+                import json as _json
+                sbol3_content = _json.dumps({
+                    "SBOL3": True,
+                    "type": "http://sbols.org/v3#Component",
+                    "identity": f"https://biocompiler.org/{gene_name}",
+                    "displayId": gene_name,
+                    "sequence": {
+                        "type": "http://sbols.org/v3#Sequence",
+                        "identity": f"https://biocompiler.org/{gene_name}_seq",
+                        "displayId": f"{gene_name}_seq",
+                        "elements": seq,
+                        "encoding": "http://www.chem.qmul.ac.uk/iubmb/misc/naseq.html",
+                    },
+                    "organism": organism,
+                }, indent=2)
+            else:
+                sbol3_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:sbol="http://sbols.org/v3#"
+         xmlns:dcterms="http://purl.org/dc/terms/">
+  <sbol:Component rdf:about="https://biocompiler.org/{gene_name}">
+    <dcterms:title>{gene_name}</dcterms:title>
+    <sbol:displayId>{gene_name}</sbol:displayId>
+    <sbol:hasSequence rdf:resource="https://biocoder.org/{gene_name}_seq"/>
+    <sbol:organism>{organism}</sbol:organism>
+  </sbol:Component>
+  <sbol:Sequence rdf:about="https://biocompiler.org/{gene_name}_seq">
+    <sbol:displayId>{gene_name}_seq</sbol:displayId>
+    <sbol:elements>{seq}</sbol:elements>
+    <sbol:encoding rdf:resource="http://www.chem.qmul.ac.uk/iubmb/misc/naseq.html"/>
+  </sbol:Sequence>
+</rdf:RDF>"""
+            return {"format": fmt, "content": sbol3_content}
+        except Exception as e:
+            logger.exception("SBOL3 export failed unexpectedly")
+            raise HTTPException(status_code=500, detail=f"SBOL3 export failed: {e}")
 
     # ─── Batch Endpoints ─────────────────────────────────────────
 

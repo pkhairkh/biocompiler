@@ -5,17 +5,18 @@ Covers:
 1. Basic check/record — requests under the limit are allowed
 2. Rate-limit enforcement — requests exceeding the limit are blocked
 3. Batch recording — multiple requests recorded at once
-4. Sliding window expiry — old entries no longer count
-5. Cleanup — expired entries are removed from the database
+4. Sliding window expiry — old entries no longer count (no real sleeps)
+5. Cleanup — expired entries are removed from the database (no real sleeps)
 6. Persistence — state survives across limiter instances
 7. Client isolation — one client hitting the limit doesn't affect another
 8. Clear — per-client and global clear works
+9. Database schema and properties
+10. Custom time function support
 """
 
 from __future__ import annotations
 
 import sqlite3
-import time
 import tempfile
 import os
 
@@ -41,6 +42,25 @@ def limiter(tmp_db):
         max_requests=10,
         window_seconds=60,
     )
+
+
+@pytest.fixture()
+def mock_time():
+    """Provide a controllable mock time source.
+
+    Returns a dict with keys:
+      - "time": current simulated time (float)
+      - "fn": callable that returns the current simulated time
+      - "advance": callable(dt) that advances time by dt seconds
+    """
+    state = {"time": 1000000.0}
+
+    def time_fn() -> float:
+        return state["time"]
+
+    state["fn"] = time_fn
+    state["advance"] = lambda dt: state.update(time=state["time"] + dt)
+    return state
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -121,21 +141,22 @@ class TestBatchRecording:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4. Sliding window expiry
+# 4. Sliding window expiry (no real sleeps)
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestSlidingWindowExpiry:
     """Verify that old entries no longer count toward the limit."""
 
-    def test_old_entries_expire(self, tmp_db):
+    def test_old_entries_expire(self, tmp_db, mock_time):
         """Entries older than window_seconds should not count."""
         limiter = PersistentRateLimiter(
             db_path=tmp_db,
             max_requests=10,
-            window_seconds=2,  # 2-second window for fast test
+            window_seconds=60,
+            time_func=mock_time["fn"],
         )
-        # Record 10 requests
+        # Record 10 requests at the initial time
         for _ in range(10):
             limiter.record("client_a")
 
@@ -143,8 +164,8 @@ class TestSlidingWindowExpiry:
         allowed, remaining = limiter.check("client_a")
         assert allowed is False
 
-        # Wait for window to expire
-        time.sleep(2.5)
+        # Advance time past the window (no real sleep!)
+        mock_time["advance"](61)
 
         # Old entries should have expired
         allowed, remaining = limiter.check("client_a")
@@ -153,24 +174,25 @@ class TestSlidingWindowExpiry:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5. Cleanup
+# 5. Cleanup (no real sleeps)
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestCleanup:
     """Verify that expired entries are removed from the database."""
 
-    def test_cleanup_removes_expired_entries(self, tmp_db):
+    def test_cleanup_removes_expired_entries(self, tmp_db, mock_time):
         limiter = PersistentRateLimiter(
             db_path=tmp_db,
             max_requests=100,
-            window_seconds=1,  # 1-second window for fast test
+            window_seconds=60,
+            time_func=mock_time["fn"],
         )
         limiter.record("client_a")
         limiter.record("client_b")
 
-        # Wait for entries to expire
-        time.sleep(1.5)
+        # Advance time past the window (no real sleep!)
+        mock_time["advance"](61)
 
         deleted = limiter.cleanup()
         assert deleted >= 2  # At least the two we inserted
@@ -181,19 +203,20 @@ class TestCleanup:
         # Entries are still within the window, so nothing should be deleted
         assert deleted == 0
 
-    def test_periodic_cleanup_triggered(self, tmp_db):
+    def test_periodic_cleanup_triggered(self, tmp_db, mock_time):
         """Verify that cleanup is triggered automatically after many records."""
         limiter = PersistentRateLimiter(
             db_path=tmp_db,
             max_requests=1000,
-            window_seconds=1,
+            window_seconds=60,
+            time_func=mock_time["fn"],
         )
         # Record enough to trigger periodic cleanup (default every 100)
         for _ in range(110):
             limiter.record("client_a")
 
-        # Wait for entries to expire, then check count
-        time.sleep(1.5)
+        # Advance time past the window (no real sleep!)
+        mock_time["advance"](61)
         # The cleanup should have run during the record loop.
         # After window expiry, all should be gone.
         deleted = limiter.cleanup()
@@ -338,3 +361,25 @@ class TestDatabaseSchema:
             db_path="~/.biocompiler_test_rate_limits/test.db"
         )
         assert not str(limiter.db_path).startswith("~")
+
+    def test_custom_time_func(self, tmp_db, mock_time):
+        """Verify that a custom time_func is used for all time-dependent ops."""
+        limiter = PersistentRateLimiter(
+            db_path=tmp_db,
+            max_requests=5,
+            window_seconds=10,
+            time_func=mock_time["fn"],
+        )
+        # Record 5 requests at time 0
+        for _ in range(5):
+            limiter.record("client_a")
+
+        allowed, _ = limiter.check("client_a")
+        assert allowed is False
+
+        # Advance past the window
+        mock_time["advance"](11)
+
+        allowed, remaining = limiter.check("client_a")
+        assert allowed is True
+        assert remaining == 5

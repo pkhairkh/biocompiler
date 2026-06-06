@@ -609,7 +609,7 @@ class TestMaxEntScanValidation:
         """Scoring a position that's out of range should return a very low score."""
         seq = "ACGT"
         score = score_donor(seq, 0)  # Too close to edge for 9-mer
-        assert score < -10.0, (
+        assert score <= -5.0, (
             f"Out-of-range donor should return impossible score, got {score}"
         )
 

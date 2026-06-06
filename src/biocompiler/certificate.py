@@ -57,7 +57,17 @@ __all__ = [
     "compute_certificate",
     "format_certificate",
     "VERSION",
+    "_CERTIFICATE_VERSION",
+    "_REQUIRED_INPUT_PARAM_KEYS",
 ]
+
+# Certificate version (integer, incremented when the hash format changes)
+_CERTIFICATE_VERSION: int = 2
+
+# Required input parameter keys for certificate generation
+_REQUIRED_INPUT_PARAM_KEYS: frozenset[str] = frozenset({
+    "organism", "gc_lo", "gc_hi", "cai_threshold", "enzymes",
+})
 
 # Required keys in a certificate dict for verification
 _CERT_REQUIRED_KEYS: frozenset[str] = frozenset({"version", "design_id", "sequence", "types", "provenance"})
@@ -155,6 +165,7 @@ def generate_certificate(
     provenance: dict[str, Any] = {
         "tool": "BioCompiler",
         "version": VERSION,
+        "certificate_version": _CERTIFICATE_VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "parameters": complete_params,
         "input_hash": seq_hash,
@@ -495,9 +506,10 @@ def compute_certificate(
     for r in results:
         if not r.passed:
             has_unsatisfied = True
-        if "mutagenesis" in r.details.lower():
+        # Check structured flags first (preferred), then fall back to string matching
+        if getattr(r, 'mutagenesis_applied', False) or "mutagenesis" in r.details.lower():
             has_mutagenesis = True
-        if "unavoidable" in r.details.lower():
+        if getattr(r, 'unavoidable_constraints', []) or "unavoidable" in r.details.lower():
             has_unavoidable = True
 
     if has_unsatisfied:

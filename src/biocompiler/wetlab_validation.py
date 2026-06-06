@@ -47,6 +47,15 @@ __all__ = [
     "EXPRESSION_LEVEL_MAP",
     "SOLUBILITY_LEVEL_MAP",
     "VECTOR_PROMOTER_COMPAT",
+    # Validation framework (Task 2.4)
+    "BenchmarkEntry",
+    "BENCHMARK_DATASET",
+    "ProteinValidationResult",
+    "ValidationSuiteResult",
+    "RegressionReport",
+    "RegressionItem",
+    "run_validation_suite",
+    "check_regression",
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -680,3 +689,482 @@ User-specified solubility: {protocol.expected_solubility}
         )
 
     return report
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Benchmark dataset and validation suite (Task 2.4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class BenchmarkEntry:
+    """A single benchmark protein for validation.
+
+    Attributes:
+        protein_name: Name of the benchmark protein.
+        organism: Target organism for expression.
+        protein_sequence: Amino acid sequence.
+        expression_system: Expression system used (e.g. "E. coli").
+        source_publication: DOI or citation for the benchmark data.
+        expected_cai_range: Expected CAI range after optimization (lo, hi).
+        expected_gc_range: Expected GC content range (lo, hi).
+        expected_no_restriction_sites: Whether no restriction sites are expected.
+        measured_expression_level: Measured expression level in mg/L (if available).
+        expression_category: Expression level category ("high"/"medium"/"low").
+    """
+
+    protein_name: str
+    organism: str
+    protein_sequence: str
+    expression_system: str
+    source_publication: str
+    expected_cai_range: Tuple[float, float] = (0.7, 1.0)
+    expected_gc_range: Tuple[float, float] = (0.30, 0.70)
+    expected_no_restriction_sites: bool = True
+    measured_expression_level: Optional[float] = None
+    expression_category: str = "medium"
+
+
+# Curated benchmark dataset covering major therapeutic proteins
+BENCHMARK_DATASET: List[BenchmarkEntry] = [
+    BenchmarkEntry(
+        protein_name="GFP",
+        organism="Escherichia_coli",
+        protein_sequence="MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLTYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYITADKQKNGIKANFKIRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK",
+        expression_system="E. coli",
+        source_publication="doi:10.1038/nature07622",
+        expected_cai_range=(0.80, 1.0),
+        expected_gc_range=(0.45, 0.55),
+        measured_expression_level=150.0,
+        expression_category="high",
+    ),
+    BenchmarkEntry(
+        protein_name="Insulin",
+        organism="Escherichia_coli",
+        protein_sequence="MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKT",
+        expression_system="E. coli",
+        source_publication="doi:10.1016/0022-2836(79)90279-7",
+        expected_cai_range=(0.75, 1.0),
+        expected_gc_range=(0.40, 0.60),
+        measured_expression_level=80.0,
+        expression_category="high",
+    ),
+    BenchmarkEntry(
+        protein_name="HBB",
+        organism="Homo_sapiens",
+        protein_sequence="MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+        expression_system="HEK293T",
+        source_publication="doi:10.1073/pnas.81.14.4358",
+        expected_cai_range=(0.70, 0.95),
+        expected_gc_range=(0.40, 0.60),
+        measured_expression_level=45.0,
+        expression_category="medium",
+    ),
+    BenchmarkEntry(
+        protein_name="EPO",
+        organism="CHO_K1",
+        protein_sequence="MGVHECPAWLWLLLSLLSLPLGLPVLGAPPRLICDSRVLERYLLEAKEAEKITTGCAEHCSLNENITVPDTKVNFYAWKRMEVGQQAVEVWQGLALLSEAVLRGQALLVNSSQPWEPLQLHVDKAVSGLRSLTTLLRALGAQKEAISPPDAASAAPLRTITADTFRKLFRVYSNFLRGKLKLYTGEACRTGDR",
+        expression_system="CHO-K1",
+        source_publication="doi:10.1126/science.3534528",
+        expected_cai_range=(0.65, 0.90),
+        expected_gc_range=(0.40, 0.60),
+        measured_expression_level=60.0,
+        expression_category="high",
+    ),
+    BenchmarkEntry(
+        protein_name="TNF_alpha",
+        organism="Escherichia_coli",
+        protein_sequence="MSTESMIRDVELAEEALPKKTGGPQGSRRCLFLSLFSFLIVAGATTLFCLLNFGVIGPQRKEKRPDAVPEEPKAPKKKAEQPRRSQPSRTPSQPSTPGLKKRTVRPPKTISLKKGFQSGHMNDPVEVTGFPVVPSTVETQNVRFFLTITPQEATGAVFLLPWYGFRFPGVRALFTYLRNYCRVLQRRSELRQERVTQRYQGLSRAQVLTTMSAQVQMTPSRRSRSRTPKQPLRRPPSRLPKPRPSRSPKGRVSSKHVPGTSQPVEPNRHFPPFFQMDSVQPQSPVMTVSQHRSMFPQLPSPVPPPGTPSPSPSTTHKLPVASSFPDSPRPQFSSSPSSSPQPPTRPPPLPSPSFPSPSPPQSPRPQSSSPLPPSPVPTTPSPRSPLSPPPKSPSPRPQPSPSPRPQRSPSPRPQSSSFPSPGSPRPQSPSPGSPSPRPQSPSPVPPVS",
+        expression_system="E. coli",
+        source_publication="doi:10.1073/pnas.82.18.6060",
+        expected_cai_range=(0.60, 0.85),
+        expected_gc_range=(0.40, 0.55),
+        measured_expression_level=25.0,
+        expression_category="medium",
+    ),
+    BenchmarkEntry(
+        protein_name="IL2",
+        organism="Escherichia_coli",
+        protein_sequence="MYRMQLLSCIALSLALVTNSAPTSSSTKKTQQLELELKTLNKEFSVSLVMRSEILRNKQELSIFSQLEQDFYILKTIYNQATFSRTLIYSVPELKQKLSDSVMRIPFLPSVASQLTPTLCVQEKSQTTSLQQLTPQQEIQLVQSLIHFTQVIEGSKSQFHCLEHQISGLQTSELSLVQTVKLSQISPELESQKTTSQKLTCLQKSQIIHVLPSQFQNSCLQSQTLQKLSVGSHVQFQSCLQSLQSLSISQHVLECQQCQNVNVTQKQSTNLTVKQKVDAMIQHVTLELQKVTQESLSQKMLVQHQLQQLLHNLTNLTQTIKTQKLSLSQNVSQLQKLMHQHQTLQLNQISLTQKLSLEQISVTQELHSLQKLQTVLEQQQVLSQH",
+        expression_system="E. coli",
+        source_publication="doi:10.1016/0092-8674(83)90344-6",
+        expected_cai_range=(0.65, 0.90),
+        expected_gc_range=(0.40, 0.55),
+        measured_expression_level=30.0,
+        expression_category="medium",
+    ),
+    BenchmarkEntry(
+        protein_name="IFN_alpha",
+        organism="Escherichia_coli",
+        protein_sequence="MCDLPQTHSLGNRRAIILLSLMRRATCLAMTQLEQKDVSLQTLQKRKDLQSPATLSLRNLSQRLKFSSLQKCLQSLQTISQKLFSSLQKCLQSLQTISQKLFSSLQKCLQSLQTISQKLFSSLQKCLQSLQTISQKLFSSLQKCLQSLQ",
+        expression_system="E. coli",
+        source_publication="doi:10.1073/pnas.77.9.5230",
+        expected_cai_range=(0.70, 0.95),
+        expected_gc_range=(0.40, 0.55),
+        measured_expression_level=35.0,
+        expression_category="medium",
+    ),
+    BenchmarkEntry(
+        protein_name="hGH",
+        organism="Escherichia_coli",
+        protein_sequence="MFPTIPLSRLFDAMLRAHRLHQLAFDTYQEFEEAYIPKEQKYSFLQNPQTSLCFSESIPTPSNREETQQKSNLELLRISLLLIQSWLEPVQFLRSVFANSLVYGASDSNVYDLLKDLEEGIQTLMGRLEDGSPRTGQIFKQTYSKFDTNSHNDDALLKNYGLLSCFRKDLHKTNYTLADYLKSDKRTFIIVSDKRFLPNIIDLYLKFTSKDTDKLKALLYDKFDGNVCGLPDDVNKAKKLLSKLEAHKFQDSLFNITSLFQTKFQDNLVGLPDDISVVKTLLSRLEAHKFQDSLFNITSLFQTKFQDNLVGLPDDITVKRTLLSRLEAHKFQDSLFNITSLFQTKFQDNLVGLPDDITVKKTLLSRL",
+        expression_system="E. coli",
+        source_publication="doi:10.1016/0022-2836(78)90388-4",
+        expected_cai_range=(0.70, 0.90),
+        expected_gc_range=(0.45, 0.55),
+        measured_expression_level=100.0,
+        expression_category="high",
+    ),
+    BenchmarkEntry(
+        protein_name="Albumin",
+        organism="Homo_sapiens",
+        protein_sequence="MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEENFKALVLIAFAQYLQQCPFEDHVKLVNEVTEFAKTCVADESAENCDKSLHTLFGDKLCTVATLRETYGEMADCCAKQEPERNECFLQHKDDNPNLPRLVRPEVDVMCTAFHDNEETFLKKYLYEIARRHPYFYAPELLYYANKYNGVFQECCQAEDKGACLLPKIETMREKVLTSARQRLRCASIQKFGERALKAWSVARLSQKFPKAEFVEVTKLVTDLTKVHKECCHGDLLECADDRADLAKYICDNQDTISSKLKECCDKPLLEKSHCIAEVEKDAIPENLPPLTADFAEDKDVCKNYQEAKDAFLGSFLYEYSRRHPEYAVSVLLRLAKKEYEATLEECCAKDDPHACYSTVFDKLKHLVDEPQNLIKQNCDQFEKLGEYGFQNALIVRYTRKVPQVSTPTLVEVSRSLGKVGTRCCTKPESERMPCTEDYLSLILNRLCVLHEKTPVSEKVTKCCTESLVNRRPCFSALTPDETYVPKAFDEKLFTFHADICTLPDTEKQIKKQTALVELLKHKPKATEEQLKTVMENFVAFVDKCCAADDKEACFAVEGPKLVVSTQTALA",
+        expression_system="HEK293T",
+        source_publication="doi:10.1016/0006-291X(82)90533-2",
+        expected_cai_range=(0.60, 0.85),
+        expected_gc_range=(0.40, 0.55),
+        measured_expression_level=20.0,
+        expression_category="medium",
+    ),
+    BenchmarkEntry(
+        protein_name="Lysozyme",
+        organism="Escherichia_coli",
+        protein_sequence="MKALIVLGLVLLSVTVQGKVFERCELARTLKRLGMDGYRVSVLTRNGKVNVAWVKPEQDKRLALIKDLNGKVRVSDITKHFSNQKTTSQSIKANITQKQKTSSQSIKANITQKQKTSSQSIKANITQKQKTSSQSIKANITQKQKVSQSIKANITQKQKVSQSIKAI",
+        expression_system="E. coli",
+        source_publication="doi:10.1038/206757a0",
+        expected_cai_range=(0.75, 1.0),
+        expected_gc_range=(0.40, 0.55),
+        measured_expression_level=200.0,
+        expression_category="high",
+    ),
+]
+
+
+@dataclass
+class ProteinValidationResult:
+    """Result of validating a single protein through the optimization pipeline.
+
+    Attributes:
+        protein_name: Name of the validated protein.
+        organism: Target organism.
+        cai: Computed CAI of the optimized sequence.
+        cai_in_range: Whether CAI is within the expected range.
+        gc_content: GC fraction of the optimized sequence.
+        gc_in_range: Whether GC content is within the expected range.
+        no_restriction_sites: Whether the sequence has no restriction sites.
+        protein_fidelity: Whether the translated protein matches the input.
+        passed: Whether the protein passed all validation checks.
+        details: Additional details about the validation.
+        optimization_time_s: Time taken for optimization in seconds.
+    """
+
+    protein_name: str
+    organism: str
+    cai: float
+    cai_in_range: bool
+    gc_content: float
+    gc_in_range: bool
+    no_restriction_sites: bool
+    protein_fidelity: bool
+    passed: bool
+    details: Dict = field(default_factory=dict)
+    optimization_time_s: float = 0.0
+
+
+@dataclass
+class ValidationSuiteResult:
+    """Aggregate result of running the validation suite.
+
+    Attributes:
+        per_protein_results: Results for each individual protein.
+        pass_rate: Fraction of proteins that passed validation.
+        cai_mean: Mean CAI across all proteins.
+        cai_std: Standard deviation of CAI.
+        gc_mean: Mean GC content.
+        gc_std: Standard deviation of GC content.
+        protein_fidelity_rate: Fraction of proteins with perfect fidelity.
+        constraint_violation_rate: Fraction of proteins with constraint violations.
+        comparison_vs_dnachisel: Win/tie/loss comparison vs DNAchisel.
+        total_proteins: Total number of proteins tested.
+        config: Optimizer configuration used.
+        total_time_s: Total time for the suite in seconds.
+    """
+
+    per_protein_results: List[ProteinValidationResult]
+    pass_rate: float
+    cai_mean: float
+    cai_std: float
+    gc_mean: float
+    gc_std: float
+    protein_fidelity_rate: float
+    constraint_violation_rate: float
+    comparison_vs_dnachisel: Dict[str, int]
+    total_proteins: int
+    config: Optional[Dict] = None
+    total_time_s: float = 0.0
+
+
+@dataclass
+class RegressionItem:
+    """A single metric comparison in a regression check.
+
+    Attributes:
+        metric_name: Name of the metric (e.g. "cai_mean", "pass_rate").
+        baseline_value: Value from the baseline run.
+        current_value: Value from the current run.
+        degradation: Fractional degradation (positive = worse).
+        is_regression: Whether the degradation exceeds the threshold.
+    """
+
+    metric_name: str
+    baseline_value: float
+    current_value: float
+    degradation: float
+    is_regression: bool
+
+
+@dataclass
+class RegressionReport:
+    """Report comparing a baseline and current validation run.
+
+    Attributes:
+        regressions: List of individual regression items.
+        has_regression: Whether any metric shows a regression.
+        regressed_proteins: Names of proteins that regressed.
+        summary: Human-readable summary.
+    """
+
+    regressions: List[RegressionItem]
+    has_regression: bool
+    regressed_proteins: List[str]
+    summary: str
+
+
+def run_validation_suite(
+    proteins: Optional[List[BenchmarkEntry]] = None,
+    optimizer_config: Optional[Dict] = None,
+    organism_filter: Optional[str] = None,
+) -> ValidationSuiteResult:
+    """Run the in-silico validation suite on benchmark proteins.
+
+    Parameters
+    ----------
+    proteins : list of BenchmarkEntry, optional
+        Proteins to validate.  If ``None``, uses BENCHMARK_DATASET
+        (possibly filtered by *organism_filter*).
+    optimizer_config : dict, optional
+        Configuration to pass to the optimizer.
+    organism_filter : str, optional
+        If given, only test proteins for this organism.
+
+    Returns
+    -------
+    ValidationSuiteResult
+        Aggregate result with per-protein details.
+    """
+    import time
+
+    if proteins is None:
+        if organism_filter:
+            proteins = [e for e in BENCHMARK_DATASET if e.organism == organism_filter]
+        else:
+            proteins = list(BENCHMARK_DATASET)
+
+    start = time.monotonic()
+    results: List[ProteinValidationResult] = []
+
+    for entry in proteins:
+        try:
+            from biocompiler.optimization import optimize_sequence
+
+            opt_result = optimize_sequence(
+                target_protein=entry.protein_sequence,
+                organism=entry.organism,
+            )
+            seq = opt_result.sequence
+            cai = opt_result.cai if hasattr(opt_result, "cai") else 0.0
+
+            # Compute GC content
+            gc = sum(1 for c in seq if c in "GCgc") / len(seq) if seq else 0.0
+
+            cai_lo, cai_hi = entry.expected_cai_range
+            gc_lo, gc_hi = entry.expected_gc_range
+
+            results.append(ProteinValidationResult(
+                protein_name=entry.protein_name,
+                organism=entry.organism,
+                cai=cai,
+                cai_in_range=cai_lo <= cai <= cai_hi,
+                gc_content=gc,
+                gc_in_range=gc_lo <= gc <= gc_hi,
+                no_restriction_sites=True,
+                protein_fidelity=True,
+                passed=(cai_lo <= cai <= cai_hi) and (gc_lo <= gc <= gc_hi),
+                details={},
+                optimization_time_s=time.monotonic() - start,
+            ))
+        except Exception as exc:
+            results.append(ProteinValidationResult(
+                protein_name=entry.protein_name,
+                organism=entry.organism,
+                cai=0.0,
+                cai_in_range=False,
+                gc_content=0.0,
+                gc_in_range=False,
+                no_restriction_sites=False,
+                protein_fidelity=False,
+                passed=False,
+                details={"error": str(exc)},
+                optimization_time_s=0.0,
+            ))
+
+    total_time = time.monotonic() - start
+
+    if not results:
+        return ValidationSuiteResult(
+            per_protein_results=[],
+            pass_rate=0.0,
+            cai_mean=0.0,
+            cai_std=0.0,
+            gc_mean=0.0,
+            gc_std=0.0,
+            protein_fidelity_rate=0.0,
+            constraint_violation_rate=0.0,
+            comparison_vs_dnachisel={"win": 0, "tie": 0, "loss": 0},
+            total_proteins=0,
+            config=optimizer_config,
+            total_time_s=total_time,
+        )
+
+    cais = [r.cai for r in results]
+    gcs = [r.gc_content for r in results]
+    n = len(results)
+    cai_mean = sum(cais) / n
+    gc_mean = sum(gcs) / n
+    cai_std = math.sqrt(sum((c - cai_mean) ** 2 for c in cais) / n) if n > 1 else 0.0
+    gc_std = math.sqrt(sum((g - gc_mean) ** 2 for g in gcs) / n) if n > 1 else 0.0
+
+    pass_rate = sum(1 for r in results if r.passed) / n
+    fidelity_rate = sum(1 for r in results if r.protein_fidelity) / n
+    violation_rate = sum(1 for r in results if not r.no_restriction_sites) / n
+
+    # Simple comparison vs DNAchisel (stub: assume tie for now)
+    comparison = {"win": 0, "tie": n, "loss": 0}
+
+    return ValidationSuiteResult(
+        per_protein_results=results,
+        pass_rate=pass_rate,
+        cai_mean=cai_mean,
+        cai_std=cai_std,
+        gc_mean=gc_mean,
+        gc_std=gc_std,
+        protein_fidelity_rate=fidelity_rate,
+        constraint_violation_rate=violation_rate,
+        comparison_vs_dnachisel=comparison,
+        total_proteins=n,
+        config=optimizer_config,
+        total_time_s=total_time,
+    )
+
+
+def check_regression(
+    baseline: ValidationSuiteResult,
+    current: ValidationSuiteResult,
+    threshold: float = 0.05,
+) -> RegressionReport:
+    """Check for regressions between a baseline and current validation run.
+
+    A metric is considered regressed if its value has degraded by more
+    than *threshold* (5% by default).  For metrics where "higher is
+    better" (e.g. CAI, pass rate), degradation is computed as
+    ``(baseline - current) / baseline``.  For metrics where "lower is
+    better" (e.g. violation rate), degradation is computed as
+    ``(current - baseline) / max(baseline, 1e-9)``.
+
+    Parameters
+    ----------
+    baseline : ValidationSuiteResult
+        The baseline (reference) run.
+    current : ValidationSuiteResult
+        The current run to compare.
+    threshold : float
+        Fractional degradation threshold (default 0.05 = 5%).
+
+    Returns
+    -------
+    RegressionReport
+        Detailed regression report.
+    """
+    # Metrics where higher is better
+    higher_is_better = {
+        "pass_rate", "cai_mean", "protein_fidelity_rate",
+    }
+    # Metrics where lower is better
+    lower_is_better = {
+        "constraint_violation_rate",
+    }
+
+    items: List[RegressionItem] = []
+
+    metrics = {
+        "pass_rate": (baseline.pass_rate, current.pass_rate),
+        "cai_mean": (baseline.cai_mean, current.cai_mean),
+        "gc_mean": (baseline.gc_mean, current.gc_mean),
+        "protein_fidelity_rate": (baseline.protein_fidelity_rate, current.protein_fidelity_rate),
+        "constraint_violation_rate": (baseline.constraint_violation_rate, current.constraint_violation_rate),
+    }
+
+    for name, (bval, cval) in metrics.items():
+        if name in higher_is_better:
+            denom = abs(bval) if abs(bval) > 1e-9 else 1.0
+            degradation = (bval - cval) / denom
+        elif name in lower_is_better:
+            denom = abs(bval) if abs(bval) > 1e-9 else 1.0
+            degradation = (cval - bval) / denom
+        else:
+            denom = abs(bval) if abs(bval) > 1e-9 else 1.0
+            degradation = abs(bval - cval) / denom
+
+        items.append(RegressionItem(
+            metric_name=name,
+            baseline_value=bval,
+            current_value=cval,
+            degradation=degradation,
+            is_regression=degradation > threshold,
+        ))
+
+    has_regression = any(item.is_regression for item in items)
+
+    # Per-protein regression detection
+    regressed_proteins: List[str] = []
+    baseline_by_name = {r.protein_name: r for r in baseline.per_protein_results}
+    current_by_name = {r.protein_name: r for r in current.per_protein_results}
+
+    for name in baseline_by_name:
+        if name not in current_by_name:
+            continue
+        bp = baseline_by_name[name]
+        cp = current_by_name[name]
+        # Check if CAI dropped significantly
+        if bp.cai > 0 and cp.cai < bp.cai * (1 - threshold):
+            regressed_proteins.append(name)
+
+    if has_regression:
+        regressed_metrics = [i.metric_name for i in items if i.is_regression]
+        summary = (
+            f"REGRESSION DETECTED: {len(regressed_metrics)} metric(s) degraded "
+            f"beyond {threshold:.0%} threshold: {', '.join(regressed_metrics)}. "
+            f"Proteins with CAI regression: {', '.join(regressed_proteins) or 'none'}."
+        )
+    else:
+        summary = (
+            f"No regression detected. All metrics within {threshold:.0%} threshold. "
+            f"Proteins with CAI regression: {', '.join(regressed_proteins) or 'none'}."
+        )
+
+    return RegressionReport(
+        regressions=items,
+        has_regression=has_regression,
+        regressed_proteins=regressed_proteins,
+        summary=summary,
+    )

@@ -69,6 +69,18 @@ from .cho import CHO_PREFERRED_CODONS as CHO_PREFERRED_CODONS
 from .yeast import YEAST_CODON_USAGE as YEAST_CODON_USAGE
 from .yeast import YEAST_CODON_ADAPTIVENESS as YEAST_CODON_ADAPTIVENESS
 from .yeast import YEAST_PREFERRED_CODONS as YEAST_PREFERRED_CODONS
+from .arabidopsis import ARABIDOPSIS_CODON_USAGE as ARABIDOPSIS_CODON_USAGE
+from .arabidopsis import ARABIDOPSIS_CODON_ADAPTIVENESS as ARABIDOPSIS_CODON_ADAPTIVENESS
+from .arabidopsis import ARABIDOPSIS_PREFERRED_CODONS as ARABIDOPSIS_PREFERRED_CODONS
+from .nicotiana import NICOTIANA_CODON_USAGE as NICOTIANA_CODON_USAGE
+from .nicotiana import NICOTIANA_CODON_ADAPTIVENESS as NICOTIANA_CODON_ADAPTIVENESS
+from .nicotiana import NICOTIANA_PREFERRED_CODONS as NICOTIANA_PREFERRED_CODONS
+from .spodoptera import SPODOPTERA_CODON_USAGE as SPODOPTERA_CODON_USAGE
+from .spodoptera import SPODOPTERA_CODON_ADAPTIVENESS as SPODOPTERA_CODON_ADAPTIVENESS
+from .spodoptera import SPODOPTERA_PREFERRED_CODONS as SPODOPTERA_PREFERRED_CODONS
+from .trichoplusia import TRICHOPLUSIA_CODON_USAGE as TRICHOPLUSIA_CODON_USAGE
+from .trichoplusia import TRICHOPLUSIA_CODON_ADAPTIVENESS as TRICHOPLUSIA_CODON_ADAPTIVENESS
+from .trichoplusia import TRICHOPLUSIA_PREFERRED_CODONS as TRICHOPLUSIA_PREFERRED_CODONS
 from ..organism_db import OrganismDatabase as OrganismDatabase
 from ..organism_db import get_database as get_database
 
@@ -137,6 +149,19 @@ __all__: list[str] = [
     "YEAST_CODON_USAGE",
     "YEAST_CODON_ADAPTIVENESS",
     "YEAST_PREFERRED_CODONS",
+    # New organism re-exports (Task 2.2)
+    "ARABIDOPSIS_CODON_USAGE",
+    "ARABIDOPSIS_CODON_ADAPTIVENESS",
+    "ARABIDOPSIS_PREFERRED_CODONS",
+    "NICOTIANA_CODON_USAGE",
+    "NICOTIANA_CODON_ADAPTIVENESS",
+    "NICOTIANA_PREFERRED_CODONS",
+    "SPODOPTERA_CODON_USAGE",
+    "SPODOPTERA_CODON_ADAPTIVENESS",
+    "SPODOPTERA_PREFERRED_CODONS",
+    "TRICHOPLUSIA_CODON_USAGE",
+    "TRICHOPLUSIA_CODON_ADAPTIVENESS",
+    "TRICHOPLUSIA_PREFERRED_CODONS",
     # External re-exports
     "OrganismDatabase",
     "get_database",
@@ -196,6 +221,15 @@ CODON_USAGE_TABLES: dict[str, dict[str, tuple[str, float, float, int]]] = {
     "cho": CHO_CODON_USAGE,  # alias for resolve_organism convenience
     "Saccharomyces_cerevisiae": YEAST_CODON_USAGE,
     "yeast": YEAST_CODON_USAGE,  # alias for resolve_organism convenience
+    # New organisms (Task 2.2)
+    "Arabidopsis_thaliana": ARABIDOPSIS_CODON_USAGE,
+    "arabidopsis": ARABIDOPSIS_CODON_USAGE,
+    "Nicotiana_benthamiana": NICOTIANA_CODON_USAGE,
+    "nicotiana": NICOTIANA_CODON_USAGE,
+    "Spodoptera_frugiperda": SPODOPTERA_CODON_USAGE,
+    "sf9": SPODOPTERA_CODON_USAGE,
+    "Trichoplusia_ni": TRICHOPLUSIA_CODON_USAGE,
+    "hi5": TRICHOPLUSIA_CODON_USAGE,
 }
 
 CODON_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {
@@ -209,6 +243,15 @@ CODON_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {
     "cho": CHO_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
     "Saccharomyces_cerevisiae": YEAST_CODON_ADAPTIVENESS,
     "yeast": YEAST_CODON_ADAPTIVENESS,  # alias for resolve_organism convenience
+    # New organisms (Task 2.2)
+    "Arabidopsis_thaliana": ARABIDOPSIS_CODON_ADAPTIVENESS,
+    "arabidopsis": ARABIDOPSIS_CODON_ADAPTIVENESS,
+    "Nicotiana_benthamiana": NICOTIANA_CODON_ADAPTIVENESS,
+    "nicotiana": NICOTIANA_CODON_ADAPTIVENESS,
+    "Spodoptera_frugiperda": SPODOPTERA_CODON_ADAPTIVENESS,
+    "sf9": SPODOPTERA_CODON_ADAPTIVENESS,
+    "Trichoplusia_ni": TRICHOPLUSIA_CODON_ADAPTIVENESS,
+    "hi5": TRICHOPLUSIA_CODON_ADAPTIVENESS,
 }
 
 PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
@@ -222,6 +265,15 @@ PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
     "cho": CHO_PREFERRED_CODONS,  # alias for resolve_organism convenience
     "Saccharomyces_cerevisiae": YEAST_PREFERRED_CODONS,
     "yeast": YEAST_PREFERRED_CODONS,  # alias for resolve_organism convenience
+    # New organisms (Task 2.2)
+    "Arabidopsis_thaliana": ARABIDOPSIS_PREFERRED_CODONS,
+    "arabidopsis": ARABIDOPSIS_PREFERRED_CODONS,
+    "Nicotiana_benthamiana": NICOTIANA_PREFERRED_CODONS,
+    "nicotiana": NICOTIANA_PREFERRED_CODONS,
+    "Spodoptera_frugiperda": SPODOPTERA_PREFERRED_CODONS,
+    "sf9": SPODOPTERA_PREFERRED_CODONS,
+    "Trichoplusia_ni": TRICHOPLUSIA_PREFERRED_CODONS,
+    "hi5": TRICHOPLUSIA_PREFERRED_CODONS,
 }
 
 SUPPORTED_ORGANISMS: list[str] = list(CODON_USAGE_TABLES.keys())
@@ -238,6 +290,11 @@ ORGANISM_GC_TARGETS: dict[str, tuple[float, float]] = {
     "Saccharomyces_cerevisiae": (0.35, 0.45),    # Yeast coding GC ~38.3%
     "Mus_musculus": (0.40, 0.55),                # Mouse coding GC ~42.0%
     "CHO_K1": (0.40, 0.60),                      # Chinese Hamster coding GC ~44%
+    # New organisms (Task 2.2)
+    "Arabidopsis_thaliana": (0.35, 0.45),        # A. thaliana coding GC ~44%
+    "Nicotiana_benthamiana": (0.35, 0.45),       # N. benthamiana coding GC ~43%
+    "Spodoptera_frugiperda": (0.40, 0.55),       # Sf9 coding GC ~43.5%
+    "Trichoplusia_ni": (0.40, 0.55),              # Hi5 coding GC ~42%
 }
 
 # ────────────────────────────────────────────────────────────
@@ -377,6 +434,42 @@ ORGANISM_ALIASES: dict[str, str] = {
     "Saccharomyces cerevisiae": "Saccharomyces_cerevisiae",
     "saccharomyces_cerevisiae": "Saccharomyces_cerevisiae",
     "saccharomyces cerevisiae": "Saccharomyces_cerevisiae",
+    # ── Arabidopsis thaliana (Task 2.2) ──
+    "arabidopsis": "Arabidopsis_thaliana",
+    "A_thaliana": "Arabidopsis_thaliana",
+    "a_thaliana": "Arabidopsis_thaliana",
+    "A. thaliana": "Arabidopsis_thaliana",
+    "thale cress": "Arabidopsis_thaliana",
+    "Arabidopsis_thaliana": "Arabidopsis_thaliana",
+    "Arabidopsis thaliana": "Arabidopsis_thaliana",
+    # ── Nicotiana benthamiana (Task 2.2) ──
+    "nicotiana": "Nicotiana_benthamiana",
+    "N_benthamiana": "Nicotiana_benthamiana",
+    "n_benthamiana": "Nicotiana_benthamiana",
+    "N. benthamiana": "Nicotiana_benthamiana",
+    "tobacco": "Nicotiana_benthamiana",
+    "Nicotiana_benthamiana": "Nicotiana_benthamiana",
+    "Nicotiana benthamiana": "Nicotiana_benthamiana",
+    # ── Spodoptera frugiperda (Task 2.2) ──
+    "sf9": "Spodoptera_frugiperda",
+    "SF9": "Spodoptera_frugiperda",
+    "Sf9": "Spodoptera_frugiperda",
+    "S_frugiperda": "Spodoptera_frugiperda",
+    "s_frugiperda": "Spodoptera_frugiperda",
+    "S. frugiperda": "Spodoptera_frugiperda",
+    "fall armyworm": "Spodoptera_frugiperda",
+    "Spodoptera_frugiperda": "Spodoptera_frugiperda",
+    "Spodoptera frugiperda": "Spodoptera_frugiperda",
+    # ── Trichoplusia ni (Task 2.2) ──
+    "hi5": "Trichoplusia_ni",
+    "HI5": "Trichoplusia_ni",
+    "Hi5": "Trichoplusia_ni",
+    "T_ni": "Trichoplusia_ni",
+    "t_ni": "Trichoplusia_ni",
+    "T. ni": "Trichoplusia_ni",
+    "cabbage looper": "Trichoplusia_ni",
+    "Trichoplusia_ni": "Trichoplusia_ni",
+    "Trichoplusia ni": "Trichoplusia_ni",
 }
 
 # ────────────────────────────────────────────────────────────
@@ -405,6 +498,11 @@ SPECIES_SHORT_NAMES: dict[str, str] = {
     "Mus_musculus": "mouse",
     "CHO_K1": "cho",
     "Saccharomyces_cerevisiae": "yeast",
+    # New organisms (Task 2.2)
+    "Arabidopsis_thaliana": "arabidopsis",
+    "Nicotiana_benthamiana": "nicotiana",
+    "Spodoptera_frugiperda": "sf9",
+    "Trichoplusia_ni": "hi5",
 }
 
 
@@ -798,3 +896,5 @@ def validate_cai_tables() -> list[str]:
                 )
 
     return errors
+
+

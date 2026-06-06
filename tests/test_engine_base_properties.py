@@ -9,6 +9,7 @@ Covers three core properties:
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 import pytest
 from hypothesis import given, settings, assume, example
@@ -278,7 +279,11 @@ class TestBaseEngineResultConsistency:
 # ────────────────────────────────────────────────────────────
 
 class TestEngineTimerElapsedTime:
-    """Property: EngineTimer always records positive elapsed time after use."""
+    """Property: EngineTimer always records positive elapsed time after use.
+
+    All timing-dependent tests use mocked time.perf_counter to eliminate
+    flaky test failures due to system load or CI environment variance.
+    """
 
     def test_timer_starts_at_zero(self):
         """Fresh EngineTimer has zero elapsed time."""
@@ -286,37 +291,57 @@ class TestEngineTimerElapsedTime:
         assert timer.elapsed == 0.0
         assert timer.start == 0.0
 
-    @given(duration=small_positive_duration)
-    @settings(max_examples=20, deadline=10000)
-    def test_elapsed_positive_after_context(self, duration):
-        """After context exit, elapsed time is positive."""
-        with EngineTimer() as timer:
-            time.sleep(duration)
-        assert timer.elapsed > 0.0
+    def test_elapsed_positive_after_context_with_mock(self):
+        """After context exit, elapsed time is positive (mocked time)."""
+        fake_time = 1000.0
 
-    @given(duration=small_positive_duration)
-    @settings(max_examples=15, deadline=10000)
-    def test_elapsed_approximately_matches_sleep(self, duration):
-        """Elapsed time is approximately >= the sleep duration."""
-        with EngineTimer() as timer:
-            time.sleep(duration)
-        # Allow generous overhead; elapsed should be at least the sleep duration
-        assert timer.elapsed >= duration * 0.8
+        def mock_perf_counter():
+            nonlocal fake_time
+            return fake_time
 
-    @given(duration=small_positive_duration)
-    @settings(max_examples=15, deadline=10000)
-    def test_elapsed_reasonable_upper_bound(self, duration):
-        """Elapsed time is not absurdly larger than the sleep duration."""
-        with EngineTimer() as timer:
-            time.sleep(duration)
-        # With overhead, elapsed should not exceed 10x the sleep
-        assert timer.elapsed < duration * 10 + 1.0
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter):
+            with EngineTimer() as timer:
+                fake_time = 1000.05  # advance 50ms
+            assert timer.elapsed > 0.0
+
+    def test_elapsed_matches_mock_time_advance(self):
+        """Elapsed time matches the mock time advance exactly."""
+        fake_time = 1000.0
+
+        def mock_perf_counter():
+            nonlocal fake_time
+            return fake_time
+
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter):
+            with EngineTimer() as timer:
+                fake_time = 1000.5  # advance 0.5s
+            assert timer.elapsed == pytest.approx(0.5, rel=1e-6)
+
+    def test_elapsed_reasonable_upper_bound_with_mock(self):
+        """Elapsed time is not absurdly larger than the mock time advance."""
+        fake_time = 2000.0
+
+        def mock_perf_counter():
+            nonlocal fake_time
+            return fake_time
+
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter):
+            with EngineTimer() as timer:
+                fake_time = 2000.1  # advance 0.1s
+            assert timer.elapsed < 10.0
 
     def test_elapsed_positive_even_with_no_work(self):
         """Even with no work inside context, elapsed is >= 0."""
-        with EngineTimer() as timer:
-            pass  # no-op
-        assert timer.elapsed >= 0.0
+        fake_time = 3000.0
+
+        def mock_perf_counter():
+            nonlocal fake_time
+            return fake_time
+
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter):
+            with EngineTimer() as timer:
+                pass  # no-op, time doesn't advance
+            assert timer.elapsed >= 0.0
 
     def test_timer_returns_self_from_enter(self):
         """__enter__ returns the timer instance itself."""
@@ -324,47 +349,84 @@ class TestEngineTimerElapsedTime:
         with timer as t:
             assert t is timer
 
-    @given(duration=small_positive_duration)
-    @settings(max_examples=10, deadline=10000)
-    def test_two_timers_ordering(self, duration):
-        """A longer sleep produces a larger elapsed time."""
-        with EngineTimer() as timer_short:
-            time.sleep(duration)
-        with EngineTimer() as timer_long:
-            time.sleep(duration * 3)
+    def test_two_timers_ordering_with_mock(self):
+        """A longer duration produces a larger elapsed time (mocked)."""
+        # Short timer
+        fake_time = 4000.0
+
+        def mock_perf_counter_short():
+            nonlocal fake_time
+            return fake_time
+
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter_short):
+            with EngineTimer() as timer_short:
+                fake_time = 4000.01  # 10ms
+            short_elapsed = timer_short.elapsed
+
+        # Long timer
+        fake_time = 5000.0
+
+        def mock_perf_counter_long():
+            nonlocal fake_time
+            return fake_time
+
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter_long):
+            with EngineTimer() as timer_long:
+                fake_time = 5000.1  # 100ms
+            long_elapsed = timer_long.elapsed
+
         # The longer timer should have greater elapsed time
-        assert timer_long.elapsed > timer_short.elapsed * 0.5
+        assert long_elapsed > short_elapsed
 
-    def test_reuse_timer_resets(self):
-        """Reusing a timer resets start/elapsed properly."""
-        timer = EngineTimer()
-        with timer:
-            time.sleep(0.005)
-        first_elapsed = timer.elapsed
-        with timer:
-            time.sleep(0.005)
-        second_elapsed = timer.elapsed
-        # Second elapsed is independent of first (not accumulated)
-        assert second_elapsed >= 0.0
-        # Both should be positive
-        assert first_elapsed > 0.0
-        assert second_elapsed > 0.0
+    def test_reuse_timer_resets_with_mock(self):
+        """Reusing a timer resets start/elapsed properly (mocked)."""
+        fake_time = 6000.0
 
-    @given(duration=small_positive_duration)
-    @settings(max_examples=10, deadline=10000)
-    def test_elapsed_is_float(self, duration):
-        """Elapsed time is always a float."""
-        with EngineTimer() as timer:
-            time.sleep(duration)
-        assert isinstance(timer.elapsed, float)
+        def mock_perf_counter():
+            nonlocal fake_time
+            return fake_time
 
-    def test_timer_with_exception_in_context(self):
-        """Timer records elapsed time even if context body raises."""
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter):
+            timer = EngineTimer()
+            with timer:
+                fake_time = 6000.005
+            first_elapsed = timer.elapsed
+            with timer:
+                fake_time = 6000.015  # 10ms from second start
+            second_elapsed = timer.elapsed
+            # Second elapsed is independent of first (not accumulated)
+            assert second_elapsed >= 0.0
+            # Both should be positive
+            assert first_elapsed > 0.0
+            assert second_elapsed > 0.0
+
+    def test_elapsed_is_float_with_mock(self):
+        """Elapsed time is always a float (mocked)."""
+        fake_time = 7000.0
+
+        def mock_perf_counter():
+            nonlocal fake_time
+            return fake_time
+
+        with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter):
+            with EngineTimer() as timer:
+                fake_time = 7000.1
+            assert isinstance(timer.elapsed, float)
+
+    def test_timer_with_exception_in_context_mocked(self):
+        """Timer records elapsed time even if context body raises (mocked)."""
+        fake_time = 8000.0
+
+        def mock_perf_counter():
+            nonlocal fake_time
+            return fake_time
+
         timer = EngineTimer()
         try:
-            with timer:
-                time.sleep(0.005)
-                raise RuntimeError("test error")
+            with patch("biocompiler.engine_base.time.perf_counter", side_effect=mock_perf_counter):
+                with timer:
+                    fake_time = 8000.005
+                    raise RuntimeError("test error")
         except RuntimeError:
             pass
         # Timer should still have recorded elapsed time

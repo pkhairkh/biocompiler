@@ -28,19 +28,28 @@ References:
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional
 
 from .exceptions import BiosecurityError
 
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data classes
+# Type aliases
 # ─────────────────────────────────────────────────────────────────────────────
 
 RiskLevel = Literal["none", "low", "medium", "high", "critical"]
+BiosecurityMode = Literal["enforce", "warn", "off"]
+MatchType = Literal["exact", "fuzzy", "reverse_complement"]
+StrandType = Literal["forward", "reverse"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data classes
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -53,6 +62,11 @@ class HazardMatch:
     matched_sequence: str
     confidence: float
     source: str
+    # Extended fields for fuzzy and reverse complement matching
+    match_type: MatchType = "exact"
+    distance: int = 0
+    strand: StrandType = "forward"
+    substitutions: list[tuple[int, str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -837,6 +851,184 @@ def _max_risk(*levels: str) -> RiskLevel:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Biosecurity mode
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_biosecurity_mode() -> BiosecurityMode:
+    """Read the biosecurity screening mode from the environment.
+
+    Returns one of ``"enforce"``, ``"warn"``, or ``"off"`` based on the
+    ``BIOCOMPILER_BIOSECURITY_MODE`` environment variable.  Falls back
+    to ``"enforce"`` when the variable is unset or set to an
+    unrecognised value.  The value is case-insensitive.
+
+    Returns
+    -------
+    BiosecurityMode
+        The effective biosecurity mode.
+    """
+    raw = os.environ.get("BIOCOMPILER_BIOSECURITY_MODE", "").strip().lower()
+    if raw in ("enforce", "warn", "off"):
+        return raw  # type: ignore[return-value]
+    return "enforce"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sequence utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+_COMPLEMENT = str.maketrans("ACGTacgt", "TGCAtgca")
+
+
+def reverse_complement(dna: str) -> str:
+    """Return the reverse complement of a DNA sequence.
+
+    Parameters
+    ----------
+    dna : str
+        DNA sequence consisting of A, C, G, T (uppercase expected).
+
+    Returns
+    -------
+    str
+        The reverse complement.
+    """
+    return dna.translate(_COMPLEMENT)[::-1]
+
+
+def _hamming_distance(s1: str, s2: str) -> int:
+    """Compute the Hamming distance between two equal-length strings.
+
+    Raises ``ValueError`` if the strings differ in length.
+    """
+    if len(s1) != len(s2):
+        raise ValueError(
+            f"Hamming distance requires equal-length strings, "
+            f"got {len(s1)} and {len(s2)}"
+        )
+    return sum(c1 != c2 for c1, c2 in zip(s1, s2))
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute the Levenshtein (edit) distance between two strings.
+
+    Uses dynamic programming with O(min(len(s1), len(s2))) memory.
+    """
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+
+    # Now len(s1) >= len(s2)
+    previous = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        current = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous[j + 1] + 1
+            deletions = current[j] + 1
+            substitutions = previous[j] + (c1 != c2)
+            current.append(min(insertions, deletions, substitutions))
+        previous = current
+
+    return previous[-1]
+
+
+def _fuzzy_match_hamming(
+    sequence: str,
+    motif: str,
+    max_distance: int = 2,
+) -> list[tuple[int, int, list[tuple[int, str, str]]]]:
+    """Find fuzzy matches of *motif* in *sequence* using Hamming distance.
+
+    Only returns matches with distance >= 1 (i.e. excludes exact matches)
+    and distance <= *max_distance*.
+
+    Parameters
+    ----------
+    sequence : str
+        The sequence to search in.
+    motif : str
+        The motif to search for.
+    max_distance : int
+        Maximum Hamming distance to report (default 2).
+
+    Returns
+    -------
+    list of (position, distance, substitutions)
+        Each element is a tuple ``(pos, dist, subs)`` where *subs* is a
+        list of ``(position_in_window, original_char, replacement_char)``
+        tuples describing the substitutions.
+    """
+    mlen = len(motif)
+    slen = len(sequence)
+    if mlen == 0 or slen < mlen:
+        return []
+
+    results: list[tuple[int, int, list[tuple[int, str, str]]]] = []
+    for i in range(slen - mlen + 1):
+        window = sequence[i : i + mlen]
+        dist = _hamming_distance(window, motif)
+        if 1 <= dist <= max_distance:
+            subs = [
+                (j, motif[j], window[j])
+                for j in range(mlen)
+                if motif[j] != window[j]
+            ]
+            results.append((i, dist, subs))
+
+    return results
+
+
+def _fuzzy_match_edit_distance(
+    sequence: str,
+    motif: str,
+    max_distance: int = 1,
+) -> list[tuple[int, int]]:
+    """Find fuzzy matches of *motif* in *sequence* using Levenshtein distance.
+
+    Uses a sliding-window approach with windows of varying length around
+    the motif length to catch insertions and deletions.
+
+    Only returns matches with distance >= 1 and <= *max_distance*.
+
+    Parameters
+    ----------
+    sequence : str
+        The sequence to search in.
+    motif : str
+        The motif to search for.
+    max_distance : int
+        Maximum edit distance to report (default 1).
+
+    Returns
+    -------
+    list of (position, distance)
+        Each element is a tuple ``(pos, dist)``.
+    """
+    mlen = len(motif)
+    slen = len(sequence)
+    if mlen == 0 or slen == 0:
+        return []
+
+    results: list[tuple[int, int]] = []
+    # Check windows of length mlen-1 through mlen+max_distance
+    for window_len in range(max(1, mlen - max_distance), mlen + max_distance + 1):
+        if window_len > slen:
+            continue
+        for i in range(slen - window_len + 1):
+            window = sequence[i : i + window_len]
+            dist = _levenshtein_distance(window, motif)
+            if 1 <= dist <= max_distance:
+                results.append((i, dist))
+
+    # Deduplicate: keep the best distance per position
+    best: dict[int, int] = {}
+    for pos, dist in results:
+        if pos not in best or dist < best[pos]:
+            best[pos] = dist
+
+    return sorted(best.items())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Core screening function
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -860,8 +1052,11 @@ def screen_hazardous_sequence(protein: str, dna: str = "") -> BiosecurityReport:
     -----
     - Protein screening uses sliding-window substring matching against
       short peptide motifs (8-12 aa).
+    - Fuzzy matching via Hamming distance (1-2 substitutions) and
+      Levenshtein edit distance (1 edit) is applied for motifs < 15 aa.
     - DNA screening uses substring matching against nucleotide patterns
-      (15-21 nt) for antibiotic resistance markers.
+      (15-21 nt) for antibiotic resistance markers, plus reverse
+      complement screening.
     - Confidence scoring accounts for motif length (longer = higher
       confidence) and exact match position context.
     """
@@ -870,6 +1065,8 @@ def screen_hazardous_sequence(protein: str, dna: str = "") -> BiosecurityReport:
 
     matches: list[HazardMatch] = []
     flagged_categories: set[str] = set()
+    # Track exact match positions per signature name for deduplication
+    exact_positions: dict[str, set[int]] = {}
 
     # ── Screen protein against peptide motifs ────────────────────────────
     for sig in _PROTEIN_SIGNATURES:
@@ -889,14 +1086,77 @@ def screen_hazardous_sequence(protein: str, dna: str = "") -> BiosecurityReport:
                 matched_sequence=motif,
                 confidence=round(confidence, 3),
                 source=sig["source"],
+                match_type="exact",
+                distance=0,
+                strand="forward",
+                substitutions=[],
             ))
             flagged_categories.add(sig["category"])
+            exact_positions.setdefault(sig["name"], set()).add(pos)
 
             # Look for additional occurrences
             pos = protein.find(motif, pos + 1)
 
+        # ── Fuzzy matching (Hamming) for short protein motifs ────────────
+        if motif_len < 15:
+            hamming_results = _fuzzy_match_hamming(protein, motif, max_distance=2)
+            for fpos, fdist, fsubs in hamming_results:
+                # Skip fuzzy matches at positions already covered by exact matches
+                if sig["name"] in exact_positions and fpos in exact_positions[sig["name"]]:
+                    continue
+                # Reduce confidence for fuzzy matches
+                confidence = min(1.0, max(0.0, sig["confidence"] - 0.10 * fdist))
+                length_adj = (motif_len - 10) * 0.025
+                confidence = min(1.0, max(0.0, confidence + length_adj))
+
+                matches.append(HazardMatch(
+                    category=sig["category"],
+                    name=sig["name"],
+                    position=fpos,
+                    matched_sequence=protein[fpos:fpos + motif_len],
+                    confidence=round(confidence, 3),
+                    source=sig["source"],
+                    match_type="fuzzy",
+                    distance=fdist,
+                    strand="forward",
+                    substitutions=fsubs,
+                ))
+                flagged_categories.add(sig["category"])
+
+            # ── Fuzzy matching (edit distance) for short protein motifs ───
+            edit_results = _fuzzy_match_edit_distance(protein, motif, max_distance=1)
+            for epos, edist in edit_results:
+                # Skip if an exact match already covers this position
+                if sig["name"] in exact_positions and epos in exact_positions[sig["name"]]:
+                    continue
+                # Skip if a Hamming fuzzy match already covers this position
+                existing_fuzzy = [
+                    m for m in matches
+                    if m.name == sig["name"] and m.position == epos and m.match_type == "fuzzy"
+                ]
+                if existing_fuzzy:
+                    continue
+                confidence = min(1.0, max(0.0, sig["confidence"] - 0.10 * edist))
+                length_adj = (motif_len - 10) * 0.025
+                confidence = min(1.0, max(0.0, confidence + length_adj))
+
+                matches.append(HazardMatch(
+                    category=sig["category"],
+                    name=sig["name"],
+                    position=epos,
+                    matched_sequence=protein[epos:epos + motif_len],
+                    confidence=round(confidence, 3),
+                    source=sig["source"],
+                    match_type="fuzzy",
+                    distance=edist,
+                    strand="forward",
+                    substitutions=[],
+                ))
+                flagged_categories.add(sig["category"])
+
     # ── Screen DNA against nucleotide patterns ───────────────────────────
     if dna:
+        # Forward strand
         for sig in _DNA_SIGNATURES:
             motif = sig["motif"].upper()
             pos = dna.find(motif)
@@ -908,10 +1168,38 @@ def screen_hazardous_sequence(protein: str, dna: str = "") -> BiosecurityReport:
                     matched_sequence=motif,
                     confidence=sig["confidence"],
                     source=sig["source"],
+                    match_type="exact",
+                    distance=0,
+                    strand="forward",
+                    substitutions=[],
                 ))
                 flagged_categories.add(sig["category"])
 
                 pos = dna.find(motif, pos + 1)
+
+        # Reverse complement strand
+        rc_dna = reverse_complement(dna)
+        for sig in _DNA_SIGNATURES:
+            motif = sig["motif"].upper()
+            pos = rc_dna.find(motif)
+            while pos != -1:
+                # Map position back to the original strand
+                original_pos = len(rc_dna) - pos - len(motif)
+                matches.append(HazardMatch(
+                    category=sig["category"],
+                    name=sig["name"],
+                    position=original_pos,
+                    matched_sequence=motif,
+                    confidence=sig["confidence"],
+                    source=sig["source"],
+                    match_type="reverse_complement",
+                    distance=0,
+                    strand="reverse",
+                    substitutions=[],
+                ))
+                flagged_categories.add(sig["category"])
+
+                pos = rc_dna.find(motif, pos + 1)
 
     # ── Determine risk level ─────────────────────────────────────────────
     if not matches:
@@ -942,18 +1230,41 @@ def screen_hazardous_sequence(protein: str, dna: str = "") -> BiosecurityReport:
 
 
 def sig_risk_for_match(match: HazardMatch) -> str:
-    """Look up the risk level for a match's signature."""
+    """Look up the risk level for a match's signature.
+
+    Fuzzy matches have their risk downgraded:
+      - distance 1 → one level below the signature risk
+      - distance 2 → two levels below the signature risk
+    Reverse complement matches keep the original risk level.
+    """
+    base_risk: str | None = None
     for sig in _HAZARD_SIGNATURES:
         if sig["name"] == match.name and sig["category"] == match.category:
-            return sig["risk"]
-    # Fallback: infer from category
-    _category_default_risk = {
-        "select_agent": "critical",
-        "viral_surface": "high",
-        "antibiotic_resistance": "medium",
-        "oncogene": "low",
-    }
-    return _category_default_risk.get(match.category, "low")
+            base_risk = sig["risk"]
+            break
+
+    if base_risk is None:
+        # Fallback: infer from category
+        _category_default_risk = {
+            "select_agent": "critical",
+            "viral_surface": "high",
+            "antibiotic_resistance": "medium",
+            "oncogene": "low",
+        }
+        base_risk = _category_default_risk.get(match.category, "low")
+
+    if match.match_type == "reverse_complement":
+        return base_risk
+
+    if match.match_type == "fuzzy" and match.distance > 0:
+        # Fuzzy matches get fixed downgraded risk levels:
+        #   distance 1 → "medium"
+        #   distance 2+ → "low"
+        if match.distance == 1:
+            return "medium"
+        return "low"
+
+    return base_risk
 
 
 def _build_recommendations(
@@ -1000,6 +1311,26 @@ def _build_recommendations(
             f"Review institutional gene therapy oversight requirements."
         )
 
+    # Mention fuzzy/homology matches
+    fuzzy_matches = [m for m in matches if m.match_type == "fuzzy"]
+    if fuzzy_matches:
+        fuzzy_names = sorted({m.name for m in fuzzy_matches})
+        recs.append(
+            f"Fuzzy homology match(es) detected (substitution/indel tolerance): "
+            f"{', '.join(fuzzy_names)}. "
+            f"These are lower-confidence matches — review carefully before proceeding."
+        )
+
+    # Mention reverse complement matches
+    rc_matches = [m for m in matches if m.match_type == "reverse_complement"]
+    if rc_matches:
+        rc_names = sorted({m.name for m in rc_matches})
+        recs.append(
+            f"Reverse complement / anti-sense match(es) detected on the opposite strand: "
+            f"{', '.join(rc_names)}. "
+            f"These indicate hazardous sequences on the reverse strand."
+        )
+
     if risk_level in ("high", "critical"):
         recs.append(
             "Optimization BLOCKED due to high/critical biosecurity risk. "
@@ -1027,16 +1358,24 @@ def check_biosecurity_before_optimize(
     protein: str,
     organism: str = "",
     dna: str = "",
+    biosecurity_mode: Optional[BiosecurityMode] = None,
 ) -> BiosecurityReport:
     """Biosecurity gate called at the start of optimization.
 
     This function screens the input sequence and enforces hard-stop or
-    warning behavior depending on the risk level:
+    warning behavior depending on the risk level and the effective
+    biosecurity mode:
 
-    - ``critical`` or ``high``: raises :class:`BiosecurityError`
-    - ``medium``: emits a :class:`UserWarning`
-    - ``low``: logs at INFO level
-    - ``none``: no action
+    - ``enforce``: ``critical`` or ``high`` risk raises
+      :class:`BiosecurityError`; ``medium`` emits :class:`UserWarning`.
+    - ``warn``: all risk levels emit warnings but no
+      :class:`BiosecurityError` is raised.
+    - ``off``: screening is skipped entirely; returns a clean report
+      noting that screening was skipped.
+
+    If *biosecurity_mode* is ``None`` (the default), the mode is read
+    from the ``BIOCOMPILER_BIOSECURITY_MODE`` environment variable via
+    :func:`get_biosecurity_mode`.
 
     Parameters
     ----------
@@ -1046,6 +1385,9 @@ def check_biosecurity_before_optimize(
         Target organism (for context in log messages).
     dna : str, optional
         DNA sequence to screen for resistance markers.
+    biosecurity_mode : BiosecurityMode or None, optional
+        Explicit override for the biosecurity mode.  When ``None``,
+        the mode is read from the environment variable.
 
     Returns
     -------
@@ -1055,18 +1397,33 @@ def check_biosecurity_before_optimize(
     Raises
     ------
     BiosecurityError
-        If risk_level is "critical" or "high".
+        If mode is ``enforce`` and risk_level is ``critical`` or ``high``.
     """
+    if biosecurity_mode is None:
+        biosecurity_mode = get_biosecurity_mode()
+
+    # Off mode: skip screening entirely
+    if biosecurity_mode == "off":
+        return BiosecurityReport(
+            is_hazardous=False,
+            risk_level="none",
+            flagged_categories=[],
+            matches=[],
+            recommendations=["Biosecurity screening was skipped (mode=off)."],
+        )
+
     report = screen_hazardous_sequence(protein, dna)
 
-    if report.risk_level in ("critical", "high"):
-        logger.error(
-            "Biosecurity gate BLOCKED optimization: risk=%s, organism=%s, "
-            "protein_len=%d, matches=%d",
-            report.risk_level, organism, len(protein), len(report.matches),
-        )
-        raise BiosecurityError(report)
+    if biosecurity_mode == "enforce":
+        if report.risk_level in ("critical", "high"):
+            logger.error(
+                "Biosecurity gate BLOCKED optimization: risk=%s, organism=%s, "
+                "protein_len=%d, matches=%d",
+                report.risk_level, organism, len(protein), len(report.matches),
+            )
+            raise BiosecurityError(report)
 
+    # Both enforce (medium) and warn modes emit a warning
     if report.risk_level == "medium":
         logger.warning(
             "Biosecurity warning (risk=medium): organism=%s, protein_len=%d, "
@@ -1088,6 +1445,16 @@ def check_biosecurity_before_optimize(
             organism, len(protein), len(report.matches), report.flagged_categories,
         )
 
+    # In warn mode, critical/high also emits a warning (instead of raising)
+    if biosecurity_mode == "warn" and report.risk_level in ("critical", "high"):
+        warnings.warn(
+            f"Biosecurity screening detected {report.risk_level}-risk hazard(s): "
+            f"{', '.join(report.flagged_categories)}. "
+            f"Mode is 'warn' so optimization is NOT blocked, but review is strongly recommended.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     return report
 
 
@@ -1099,8 +1466,18 @@ __all__ = [
     "BiosecurityReport",
     "HazardMatch",
     "BiosecurityError",
+    "BiosecurityMode",
+    "MatchType",
+    "StrandType",
     "screen_hazardous_sequence",
     "check_biosecurity_before_optimize",
+    "get_biosecurity_mode",
+    "sig_risk_for_match",
+    "reverse_complement",
+    "_hamming_distance",
+    "_levenshtein_distance",
+    "_fuzzy_match_hamming",
+    "_fuzzy_match_edit_distance",
     # Expose the database size for testing/validation
     "HAZARD_SIGNATURE_COUNT",
 ]

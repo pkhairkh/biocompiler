@@ -1075,6 +1075,9 @@ def _get_taxonomy(organism: str) -> str:
         "Drosophila_melanogaster": "Eukaryota; Metazoa; Arthropoda; Hexapoda; Insecta; Pterygota; Neoptera; Endopterygota; Diptera; Brachycera; Muscomorpha; Drosophilidae; Drosophila.",
         "Caenorhabditis_elegans": "Eukaryota; Metazoa; Ecdysozoa; Nematoda; Chromadorea; Rhabditida; Rhabditoidea; Rhabditidae; Peloderinae; Caenorhabditis.",
         "Arabidopsis_thaliana": "Eukaryota; Viridiplantae; Streptophyta; Embryophyta; Tracheophyta; Spermatophyta; Magnoliopsida; eudicotyledons; Gunneridae; Brassicales; Brassicaceae; Arabidopsis.",
+        "Nicotiana_benthamiana": "Eukaryota; Viridiplantae; Streptophyta; Embryophyta; Tracheophyta; Spermatophyta; Magnoliopsida; eudicotyledons; Gunneridae; Solanales; Solanaceae; Nicotiana.",
+        "Spodoptera_frugiperda": "Eukaryota; Metazoa; Arthropoda; Hexapoda; Insecta; Pterygota; Neoptera; Endopterygota; Lepidoptera; Noctuoidea; Noctuidae; Spodoptera.",
+        "Trichoplusia_ni": "Eukaryota; Metazoa; Arthropoda; Hexapoda; Insecta; Pterygota; Neoptera; Endopterygota; Lepidoptera; Noctuoidea; Noctuidae; Trichoplusia.",
         "Bacillus_subtilis": "Bacteria; Firmicutes; Bacilli; Bacillales; Bacillaceae; Bacillus.",
     }
     return taxonomies.get(organism, "Eukaryota; Metazoa; Unclassified.")

@@ -21,6 +21,7 @@ import pytest
 
 from biocompiler.api import (
     MAX_PROTEIN_LENGTH,
+    MAX_DNA_LENGTH,
     MAX_BATCH_SIZE,
     MAX_REQUEST_SIZE,
     OPTIMIZE_TIMEOUT_S,
@@ -192,12 +193,25 @@ class TestRateLimiting:
             Path(db_path).unlink(missing_ok=True)
 
     def test_rate_limiter_cleanup(self):
-        """Cleanup should remove expired entries."""
-        limiter, db_path = self._make_limiter(max_requests=100, window_seconds=1)
+        """Cleanup should remove expired entries (mocked time, no sleep)."""
+        # Use mock time source to avoid real sleep
+        fake_time = [1000000.0]
+
+        def mock_time_fn():
+            return fake_time[0]
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        limiter = PersistentRateLimiter(
+            db_path=tmp.name,
+            max_requests=100,
+            window_seconds=60,
+            time_func=mock_time_fn,
+        )
         try:
             limiter.record("client_e")
-            # Wait for entries to expire
-            time.sleep(1.1)
+            # Advance time past the window (no real sleep!)
+            fake_time[0] += 61
             deleted = limiter.cleanup()
             # At least one entry should have been cleaned
             assert deleted >= 0  # may be 0 if already cleaned
@@ -205,7 +219,7 @@ class TestRateLimiting:
             allowed, remaining = limiter.check("client_e")
             assert allowed is True
         finally:
-            Path(db_path).unlink(missing_ok=True)
+            Path(tmp.name).unlink(missing_ok=True)
 
     def test_rate_limiter_persistence(self):
         """Rate limit state should persist in the SQLite DB."""
@@ -446,6 +460,7 @@ class TestInfoEndpoint:
             supported_organisms=["Homo_sapiens", "Escherichia_coli"],
             api_version=__version__,
             safety_version=__version__,
+            max_dna_length=MAX_PROTEIN_LENGTH * 3,
         )
         assert info.max_protein_length == MAX_PROTEIN_LENGTH
         assert info.max_batch_size == MAX_BATCH_SIZE

@@ -166,7 +166,7 @@ except ImportError:
 # Optimization
 # ═══════════════════════════════════════════════════════════════════════
 
-from .optimization import BioOptimizer, optimize_sequence, batch_optimize, OptimizationResult, FullConstructResult
+from .optimizer import BioOptimizer, optimize_sequence, batch_optimize, OptimizationResult, FullConstructResult
 from .objectives import (
     ObjectiveFunction,
     cai_objective,
