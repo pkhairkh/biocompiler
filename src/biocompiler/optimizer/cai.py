@@ -17,6 +17,7 @@ from ..type_system import CODON_TABLE
 try:
     from ..numba_kernels import (
         HAS_NUMBA as _HAS_NUMBA,
+        USE_NUMBA as _USE_NUMBA,
         count_gc as _numba_count_gc,
         count_dinucleotides as _numba_count_dinuc,
         seq_to_bytes as _seq_to_bytes,
@@ -27,12 +28,14 @@ try:
     )
 except ImportError:
     _HAS_NUMBA = False
+    _USE_NUMBA = False
     _numba_fast_dinuc_count = None  # type: ignore[assignment]
     _numba_batch_codon_swap_score = None  # type: ignore[assignment]
     _numba_cai_kernel = None  # type: ignore[assignment]
     _numba_cai_incremental = None  # type: ignore[assignment]
 
 HAS_NUMBA: bool = _HAS_NUMBA if isinstance(_HAS_NUMBA, bool) else False
+USE_NUMBA: bool = _USE_NUMBA if isinstance(_USE_NUMBA, bool) else False
 
 # ── NUMBA CAI helpers ──────────────────────────────────────────────
 import numpy as _np

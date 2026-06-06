@@ -119,9 +119,11 @@ __all__ = [
     "ESMFOLD_TIMEOUT_S",
     # Input size limits
     "MAX_PROTEIN_LENGTH",
+    "MAX_PROTEIN_SEQUENCE_LENGTH",
     "MAX_BATCH_SIZE",
     "MAX_REQUEST_SIZE",
     "MAX_DNA_LENGTH",
+    "MAX_DNA_SEQUENCE_LENGTH",
     "OPTIMIZE_TIMEOUT_S",
     # Batch optimization (programmatic API)
     "batch_optimize",
@@ -1389,10 +1391,12 @@ ESMFOLD_TIMEOUT_S = 120  # Default timeout for ESMFold structure prediction
 # ─── Input Size Limits ────────────────────────────────────────────
 
 MAX_PROTEIN_LENGTH = int(os.environ.get("BIOCOMPILER_MAX_PROTEIN_LENGTH", "10000"))  # aa
+MAX_PROTEIN_SEQUENCE_LENGTH = MAX_PROTEIN_LENGTH  # backward-compatible alias
 MAX_BATCH_SIZE = int(os.environ.get("BIOCOMPILER_MAX_BATCH_SIZE", "50"))  # sequences per batch
 MAX_REQUEST_SIZE = int(os.environ.get("BIOCOMPILER_MAX_REQUEST_SIZE", str(10_000_000)))  # bytes
 OPTIMIZE_TIMEOUT_S = int(os.environ.get("BIOCOMPILER_OPTIMIZE_TIMEOUT", "300"))  # seconds
 MAX_DNA_LENGTH = int(os.environ.get("BIOCOMPILER_MAX_DNA_LENGTH", "100000"))  # bases
+MAX_DNA_SEQUENCE_LENGTH = MAX_DNA_LENGTH  # backward-compatible alias
 
 _PROTEIN_VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 

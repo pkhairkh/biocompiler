@@ -597,6 +597,7 @@ def _eliminate_cpg_dinucleotides(
     organism: str = "",
     gc_lo: float = 0.0,
     gc_hi: float = 1.0,
+    max_cai_cost: float = 1.0,
 ) -> tuple[str, list[str]]:
     """Systematically eliminate CpG dinucleotides to avoid CpG islands.
 
@@ -702,19 +703,53 @@ def _eliminate_cpg_dinucleotides(
     if cpg_result.passed and total_cg == 0:
         # No CpG island and no individual CGs — nothing to do
         return sequence, []
-    
+
+    # ── Adaptive CAI cost threshold ──
+    # When the sequence FAILS the CpG island check, we need to eliminate CGs
+    # more aggressively (higher max_cai_cost) to break the CpG island.
+    # When it PASSES, CpG avoidance is a soft preference and we use the
+    # user-specified (or default low) max_cai_cost to protect CAI.
+    # For short sequences (< cpg_window), the island check trivially passes,
+    # but a high CG density is still biologically relevant.  In this case,
+    # use a more permissive threshold proportional to the CG density.
+    effective_max_cai_cost = max_cai_cost
+    if not cpg_result.passed:
+        # CpG island detected — allow more CAI sacrifice to fix it.
+        # Use 0.20 as the adaptive ceiling (enough to swap CGT→AGA, etc.)
+        # but still protect against the worst swaps.
+        effective_max_cai_cost = max(max_cai_cost, 0.20)
+        logger.debug(
+            "CpG island detected (Obs/Exp > %.2f): using adaptive "
+            "max_cai_cost=%.4f (up from %.4f) to break the island",
+            cpg_threshold, effective_max_cai_cost, max_cai_cost,
+        )
+    elif cpg_result.passed and total_cg > 0 and len(sequence) < cpg_window:
+        # Short sequence: CpG island check doesn't apply but CGs are present.
+        # Use a density-adaptive threshold: if >30% of dinucleotides are CG,
+        # treat it as aggressively as a CpG island.
+        cg_density = total_cg / max(len(sequence) - 1, 1)
+        if cg_density > 0.30:
+            effective_max_cai_cost = max(max_cai_cost, 0.20)
+            logger.debug(
+                "Short sequence (%d bp < window %d) with high CG density "
+                "(%.1f%%): using adaptive max_cai_cost=%.4f",
+                len(sequence), cpg_window, cg_density * 100,
+                effective_max_cai_cost,
+            )
+
     if cpg_result.passed and total_cg > 0:
         # Sequence passes island check but has individual CGs — still attempt
         # elimination as a best-effort pass (soft preference)
         logger.debug(
             "Sequence passes CpG island check but has %d CG dinucleotides — "
-            "attempting elimination as soft preference",
-            total_cg
+            "attempting elimination as soft preference (max_cai_cost=%.4f)",
+            total_cg, effective_max_cai_cost,
         )
 
     warnings: list[str] = []
     seq = sequence
     eliminated_count = 0
+    skipped_cai_cost = 0  # Track CpG fixes skipped due to CAI cost
     initial_cg_count = _count_dinucs_fast(seq, "CG")[0]
     # Track the initial GC content to allow swaps that move GC toward the
     # target range even if the current GC is outside the range.
@@ -913,14 +948,27 @@ def _eliminate_cpg_dinucleotides(
                         best_alt_cai = alt_cai
 
                 if best_alt is not None:
-                    # Update GC count incrementally
-                    _old_gc = sum(1 for b in current if b in "GC")
-                    _new_gc = sum(1 for b in best_alt if b in "GC")
-                    seq_gc_count += _new_gc - _old_gc
-                    seq = seq[:left_ci*3] + best_alt + seq[left_ci*3+3:]
-                    fixed = True
-                    any_fixed = True
-                    eliminated_count += 1
+                    # CAI cost gate: if the best CG-free alternative has
+                    # too much CAI loss, keep the CG (CAI > CpG avoidance).
+                    current_cai = usage.get(current, 0.0)
+                    cai_loss = current_cai - best_alt_cai
+                    if cai_loss > effective_max_cai_cost:
+                        skipped_cai_cost += 1
+                        logger.debug(
+                            "CpG elimination skipped at codon %d (%s→%s): "
+                            "CAI cost %.4f > max_cai_cost %.4f",
+                            left_ci, current, best_alt,
+                            cai_loss, effective_max_cai_cost,
+                        )
+                    else:
+                        # Update GC count incrementally
+                        _old_gc = sum(1 for b in current if b in "GC")
+                        _new_gc = sum(1 for b in best_alt if b in "GC")
+                        seq_gc_count += _new_gc - _old_gc
+                        seq = seq[:left_ci*3] + best_alt + seq[left_ci*3+3:]
+                        fixed = True
+                        any_fixed = True
+                        eliminated_count += 1
             else:
                 # ── Cross-codon CpG ──
                 # The C is the last base of codon left_ci, the G is the
@@ -992,13 +1040,25 @@ def _eliminate_cpg_dinucleotides(
                                 best_right_cai = alt_cai
 
                         if best_right_alt is not None:
-                            _old_gc = sum(1 for b in right_current if b in "GC")
-                            _new_gc = sum(1 for b in best_right_alt if b in "GC")
-                            seq_gc_count += _new_gc - _old_gc
-                            seq = seq[:right_ci*3] + best_right_alt + seq[right_ci*3+3:]
-                            fixed = True
-                            any_fixed = True
-                            eliminated_count += 1
+                            # CAI cost gate for cross-codon CpG strategy 1
+                            right_current_cai = usage.get(right_current, 0.0)
+                            right_cai_loss = right_current_cai - best_right_cai
+                            if right_cai_loss > effective_max_cai_cost:
+                                skipped_cai_cost += 1
+                                logger.debug(
+                                    "CpG elimination skipped (strategy 1, right codon %d: %s→%s): "
+                                    "CAI cost %.4f > max_cai_cost %.4f",
+                                    right_ci, right_current, best_right_alt,
+                                    right_cai_loss, effective_max_cai_cost,
+                                )
+                            else:
+                                _old_gc = sum(1 for b in right_current if b in "GC")
+                                _new_gc = sum(1 for b in best_right_alt if b in "GC")
+                                seq_gc_count += _new_gc - _old_gc
+                                seq = seq[:right_ci*3] + best_right_alt + seq[right_ci*3+3:]
+                                fixed = True
+                                any_fixed = True
+                                eliminated_count += 1
 
                 # Strategy 2: Change left codon (to not end with C)
                 if not fixed and 0 <= left_ci < n_codons:
@@ -1059,13 +1119,25 @@ def _eliminate_cpg_dinucleotides(
                                 best_left_cai = alt_cai
 
                         if best_left_alt is not None:
-                            _old_gc = sum(1 for b in left_current if b in "GC")
-                            _new_gc = sum(1 for b in best_left_alt if b in "GC")
-                            seq_gc_count += _new_gc - _old_gc
-                            seq = seq[:left_ci*3] + best_left_alt + seq[left_ci*3+3:]
-                            fixed = True
-                            any_fixed = True
-                            eliminated_count += 1
+                            # CAI cost gate for cross-codon CpG strategy 2
+                            left_current_cai = usage.get(left_current, 0.0)
+                            left_cai_loss = left_current_cai - best_left_cai
+                            if left_cai_loss > effective_max_cai_cost:
+                                skipped_cai_cost += 1
+                                logger.debug(
+                                    "CpG elimination skipped (strategy 2, left codon %d: %s→%s): "
+                                    "CAI cost %.4f > max_cai_cost %.4f",
+                                    left_ci, left_current, best_left_alt,
+                                    left_cai_loss, effective_max_cai_cost,
+                                )
+                            else:
+                                _old_gc = sum(1 for b in left_current if b in "GC")
+                                _new_gc = sum(1 for b in best_left_alt if b in "GC")
+                                seq_gc_count += _new_gc - _old_gc
+                                seq = seq[:left_ci*3] + best_left_alt + seq[left_ci*3+3:]
+                                fixed = True
+                                any_fixed = True
+                                eliminated_count += 1
 
                 # Strategy 3: Coordinated 2-codon swap
                 # PERF (Fix B): The original code built full test sequences
@@ -1158,18 +1230,36 @@ def _eliminate_cpg_dinucleotides(
 
                         if best_swap is not None:
                             left_alt, right_alt, _ = best_swap
-                            # Update GC count incrementally
-                            _old_gc_l = sum(1 for b in left_current if b in "GC")
-                            _new_gc_l = sum(1 for b in left_alt if b in "GC")
-                            _old_gc_r = sum(1 for b in right_current if b in "GC")
-                            _new_gc_r = sum(1 for b in right_alt if b in "GC")
-                            seq_gc_count += (_new_gc_l - _old_gc_l) + (_new_gc_r - _old_gc_r)
-                            seq = (seq[:left_ci*3] + left_alt +
-                                   seq[left_ci*3+3:right_ci*3] + right_alt +
-                                   seq[right_ci*3+3:])
-                            fixed = True
-                            any_fixed = True
-                            eliminated_count += 1
+                            # CAI cost gate for cross-codon CpG strategy 3
+                            left_current_cai_s3 = usage.get(left_current, 0.0)
+                            right_current_cai_s3 = usage.get(right_current, 0.0)
+                            left_alt_cai_s3 = usage.get(left_alt, 0.0)
+                            right_alt_cai_s3 = usage.get(right_alt, 0.0)
+                            cai_loss_l = left_current_cai_s3 - left_alt_cai_s3
+                            cai_loss_r = right_current_cai_s3 - right_alt_cai_s3
+                            if cai_loss_l > effective_max_cai_cost or cai_loss_r > effective_max_cai_cost:
+                                skipped_cai_cost += 1
+                                logger.debug(
+                                    "CpG elimination skipped (strategy 3, codons %d+%d: %s→%s, %s→%s): "
+                                    "CAI cost L=%.4f R=%.4f > max_cai_cost %.4f",
+                                    left_ci, right_ci,
+                                    left_current, left_alt,
+                                    right_current, right_alt,
+                                    cai_loss_l, cai_loss_r, effective_max_cai_cost,
+                                )
+                            else:
+                                # Update GC count incrementally
+                                _old_gc_l = sum(1 for b in left_current if b in "GC")
+                                _new_gc_l = sum(1 for b in left_alt if b in "GC")
+                                _old_gc_r = sum(1 for b in right_current if b in "GC")
+                                _new_gc_r = sum(1 for b in right_alt if b in "GC")
+                                seq_gc_count += (_new_gc_l - _old_gc_l) + (_new_gc_r - _old_gc_r)
+                                seq = (seq[:left_ci*3] + left_alt +
+                                       seq[left_ci*3+3:right_ci*3] + right_alt +
+                                       seq[right_ci*3+3:])
+                                fixed = True
+                                any_fixed = True
+                                eliminated_count += 1
 
         # If no CG was fixed in this pass, stop trying
         if not any_fixed:
@@ -1192,9 +1282,22 @@ def _eliminate_cpg_dinucleotides(
                 f"{final_cpg_result.details}"
             )
 
+    # Log summary including CAI cost skips
+    if skipped_cai_cost > 0:
+        logger.warning(
+            "CpG elimination: %d position(s) skipped because CAI cost exceeded "
+            "max_cai_cost=%.4f. CAI is preserved at the cost of retaining CG "
+            "dinucleotides. For eukaryotes, CpG avoidance is a soft preference — "
+            "individual CGs in CDS are common and not biologically problematic "
+            "unless they form CpG islands.",
+            skipped_cai_cost, effective_max_cai_cost,
+        )
+
     logger.debug(
-        "CpG elimination: %d/%d CG dinucleotides eliminated in %d passes",
+        "CpG elimination: %d/%d CG dinucleotides eliminated in %d passes "
+        "(%d skipped due to CAI cost)",
         eliminated_count, initial_cg_count, iteration + 1 if max_iterations > 0 else 0,
+        skipped_cai_cost,
     )
 
     return seq, warnings

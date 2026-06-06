@@ -51,13 +51,18 @@ try:
     HAS_NUMBA: bool = True
     _NUMBA_VERSION: str = numba.__version__
 except ImportError:
-    HAS_NUMBA = False
+    HAS_NUMBA: bool = False
     _NUMBA_VERSION = ""
     numba = None  # type: ignore[assignment]
     prange = range  # type: ignore[assignment]
 
+# Runtime toggle: set to False to disable NUMBA even when available
+import os as _os
+USE_NUMBA: bool = HAS_NUMBA and _os.environ.get("BIOCOMPILER_USE_NUMBA", "1") not in ("0", "false", "False")
+
 __all__ = [
     "HAS_NUMBA",
+    "USE_NUMBA",
     "count_gc",
     "count_dinucleotides",
     "compute_cai_kernel",

@@ -840,8 +840,13 @@ class ProvenanceStore:
         audit_json = store.export_audit_trail(record_id)
     """
 
+    # UUID format regex: strict lowercase hex with hyphens
+    _UUID_PATTERN = __import__("re").compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+
     def __init__(self, store_dir: str | None = None) -> None:
-        self._store_dir = Path(store_dir or Path.home() / ".biocompiler" / "provenance")
+        self._store_dir = Path(store_dir or Path.home() / ".biocompiler" / "provenance").resolve()
         self._store_dir.mkdir(parents=True, exist_ok=True)
         _logger.debug("ProvenanceStore initialized at %s", self._store_dir)
 
@@ -875,21 +880,74 @@ class ProvenanceStore:
         )
         return record_id
 
+    @staticmethod
+    def _validate_uuid(record_id: str) -> None:
+        """Validate that *record_id* is a well-formed UUID string.
+
+        Security: prevents path-traversal attacks by rejecting anything
+        that is not a strict ``xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx``
+        lowercase-hex UUID.
+
+        Raises:
+            ValueError: If *record_id* is not a valid UUID format.
+        """
+        # Layer 1: Reject path separators
+        if "/" in record_id or "\\" in record_id:
+            raise ValueError(
+                f"Invalid provenance record ID (contains path separators): {record_id!r}"
+            )
+        # Layer 2: Reject parent-directory traversal
+        if ".." in record_id:
+            raise ValueError(
+                f"Invalid provenance record ID (contains '..'): {record_id!r}"
+            )
+        # Layer 3: Strict UUID format check (lowercase hex only)
+        if not ProvenanceStore._UUID_PATTERN.match(record_id):
+            raise ValueError(
+                f"Invalid provenance record ID (not a valid UUID): {record_id!r}"
+            )
+        # Layer 4: uuid.UUID parsing for definitive validation
+        try:
+            uuid.UUID(record_id)
+        except ValueError:
+            raise ValueError(
+                f"Invalid provenance record ID (UUID parse failure): {record_id!r}"
+            )
+
+    def _safe_record_path(self, record_id: str) -> Path:
+        """Return a validated, path-contained file path for *record_id*.
+
+        Calls :meth:`_validate_uuid` first, then resolves the resulting
+        path and verifies it is still inside ``self._store_dir``.
+
+        Raises:
+            ValueError: If *record_id* is invalid or path escapes store.
+        """
+        self._validate_uuid(record_id)
+        filepath = (self._store_dir / f"{record_id}.json").resolve()
+        # Defense-in-depth: verify resolved path stays within store dir
+        if not str(filepath).startswith(str(self._store_dir)):
+            raise ValueError(
+                f"Invalid provenance record ID (path escapes store): {record_id!r}"
+            )
+        return filepath
+
     def load(self, record_id: str) -> OptimizationDecisionTrail:
         """Load a provenance record by ID.
 
         Args:
             record_id: The record ID returned by :meth:`save`.
+                Must be a valid UUID string (no path traversal).
 
         Returns:
             The deserialized :class:`OptimizationDecisionTrail`.
 
         Raises:
             FileNotFoundError: If no record with the given ID exists.
-            ValueError: If the stored file is corrupted or cannot be
-                deserialized.
+            ValueError: If the record_id is invalid or the stored file
+                is corrupted or cannot be deserialized.
         """
-        filepath = self._store_dir / f"{record_id}.json"
+        filepath = self._safe_record_path(record_id)
         if not filepath.exists():
             raise FileNotFoundError(
                 f"Provenance record not found: {record_id}"

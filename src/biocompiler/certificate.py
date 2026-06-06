@@ -59,6 +59,11 @@ __all__ = [
     "VERSION",
     "_CERTIFICATE_VERSION",
     "_REQUIRED_INPUT_PARAM_KEYS",
+    "_compute_certificate_hash",
+    "_compute_gc_content",
+    "_CURRENT_HASH_VERSION",
+    "_HASH_ALGORITHM",
+    "_V2_HASH_PARAM_KEYS",
 ]
 
 # Certificate version (integer, incremented when the hash format changes)
@@ -86,6 +91,58 @@ _CERT_FORMAT_WIDTH: int = 60
 # Hashing constants
 _HASH_ALGORITHM: str = "sha256"
 _HASH_TRUNCATION_LENGTH: int = 16
+_CURRENT_HASH_VERSION: int = 2
+
+# Parameter keys included in v2 hash computation
+_V2_HASH_PARAM_KEYS: tuple[str, ...] = (
+    "organism", "gc_lo", "gc_hi", "cai_threshold", "solver_backend",
+)
+
+
+def _compute_gc_content(sequence: str) -> float:
+    """Compute GC fraction of a DNA sequence (case-insensitive)."""
+    if not sequence:
+        return 0.0
+    seq = sequence.upper()
+    gc = sum(1 for b in seq if b in ("G", "C"))
+    return gc / len(seq)
+
+
+def _compute_certificate_hash(
+    sequence: str,
+    types_list: list[dict[str, str]],
+    params: dict[str, Any],
+    hash_version: int = _CURRENT_HASH_VERSION,
+    **kwargs: Any,
+) -> str:
+    """Compute the certificate design_id hash.
+
+    v1: SHA-256(sequence) — legacy, soundness bug (ignores predicates/params).
+    v2: SHA-256(sequence + sorted predicate results + key opt params).
+    """
+    if hash_version == 1:
+        return hashlib.new(_HASH_ALGORITHM, sequence.encode()).hexdigest()
+
+    # v2: include sorted predicate results and key parameters
+    hasher = hashlib.new(_HASH_ALGORITHM)
+    hasher.update(sequence.encode())
+
+    # Sort predicates by name for order-independence
+    for entry in sorted(types_list, key=lambda t: t.get("predicate", "")):
+        pred = entry.get("predicate", "")
+        verdict = entry.get("verdict", "")
+        hasher.update(f"{pred}={verdict}".encode())
+
+    # Merge params with kwargs (kwargs take precedence)
+    effective_params = dict(params)
+    effective_params.update(kwargs)
+
+    # Include key optimization parameters in sorted order
+    for key in sorted(_V2_HASH_PARAM_KEYS):
+        if key in effective_params:
+            hasher.update(f"{key}={effective_params[key]}".encode())
+
+    return hasher.hexdigest()
 
 
 def generate_certificate(
@@ -195,9 +252,19 @@ def generate_certificate(
     else:
         provenance["mutagenesis"] = {"applied": False}
 
+    # Compute hash — v2 covers sequence + sorted predicates + key params
+    types_for_hash = [
+        {"predicate": r.predicate, "verdict": r.verdict.value}
+        for r in type_results
+    ]
+    design_id = _compute_certificate_hash(
+        sequence, types_for_hash, complete_params, hash_version=_CURRENT_HASH_VERSION,
+    )
+
     cert = Certificate(
         version=VERSION,
-        design_id=seq_hash,
+        design_id=design_id,
+        hash_version=_CURRENT_HASH_VERSION,
         sequence=sequence,
         types=[
             {
@@ -409,8 +476,16 @@ def verify_certificate(cert_dict: dict[str, Any], **kwargs: Any) -> tuple[str, l
     for key, val in kwargs.items():
         effective_params[key] = val
 
-    # Check 1: design_id matches hash of sequence
-    computed_hash = hashlib.new(_HASH_ALGORITHM, seq.encode()).hexdigest()
+    # Check 1: design_id matches hash
+    hash_version = cert_dict.get("hash_version", 1)
+    if hash_version == 1:
+        # v1: sequence-only hash
+        computed_hash = hashlib.new(_HASH_ALGORITHM, seq.encode()).hexdigest()
+    else:
+        # v2: sequence + sorted predicates + key params
+        computed_hash = _compute_certificate_hash(
+            seq, cert_dict.get("types", []), params, hash_version=hash_version,
+        )
     if computed_hash != cert_dict["design_id"]:
         failures.append(
             f"design_id mismatch: computed {computed_hash[:_HASH_TRUNCATION_LENGTH]}... != "

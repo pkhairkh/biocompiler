@@ -364,6 +364,8 @@ class PredicateResult:
     details: str = ""
     positions: List[int] = field(default_factory=list)
     verification_evidence: Optional[Dict[str, Any]] = None  # SLOT verification evidence
+    mutagenesis_applied: bool = False
+    unavoidable_constraints: List[str] = field(default_factory=list)
 
 
 # ────────────────────────────────────────────────────────────

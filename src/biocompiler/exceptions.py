@@ -273,13 +273,15 @@ class BiosecurityError(BioCompilerError):
     or screening. Carries structured information about the
     risk level, flagged categories, and individual matches.
 
-    Supports two calling conventions:
+    Supports multiple calling conventions:
 
     1. **Report form** (recommended): pass a :class:`BiosecurityReport`
        object as the first argument.  The report's attributes are
        automatically extracted for the error message.
     2. **Legacy form**: pass ``reason`` (str) plus optional
        ``risk_level``, ``flagged_categories``, and ``matches``.
+    3. **Keyword form**: pass ``protein``, ``flagged_pathogens``,
+       ``risk_levels``, and ``match_details`` as keyword arguments.
 
     Attributes:
         report: The :class:`BiosecurityReport` that triggered the error
@@ -288,6 +290,10 @@ class BiosecurityError(BioCompilerError):
         risk_level: One of "none", "low", "medium", "high", "critical".
         flagged_categories: Categories that were flagged.
         matches: Individual hazard matches.
+        protein: The protein sequence that was screened.
+        flagged_pathogens: Names of pathogens that were flagged.
+        risk_levels: Risk levels for each flagged pathogen.
+        match_details: Details about each match.
     """
 
     def __init__(
@@ -296,6 +302,11 @@ class BiosecurityError(BioCompilerError):
         risk_level: str | None = None,
         flagged_categories: list[str] | None = None,
         matches: list[Any] | None = None,
+        *,
+        protein: str | None = None,
+        flagged_pathogens: list[str] | None = None,
+        risk_levels: list[str] | None = None,
+        match_details: list[str] | None = None,
     ):
         # Detect report-form: if the first argument is a BiosecurityReport
         # (has is_hazardous, risk_level attributes), extract info from it.
@@ -314,13 +325,23 @@ class BiosecurityError(BioCompilerError):
 
         self.report = report
 
+        # Keyword-form attributes
+        self.protein = protein or ""
+        self.flagged_pathogens = flagged_pathogens or []
+        self.risk_levels = risk_levels or []
+        self.match_details = match_details or []
+
+        # Build message
         detail = f" (risk_level={self.risk_level})" if self.risk_level else ""
         if self.flagged_categories:
             detail += f" categories={self.flagged_categories}"
-        super().__init__(
-            f"Biosecurity screening blocked optimization: "
-            f"{self.reason}{detail}"
-        )
+        if self.flagged_pathogens:
+            detail += f" pathogens={self.flagged_pathogens}"
+
+        msg = f"BIOSECURITY ALERT: Optimization BLOCKED — {self.reason}{detail}"
+        if self.flagged_pathogens:
+            msg += "\nConsult your institution's biosafety officer before proceeding."
+        super().__init__(msg)
 
 
 class TranslationVerificationError(BioCompilerError):

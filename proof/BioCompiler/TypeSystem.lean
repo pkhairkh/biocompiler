@@ -479,9 +479,8 @@ theorem type_soundness [SpliceSiteScanner] [CodonAdaptationIndex] [CpGIslandScan
       cases h_em_obs with
       | inl h_obs_lt =>
         -- Obs/Exp < threshold: provide the witness
-        use (List.zipWith (· == ·) ((seq.drop pos).take cpgIslandWindowSize)
-              (((seq.drop pos).take cpgIslandWindowSize).drop 1)).count true
-        exact ⟨rfl, h_obs_lt⟩
+        exact ⟨(List.zipWith (· == ·) ((seq.drop pos).take cpgIslandWindowSize)
+              (((seq.drop pos).take cpgIslandWindowSize).drop 1)).count true, rfl, h_obs_lt⟩
       | inr h_obs_not_lt =>
         -- Obs/Exp ≥ threshold: both conditions hold, contradiction with scanner returning false
         have h_obs_exp_ge :=

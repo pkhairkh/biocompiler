@@ -215,42 +215,41 @@ theorem all_valine_codons_have_gt :
   intro codon h_len h_aa
   -- Valine codons are exactly GTT, GTC, GTA, GTG
   -- We prove by exhaustion: check all 64 codons
-  have : codon ∈ ([
+  have h_mem : codon ∈ ([
     [Nucleotide.G, Nucleotide.T, Nucleotide.T],
     [Nucleotide.G, Nucleotide.T, Nucleotide.C],
     [Nucleotide.G, Nucleotide.T, Nucleotide.A],
     [Nucleotide.G, Nucleotide.T, Nucleotide.G]
   ] : List (List Nucleotide)) := by
-    by_contra h_not_mem
-    -- If codon is not one of the GTx codons, it doesn't encode Valine
-    -- We check this by native_decide for each possible codon
-    have : codonToAA codon ≠ 'V' := by
-      -- Use the fact that only GTx codons encode V
-      cases codon with
-      | nil => simp at h_len
-      | cons h1 t1 =>
-        cases t1 with
+    by_cases h_in : codon ∈ ([
+      [Nucleotide.G, Nucleotide.T, Nucleotide.T],
+      [Nucleotide.G, Nucleotide.T, Nucleotide.C],
+      [Nucleotide.G, Nucleotide.T, Nucleotide.A],
+      [Nucleotide.G, Nucleotide.T, Nucleotide.G]
+    ] : List (List Nucleotide))
+    · exact h_in
+    · -- If codon is not one of the GTx codons, it doesn't encode Valine
+      exfalso
+      have h_not_V : codonToAA codon ≠ 'V' := by
+        cases codon with
         | nil => simp at h_len
-        | cons h2 t2 =>
-          cases t2 with
+        | cons h1 t1 =>
+          cases t1 with
           | nil => simp at h_len
-          | cons h3 t3 =>
-            cases t3 with
-            | nil =>
-              cases h1 <;> cases h2 <;> cases h3 <;>
-                simp [codonToAA] <;> try rfl <;> try { intro h; cases h }
-            | cons h4 t4 =>
-              simp at h_len
-              -- length = 3, so t3 = []
-              have : t3.length = 0 := by omega
-              simp [List.length_eq_zero] at this
-              subst this
-              cases h1 <;> cases h2 <;> cases h3 <;>
-                simp [codonToAA] <;> try rfl <;> try { intro h; cases h }
-    exact this h_aa
+          | cons h2 t2 =>
+            cases t2 with
+            | nil => simp at h_len
+            | cons h3 t3 =>
+              cases t3 with
+              | nil =>
+                cases h1 <;> cases h2 <;> cases h3 <;>
+                  simp [codonToAA] <;> try rfl <;> try { intro h; cases h }
+              | cons h4 t4 =>
+                simp at h_len
+        exact h_not_V h_aa
   -- Now codon is one of the GTx codons, all of which have GT
-  simp [List.mem_cons] at this
-  rcases this with h | h | h | h
+  simp [List.mem_cons] at h_mem
+  rcases h_mem with h | h | h | h
   · subst h; exact valine_codons_have_gt.1
   · subst h; exact valine_codons_have_gt.2.1
   · subst h; exact valine_codons_have_gt.2.2.1
@@ -266,7 +265,7 @@ theorem mandatory_gt_has_gt :
   intro aa h_mand codon h_len h_aa
   -- GT_MANDATORY_AAS = ['V'], so aa = 'V'
   unfold isGTMandatory GT_MANDATORY_AAS at h_mand
-  simp [List.mem_cons, List.mem_nil] at h_mand
+  simp [List.mem_cons, List.not_mem_nil] at h_mand
   subst h_mand
   exact all_valine_codons_have_gt codon h_len h_aa
 
@@ -280,7 +279,7 @@ theorem no_ag_mandatory :
     ∀ (aa : Char), isAGMandatory aa = false := by
   intro aa
   unfold isAGMandatory AG_MANDATORY_AAS
-  simp [List.mem_nil]
+  simp [List.not_mem_nil]
 
 -- ==============================================================================
 -- Unrepairable Cryptic Sites
@@ -295,11 +294,11 @@ theorem no_ag_mandatory :
     This is the KEY negative result: the type system's FAIL verdict for
     NoCrypticSplice at Valine positions is INESCAPABLE. -/
 def isUnrepairableCrypticDonor (seq : Sequence) (pos : Nat) : Bool :=
-  pos + 2 ≤ seq.length ∧
-  seq.get! pos = Nucleotide.G ∧
-  seq.get! (pos + 1) = Nucleotide.T ∧
+  decide (pos + 2 ≤ seq.length) &&
+  (seq.getD pos Nucleotide.A) = Nucleotide.G &&
+  (seq.getD (pos + 1) Nucleotide.A) = Nucleotide.T &&
   -- pos must be at a codon boundary (pos = codonPos * 3)
-  pos % 3 = 0 ∧
+  decide (pos % 3 = 0) &&
   -- The amino acid at this codon must be GT-mandatory
   isGTMandatory (codonToAA (seq.drop pos |>.take 3)) = true
 
@@ -337,8 +336,8 @@ theorem unrepairable_cryptic_donor_exists :
 theorem limited_ag_synonymous_options :
     ∃ (seq : Sequence) (pos : Nat),
       pos + 2 ≤ seq.length ∧
-      seq.get! pos = Nucleotide.A ∧
-      seq.get! (pos + 1) = Nucleotide.G ∧
+      (seq.getD pos Nucleotide.A) = Nucleotide.A ∧
+      (seq.getD (pos + 1) Nucleotide.A) = Nucleotide.G ∧
       pos % 3 = 0 ∧
       -- The codon is AGA or AGG (Arginine)
       codonToAA (seq.drop pos |>.take 3) = 'R' := by
@@ -368,27 +367,27 @@ structure SynonymousMutation where
   h_different : originalCodon ≠ newCodon
 
 /-- Apply a synonymous mutation to a sequence at a codon-aligned position. -/
-def applySynonymousMutation (seq : Sequence) (mut : SynonymousMutation) : Sequence :=
-  let prefix := seq.take (mut.codonPos * 3)
-  let suffix := seq.drop (mut.codonPos * 3 + 3)
-  prefix ++ mut.newCodon ++ suffix
+def applySynonymousMutation (seq : Sequence) (mt : SynonymousMutation) : Sequence :=
+  let pref := seq.take (mt.codonPos * 3)
+  let suffix := seq.drop (mt.codonPos * 3 + 3)
+  pref ++ mt.newCodon ++ suffix
 
 /-- THEOREM: Synonymous mutations preserve the amino acid at the mutated position.
     This is the fundamental guarantee that synonymous substitution provides. -/
-theorem synonymous_preserves_translation (mut : SynonymousMutation) :
-    codonToAA mut.originalCodon = codonToAA mut.newCodon :=
-  mut.h_synonymous
+theorem synonymous_preserves_translation (mt : SynonymousMutation) :
+    codonToAA mt.originalCodon = codonToAA mt.newCodon :=
+  mt.h_synonymous
 
 /-- THEOREM: Synonymous mutations do NOT necessarily preserve GC content.
     Counterexample: AAA (Lysine, 0% GC) → AAG (Lysine, 33% GC).
     This shows that GCInRange is NOT preserved by synonymous substitutions. -/
 theorem synonymous_gc_counterexample :
-    ∃ (mut : SynonymousMutation),
-      codonToAA mut.originalCodon = codonToAA mut.newCodon ∧
-      mut.originalCodon ≠ mut.newCodon ∧
+    ∃ (mt : SynonymousMutation),
+      codonToAA mt.originalCodon = codonToAA mt.newCodon ∧
+      mt.originalCodon ≠ mt.newCodon ∧
       -- AAA has 0 G/C nucleotides, AAG has 1 G nucleotide
-      (mut.originalCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length ≠
-      (mut.newCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length := by
+      (mt.originalCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length ≠
+      (mt.newCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length := by
   exact ⟨
     { codonPos := 0
       originalCodon := [Nucleotide.A, Nucleotide.A, Nucleotide.A]
@@ -416,12 +415,12 @@ theorem synonymous_gc_counterexample :
     TCT has no AG dinucleotide at start, AGT has AG at positions 0-1.
     This shows NoGTDinucleotide and NoCrypticSplice are not preserved. -/
 theorem synonymous_restriction_counterexample :
-    ∃ (mut : SynonymousMutation),
-      codonToAA mut.originalCodon = codonToAA mut.newCodon ∧
-      mut.originalCodon ≠ mut.newCodon ∧
+    ∃ (mt : SynonymousMutation),
+      codonToAA mt.originalCodon = codonToAA mt.newCodon ∧
+      mt.originalCodon ≠ mt.newCodon ∧
       -- TCT has no AG at positions 0-1, AGT has AG at positions 0-1
-      codonHasAG mut.originalCodon = false ∧
-      codonHasAG mut.newCodon = true := by
+      codonHasAG mt.originalCodon = false ∧
+      codonHasAG mt.newCodon = true := by
   exact ⟨
     { codonPos := 0
       originalCodon := [Nucleotide.T, Nucleotide.C, Nucleotide.T]
@@ -451,11 +450,11 @@ theorem synonymous_restriction_counterexample :
     And codonToAA [A,G,A] = 'R' = codonToAA [C,G,T]. So AGA → CGT is synonymous
     and introduces GT. -/
 theorem synonymous_introduces_gt :
-    ∃ (mut : SynonymousMutation),
-      codonToAA mut.originalCodon = codonToAA mut.newCodon ∧
-      mut.originalCodon ≠ mut.newCodon ∧
-      codonHasGT mut.originalCodon = false ∧
-      codonHasGT mut.newCodon = true := by
+    ∃ (mt : SynonymousMutation),
+      codonToAA mt.originalCodon = codonToAA mt.newCodon ∧
+      mt.originalCodon ≠ mt.newCodon ∧
+      codonHasGT mt.originalCodon = false ∧
+      codonHasGT mt.newCodon = true := by
   exact ⟨
     { codonPos := 0
       originalCodon := [Nucleotide.A, Nucleotide.G, Nucleotide.A]
@@ -479,25 +478,25 @@ theorem synonymous_introduces_gt :
     the verdict of all protein-level (SLOT-dependent) type predicates.
     Since SLOT-dependent predicates always return UNCERTAIN, any mutation
     is trivially type-safe for them. -/
-def isTypeSafeForProteinPredicates (_mut : SynonymousMutation) : Bool := true
+def isTypeSafeForProteinPredicates (_mt : SynonymousMutation) : Bool := true
 
 /-- A mutation is "type-safe for DNA-level predicates" if it preserves
     the verdict of all DNA-level type predicates. This is much harder to
     guarantee, as shown by the counterexamples above. -/
-def isTypeSafeForDNAPredicates (mut : SynonymousMutation) : Bool :=
+def isTypeSafeForDNAPredicates (mt : SynonymousMutation) : Bool :=
   -- GC content change?
-  let origGC := (mut.originalCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length
-  let newGC := (mut.newCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length
+  let origGC := (mt.originalCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length
+  let newGC := (mt.newCodon.filter (· = Nucleotide.G || · = Nucleotide.C)).length
   -- No new GT dinucleotide?
-  let noNewGT := codonHasGT mut.originalCodon = true ∨ codonHasGT mut.newCodon = false
+  let noNewGT := codonHasGT mt.originalCodon = true || codonHasGT mt.newCodon = false
   -- No new AG dinucleotide?
-  let noNewAG := codonHasAG mut.originalCodon = true ∨ codonHasAG mut.newCodon = false
+  let noNewAG := codonHasAG mt.originalCodon = true || codonHasAG mt.newCodon = false
   -- No CpG island creation?
-  let origCpG := mut.originalCodon.contains Nucleotide.C && mut.originalCodon.contains Nucleotide.G
-  let newCpG := mut.newCodon.contains Nucleotide.C && mut.newCodon.contains Nucleotide.G
-  let noNewCpG := origCpG ∨ ¬newCpG
+  let origCpG := mt.originalCodon.contains Nucleotide.C && mt.originalCodon.contains Nucleotide.G
+  let newCpG := mt.newCodon.contains Nucleotide.C && mt.newCodon.contains Nucleotide.G
+  let noNewCpG := origCpG || !newCpG
   -- No restriction site creation (conservative check)
-  let noRestriction := ¬(codonHasAG mut.newCodon ∧ ¬codonHasAG mut.originalCodon)
+  let noRestriction := !(codonHasAG mt.newCodon && !codonHasAG mt.originalCodon)
   -- Combine checks
   (origGC = newGC) && noNewGT && noNewAG && noNewCpG && noRestriction
 
@@ -508,36 +507,36 @@ theorem synonymous_safe_for_SLOT_predicates
     [inst_splice : SpliceSiteScanner] [inst_cai : CodonAdaptationIndex] [inst_cpg : CpGIslandScanner]
     [inst_prom : PromoterScanner] [inst_tm : TMDomainScanner] [inst_mrna : mRNAStructureOracle] [inst_cotrans : CoTranslationalFoldingOracle]
     {State : Type} [DecidableEq State] [Inhabited State] [SplicingNDFST State]
-    (mut : SynonymousMutation) (seq : Sequence) (ctx : CellularContext)
+    (mt : SynonymousMutation) (seq : Sequence) (ctx : CellularContext)
     (P : TypePredicate) :
     isSLOT P = true →
     @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
       State _ _ _ P seq ctx =
     @evaluate inst_splice inst_cai inst_cpg inst_prom inst_tm inst_mrna inst_cotrans
-      State _ _ _ P (applySynonymousMutation seq mut) ctx := by
+      State _ _ _ P (applySynonymousMutation seq mt) ctx := by
   intro h_slot
   -- SLOT predicates always evaluate to UNCERTAIN regardless of sequence
   cases P with
-  | ConservationScore _ => simp [evaluate, evaluate]
-  | NoUnexpectedTMDomain _ _ => simp [evaluate, evaluate]
-  | mRNASecondaryStructure _ => simp [evaluate, evaluate]
-  | CoTranslationalFolding _ => simp [evaluate, evaluate]
-  | StructureConfidence _ => simp [evaluate, evaluate]
-  | NoMisfoldingRisk => simp [evaluate, evaluate]
-  | CorrectFoldTopology => simp [evaluate, evaluate]
-  | NoUnexpectedInteraction => simp [evaluate, evaluate]
-  | StableFolding _ => simp [evaluate, evaluate]
-  | NoDestabilizingMutation _ => simp [evaluate, evaluate]
-  | DisulfideBondIntegrity => simp [evaluate, evaluate]
-  | HydrophobicCoreQuality _ => simp [evaluate, evaluate]
-  | SolubleExpression _ => simp [evaluate, evaluate]
-  | NoAggregationProneRegion => simp [evaluate, evaluate]
-  | ChargeComposition _ _ => simp [evaluate, evaluate]
-  | NoLongHydrophobicStretch _ => simp [evaluate, evaluate]
-  | LowImmunogenicity _ => simp [evaluate, evaluate]
-  | NoStrongTCellEpitope _ => simp [evaluate, evaluate]
-  | NoDominantBCellEpitope _ => simp [evaluate, evaluate]
-  | PopulationCoverageSafe _ => simp [evaluate, evaluate]
+  | ConservationScore _ => simp [evaluate]
+  | NoUnexpectedTMDomain _ _ => simp [evaluate]
+  | mRNASecondaryStructure _ => simp [evaluate]
+  | CoTranslationalFolding _ => simp [evaluate]
+  | StructureConfidence _ => simp [evaluate]
+  | NoMisfoldingRisk => simp [evaluate]
+  | CorrectFoldTopology => simp [evaluate]
+  | NoUnexpectedInteraction => simp [evaluate]
+  | StableFolding _ => simp [evaluate]
+  | NoDestabilizingMutation _ => simp [evaluate]
+  | DisulfideBondIntegrity => simp [evaluate]
+  | HydrophobicCoreQuality _ => simp [evaluate]
+  | SolubleExpression _ => simp [evaluate]
+  | NoAggregationProneRegion => simp [evaluate]
+  | ChargeComposition _ _ => simp [evaluate]
+  | NoLongHydrophobicStretch _ => simp [evaluate]
+  | LowImmunogenicity _ => simp [evaluate]
+  | NoStrongTCellEpitope _ => simp [evaluate]
+  | NoDominantBCellEpitope _ => simp [evaluate]
+  | PopulationCoverageSafe _ => simp [evaluate]
   -- Core predicates: isSLOT = false, contradiction
   | SpliceCorrect _ => simp [isSLOT] at h_slot; cases h_slot
   | NoCrypticSplice => simp [isSLOT] at h_slot; cases h_slot
@@ -557,10 +556,10 @@ theorem synonymous_safe_for_SLOT_predicates
     predicates. We provide a concrete counterexample where a synonymous
     substitution changes the NoGTDinucleotide verdict from PASS to FAIL. -/
 theorem synonymous_unsafe_for_dna_predicates :
-    ∃ (mut : SynonymousMutation) (seq : Sequence) (pos : Nat),
-      codonToAA mut.originalCodon = codonToAA mut.newCodon ∧
+    ∃ (mt : SynonymousMutation) (seq : Sequence) (pos : Nat),
+      codonToAA mt.originalCodon = codonToAA mt.newCodon ∧
       hasPattern seq spliceDonorConsensus = false ∧
-      hasPattern (applySynonymousMutation seq mut) spliceDonorConsensus = true := by
+      hasPattern (applySynonymousMutation seq mt) spliceDonorConsensus = true := by
   -- AGA → CGT at position 0 of a sequence that has no GT originally
   -- Original: AGA + AAA = [A,G,A,A,A,A] — no GT
   -- After:    CGT + AAA = [C,G,T,A,A,A] — has GT at position 1
@@ -777,17 +776,17 @@ inductive MutationSafety where
   deriving Repr, BEq
 
 /-- Classify the safety of a synonymous mutation. -/
-def classifyMutationSafety (mut : SynonymousMutation) : MutationSafety :=
-  if isTypeSafeForDNAPredicates mut then MutationSafety.SAFE
-  else if isTypeSafeForProteinPredicates mut then MutationSafety.PROTEIN_SAFE
+def classifyMutationSafety (mt : SynonymousMutation) : MutationSafety :=
+  if isTypeSafeForDNAPredicates mt then MutationSafety.SAFE
+  else if isTypeSafeForProteinPredicates mt then MutationSafety.PROTEIN_SAFE
   else MutationSafety.UNSAFE
 
 /-- THEOREM: All synonymous mutations are at least PROTEIN_SAFE.
     This is because protein-level predicates are SLOT-dependent and always
     return UNCERTAIN, so they are trivially preserved. -/
-theorem synonymous_at_least_protein_safe (mut : SynonymousMutation) :
-    classifyMutationSafety mut = MutationSafety.SAFE ∨
-    classifyMutationSafety mut = MutationSafety.PROTEIN_SAFE := by
+theorem synonymous_at_least_protein_safe (mt : SynonymousMutation) :
+    classifyMutationSafety mt = MutationSafety.SAFE ∨
+    classifyMutationSafety mt = MutationSafety.PROTEIN_SAFE := by
   unfold classifyMutationSafety isTypeSafeForProteinPredicates
   simp [isTypeSafeForProteinPredicates]
   split

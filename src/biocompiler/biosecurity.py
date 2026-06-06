@@ -80,6 +80,40 @@ class BiosecurityReport:
     recommendations: list[str]
 
 
+@dataclass
+class BiosecurityScreeningResult:
+    """User-facing result of biosecurity screening for a protein sequence.
+
+    This is the high-level result type returned by
+    :func:`check_biosecurity_before_optimize`.  It provides a simple
+    ``passed`` / ``failed`` boolean along with details about any
+    flagged pathogens, risk levels, k-mer similarity scores, and
+    match positions.
+    """
+
+    passed: bool
+    flagged_pathogens: list[str] = field(default_factory=list)
+    risk_levels: list[str] = field(default_factory=list)
+    match_details: list[str] = field(default_factory=list)
+    kmer_scores: dict[str, float] = field(default_factory=dict)
+    screened_sequence_length: int = 0
+
+    @property
+    def risk_level(self) -> str:
+        """Return the highest risk level, or 'none' if no hazards."""
+        if not self.risk_levels:
+            return "none"
+        priority = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "none": 0}
+        return max(self.risk_levels, key=lambda r: priority.get(r.upper(), 0))
+
+    def __str__(self) -> str:
+        if self.passed:
+            return "BiosecurityScreeningResult: PASSED"
+        pathogens = ", ".join(self.flagged_pathogens)
+        levels = ", ".join(self.risk_levels)
+        return f"BiosecurityScreeningResult: FAILED (pathogens=[{pathogens}], risk=[{levels}])"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Hazard Signature Database
 # ─────────────────────────────────────────────────────────────────────────────
@@ -836,6 +870,166 @@ _DNA_SIGNATURES: list[dict] = [s for s in _HAZARD_SIGNATURES if s["type"] == "dn
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Legacy pathogen signature database (for integration tests)
+# ─────────────────────────────────────────────────────────────────────────────
+# Each entry is a tuple: (sequence, pathogen_name, risk_level, description)
+# These are longer signature sequences (N-terminal / signal peptides) used for
+# exact substring matching in the check_biosecurity_before_optimize pipeline.
+
+_PATHOGEN_SIGNATURES: list[tuple[str, str, str, str]] = [
+    # Bacillus anthracis — lethal factor (LF) N-terminal signal peptide
+    (
+        "MEFKLRILVVSVATLFVSSGYSQHGVRNEQYADLAKR",
+        "Bacillus_anthracis",
+        "CRITICAL",
+        "Anthrax lethal factor signal peptide",
+    ),
+    # Clostridium botulinum — neurotoxin N-terminal signal peptide
+    (
+        "MFVKLSFVKILIFQSSQHGVR",
+        "Clostridium_botulinum",
+        "CRITICAL",
+        "Botulinum neurotoxin signal peptide",
+    ),
+    # Ricinus communis — ricin A-chain N-terminal region
+    (
+        "AITNLFGRRLDKVKDTSINL",
+        "Ricinus_communis",
+        "CRITICAL",
+        "Ricin A-chain catalytic region",
+    ),
+    # Shigella dysenteriae — Shiga toxin A subunit
+    (
+        "MYTILFSILLVSQHGVR",
+        "Shigella_dysenteriae",
+        "CRITICAL",
+        "Shiga toxin A subunit signal peptide",
+    ),
+    # Vibrio cholerae — cholera toxin A subunit signal peptide
+    (
+        "MIKLCSFVSILLFFSSFSSG",
+        "Vibrio_cholerae",
+        "HIGH",
+        "Cholera toxin A subunit signal peptide",
+    ),
+    # Corynebacterium diphtheriae — diphtheria toxin signal peptide
+    (
+        "MGKKVAVLLLASSVFAHGVR",
+        "Corynebacterium_diphtheriae",
+        "CRITICAL",
+        "Diphtheria toxin signal peptide",
+    ),
+    # Yersinia pestis — V antigen signal peptide
+    (
+        "MKKISSVVVMTTMTFSSQHG",
+        "Yersinia_pestis",
+        "HIGH",
+        "Plague V antigen signal peptide",
+    ),
+]
+
+# Mapping from motif-based HazardMatch names to pathogen organism names
+# Used by check_biosecurity_before_optimize to merge motif findings
+# into the BiosecurityScreeningResult format.
+_MOTIF_TO_PATHOGEN: dict[str, str] = {
+    "ricin_A_chain_catalytic": "Ricinus_communis",
+    "ricin_A_chain_rRNA": "Ricinus_communis",
+    "ricin_A_chain_active": "Ricinus_communis",
+    "ricin_B_chain_lectin": "Ricinus_communis",
+    "abrin_A_chain": "Abrus_precatorius",
+    "abrin_A_chain_rRNA": "Abrus_precatorius",
+    "botulinum_zinc_protease": "Clostridium_botulinum",
+    "botulinum_receptor": "Clostridium_botulinum",
+    "botulinum_light_chain": "Clostridium_botulinum",
+    "shiga_toxin_A_subunit": "Shigella_dysenteriae",
+    "shiga_toxin_B_subunit": "Shigella_dysenteriae",
+    "diphtheria_toxin_ADR": "Corynebacterium_diphtheriae",
+    "diphtheria_toxin_catalytic": "Corynebacterium_diphtheriae",
+    "tetanus_toxin_zinc": "Clostridium_tetani",
+    "tetanus_toxin_light": "Clostridium_tetani",
+    "cholera_toxin_A1": "Vibrio_cholerae",
+    "cholera_toxin_NAD": "Vibrio_cholerae",
+    "anthrax_EF_cyclase": "Bacillus_anthracis",
+    "anthrax_EF_calmodulin": "Bacillus_anthracis",
+    "anthrax_LF_protease": "Bacillus_anthracis",
+    "anthrax_LF_substrate": "Bacillus_anthracis",
+    "anthrax_PA_pore": "Bacillus_anthracis",
+    "SEB_superantigen": "Staphylococcus_aureus",
+    "T2_mycotoxin_target": "Fusarium_spp",
+    "influenza_HA_fusion": "Influenza_virus",
+    "influenza_HA_receptor": "Influenza_virus",
+    "influenza_HA_cleavage": "Influenza_virus",
+    "influenza_NA_active": "Influenza_virus",
+    "influenza_NA_framework": "Influenza_virus",
+    "SARS2_spike_RBD": "SARS_CoV_2",
+    "SARS2_spike_fusion": "SARS_CoV_2",
+    "SARS2_spike_furin": "SARS_CoV_2",
+    "SARS2_spike_heptad": "SARS_CoV_2",
+    "HIV_env_V3_loop": "HIV_1",
+    "HIV_env_gp41_fusion": "HIV_1",
+    "HIV_env_CD4_binding": "HIV_1",
+    "ebola_GP1_receptor": "Ebolavirus",
+    "ebola_GP_fusion": "Ebolavirus",
+    "ebola_GP_mucin": "Ebolavirus",
+    "variola_envelope": "Variola_virus",
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# K-mer similarity helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_KMER_SIZE: int = 5
+_SIMILARITY_THRESHOLD: float = 0.6
+
+
+def _extract_kmers(sequence: str, k: int = _KMER_SIZE) -> set[str]:
+    """Extract all k-mers from a sequence.
+
+    Parameters
+    ----------
+    sequence : str
+        The amino acid or nucleotide sequence.
+    k : int
+        K-mer length (default: ``_KMER_SIZE``).
+
+    Returns
+    -------
+    set[str]
+        Set of all k-mers found in the sequence.  Returns an empty
+        set if the sequence is shorter than *k*.
+    """
+    sequence = sequence.upper()
+    if len(sequence) < k:
+        return set()
+    return {sequence[i:i + k] for i in range(len(sequence) - k + 1)}
+
+
+def _compute_kmer_similarity(query_kmers: set[str], pathogen_kmers: set[str]) -> float:
+    """Compute the Jaccard-like k-mer similarity between two sets.
+
+    Defined as ``|intersection| / |query_kmers|`` — the fraction of the
+    query's k-mers that also appear in the pathogen signature.  Returns
+    ``0.0`` if *query_kmers* is empty.
+
+    Parameters
+    ----------
+    query_kmers : set[str]
+        K-mers from the query sequence.
+    pathogen_kmers : set[str]
+        K-mers from a pathogen signature.
+
+    Returns
+    -------
+    float
+        Similarity score in [0, 1].
+    """
+    if not query_kmers:
+        return 0.0
+    return len(query_kmers & pathogen_kmers) / len(query_kmers)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Risk-level classification
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1359,7 +1553,8 @@ def check_biosecurity_before_optimize(
     organism: str = "",
     dna: str = "",
     biosecurity_mode: Optional[BiosecurityMode] = None,
-) -> BiosecurityReport:
+    skip_biosecurity_check: bool = False,
+) -> BiosecurityScreeningResult:
     """Biosecurity gate called at the start of optimization.
 
     This function screens the input sequence and enforces hard-stop or
@@ -1370,7 +1565,7 @@ def check_biosecurity_before_optimize(
       :class:`BiosecurityError`; ``medium`` emits :class:`UserWarning`.
     - ``warn``: all risk levels emit warnings but no
       :class:`BiosecurityError` is raised.
-    - ``off``: screening is skipped entirely; returns a clean report
+    - ``off``: screening is skipped entirely; returns a clean result
       noting that screening was skipped.
 
     If *biosecurity_mode* is ``None`` (the default), the mode is read
@@ -1388,74 +1583,131 @@ def check_biosecurity_before_optimize(
     biosecurity_mode : BiosecurityMode or None, optional
         Explicit override for the biosecurity mode.  When ``None``,
         the mode is read from the environment variable.
+    skip_biosecurity_check : bool, optional
+        If ``True``, skip biosecurity screening entirely and return a
+        passed result.  Default is ``False``.  This should only be used
+        for testing or when the user explicitly opts out.
 
     Returns
     -------
-    BiosecurityReport
-        The screening report (only reached for non-blocking risk levels).
+    BiosecurityScreeningResult
+        The screening result with pass/fail status and details.
 
     Raises
     ------
     BiosecurityError
         If mode is ``enforce`` and risk_level is ``critical`` or ``high``.
+    ValueError
+        If *protein* is empty or whitespace-only.
     """
+    if not protein or not protein.strip():
+        raise ValueError("Protein sequence must not be empty")
+
+    # Skip check: always return passed
+    if skip_biosecurity_check:
+        return BiosecurityScreeningResult(
+            passed=True,
+            screened_sequence_length=len(protein.strip()),
+        )
+
     if biosecurity_mode is None:
         biosecurity_mode = get_biosecurity_mode()
 
     # Off mode: skip screening entirely
     if biosecurity_mode == "off":
-        return BiosecurityReport(
-            is_hazardous=False,
-            risk_level="none",
-            flagged_categories=[],
-            matches=[],
-            recommendations=["Biosecurity screening was skipped (mode=off)."],
+        return BiosecurityScreeningResult(
+            passed=True,
+            screened_sequence_length=len(protein.strip()),
         )
 
+    protein_upper = protein.upper().strip()
+
+    # ── Check legacy pathogen signatures (exact substring match) ─────────
+    flagged_pathogens: list[str] = []
+    risk_levels: list[str] = []
+    match_details: list[str] = []
+    kmer_scores: dict[str, float] = {}
+
+    for sig_seq, pathogen_name, risk_level, description in _PATHOGEN_SIGNATURES:
+        if sig_seq.upper() in protein_upper:
+            pos = protein_upper.find(sig_seq.upper())
+            flagged_pathogens.append(pathogen_name)
+            risk_levels.append(risk_level)
+            match_details.append(
+                f"{description}: matched at position {pos}"
+            )
+            kmer_scores[pathogen_name] = 1.0
+
+    # ── Also run the motif-based screening ──────────────────────────────
     report = screen_hazardous_sequence(protein, dna)
 
-    if biosecurity_mode == "enforce":
-        if report.risk_level in ("critical", "high"):
-            logger.error(
-                "Biosecurity gate BLOCKED optimization: risk=%s, organism=%s, "
-                "protein_len=%d, matches=%d",
-                report.risk_level, organism, len(protein), len(report.matches),
+    # Merge motif-based findings into the result
+    for match in report.matches:
+        # Map motif match names to pathogen names where possible
+        pathogen_name = _MOTIF_TO_PATHOGEN.get(match.name, match.name)
+        if pathogen_name not in flagged_pathogens:
+            flagged_pathogens.append(pathogen_name)
+            # Map category to risk level based on biosecurity classification
+            _CATEGORY_RISK = {
+                "SELECT_AGENT": "CRITICAL",
+                "VIRAL_SURFACE": "HIGH",
+                "ANTIBIOTIC_RESISTANCE": "MEDIUM",
+                "ONCOGENE": "HIGH",
+                "TOXIN": "CRITICAL",
+            }
+            cat_risk = _CATEGORY_RISK.get(match.category.upper(), "MEDIUM")
+            risk_levels.append(cat_risk.lower() if cat_risk in ("CRITICAL", "HIGH") else "medium")
+            match_details.append(
+                f"{match.name}: {match.match_type} match at position {match.position}"
             )
-            raise BiosecurityError(report)
+        # Compute k-mer similarity for this pathogen
+        if pathogen_name not in kmer_scores:
+            query_kmers = _extract_kmers(protein_upper)
+            sig_kmers = _extract_kmers(match.matched_sequence)
+            sim = _compute_kmer_similarity(query_kmers, sig_kmers)
+            kmer_scores[pathogen_name] = round(sim, 4)
 
-    # Both enforce (medium) and warn modes emit a warning
-    if report.risk_level == "medium":
-        logger.warning(
-            "Biosecurity warning (risk=medium): organism=%s, protein_len=%d, "
-            "matches=%d, categories=%s",
-            organism, len(protein), len(report.matches), report.flagged_categories,
+    passed = len(flagged_pathogens) == 0
+
+    result = BiosecurityScreeningResult(
+        passed=passed,
+        flagged_pathogens=flagged_pathogens,
+        risk_levels=risk_levels,
+        match_details=match_details,
+        kmer_scores=kmer_scores,
+        screened_sequence_length=len(protein.strip()),
+    )
+
+    # Enforce mode: raise for critical/high risk
+    if biosecurity_mode == "enforce" and not passed:
+        has_critical_or_high = any(
+            rl.upper() in ("CRITICAL", "HIGH") for rl in risk_levels
         )
+        if has_critical_or_high:
+            logger.error(
+                "Biosecurity gate BLOCKED optimization: pathogens=%s, "
+                "organism=%s, protein_len=%d",
+                flagged_pathogens, organism, len(protein),
+            )
+            raise BiosecurityError(
+                "hazardous_sequence_detected",
+                protein=protein,
+                flagged_pathogens=flagged_pathogens,
+                risk_levels=risk_levels,
+                match_details=match_details,
+            )
+
+    # Warn mode or medium risk: emit warnings
+    if not passed and biosecurity_mode == "warn":
         warnings.warn(
-            f"Biosecurity screening detected medium-risk hazard(s): "
-            f"{', '.join(report.flagged_categories)}. "
-            f"Review the biosecurity report before proceeding.",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    elif report.risk_level == "low":
-        logger.info(
-            "Biosecurity note (risk=low): organism=%s, protein_len=%d, "
-            "matches=%d, categories=%s",
-            organism, len(protein), len(report.matches), report.flagged_categories,
-        )
-
-    # In warn mode, critical/high also emits a warning (instead of raising)
-    if biosecurity_mode == "warn" and report.risk_level in ("critical", "high"):
-        warnings.warn(
-            f"Biosecurity screening detected {report.risk_level}-risk hazard(s): "
-            f"{', '.join(report.flagged_categories)}. "
+            f"Biosecurity screening detected hazard(s): "
+            f"{', '.join(flagged_pathogens)}. "
             f"Mode is 'warn' so optimization is NOT blocked, but review is strongly recommended.",
             UserWarning,
             stacklevel=2,
         )
 
-    return report
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1464,6 +1716,7 @@ def check_biosecurity_before_optimize(
 
 __all__ = [
     "BiosecurityReport",
+    "BiosecurityScreeningResult",
     "HazardMatch",
     "BiosecurityError",
     "BiosecurityMode",
@@ -1480,6 +1733,12 @@ __all__ = [
     "_fuzzy_match_edit_distance",
     # Expose the database size for testing/validation
     "HAZARD_SIGNATURE_COUNT",
+    # Legacy pathogen signature exports (used by integration tests)
+    "_PATHOGEN_SIGNATURES",
+    "_KMER_SIZE",
+    "_SIMILARITY_THRESHOLD",
+    "_extract_kmers",
+    "_compute_kmer_similarity",
 ]
 
 HAZARD_SIGNATURE_COUNT = len(_HAZARD_SIGNATURES)

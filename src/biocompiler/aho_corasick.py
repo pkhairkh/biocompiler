@@ -130,6 +130,7 @@ class AhoCorasickScanner:
         if not self._patterns:
             self._delta: list[int] = [0] * _ALPHABET_SIZE  # single root state
             self._output_table: list[list[tuple[str, str]] | None] = [None]
+            self._num_nodes: int = 1  # root node exists even with no patterns
             self._is_empty: bool = True
             return
 

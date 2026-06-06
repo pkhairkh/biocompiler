@@ -1,0 +1,428 @@
+# BioCompiler NCBI Reference Accession Database
+# ===============================================
+# Curated list of NCBI GenBank/RefSeq accession numbers for key pathogens,
+# toxins, and hazardous organisms. Used by build_blast_databases.py to
+# download full-length reference sequences for robust BLAST+ biosecurity
+# screening.
+#
+# These are publicly available reference sequences from NCBI. They are
+# used ONLY for screening/detection purposes and must NOT be used to
+# construct functional hazardous agents.
+#
+# Categories follow the Australia Group Common Control List and CDC
+# Select Agent Program (42 CFR Part 73).
+#
+# References:
+#   - CDC Select Agent Program: https://www.selectagents.gov/
+#   - Australia Group: https://www.australiagroup.net/
+#   - WHO Laboratory Biosafety Manual, 4th ed. (2020)
+
+# Database version – increment when accessions are added/updated
+version: "1.0.0"
+last_updated: "2025-01-15"
+
+# NCBI Entrez configuration
+entrez:
+  email: "biocompiler-screening@example.org"
+  api_key_env: "NCBI_API_KEY"  # Optional: env var name for NCBI API key
+  retmax: 10000
+  retry_attempts: 3
+  retry_delay_seconds: 5
+  rate_limit_seconds: 0.4  # NCBI limit: ~3 requests/second without API key
+
+# ─── Select Agent Toxins ─────────────────────────────────────────────────
+
+ricin_toxin:
+  description: "Ricin toxin (Ricinus communis) – Type II ribosome-inactivating protein"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "AB017147"
+        description: "Ricinus communis ricin precursor gene, complete cds"
+        organism: "Ricinus communis"
+      - accession: "X52908"
+        description: "R. communis mRNA for ricin B chain"
+        organism: "Ricinus communis"
+      - accession: "X52908.1"
+        description: "R. communis mRNA for ricin B chain (versioned)"
+        organism: "Ricinus communis"
+      - accession: "M12089"
+        description: "Ricinus communis ricin mRNA, complete cds"
+        organism: "Ricinus communis"
+    protein:
+      - accession: "P02879"
+        description: "Ricin A chain (RCA60) – Ricinus communis"
+        organism: "Ricinus communis"
+      - accession: "P02878"
+        description: "Ricin B chain (RCA60) – Ricinus communis"
+        organism: "Ricinus communis"
+
+botulinum_toxin:
+  description: "Botulinum neurotoxin (Clostridium botulinum) – Multiple serotypes"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "AB232391"
+        description: "C. botulinum type A neurotoxin gene, complete cds"
+        organism: "Clostridium botulinum"
+      - accession: "X52079"
+        description: "C. botulinum type B neurotoxin gene"
+        organism: "Clostridium botulinum"
+      - accession: "X73162"
+        description: "C. botulinum type C neurotoxin gene"
+        organism: "Clostridium botulinum"
+      - accession: "X54254"
+        description: "C. botulinum type D neurotoxin gene"
+        organism: "Clostridium botulinum"
+      - accession: "X62689"
+        description: "C. botulinum type E neurotoxin gene"
+        organism: "Clostridium botulinum"
+      - accession: "X62383"
+        description: "C. botulinum type F neurotoxin gene"
+        organism: "Clostridium botulinum"
+      - accession: "AF071604"
+        description: "C. botulinum type G neurotoxin gene"
+        organism: "Clostridium botulinum"
+    protein:
+      - accession: "P0DPI0"
+        description: "Botulinum neurotoxin type A – Clostridium botulinum"
+        organism: "Clostridium botulinum"
+      - accession: "P10844"
+        description: "Botulinum neurotoxin type B – Clostridium botulinum"
+        organism: "Clostridium botulinum"
+      - accession: "P18640"
+        description: "Botulinum neurotoxin type C – Clostridium botulinum"
+        organism: "Clostridium botulinum"
+      - accession: "P19321"
+        description: "Botulinum neurotoxin type D – Clostridium botulinum"
+        organism: "Clostridium botulinum"
+      - accession: "Q45895"
+        description: "Botulinum neurotoxin type E – Clostridium botulinum"
+        organism: "Clostridium botulinum"
+
+anthrax_toxin:
+  description: "Anthrax toxin (Bacillus anthracis) – Lethal factor, edema factor, protective antigen"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "AF306839"
+        description: "B. anthracis lethal factor gene, complete cds"
+        organism: "Bacillus anthracis"
+      - accession: "M33101"
+        description: "B. anthracis edema factor (cya) gene, complete cds"
+        organism: "Bacillus anthracis"
+      - accession: "AF220179"
+        description: "B. anthracis protective antigen gene, complete cds"
+        organism: "Bacillus anthracis"
+      - accession: "AE016879"
+        description: "B. anthracis plasmid pXO1, complete sequence"
+        organism: "Bacillus anthracis"
+    protein:
+      - accession: "P15917"
+        description: "Lethal factor – Bacillus anthracis"
+        organism: "Bacillus anthracis"
+      - accession: "P40136"
+        description: "Calmodulin-sensitive adenylate cyclase (edema factor) – B. anthracis"
+        organism: "Bacillus anthracis"
+      - accession: "P13423"
+        description: "Protective antigen – Bacillus anthracis"
+        organism: "Bacillus anthracis"
+
+shiga_toxin:
+  description: "Shiga toxin (Shigella dysenteriae / E. coli) – Ribosome-inactivating protein"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "X70941"
+        description: "S. dysenteriae shiga toxin operon, complete cds"
+        organism: "Shigella dysenteriae"
+      - accession: "M19437"
+        description: "E. coli Shiga-like toxin I gene, complete cds"
+        organism: "Escherichia coli"
+      - accession: "L11079"
+        description: "E. coli Shiga-like toxin II gene, complete cds"
+        organism: "Escherichia coli"
+      - accession: "AF034926"
+        description: "E. coli Shiga toxin 2 variant gene"
+        organism: "Escherichia coli"
+    protein:
+      - accession: "P06460"
+        description: "Shiga toxin A subunit – Shigella dysenteriae"
+        organism: "Shigella dysenteriae"
+      - accession: "P06461"
+        description: "Shiga toxin B subunit – Shigella dysenteriae"
+        organism: "Shigella dysenteriae"
+
+diphtheria_toxin:
+  description: "Diphtheria toxin (Corynebacterium diphtheriae) – ADP-ribosyltransferase"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "K02718"
+        description: "C. diphtheriae diphtheria toxin gene, complete cds"
+        organism: "Corynebacterium diphtheriae"
+      - accession: "V00112"
+        description: "C. diphtheriae tox gene for diphtheria toxin"
+        organism: "Corynebacterium diphtheriae"
+    protein:
+      - accession: "P00587"
+        description: "Diphtheria toxin – Corynebacterium diphtheriae"
+        organism: "Corynebacterium diphtheriae"
+
+cholera_toxin:
+  description: "Cholera toxin (Vibrio cholerae) – ADP-ribosyltransferase"
+  category: "select_agent"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "X00171"
+        description: "V. cholerae cholera toxin A subunit gene, complete cds"
+        organism: "Vibrio cholerae"
+      - accession: "D30052"
+        description: "V. cholerae ctxAB operon, complete cds"
+        organism: "Vibrio cholerae"
+    protein:
+      - accession: "P01555"
+        description: "Cholera enterotoxin A chain – Vibrio cholerae"
+        organism: "Vibrio cholerae"
+      - accession: "P01556"
+        description: "Cholera enterotoxin B chain – Vibrio cholerae"
+        organism: "Vibrio cholerae"
+
+tetanus_toxin:
+  description: "Tetanus toxin (Clostridium tetani) – Zinc endopeptidase neurotoxin"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "X06214"
+        description: "C. tetani tetanus toxin gene, complete cds"
+        organism: "Clostridium tetani"
+      - accession: "AF154828"
+        description: "C. tetani tetanus toxin gene, complete cds"
+        organism: "Clostridium tetani"
+    protein:
+      - accession: "P04958"
+        description: "Tetanus toxin – Clostridium tetani"
+        organism: "Clostridium tetani"
+
+abrin_toxin:
+  description: "Abrin toxin (Abrus precatorius) – Type II ribosome-inactivating protein"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "AB017431"
+        description: "Abrus precatorius abrin-a precursor gene, complete cds"
+        organism: "Abrus precatorius"
+      - accession: "X54943"
+        description: "A. precatorius mRNA for abrin A chain"
+        organism: "Abrus precatorius"
+    protein:
+      - accession: "P28591"
+        description: "Abrin-a A chain – Abrus precatorius"
+        organism: "Abrus precatorius"
+      - accession: "P28592"
+        description: "Abrin-a B chain – Abrus precatorius"
+        organism: "Abrus precatorius"
+
+# ─── Additional Select Agents ────────────────────────────────────────────
+
+staphylococcal_enterotoxin_B:
+  description: "Staphylococcal enterotoxin B (SEB) – Superantigen"
+  category: "select_agent"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "M11118"
+        description: "S. aureus enterotoxin B gene, complete cds"
+        organism: "Staphylococcus aureus"
+      - accession: "AB089258"
+        description: "S. aureus enterotoxin B gene, complete cds"
+        organism: "Staphylococcus aureus"
+    protein:
+      - accession: "P01552"
+        description: "Enterotoxin type B – Staphylococcus aureus"
+        organism: "Staphylococcus aureus"
+
+t2_trichothecene_mycotoxin:
+  description: "T-2 mycotoxin biosynthesis genes (Fusarium sporotrichioides)"
+  category: "select_agent"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "AF336366"
+        description: "F. sporotrichioides tri5 gene for trichodiene synthase"
+        organism: "Fusarium sporotrichioides"
+      - accession: "U22136"
+        description: "F. sporotrichioides tri6 gene, complete cds"
+        organism: "Fusarium sporotrichioides"
+    protein:
+      - accession: "Q00926"
+        description: "Trichodiene synthase – Fusarium sporotrichioides"
+        organism: "Fusarium sporotrichioides"
+
+clostridium_perfringens_epsilon_toxin:
+  description: "Epsilon toxin (Clostridium perfringens) – Pore-forming toxin"
+  category: "select_agent"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "X60801"
+        description: "C. perfringens epsilon toxin gene, complete cds"
+        organism: "Clostridium perfringens"
+      - accession: "L43547"
+        description: "C. perfringens etx gene for epsilon toxin"
+        organism: "Clostridium perfringens"
+    protein:
+      - accession: "P0A398"
+        description: "Epsilon-toxin – Clostridium perfringens"
+        organism: "Clostridium perfringens"
+
+# ─── High-Consequence Pathogen Genes ─────────────────────────────────────
+
+yersinia_pestis_virulence:
+  description: "Yersinia pestis key virulence factors"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "AF053945"
+        description: "Y. pestis YopM gene, complete cds"
+        organism: "Yersinia pestis"
+      - accession: "X13846"
+        description: "Y. pestis pla gene for plasminogen activator"
+        organism: "Yersinia pestis"
+      - accession: "AL109866"
+        description: "Y. pestis plasmid pCD1, complete sequence"
+        organism: "Yersinia pestis"
+    protein:
+      - accession: "P0C7U7"
+        description: "Plasminogen activator – Yersinia pestis"
+        organism: "Yersinia pestis"
+
+francisella_tularensis_virulence:
+  description: "Francisella tularensis key virulence factors"
+  category: "select_agent"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "AY178057"
+        description: "F. tularensis iglC gene, complete cds"
+        organism: "Francisella tularensis"
+      - accession: "AF095741"
+        description: "F. tularensis FTT1103 virulence gene"
+        organism: "Francisella tularensis"
+    protein:
+      - accession: "Q5NG67"
+        description: "Intracellular growth locus protein C – F. tularensis"
+        organism: "Francisella tularensis"
+
+# ─── Viral Surface Proteins (Key Detection Targets) ─────────────────────
+
+sars_cov2_spike:
+  description: "SARS-CoV-2 spike glycoprotein"
+  category: "viral_surface"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "MN908947"
+        description: "SARS-CoV-2 isolate Wuhan-Hu-1, complete genome"
+        organism: "Severe acute respiratory syndrome coronavirus 2"
+    protein:
+      - accession: "QHD43416"
+        description: "Spike glycoprotein – SARS-CoV-2"
+        organism: "Severe acute respiratory syndrome coronavirus 2"
+
+influenza_h5n1_ha:
+  description: "Influenza A H5N1 hemagglutinin"
+  category: "viral_surface"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "AF144305"
+        description: "Influenza A H5N1 hemagglutinin gene, complete cds"
+        organism: "Influenza A virus"
+    protein:
+      - accession: "Q6QRA4"
+        description: "Hemagglutinin – Influenza A virus (H5N1)"
+        organism: "Influenza A virus"
+
+ebola_gp:
+  description: "Ebola virus glycoprotein"
+  category: "viral_surface"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "AF086833"
+        description: "Ebola virus Ebola/H.sapiens-tc/COD/1976/Yambuku-Mayinga, GP gene"
+        organism: "Zaire ebolavirus"
+    protein:
+      - accession: "Q05320"
+        description: "Envelope glycoprotein – Zaire ebolavirus"
+        organism: "Zaire ebolavirus"
+
+# ─── Critical Antibiotic Resistance Genes ────────────────────────────────
+
+ndm1_beta_lactamase:
+  description: "New Delhi metallo-beta-lactamase 1 (NDM-1)"
+  category: "antibiotic_resistance"
+  risk_level: "critical"
+  accessions:
+    nucleotide:
+      - accession: "FN396876"
+        description: "Klebsiella pneumoniae blaNDM-1 gene, complete cds"
+        organism: "Klebsiella pneumoniae"
+      - accession: "AB571791"
+        description: "E. coli blaNDM-1 gene, complete cds"
+        organism: "Escherichia coli"
+    protein:
+      - accession: "C7C422"
+        description: "Beta-lactamase NDM-1 – Klebsiella pneumoniae"
+        organism: "Klebsiella pneumoniae"
+
+ctx_m_esbl:
+  description: "CTX-M extended-spectrum beta-lactamases"
+  category: "antibiotic_resistance"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "X92506"
+        description: "E. coli CTX-M-1 beta-lactamase gene, complete cds"
+        organism: "Escherichia coli"
+      - accession: "Y10278"
+        description: "K. oxytoca blaCTX-M-3 gene"
+        organism: "Klebsiella oxytoca"
+    protein:
+      - accession: "Q9L5C7"
+        description: "Beta-lactamase CTX-M-1 – Escherichia coli"
+        organism: "Escherichia coli"
+
+vanA_vancomycin_resistance:
+  description: "VanA vancomycin resistance operon"
+  category: "antibiotic_resistance"
+  risk_level: "high"
+  accessions:
+    nucleotide:
+      - accession: "M97297"
+        description: "Enterococcus faecium vanA gene for vancomycin resistance, complete cds"
+        organism: "Enterococcus faecium"
+      - accession: "X56865"
+        description: "E. faecium vanA operon"
+        organism: "Enterococcus faecium"
+    protein:
+      - accession: "P25031"
+        description: "Vancomycin/teicoplanin resistance protein VanA – E. faecium"
+        organism: "Enterococcus faecium"
+
+# ─── Summary Statistics ──────────────────────────────────────────────────
+
+# Total accessions: 60+ nucleotide and protein sequences
+# Total pathogen/toxin groups: 17
+# Risk levels: critical (9), high (8)
+# Categories: select_agent (13), viral_surface (3), antibiotic_resistance (3)

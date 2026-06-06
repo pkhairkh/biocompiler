@@ -23,6 +23,7 @@ def disrupt_cpg_dinucleotides(
     sorted_codons: dict[str, list[str]],
     usage: dict[str, float],
     cryptic_splice_threshold: float,
+    max_cai_cost: float = 0.03,
 ) -> tuple[str, list[str]]:
     """Disrupt CpG dinucleotides to avoid CpG islands.
 
@@ -181,6 +182,7 @@ def reconcile_cpg_sites(
     usage: dict[str, float],
     cryptic_splice_threshold: float,
     concrete_sites: list[str],
+    max_cai_cost: float = 0.03,
 ) -> tuple[str, list[str]]:
     """CpG reconciliation after restriction site reconciliation.
 

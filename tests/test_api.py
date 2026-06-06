@@ -899,7 +899,8 @@ class TestRateLimiting:
         # Should not raise
         _check_rate_limit("test_client")
         # Verify the request was recorded
-        assert "test_client" in _rate_limit_store
+        # Verify the request was recorded (PersistentRateLimiter tracks it)
+        assert _rate_limiter.check("test_client")[1] < RATE_LIMIT_RPM
 
     def test_check_rate_limit_raises_at_limit(self):
         """_check_rate_limit should raise HTTPException when limit is exceeded."""
@@ -929,7 +930,8 @@ class TestRateLimiting:
         # No previous requests, so all should be available
         _check_batch_rate_limit("test_batch_client_ok", 5)
         # Verify the batch client was recorded
-        assert "test_batch_client_ok" in _rate_limit_store
+        # Verify the batch client was recorded (PersistentRateLimiter tracks it)
+        assert _rate_limiter.check("test_batch_client_ok")[1] < RATE_LIMIT_RPM
 
 
 # ═══════════════════════════════════════════════════════════════════════

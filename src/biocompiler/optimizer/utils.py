@@ -4,7 +4,7 @@ Utility functions and data classes for the optimizer.
 Contains convergence tracking, result dataclasses, and protein validation helpers.
 """
 
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import logging
 from dataclasses import dataclass, field
@@ -174,6 +174,8 @@ class OptimizationResult:
     warnings: list[str] = field(default_factory=list)
     # Custom objective score (populated when a non-default objective is used)
     objective_score: float | None = None
+    # Biosecurity screening result (populated after biosecurity check)
+    biosecurity_screening_result: Any = field(default=None, repr=False)
 
     def __post_init__(self):
         """Validate OptimizationResult invariants."""
@@ -286,11 +288,45 @@ def protein_to_aa_list(protein: str) -> list[str]:
     return list(protein)
 
 
+# ────────────────────────────────────────────────────────────
+# Optimizer Config Bundle (for postprocessing / validation)
+# ────────────────────────────────────────────────────────────
+
+@dataclass
+class _OptConfig:
+    """Lightweight config bundle passed to postprocessing and validation functions.
+
+    Extracts the relevant optimizer state so sub-module functions don't
+    need a reference to the BioOptimizer instance.  Constructed once by
+    ``BioOptimizer._make_config()`` and passed to every extracted function.
+    """
+    species_cai: Dict[str, float]
+    enzymes: List[str]
+    cpg_window: int
+    cpg_threshold: float
+    avoid_gt: bool
+    min_cai: float
+    min_blosum: int
+    splice_low: float
+    splice_high: float
+    is_prokaryote: bool
+    organism_domain: str
+    organism_name: str
+    species: str
+    optimize_mrna_stability: bool
+    gc_window_size: int = 50
+    gc_window_min: Optional[float] = None
+    gc_window_max: Optional[float] = None
+    original_protein: str = ""
+    applied_mutagenesis: List[Dict[str, Any]] = field(default_factory=list)
+
+
 __all__ = [
     "ConvergenceTracker",
     "OptimizationResult",
     "FullConstructResult",
     "protein_to_aa_list",
+    "_OptConfig",
     # Named constants
     "MAX_RESTRICTION_SITE_ITERATIONS",
     "MAX_IUPAC_SITE_ITERATIONS",

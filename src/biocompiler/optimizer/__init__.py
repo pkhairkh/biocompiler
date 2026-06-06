@@ -36,6 +36,7 @@ from .utils import (
 
 from .cai import (
     HAS_NUMBA,
+    USE_NUMBA,
     _HAS_NUMBA,
     _adaptiveness_to_array,
     _codon_to_index,
@@ -119,6 +120,7 @@ __all__ = [
     "MAX_CPG_DISRUPTION_ITERATIONS",
     # Also expose internal symbols that were part of the original module
     "HAS_NUMBA",
+    "USE_NUMBA",
     "_adaptiveness_to_array",
     "_codon_to_index",
     "_dna_to_codon_indices",
