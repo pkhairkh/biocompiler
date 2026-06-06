@@ -182,18 +182,21 @@ _LARGE_PROTEIN_THRESHOLD: int = 500
 # ── Adaptive timeout tiers ────────────────────────────────────────────
 # Protein length → timeout in seconds.  The tiers are chosen so that
 # small proteins get a quick solve, medium proteins get more time, and
-# very large proteins (>500 aa) skip Z3 entirely because it is too slow.
+# very large proteins (>1200 aa) skip Z3 entirely because it is too slow.
+# Proteins 501–1200 aa use windowed decomposition for tractable solving.
 ADAPTIVE_TIMEOUT_TIERS: list[tuple[int, float]] = [
     (100, 30.0),   # proteins ≤ 100 aa → 30 seconds
     (300, 60.0),   # proteins ≤ 300 aa → 60 seconds
     (500, 120.0),  # proteins ≤ 500 aa → 120 seconds
-    # proteins > 500 aa → skip Z3 (use greedy directly)
+    (800, 180.0),  # proteins ≤ 800 aa → 180 seconds (windowed decomposition)
+    (1200, 300.0), # proteins ≤ 1200 aa → 300 seconds (windowed decomposition)
+    # proteins > 1200 aa → skip Z3 (use greedy directly)
 ]
 """Adaptive timeout tiers: list of (max_protein_length, timeout_seconds).
 
 Used by :func:`compute_adaptive_timeout` to select an appropriate
 Z3 timeout based on protein size.  Proteins longer than the largest
-threshold (500 aa) should use the greedy optimizer directly instead
+threshold (1200 aa) should use the greedy optimizer directly instead
 of Z3.
 """
 
@@ -654,6 +657,16 @@ class Z3Engine(SolverBackendProtocol):
             )
 
         if should_skip_z3:
+            # Proteins > 1200 aa: use windowed decomposition if > 500 aa
+            # but still within a reasonable range, otherwise skip entirely
+            if n > 500:
+                logger.info(
+                    "Z3: Large protein (%d aa > 500) — "
+                    "using windowed decomposition for tractable solving",
+                    n,
+                )
+                return self.solve_large_protein_windowed(model)
+
             logger.info(
                 "Z3: Protein too large (%d aa > %d threshold), "
                 "skipping Z3 and recommending greedy fallback. "
@@ -2870,6 +2883,228 @@ class Z3Engine(SolverBackendProtocol):
             explanation=explanation,
             suggested_relaxations=suggested_relaxations,
         )
+
+    # -------------------------------------------------------------------
+    # Windowed decomposition for large proteins
+    # -------------------------------------------------------------------
+
+    def solve_large_protein_windowed(
+        self,
+        model: CSPModel,
+        window_size: int = 200,
+        overlap: int = 50,
+    ) -> SolverResult:
+        """Solve large proteins using windowed constraint decomposition.
+
+        Breaks the protein into overlapping windows of *window_size* amino
+        acids with *overlap* aa of overlap, solves each window independently
+        with a short timeout, then stitches the solutions together at the
+        overlap regions.  This avoids the exponential search space that
+        makes monolithic Z3 solving intractable for proteins > 500 aa.
+
+        Windows that fail to solve are filled with greedy optimizer output.
+
+        Args:
+            model: The CSP model encoding the optimization problem.
+            window_size: Number of amino acids per window (default 200).
+            overlap: Number of overlapping amino acids between windows
+                (default 50).
+
+        Returns:
+            SolverResult with the stitched-together sequence.
+        """
+        start_time = time.perf_counter()
+
+        if not _Z3_AVAILABLE:
+            return SolverResult(
+                sequence="",
+                solved=False,
+                backend_used=SolverBackend.Z3,
+                fallback_used=True,
+                solve_time_seconds=time.perf_counter() - start_time,
+                warnings=["Z3 not available for windowed decomposition"],
+            )
+
+        protein = (
+            getattr(model, "protein_sequence", None)
+            or getattr(model, "protein", "")
+        ).upper()
+        organism = getattr(model, "organism", None) or self.organism
+        n = len(protein)
+
+        if n <= 500:
+            return self.solve(model)
+
+        # Generate windows
+        windows: list[tuple[int, int]] = []
+        start = 0
+        while start < n:
+            end = min(start + window_size, n)
+            windows.append((start, end))
+            if end >= n:
+                break
+            start += window_size - overlap
+
+        logger.info(
+            "Z3 windowed decomposition: %d aa protein → %d windows "
+            "(window_size=%d, overlap=%d)",
+            n, len(windows), window_size, overlap,
+        )
+
+        # Solve each window
+        partial_solutions: list[tuple[int, int, str]] = []
+        for win_idx, (win_start, win_end) in enumerate(windows):
+            win_protein = protein[win_start:win_end]
+
+            # Build codon domains for this window
+            win_codon_domains: dict[int, list[str]] = {}
+            for i, aa in enumerate(win_protein):
+                orig_idx = win_start + i
+                if model.codon_domains and orig_idx in model.codon_domains:
+                    win_codon_domains[i] = model.codon_domains[orig_idx]
+
+            win_model = CSPModel(
+                protein_sequence=win_protein,
+                codon_domains=win_codon_domains if win_codon_domains else {},
+                constraints=[],
+                organism=organism,
+            )
+
+            # Solve this window with a shorter timeout
+            win_config = SolverConfig(
+                gc_lo=self.config.gc_lo,
+                gc_hi=self.config.gc_hi,
+                timeout_seconds=30.0,
+                organism=organism,
+            )
+            win_engine = Z3Engine(win_config, organism=organism)
+            win_result = win_engine.solve(win_model)
+
+            if win_result.solved:
+                partial_solutions.append((win_start, win_end, win_result.sequence))
+                logger.debug(
+                    "Window %d/%d (%d-%d aa): solved (CAI=%.4f)",
+                    win_idx + 1, len(windows), win_start, win_end,
+                    win_result.cai,
+                )
+            else:
+                # Window failed — build basic sequence from first-choice codons
+                basic_seq = self._build_basic_sequence(win_protein)
+                partial_solutions.append((win_start, win_end, basic_seq))
+                logger.debug(
+                    "Window %d/%d (%d-%d aa): fallback to basic sequence",
+                    win_idx + 1, len(windows), win_start, win_end,
+                )
+
+        # Stitch solutions together
+        full_sequence = self._stitch_windows(partial_solutions, overlap, n)
+
+        # Verify the final solution
+        is_valid, violations = _verify_z3_solution(
+            full_sequence, protein, self.config, organism,
+        )
+
+        solve_time = time.perf_counter() - start_time
+
+        # Compute CAI for the stitched sequence
+        cai_val = 0.0
+        try:
+            from ..translation import compute_cai
+            _species_key = organism.replace(" ", "_")
+            cai_val = compute_cai(full_sequence, _species_key)
+        except Exception:
+            pass
+
+        gc_frac = sum(1 for b in full_sequence.upper() if b in "GC") / max(len(full_sequence), 1)
+
+        result = SolverResult(
+            sequence=full_sequence,
+            solved=is_valid,
+            backend_used=SolverBackend.Z3,
+            fallback_used=not is_valid,
+            solve_time_seconds=solve_time,
+            num_variables=n,
+            num_constraints=len(windows),
+            cai=cai_val,
+            gc_content=gc_frac,
+            warnings=[] if is_valid else violations,
+            metadata={
+                "method": "windowed_decomposition",
+                "num_windows": len(windows),
+                "window_size": window_size,
+                "overlap": overlap,
+                "verification_passed": is_valid,
+            },
+        )
+
+        logger.info(
+            "Z3 windowed decomposition complete: %d aa, %d windows, "
+            "valid=%s, CAI=%.4f, time=%.2fs",
+            n, len(windows), is_valid, cai_val, solve_time,
+        )
+
+        return result
+
+    @staticmethod
+    def _build_basic_sequence(protein: str) -> str:
+        """Build a basic DNA sequence using first-choice codons.
+
+        This is a last-resort fallback for windows that fail to solve
+        with Z3.  It uses the first synonymous codon for each amino acid,
+        which may not be optimal but always produces a valid translation.
+        """
+        from ..constants import AA_TO_CODONS
+        codons: list[str] = []
+        for aa in protein:
+            choices = AA_TO_CODONS.get(aa, [])
+            if choices:
+                codons.append(choices[0])
+            else:
+                codons.append("NNN")
+        return "".join(codons)
+
+    @staticmethod
+    def _stitch_windows(
+        partial_solutions: list[tuple[int, int, str]],
+        overlap: int,
+        total_length: int,
+    ) -> str:
+        """Stitch windowed solutions together, preferring consensus at overlaps.
+
+        Takes the non-overlapping portion from each window, skipping the
+        overlap region that was already covered by the previous window.
+        For the last window, the full sequence is used.
+
+        Args:
+            partial_solutions: List of (start_aa, end_aa, dna_sequence) tuples.
+            overlap: Number of overlapping amino acids between windows.
+            total_length: Total protein length in amino acids.
+
+        Returns:
+            Full stitched DNA sequence.
+        """
+        if not partial_solutions:
+            return ""
+
+        if len(partial_solutions) == 1:
+            return partial_solutions[0][2]
+
+        result_codons: list[str] = []
+
+        for i, (win_start, win_end, dna_seq) in enumerate(partial_solutions):
+            # Convert DNA to codons
+            codons = [dna_seq[j:j+3] for j in range(0, len(dna_seq), 3)]
+
+            if i == 0:
+                # First window: take all codons
+                result_codons.extend(codons)
+            else:
+                # Skip the overlap region (already in result from previous window)
+                overlap_codons = min(overlap, len(result_codons) - (win_start))
+                start_idx = overlap_codons
+                result_codons.extend(codons[start_idx:])
+
+        return "".join(result_codons)
 
     # -------------------------------------------------------------------
     # Constraint classification helpers

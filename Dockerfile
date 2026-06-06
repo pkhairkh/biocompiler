@@ -23,6 +23,11 @@ LABEL org.opencontainers.image.description="Machine-verified gene design REST AP
 LABEL org.opencontainers.image.version="9.2.0"
 LABEL org.opencontainers.image.source="https://github.com/pkhairkh/biocompiler"
 
+# Install NCBI BLAST+ for homology-based biosecurity screening
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ncbi-blast+ \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user for security
 RUN groupadd -r biocompiler && \
     useradd -r -g biocompiler -d /home/biocompiler -s /sbin/nologin biocompiler && \
@@ -32,11 +37,36 @@ RUN groupadd -r biocompiler && \
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Install z3-solver (via pip, included in dev deps)
+RUN pip install --no-cache-dir z3-solver>=4.12.0 || true
+
 # Copy application code
 COPY --chown=biocompiler:biocompiler src/ /app/src/
+COPY --chown=biocompiler:biocompiler scripts/ /app/scripts/
+COPY --chown=biocompiler:biocompiler data/ /app/data/
 COPY --chown=biocompiler:biocompiler pyproject.toml /app/
 
+# Install Lean4/elan for proof verification
+# Note: This must happen before USER directive since elan installs to /root
+COPY proof/ /app/proof/
+RUN curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz \
+    && ./elan-init -y --default-toolchain none \
+    && rm elan-init \
+    && export PATH="$HOME/.elan/bin:$PATH" \
+    && cd /app/proof \
+    && elan toolchain install leanprover/lean4:v4.30.0 \
+    && lake build \
+    && cd /app
+ENV PATH="/root/.elan/bin:${PATH}"
+
 WORKDIR /app
+
+# Build BLAST databases during image build
+RUN python -c "from biocompiler.blast_integration import is_blast_available; print('BLAST+ available:', is_blast_available())" || true
+RUN if command -v makeblastdb &> /dev/null; then \
+        python scripts/build_blast_databases.py --output-dir /opt/biocompiler/blast_db || true; \
+    fi
+ENV BIOCOMPILER_BLAST_DB_PATH=/opt/biocompiler/blast_db
 
 # Environment variables with sensible defaults
 ENV BIOCOMPILER_HOST=0.0.0.0

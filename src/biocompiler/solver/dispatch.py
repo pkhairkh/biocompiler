@@ -345,6 +345,8 @@ def solve_with_csp(
             optimize_codon_pair_bias=config.optimize_codon_pair_bias,
             codon_pair_bias_weight=config.codon_pair_bias_weight,
             cai_reference_set=config.cai_reference_set,
+            warm_start_sequence=config.warm_start_sequence,
+            add_default_restriction_sites=config.add_default_restriction_sites,
             verbose=config.verbose,
             auto_detect_organism_domain=config.auto_detect_organism_domain,
         )

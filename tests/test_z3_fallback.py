@@ -7,7 +7,7 @@ Covers:
 2. Fallback to greedy on Z3 timeout
 3. Fallback to greedy on UNSAT result
 4. Z3 solution verification (defense-in-depth)
-5. Large proteins skipping Z3 entirely
+5. Large proteins using windowed decomposition
 6. Warm-start fallback (partial Z3 solution passed to greedy)
 """
 
@@ -47,7 +47,7 @@ GFP = (
 # Protein just under 500 aa
 PROTEIN_490 = "M" * 490
 
-# Large protein (> 500 aa — should skip Z3)
+# Large protein (> 500 aa — should use windowed decomposition)
 PROTEIN_600 = "M" * 600
 
 
@@ -95,14 +95,44 @@ class TestAdaptiveTimeout:
         assert timeout == 120.0
         assert skip is False
 
-    def test_very_large_protein_skip_z3(self):
-        """Proteins > 500aa should skip Z3 entirely."""
+    def test_windowed_tier_800aa(self):
+        """Proteins 501-800aa fall into the windowed tier (180s timeout)."""
         timeout, skip = compute_adaptive_timeout(501)
+        assert timeout == 180.0
+        assert skip is False
+
+    def test_windowed_tier_exactly_800(self):
+        """Protein exactly 800aa gets 180s windowed timeout."""
+        timeout, skip = compute_adaptive_timeout(800)
+        assert timeout == 180.0
+        assert skip is False
+
+    def test_windowed_tier_600aa(self):
+        """A 600aa protein falls into the windowed tier."""
+        timeout, skip = compute_adaptive_timeout(600)
+        assert timeout == 180.0
+        assert skip is False
+
+    def test_windowed_tier_1200aa(self):
+        """Proteins 801-1200aa fall into the extended windowed tier (300s)."""
+        timeout, skip = compute_adaptive_timeout(1000)
+        assert timeout == 300.0
+        assert skip is False
+
+    def test_windowed_tier_exactly_1200(self):
+        """Protein exactly 1200aa gets 300s windowed timeout."""
+        timeout, skip = compute_adaptive_timeout(1200)
+        assert timeout == 300.0
+        assert skip is False
+
+    def test_very_large_protein_skip_z3(self):
+        """Proteins > 1200aa should skip Z3 entirely."""
+        timeout, skip = compute_adaptive_timeout(1201)
         assert skip is True
 
-    def test_very_large_protein_600aa(self):
-        """A 600aa protein should skip Z3."""
-        timeout, skip = compute_adaptive_timeout(600)
+    def test_very_large_protein_1500aa(self):
+        """A 1500aa protein should skip Z3."""
+        timeout, skip = compute_adaptive_timeout(1500)
         assert skip is True
 
     def test_explicit_timeout_override(self):
@@ -112,10 +142,16 @@ class TestAdaptiveTimeout:
         assert skip is False
 
     def test_explicit_timeout_still_skip_large(self):
-        """Even with explicit timeout, large proteins still skip Z3."""
-        timeout, skip = compute_adaptive_timeout(600, solver_timeout=300.0)
+        """Even with explicit timeout, very large proteins still skip Z3."""
+        timeout, skip = compute_adaptive_timeout(1500, solver_timeout=300.0)
         assert timeout == 300.0
         assert skip is True
+
+    def test_explicit_timeout_no_skip_for_windowed(self):
+        """Explicit timeout for windowed-tier protein does not skip."""
+        timeout, skip = compute_adaptive_timeout(600, solver_timeout=300.0)
+        assert timeout == 300.0
+        assert skip is False
 
     def test_zero_solver_timeout_ignored(self):
         """solver_timeout=0 is treated as not provided."""
@@ -352,16 +388,16 @@ class TestSolutionVerification:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 5. Large proteins skip Z3 entirely
+# 5. Large proteins use windowed decomposition
 # ══════════════════════════════════════════════════════════════════════
 
 
-class TestLargeProteinSkipZ3:
-    """Test that proteins > 500aa skip Z3 and recommend greedy."""
+class TestLargeProteinWindowedSolving:
+    """Test that large proteins are handled via extended tiers or windowed decomposition."""
 
     @pytest.mark.skipif(not _Z3_AVAILABLE, reason="Z3 not available")
-    def test_large_protein_skips_z3(self):
-        """Proteins > 500aa should cause Z3 to return with skip_z3=True."""
+    def test_large_protein_600aa_solves_directly(self):
+        """Proteins 501-800aa should solve directly with extended timeout (tier 4)."""
         config = SolverConfig(
             organism="Homo_sapiens",
             backend=SolverBackend.Z3,
@@ -376,14 +412,14 @@ class TestLargeProteinSkipZ3:
             organism="Homo_sapiens",
         )
         result = engine.solve(model)
-        assert result.solved is False
-        assert result.fallback_used is True
-        assert result.metadata.get("skip_z3") is True
-        assert result.metadata.get("reason") == "protein_too_large_for_z3"
+        # Should NOT skip Z3 (600aa is within the 800aa tier)
+        assert result.metadata.get("skip_z3") is not True
+        # Should produce a valid-length sequence (solved directly, not windowed)
+        assert len(result.sequence) == len(PROTEIN_600) * 3
 
     @pytest.mark.skipif(not _Z3_AVAILABLE, reason="Z3 not available")
     def test_exactly_500_does_not_skip(self):
-        """Proteins exactly 500aa should NOT skip Z3."""
+        """Proteins exactly 500aa should NOT skip Z3 or use windowed."""
         config = SolverConfig(
             organism="Homo_sapiens",
             backend=SolverBackend.Z3,
@@ -403,23 +439,27 @@ class TestLargeProteinSkipZ3:
         assert result.metadata.get("skip_z3") is not True
 
     @pytest.mark.skipif(not _Z3_AVAILABLE, reason="Z3 not available")
-    def test_large_protein_warning_message(self):
-        """Large protein skip includes informative warning."""
+    def test_very_large_protein_over_1200_uses_windowed(self):
+        """Proteins > 1200aa should use windowed decomposition."""
         config = SolverConfig(
             organism="Homo_sapiens",
             backend=SolverBackend.Z3,
             timeout_seconds=120.0,
         )
         engine = Z3Engine(config, organism="Homo_sapiens")
+        protein_1500 = "M" * 1500
         model = CSPModel(
-            protein_sequence=PROTEIN_600,
+            protein_sequence=protein_1500,
             codon_domains={},
             constraints=[],
             config=config,
             organism="Homo_sapiens",
         )
         result = engine.solve(model)
-        assert any("too large" in w.lower() for w in result.warnings)
+        # > 1200aa should use windowed decomposition (not skip entirely)
+        assert result.metadata.get("method") == "windowed_decomposition"
+        # Should produce a valid-length sequence
+        assert len(result.sequence) == len(protein_1500) * 3
 
 
 # ══════════════════════════════════════════════════════════════════════

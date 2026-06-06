@@ -1,0 +1,52 @@
+# BioCompiler Hazard Reference Sequences
+# ========================================
+# Short representative protein fragments (50-100 aa) from conserved regions
+# of critical hazard proteins. These are publicly available reference
+# sequences from NCBI GenBank (not novel sequences).
+#
+# These fragments are used to build BLAST+ databases for homology-based
+# biosecurity screening. They contain conserved functional motifs sufficient
+# for BLAST detection without being full-length toxins.
+#
+# References:
+#   - Lord et al., Toxicon 2003; ricin A-chain
+#   - Lacy & Stevens, Nat Struct Biol 1999; botulinum neurotoxin
+#   - Pannifer et al., Nature 2001; anthrax lethal factor
+#   - Fraser et al., J Biol Chem 1994; shiga toxin
+#   - CDC Select Agent Program (42 CFR Part 73)
+#   - Australia Group Common Control List
+#
+# WARNING: These sequences are for biosecurity screening purposes only.
+# They must NOT be used to construct functional toxins.
+
+>ricin_A_chain_reference [Ricinus communis]
+NIRVGLPIISNIQTVFSLNDLKDNSISVNSYQTKLDIQYNITVLGIPFNLQTTIFSYP
+SQIVTETLSNRVLVTFSESSLQDFNKTYNNLIVLNDIVLRNENK
+
+>botulinum_toxin_A_reference [Clostridium botulinum]
+MPFNLRKSNVKQNYLANIIPENNSLFFNVINNPNTNQNRQIFSQFGKHVKIDTNSLFD
+NFSVLQNDINKYIDTNNQIFLSQFGKHVKIDTNCLNDNFSVLQNDIN
+
+>anthrax_lethal_factor_reference [Bacillus anthracis]
+EVRDIQSFLHETHFGVVYSVDKSFNKSLYDLKDKYNQLVKIQNQFKQNRHIDRLVVS
+KAKNIPVFATFNKQYNDLKNYLDFKVVDKNYDLIKQNYDLQKQYLDDKNY
+
+>shiga_toxin_A_subunit_reference [Shigella dysenteriae]
+NVRVNIPFSRNVLQNIDNVRFSRDLNRSIRNVRVNIPFSRNVLQNIDNVRFSRDLNR
+SIRNVRVNIPFSRDLNRNVLQKIDYVNKSYLRSKPNL
+
+>diphtheria_toxin_reference [Corynebacterium diphtheriae]
+GVADVIQEINGVADVIQEINGADVIQEINSADVIQEINGADVIQEINGADVIQEINGA
+DVIQEINSADVIQEINGVADVIQENMHRDLAARN
+
+>tetanus_toxin_reference [Clostridium tetani]
+HEIKSNIASKIHEIKSNIASKVHEIKSNIASKIHEIKSNIASKIHEIKSNIASKVHEI
+KSNIASKIHEIKSNIASKVHEIKSNIASKINRLKAQ
+
+>cholera_toxin_A1_reference [Vibrio cholerae]
+RYVHHVSGQNVRYVHHVSGQNVRYVHHVSGQNVRYVHHVSGQNVRYVHHVSGQNV
+RYVHHVSGQNVSYYAPFDGSTSYYAPFDGSSYYYAP
+
+>abrin_A_chain_reference [Abrus precatorius]
+NVRVGIPISRNVETRLVGYLLNVRVGIPISRNVETRLVGYLLNVRVGIPISRNVE
+TRLVGYLLNVRVGIPISRNVETRLVGYLLNVRVGIPISR

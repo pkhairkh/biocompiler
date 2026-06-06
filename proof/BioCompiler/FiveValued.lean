@@ -228,8 +228,8 @@ theorem and_ne_fail_both {a b : FiveVerdict} :
     FiveVerdict.and a b ≠ FAIL → a ≠ FAIL ∧ b ≠ FAIL := by
   intro h
   constructor
-  · intro ha; rw [ha] at h; exact h rfl
-  · intro hb; rw [hb] at h; exact h rfl
+  · intro ha; rw [ha, and_FAIL_left] at h; exact h rfl
+  · intro hb; rw [hb, and_FAIL_right] at h; exact h rfl
 
 -- ==============================================================================
 -- Ordering and Monotonicity
@@ -326,6 +326,112 @@ theorem project_pass_implies_pass {v : FiveVerdict} :
 theorem project_fail_implies_fail {v : FiveVerdict} :
     project v = Verdict.FAIL → v = FAIL := by
   intro h; cases v <;> simp [project] at h <;> try rfl <;> cases h
+
+-- ==============================================================================
+-- De Morgan's Laws
+-- ==============================================================================
+
+/-- De Morgan: not (and a b) = or (not a) (not b) -/
+theorem de_morgan_and (a b : FiveVerdict) :
+    FiveVerdict.not (FiveVerdict.and a b) = FiveVerdict.or (FiveVerdict.not a) (FiveVerdict.not b) := by
+  cases a <;> cases b <;> rfl
+
+/-- De Morgan: not (or a b) = and (not a) (not b) -/
+theorem de_morgan_or (a b : FiveVerdict) :
+    FiveVerdict.not (FiveVerdict.or a b) = FiveVerdict.and (FiveVerdict.not a) (FiveVerdict.not b) := by
+  cases a <;> cases b <;> rfl
+
+-- ==============================================================================
+-- Not Involutive
+-- ==============================================================================
+
+/-- not(not(v)) = v for all five-valued verdicts -/
+theorem not_involutive (v : FiveVerdict) : FiveVerdict.not (FiveVerdict.not v) = v := by
+  cases v <;> rfl
+
+-- ==============================================================================
+-- Absorption Laws
+-- ==============================================================================
+
+/-- AND absorbs OR: and a (or a b) = a -/
+theorem and_absorbs_or (a b : FiveVerdict) :
+    FiveVerdict.and a (FiveVerdict.or a b) = a := by
+  cases a <;> cases b <;> rfl
+
+/-- OR absorbs AND: or a (and a b) = a -/
+theorem or_absorbs_and (a b : FiveVerdict) :
+    FiveVerdict.or a (FiveVerdict.and a b) = a := by
+  cases a <;> cases b <;> rfl
+
+-- ==============================================================================
+-- Distributivity Laws
+-- ==============================================================================
+
+/-- AND distributes over OR: and a (or b c) = or (and a b) (and a c) -/
+theorem and_distrib_or (a b c : FiveVerdict) :
+    FiveVerdict.and a (FiveVerdict.or b c) =
+    FiveVerdict.or (FiveVerdict.and a b) (FiveVerdict.and a c) := by
+  cases a <;> cases b <;> cases c <;> rfl
+
+/-- OR distributes over AND: or a (and b c) = and (or a b) (or a c) -/
+theorem or_distrib_and (a b c : FiveVerdict) :
+    FiveVerdict.or a (FiveVerdict.and b c) =
+    FiveVerdict.and (FiveVerdict.or a b) (FiveVerdict.or a c) := by
+  cases a <;> cases b <;> cases c <;> rfl
+
+-- ==============================================================================
+-- De Morgan Refinement (projection consistency)
+-- ==============================================================================
+
+/-- De Morgan is consistent under projection: project(not v) = Verdict.not(project v) -/
+theorem not_project_refines (v : FiveVerdict) :
+    project (FiveVerdict.not v) = Verdict.not (project v) := by
+  cases v <;> rfl
+
+-- ==============================================================================
+-- Monotonicity of OR (complements and_monotone_left for AND)
+-- ==============================================================================
+
+/-- OR is monotonically increasing in each argument -/
+theorem or_monotone_left (v₁ v₂ v : FiveVerdict) :
+    ordering v₁ ≤ ordering v₂ → ordering (FiveVerdict.or v₁ v) ≤ ordering (FiveVerdict.or v₂ v) := by
+  intro h
+  cases v₁ <;> cases v₂ <;> cases v <;>
+    simp only [FiveVerdict.or, ordering] <;>
+    first | rfl | omega | (nomatch h)
+
+/-- AND is monotonically decreasing in the right argument -/
+theorem and_monotone_right (v v₁ v₂ : FiveVerdict) :
+    ordering v₁ ≤ ordering v₂ → ordering (FiveVerdict.and v v₁) ≤ ordering (FiveVerdict.and v v₂) := by
+  intro h
+  cases v <;> cases v₁ <;> cases v₂ <;>
+    simp only [FiveVerdict.and, ordering] <;>
+    first | rfl | omega | (nomatch h)
+
+/-- OR is monotonically increasing in the right argument -/
+theorem or_monotone_right (v v₁ v₂ : FiveVerdict) :
+    ordering v₁ ≤ ordering v₂ → ordering (FiveVerdict.or v v₁) ≤ ordering (FiveVerdict.or v v₂) := by
+  intro h
+  cases v <;> cases v₁ <;> cases v₂ <;>
+    simp only [FiveVerdict.or, ordering] <;>
+    first | rfl | omega | (nomatch h)
+
+-- ==============================================================================
+-- Bounded Lattice Properties
+-- ==============================================================================
+
+/-- PASS is the top element for OR: or v PASS = PASS -/
+theorem or_pass_top (v : FiveVerdict) : FiveVerdict.or v PASS = PASS := by
+  cases v <;> rfl
+
+/-- FAIL is the bottom element for OR: or v FAIL = v -/
+@[simp] theorem or_FAIL_bottom (v : FiveVerdict) : FiveVerdict.or v FAIL = v := by
+  cases v <;> rfl
+
+/- Bounded lattice: and v PASS = v (identity) — already and_PASS_right -/
+/- Bounded lattice: or v FAIL = v (identity) — already or_FAIL_bottom -/
+/- Bounded lattice: and v FAIL = FAIL (absorbing) — already and_FAIL_right -/
+/- Bounded lattice: or v PASS = PASS (absorbing) — already or_pass_top -/
 
 end FiveVerdict
 

@@ -55,6 +55,19 @@
   │ Module                  │ Status     │ Notes                                  │
   ├─────────────────────────┼────────────┼────────────────────────────────────────┤
   │ ThreeValued.lean        │ FULLY      │ 12 theorems, 0 sorry, 0 axioms        │
+  │ FiveValued.lean         │ FULLY      │ 27 theorems, 0 sorry, 0 axioms;       │
+  │                         │            │ De Morgan's laws (de_morgan_and/or),  │
+  │                         │            │ not_involutive, absorption laws        │
+  │                         │            │ (and_absorbs_or, or_absorbs_and),     │
+  │                         │            │ distributivity (and_distrib_or,       │
+  │                         │            │ or_distrib_and), not_project_refines, │
+  │                         │            │ or_monotone_left/right,               │
+  │                         │            │ and_monotone_right, bounded lattice   │
+  │                         │            │ (or_pass_top, or_FAIL_bottom);        │
+  │                         │            │ forms a bounded lattice with          │
+  │                         │            │ Top=PASS, Bottom=FAIL, Meet=and,      │
+  │                         │            │ Join=or; SLOT property semantics      │
+  │                         │            │ complete                              │
   │ Sequence.lean           │ FULLY      │ Pattern matching with proved           │
   │                         │            │ completeness and soundness             │
   │ NDFST.lean              │ FULLY      │ ndfstRun_sound + ndfstRun_complete     │

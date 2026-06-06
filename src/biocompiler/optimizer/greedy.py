@@ -33,9 +33,9 @@ TOP_CAI_ALTERNATIVES: int = 3
 T_RUN_LENGTH_THRESHOLD: int = 6
 SPLICE_DONOR_POTENTIAL_THRESHOLD: float = 0.5
 _MAX_ACCEPTOR_SEARCH_DIST: int = 200
-EUKARYOTE_CAI_GT_COST_THRESHOLD: float = 0.10
-GT_BOUNDARY_CAI_TOLERANCE: float = 0.10
-GT_CAI_LOG_ADAPTIVENESS_COST: float = 0.1
+EUKARYOTE_CAI_GT_COST_THRESHOLD: float = 0.02
+GT_BOUNDARY_CAI_TOLERANCE: float = 0.03
+GT_CAI_LOG_ADAPTIVENESS_COST: float = 0.03
 from ..scanner import gc_content
 from ..sliding_gc import check_sliding_gc, fix_sliding_gc_violations
 from ..maxentscan import score_donor, score_acceptor, max_donor_score, max_acceptor_score

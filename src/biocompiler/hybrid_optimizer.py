@@ -85,6 +85,21 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────
+# GT avoidance CAI cost threshold
+# ────────────────────────────────────────────────────────────
+# When deciding whether to prefer a GT-free codon over the optimal
+# (highest-CAI) codon, this threshold controls how much relative
+# adaptiveness loss is acceptable.  If the CAI loss from using a
+# GT-free alternative exceeds this threshold, the optimal codon is
+# used instead (accepting the GT).  For eukaryotes, in-codon GTs
+# from optimal codons are biologically acceptable, so this should
+# be a small value — only sacrifice trivial CAI for GT avoidance.
+# Lowered from 0.3 (30%) to 0.03 (3%) in v11 to fix the GT/CAI
+# tradeoff where yeast insulin CAI was only 0.83 instead of ~0.99.
+_GT_CAI_COST_THRESHOLD: float = 0.03
+
+
+# ────────────────────────────────────────────────────────────
 # Constraint violation types and severity scoring
 # ────────────────────────────────────────────────────────────
 
@@ -675,7 +690,7 @@ class HybridOptimizer:
             # For AAs where ALL codons contain GT (e.g. Valine), use the
             # highest-CAI codon — these GTs are unavoidable.
             # For AAs where SOME codons lack GT, prefer GT-free but don't
-            # sacrifice CAI excessively (> 0.3 weight loss per position).
+            # sacrifice CAI excessively (> _GT_CAI_COST_THRESHOLD per position).
             gt_free_opts = gt_free.get(aa, [])
             best_optimal = optimal_codon.get(aa, "")
             if not best_optimal:
@@ -700,8 +715,8 @@ class HybridOptimizer:
                         opt_rel = opt_w
                         gtf_rel = gtf_w
                     # Accept GT-containing codon if CAI loss from
-                    # avoiding GT would be > 0.3 (significant degradation)
-                    if opt_rel - gtf_rel > 0.3:
+                    # avoiding GT would be > _GT_CAI_COST_THRESHOLD (3%)
+                    if opt_rel - gtf_rel > _GT_CAI_COST_THRESHOLD:
                         best = best_optimal  # Use GT-containing for CAI
                     else:
                         best = best_gt_free  # Use GT-free
@@ -4563,10 +4578,10 @@ class HybridOptimizer:
         substitution using precomputed GT-free codon lists.
 
         If the CAI cost of switching to a GT-free codon would be excessive
-        (relative adaptiveness loss > 0.3), the GT is accepted as
-        "CAI-critical" and the fix is skipped. This prevents unnecessary
-        CAI degradation for amino acids like Glycine (GGT, w=1.0 →
-        GGA, w=0.44) and Cysteine (TGT, w=1.0 → TGC, w=0.58).
+        (relative adaptiveness loss > _GT_CAI_COST_THRESHOLD, currently 3%),
+        the GT is accepted as "CAI-critical" and the fix is skipped.
+        For eukaryotes, in-codon GTs from optimal codons are biologically
+        acceptable, so only sacrifice trivial CAI for GT avoidance.
         """
         aa = state.get_aa(codon_idx)
         if aa is None or aa == "*":
@@ -4588,7 +4603,7 @@ class HybridOptimizer:
                 current_rel = current_w
                 best_gtf_rel = best_gt_free_w
             # If CAI loss from avoiding GT would be excessive, accept the GT
-            if current_rel - best_gtf_rel > 0.3:
+            if current_rel - best_gtf_rel > _GT_CAI_COST_THRESHOLD:
                 return False  # GT is CAI-critical, don't fix
 
         # Try GT-free alternatives (sorted by CAI, highest first)
@@ -5274,14 +5289,13 @@ class HybridOptimizer:
 
         A GT is considered CAI-critical if:
         3. It's within a codon where the optimal (highest-CAI) codon
-           contains GT, and the best GT-free alternative has relative
-           adaptiveness < 0.7 of the optimal — i.e., avoiding GT
-           would cost > 0.3 in relative adaptiveness.
+           contains GT, and the best GT-free alternative would cost
+           > _GT_CAI_COST_THRESHOLD (3%) in relative adaptiveness.
 
         CAI-critical GTs are accepted because the CAI cost of avoiding
-        them is too high. This prevents unnecessary CAI degradation for
-        amino acids like Glycine (GGT, w=1.0 → GGA, w=0.44) and
-        Cysteine (TGT, w=1.0 → TGC, w=0.58).
+        them is too high. For eukaryotes, in-codon GTs from optimal
+        codons are biologically acceptable, so only trivial CAI
+        sacrifices are warranted for GT avoidance.
         """
         if pos + 1 >= len(seq):
             return False
@@ -5304,7 +5318,8 @@ class HybridOptimizer:
 
                 # CAI-critical check: is this a within-codon GT where the
                 # optimal codon contains GT and CAI loss from avoiding it
-                # would be > 0.3 in relative adaptiveness?
+                # would be > _GT_CAI_COST_THRESHOLD (3%) in relative
+                # adaptiveness?
                 gt_free_list = self.gt_free.get(aa, [])
                 if gt_free_list and aa in self.sorted_codons:
                     optimal = self.sorted_codons[aa][0]
@@ -5319,7 +5334,7 @@ class HybridOptimizer:
                         else:
                             opt_rel = opt_w
                             best_gtf_rel = best_gtf_w
-                        if opt_rel - best_gtf_rel > 0.3:
+                        if opt_rel - best_gtf_rel > _GT_CAI_COST_THRESHOLD:
                             return True  # GT is CAI-critical
 
         # Check if this GT is at a cross-codon boundary where both

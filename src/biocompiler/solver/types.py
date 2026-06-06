@@ -807,6 +807,7 @@ class SolverConfig:
     optimize_codon_pair_bias: bool = False  # Enable codon pair bias soft constraint
     codon_pair_bias_weight: float = 0.2  # Weight for codon pair bias objective
     cai_reference_set: str = "kazusa"  # CAI reference set: "kazusa" (default) or "sharp_li"
+    warm_start_sequence: str = ""  # Warm-start sequence for Z3 (from greedy optimizer output)
     verbose: bool = False
 
 
