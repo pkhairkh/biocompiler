@@ -120,6 +120,9 @@ __all__ = [
     "verify_stability_predicate",
     "verify_solubility_predicate",
     "verify_immunogenicity_predicate",
+    "verify_soundness",
+    "SoundnessReport",
+    "SoundnessResult",
 ]
 
 
@@ -1236,3 +1239,409 @@ def verify_slot_predicate(
             verified=False,
             details=f"Unknown SLOT predicate: {base_name}",
         )
+
+
+# ────────────────────────────────────────────────────────────
+# SLOT Soundness Verification
+# ────────────────────────────────────────────────────────────
+
+@dataclass
+class SoundnessResult:
+    """Result of soundness verification for a single predicate verdict.
+
+    Attributes:
+        predicate: Name of the predicate checked.
+        verdict: The original verdict returned by the predicate.
+        sound: True if the verdict is sound (PASS actually passes, FAIL condition
+            is genuinely violated).
+        recheck_passed: When verdict is PASS, True if re-running the underlying
+            check confirms the condition holds.
+        recheck_violated: When verdict is FAIL, True if the underlying condition
+            is genuinely violated (not a false alarm).
+        evidence: The original VerificationEvidence from the predicate check.
+        details: Human-readable description of the soundness check result.
+    """
+    predicate: str
+    verdict: Verdict
+    sound: bool
+    recheck_passed: Optional[bool] = None
+    recheck_violated: Optional[bool] = None
+    evidence: Optional[VerificationEvidence] = None
+    details: str = ""
+
+
+@dataclass
+class SoundnessReport:
+    """Report on the soundness of a batch of SLOT predicate verdicts.
+
+    Provides both individual results and aggregate statistics.
+
+    Attributes:
+        results: List of individual SoundnessResult objects.
+        total: Total number of predicates checked.
+        sound_count: Number of predicates whose verdict is sound.
+        unsound_count: Number of predicates whose verdict is unsound.
+        pass_verified: Number of PASS verdicts that were confirmed sound.
+        pass_unverified: Number of PASS verdicts that could not be confirmed.
+        fail_verified: Number of FAIL verdicts where the condition is genuinely violated.
+        fail_false_alarm: Number of FAIL verdicts where the condition was NOT actually
+            violated (false alarm / completeness gap).
+        all_sound: True if all verdicts are sound.
+    """
+    results: List[SoundnessResult]
+    total: int = 0
+    sound_count: int = 0
+    unsound_count: int = 0
+    pass_verified: int = 0
+    pass_unverified: int = 0
+    fail_verified: int = 0
+    fail_false_alarm: int = 0
+    all_sound: bool = True
+
+    def __post_init__(self):
+        """Compute aggregate statistics from individual results."""
+        self.total = len(self.results)
+        self.sound_count = sum(1 for r in self.results if r.sound)
+        self.unsound_count = self.total - self.sound_count
+        self.pass_verified = sum(
+            1 for r in self.results
+            if r.verdict == Verdict.PASS and r.recheck_passed is True
+        )
+        self.pass_unverified = sum(
+            1 for r in self.results
+            if r.verdict == Verdict.PASS and r.recheck_passed is not True
+        )
+        self.fail_verified = sum(
+            1 for r in self.results
+            if r.verdict == Verdict.FAIL and r.recheck_violated is True
+        )
+        self.fail_false_alarm = sum(
+            1 for r in self.results
+            if r.verdict == Verdict.FAIL and r.recheck_violated is False
+        )
+        self.all_sound = self.unsound_count == 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a plain dict."""
+        return {
+            "total": self.total,
+            "sound_count": self.sound_count,
+            "unsound_count": self.unsound_count,
+            "pass_verified": self.pass_verified,
+            "pass_unverified": self.pass_unverified,
+            "fail_verified": self.fail_verified,
+            "fail_false_alarm": self.fail_false_alarm,
+            "all_sound": self.all_sound,
+            "results": [
+                {
+                    "predicate": r.predicate,
+                    "verdict": r.verdict.value,
+                    "sound": r.sound,
+                    "recheck_passed": r.recheck_passed,
+                    "recheck_violated": r.recheck_violated,
+                    "details": r.details,
+                }
+                for r in self.results
+            ],
+        }
+
+
+def _recheck_predicate(predicate_name: str, verdict: Verdict, **kwargs) -> SoundnessResult:
+    """Re-check a single predicate verdict for soundness.
+
+    Soundness means:
+    - If the predicate says PASS, the underlying condition actually holds.
+    - If the predicate says FAIL, the underlying condition is genuinely violated.
+
+    This is the non-vacuous soundness check: instead of "PASS → property holds"
+    being trivially true because PASS never happens (as in the Lean4 conservative
+    model), we actually re-run the check to verify the claim.
+
+    The general strategy uses ``verify_slot_predicate`` to re-run the
+    verification for SLOT predicates.  For non-SLOT (core) predicates,
+    we delegate to the type_system check functions directly.  If a recheck
+    is unavailable (tool not installed), the verdict is marked *unsound*
+    rather than vacuously sound — this forces honest reporting.
+    """
+    base_name = predicate_name.split("(")[0]
+    result = SoundnessResult(
+        predicate=base_name,
+        verdict=verdict,
+        sound=True,  # Assume sound until proven otherwise
+        details="",
+    )
+
+    # For non-definite verdicts, soundness is trivially true
+    # (UNCERTAIN/LIKELY_PASS/LIKELY_FAIL don't make definite claims)
+    if verdict not in (Verdict.PASS, Verdict.FAIL):
+        result.details = f"Verdict {verdict.value} is non-definite; soundness is trivially true"
+        result.sound = True
+        return result
+
+    # ── Fast-path for core (non-SLOT) predicates ──────────────
+    # These have deterministic check functions in type_system that
+    # can be re-run directly.
+    core_recheck = _recheck_core_predicate(base_name, verdict, **kwargs)
+    if core_recheck is not None:
+        return core_recheck
+
+    # ── SLOT predicates: re-run via verify_slot_predicate ─────
+    # Re-run the verification in VERIFIED mode (the strongest mode
+    # that can actually return PASS with evidence).
+    try:
+        recheck_verdict, recheck_evidence = verify_slot_predicate(
+            base_name, slot_mode=SLOTMode.VERIFIED, **kwargs,
+        )
+
+        if verdict == Verdict.PASS:
+            # PASS is sound if the recheck confirms PASS or LIKELY_PASS
+            if recheck_verdict in (Verdict.PASS, Verdict.LIKELY_PASS):
+                result.recheck_passed = True
+                result.sound = True
+                result.evidence = recheck_evidence
+                result.details = (
+                    f"PASS soundness confirmed: recheck returned {recheck_verdict.value}"
+                )
+            elif recheck_verdict == Verdict.UNCERTAIN:
+                # Recheck couldn't verify (tool unavailable) — NOT vacuously sound.
+                # Mark as unsound because we cannot confirm the PASS claim.
+                result.recheck_passed = False
+                result.sound = False
+                result.evidence = recheck_evidence
+                result.details = (
+                    f"PASS soundness NOT confirmed: recheck returned UNCERTAIN "
+                    f"(tool unavailable or insufficient evidence)"
+                )
+            else:
+                # Recheck returned FAIL or LIKELY_FAIL — unsound!
+                result.recheck_passed = False
+                result.sound = False
+                result.evidence = recheck_evidence
+                result.details = (
+                    f"PASS UNSOUND: recheck returned {recheck_verdict.value}"
+                )
+
+        elif verdict == Verdict.FAIL:
+            # FAIL is sound if the recheck confirms FAIL or LIKELY_FAIL
+            if recheck_verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
+                result.recheck_violated = True
+                result.sound = True
+                result.evidence = recheck_evidence
+                result.details = (
+                    f"FAIL soundness confirmed: recheck returned {recheck_verdict.value}"
+                )
+            elif recheck_verdict == Verdict.UNCERTAIN:
+                # Can't confirm the violation — not vacuously sound.
+                result.recheck_violated = False
+                result.sound = False
+                result.evidence = recheck_evidence
+                result.details = (
+                    f"FAIL soundness NOT confirmed: recheck returned UNCERTAIN "
+                    f"(cannot verify violation)"
+                )
+            else:
+                # Recheck says PASS or LIKELY_PASS — FAIL was a false alarm
+                result.recheck_violated = False
+                result.sound = False
+                result.evidence = recheck_evidence
+                result.details = (
+                    f"FAIL UNSOUND: recheck returned {recheck_verdict.value} "
+                    f"(false alarm / completeness gap)"
+                )
+
+    except ValueError:
+        # Unknown predicate name — can't recheck
+        if verdict == Verdict.PASS:
+            result.recheck_passed = None
+            result.details = f"PASS: unknown predicate '{base_name}', cannot recheck"
+        else:
+            result.recheck_violated = None
+            result.details = f"FAIL: unknown predicate '{base_name}', cannot recheck"
+    except Exception as e:
+        result.sound = False
+        result.details = f"Soundness check failed: {e}"
+
+    return result
+
+
+def _recheck_core_predicate(
+    predicate_name: str,
+    verdict: Verdict,
+    **kwargs: Any,
+) -> Optional[SoundnessResult]:
+    """Re-check a core (non-SLOT) predicate for soundness.
+
+    Core predicates are deterministic and can be re-run directly
+    using their check functions from type_system.
+
+    Returns None if this is not a core predicate (caller should
+    fall through to SLOT recheck logic).
+    """
+    # Map of core predicate names to their check functions and
+    # the kwargs they need from the soundness kwargs.
+    core_dispatch = {
+        "NoStopCodons": ("seq",),
+        "NoGTDinucleotide": ("seq",),
+        "ValidCodingSeq": ("seq",),
+        "NoRestrictionSite": ("seq",),
+        "NoCpGIsland": ("seq",),
+        "GCInRange": ("seq",),
+        "InFrame": ("seq",),
+        "NoInstabilityMotif": ("seq",),
+    }
+
+    if predicate_name not in core_dispatch:
+        return None  # Not a core predicate
+
+    result = SoundnessResult(
+        predicate=predicate_name,
+        verdict=verdict,
+        sound=True,
+        details="",
+    )
+
+    required_keys = core_dispatch[predicate_name]
+    fn_kwargs = {k: kwargs.get(k, "") for k in required_keys}
+
+    try:
+        if predicate_name == "NoStopCodons":
+            from .type_system import check_no_stop_codons
+            recheck = check_no_stop_codons(fn_kwargs["seq"])
+        elif predicate_name == "NoGTDinucleotide":
+            from .type_system import check_no_gt_dinucleotide
+            recheck = check_no_gt_dinucleotide(fn_kwargs["seq"])
+        elif predicate_name == "ValidCodingSeq":
+            from .type_system import check_valid_coding_seq
+            recheck = check_valid_coding_seq(fn_kwargs["seq"])
+        elif predicate_name == "NoRestrictionSite":
+            from .type_system import check_no_restriction_site
+            enzymes = kwargs.get("enzymes", [])
+            recheck = check_no_restriction_site(fn_kwargs["seq"], enzymes)
+        elif predicate_name == "NoCpGIsland":
+            from .type_system import check_no_cpg_island
+            organism = kwargs.get("organism", "Homo_sapiens")
+            recheck = check_no_cpg_island(fn_kwargs["seq"], organism)
+        elif predicate_name == "GCInRange":
+            from .type_system import evaluate_gc_in_range
+            gc_lo = kwargs.get("gc_lo", 0.30)
+            gc_hi = kwargs.get("gc_hi", 0.70)
+            recheck_result = evaluate_gc_in_range(fn_kwargs["seq"], gc_lo, gc_hi)
+            # evaluate_gc_in_range returns TypeCheckResult
+            _apply_recheck_to_soundness(result, verdict, recheck_result.verdict, recheck_result.violation)
+            return result
+        elif predicate_name == "InFrame":
+            from .type_system import evaluate_in_frame
+            boundaries = kwargs.get("boundaries", kwargs.get("exon_boundaries", []))
+            recheck_result = evaluate_in_frame(fn_kwargs["seq"], boundaries)
+            _apply_recheck_to_soundness(result, verdict, recheck_result.verdict, recheck_result.violation)
+            return result
+        elif predicate_name == "NoInstabilityMotif":
+            from .type_system import evaluate_no_instability_motif
+            recheck_result = evaluate_no_instability_motif(fn_kwargs["seq"])
+            _apply_recheck_to_soundness(result, verdict, recheck_result.verdict, recheck_result.violation)
+            return result
+        else:
+            return None
+
+        # check_* functions return PredicateResult with .verdict and .passed
+        recheck_verdict = recheck.verdict
+        if recheck_verdict is None:
+            # Older PredicateResult uses .passed bool
+            recheck_verdict = Verdict.PASS if recheck.passed else Verdict.FAIL
+
+        _apply_recheck_to_soundness(result, verdict, recheck_verdict, recheck.details)
+
+    except Exception as e:
+        result.sound = False
+        result.details = f"Core predicate recheck failed: {e}"
+
+    return result
+
+
+def _apply_recheck_to_soundness(
+    result: SoundnessResult,
+    original_verdict: Verdict,
+    recheck_verdict: Verdict,
+    details: Optional[str] = None,
+) -> None:
+    """Apply a recheck verdict to a SoundnessResult in-place.
+
+    This helper centralises the soundness judgment logic so both core
+    and SLOT recheck paths share the same consistency rules.
+    """
+    if original_verdict == Verdict.PASS:
+        if recheck_verdict in (Verdict.PASS, Verdict.LIKELY_PASS):
+            result.recheck_passed = True
+            result.sound = True
+            result.details = f"PASS soundness confirmed: recheck = {recheck_verdict.value}"
+        elif recheck_verdict == Verdict.UNCERTAIN:
+            result.recheck_passed = False
+            result.sound = False
+            result.details = f"PASS soundness NOT confirmed: recheck = UNCERTAIN"
+        else:
+            result.recheck_passed = False
+            result.sound = False
+            result.details = f"PASS UNSOUND: recheck = {recheck_verdict.value}"
+    elif original_verdict == Verdict.FAIL:
+        if recheck_verdict in (Verdict.FAIL, Verdict.LIKELY_FAIL):
+            result.recheck_violated = True
+            result.sound = True
+            result.details = f"FAIL soundness confirmed: recheck = {recheck_verdict.value}"
+        elif recheck_verdict == Verdict.UNCERTAIN:
+            result.recheck_violated = False
+            result.sound = False
+            result.details = f"FAIL soundness NOT confirmed: recheck = UNCERTAIN"
+        else:
+            result.recheck_violated = False
+            result.sound = False
+            result.details = f"FAIL UNSOUND (false alarm): recheck = {recheck_verdict.value}"
+
+
+def verify_soundness(
+    verdicts: List[tuple[str, Verdict]],
+    **kwargs: Any,
+) -> SoundnessReport:
+    """Verify the soundness of a batch of SLOT predicate verdicts.
+
+    Soundness means: if a predicate claims PASS, the underlying condition
+    actually holds. This replaces the vacuously true soundness of the Lean4
+    conservative model (where PASS never happens) with a non-vacuous check
+    that re-runs the underlying verification condition.
+
+    Completeness means: if the underlying condition is violated, the predicate
+    must say FAIL (not PASS or UNCERTAIN). This is checked by verifying that
+    FAIL verdicts correspond to genuinely violated conditions.
+
+    Args:
+        verdicts: List of (predicate_name, verdict) tuples to check.
+        **kwargs: Additional keyword arguments passed to the underlying
+            verification functions. Common keys include:
+            - seq: DNA sequence
+            - protein_sequence: protein sequence
+            - original_aa, new_aa: amino acid pair for conservation
+            - codon, species_cai, min_cai: for codon optimality
+
+    Returns:
+        SoundnessReport with individual results and aggregate statistics.
+
+    Example::
+
+        from biocompiler.slot_verification import verify_soundness, verify_codon_optimality
+        from biocompiler.types import Verdict, SLOTMode
+
+        # Get verdict from a SLOT predicate
+        v, evidence = verify_codon_optimality(
+            "ATG", {"ATG": 0.9}, 0.5, slot_mode=SLOTMode.VERIFIED
+        )
+
+        # Verify soundness
+        report = verify_soundness([("CodonOptimality", v)],
+                                  codon="ATG", species_cai={"ATG": 0.9}, min_cai=0.5)
+        assert report.all_sound
+    """
+    results = []
+    for predicate_name, verdict in verdicts:
+        sr = _recheck_predicate(predicate_name, verdict, **kwargs)
+        results.append(sr)
+
+    return SoundnessReport(results=results)

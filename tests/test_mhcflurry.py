@@ -898,6 +898,7 @@ class TestReentrancy:
         clear_cache()
         clear_cache()
         # No assertion needed — just verifying no exception
+        # Implicit assertion: no exception raised
 
     def test_clear_cache_then_predict(self) -> None:
         """Cache can be cleared and then used for new predictions."""

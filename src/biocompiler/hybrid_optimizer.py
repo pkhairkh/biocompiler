@@ -671,15 +671,43 @@ class HybridOptimizer:
             if aa == "*":
                 codon_list.append("TAA")
                 continue
-            # Prefer GT-free codons for eukaryotes
+            # Prefer GT-free codons for eukaryotes, but balance with CAI.
+            # For AAs where ALL codons contain GT (e.g. Valine), use the
+            # highest-CAI codon — these GTs are unavoidable.
+            # For AAs where SOME codons lack GT, prefer GT-free but don't
+            # sacrifice CAI excessively (> 0.3 weight loss per position).
             gt_free_opts = gt_free.get(aa, [])
+            best_optimal = optimal_codon.get(aa, "")
+            if not best_optimal:
+                sl = sorted_codons.get(aa, [])
+                best_optimal = sl[0] if sl else "NNN"
             if gt_free_opts:
-                best = gt_free_opts[0]
+                # If no GT-free codons exist (unavoidable GT), use best-CAI
+                best_gt_free = gt_free_opts[0]
+                if best_optimal == best_gt_free:
+                    # Best CAI codon is already GT-free
+                    best = best_gt_free
+                else:
+                    # Best CAI codon contains GT — check if the CAI
+                    # sacrifice from using GT-free is too large
+                    opt_w = species_cai.get(best_optimal, 0.0)
+                    gtf_w = species_cai.get(best_gt_free, 0.0)
+                    max_a = max_adapt.get(aa, 0.0)
+                    if max_a > 0:
+                        opt_rel = opt_w / max_a
+                        gtf_rel = gtf_w / max_a
+                    else:
+                        opt_rel = opt_w
+                        gtf_rel = gtf_w
+                    # Accept GT-containing codon if CAI loss from
+                    # avoiding GT would be > 0.3 (significant degradation)
+                    if opt_rel - gtf_rel > 0.3:
+                        best = best_optimal  # Use GT-containing for CAI
+                    else:
+                        best = best_gt_free  # Use GT-free
             else:
-                best = optimal_codon.get(aa, "")
-                if not best:
-                    sl = sorted_codons.get(aa, [])
-                    best = sl[0] if sl else "NNN"
+                # No GT-free codons (Valine, etc.) — use best-CAI codon
+                best = best_optimal
             codon_list.append(best)
             gc_count += codon_gc.get(best, 0)
             adapt = species_cai.get(best, 0.0)
@@ -4532,16 +4560,39 @@ class HybridOptimizer:
         avoid_gt: bool,
     ) -> bool:
         """Fix a within-codon GT by choosing the best CAI-preserving
-        substitution using precomputed GT-free codon lists."""
+        substitution using precomputed GT-free codon lists.
+
+        If the CAI cost of switching to a GT-free codon would be excessive
+        (relative adaptiveness loss > 0.3), the GT is accepted as
+        "CAI-critical" and the fix is skipped. This prevents unnecessary
+        CAI degradation for amino acids like Glycine (GGT, w=1.0 →
+        GGA, w=0.44) and Cysteine (TGT, w=1.0 → TGC, w=0.58).
+        """
         aa = state.get_aa(codon_idx)
         if aa is None or aa == "*":
             return False
 
         old_gt_count = state.gt_count
 
+        # Check CAI cost before trying GT-free alternatives
+        gt_free_list = self.gt_free.get(aa, [])
+        if gt_free_list:
+            current_codon = state.sequence[codon_idx*3:codon_idx*3+3]
+            current_w = self.species_cai.get(current_codon, 0.0)
+            best_gt_free_w = self.species_cai.get(gt_free_list[0], 0.0)
+            max_a = self._max_adapt.get(aa, 0.0)
+            if max_a > 0:
+                current_rel = current_w / max_a
+                best_gtf_rel = best_gt_free_w / max_a
+            else:
+                current_rel = current_w
+                best_gtf_rel = best_gt_free_w
+            # If CAI loss from avoiding GT would be excessive, accept the GT
+            if current_rel - best_gtf_rel > 0.3:
+                return False  # GT is CAI-critical, don't fix
+
         # Try GT-free alternatives (sorted by CAI, highest first)
         # Use precomputed gt_free lookup table
-        gt_free_list = self.gt_free.get(aa, [])
         for alt in gt_free_list:
             # Quick boundary check
             left_gt, right_gt = state.boundary_creates_gt(codon_idx, alt)
@@ -5077,7 +5128,7 @@ class HybridOptimizer:
             else:
                 i += 1
 
-        # 5. No new avoidable GTs (if avoiding GT)
+        # 5. No new avoidable GTs that aren't CAI-critical (if avoiding GT)
         if avoid_gt:
             for pos in range(len(new_seq) - 1):
                 if new_seq[pos:pos+2] == "GT":
@@ -5149,7 +5200,7 @@ class HybridOptimizer:
             else:
                 j += 1
 
-        # 5. No new avoidable GTs (if avoiding GT)
+        # 5. No new avoidable GTs that aren't CAI-critical (if avoiding GT)
         if avoid_gt:
             # Check GT positions in neighborhood
             start = max(0, ci * 3 - 1)
@@ -5215,23 +5266,61 @@ class HybridOptimizer:
         return list(range(max(0, first_codon), min(n_codons, last_codon + 1)))
 
     def _is_unavoidable_gt(self, seq: str, pos: int) -> bool:
-        """Check if a GT dinucleotide at pos is unavoidable (Valine codon).
+        """Check if a GT dinucleotide at pos is unavoidable or CAI-critical.
 
-        Valine codons (GTN) all contain GT, so GT within a Valine codon
-        cannot be eliminated by synonymous substitution.
+        A GT is considered unavoidable if:
+        1. It's within a Valine codon (all Val codons start with GT)
+        2. It's at a cross-codon boundary where both codons force GT
+
+        A GT is considered CAI-critical if:
+        3. It's within a codon where the optimal (highest-CAI) codon
+           contains GT, and the best GT-free alternative has relative
+           adaptiveness < 0.7 of the optimal — i.e., avoiding GT
+           would cost > 0.3 in relative adaptiveness.
+
+        CAI-critical GTs are accepted because the CAI cost of avoiding
+        them is too high. This prevents unnecessary CAI degradation for
+        amino acids like Glycine (GGT, w=1.0 → GGA, w=0.44) and
+        Cysteine (TGT, w=1.0 → TGC, w=0.58).
         """
         if pos + 1 >= len(seq):
             return False
         if seq[pos:pos+2] != "GT":
             return False
 
-        # Check if this GT is the first two bases of a codon (Valine)
+        # Check if this GT is within a codon (positions 0-1 or 1-2)
         codon_start = (pos // 3) * 3
-        codon = seq[codon_start:codon_start + 3]
-        if len(codon) == 3 and codon[:2] == "GT":
-            aa = CODON_TABLE.get(codon)  # type: ignore[assignment]
-            if aa == "V":
-                return True
+        next_codon_start = codon_start + 3
+        is_within = (pos + 1) < next_codon_start
+
+        if is_within:
+            codon = seq[codon_start:codon_start + 3]
+            if len(codon) == 3 and "GT" in codon:
+                aa = CODON_TABLE.get(codon)  # type: ignore[assignment]
+
+                # Valine: ALL codons start with GT — truly unavoidable
+                if aa == "V":
+                    return True
+
+                # CAI-critical check: is this a within-codon GT where the
+                # optimal codon contains GT and CAI loss from avoiding it
+                # would be > 0.3 in relative adaptiveness?
+                gt_free_list = self.gt_free.get(aa, [])
+                if gt_free_list and aa in self.sorted_codons:
+                    optimal = self.sorted_codons[aa][0]
+                    if "GT" in optimal:
+                        # Optimal codon contains GT — check CAI cost
+                        opt_w = self.species_cai.get(optimal, 0.0)
+                        best_gtf_w = self.species_cai.get(gt_free_list[0], 0.0)
+                        max_a = self._max_adapt.get(aa, 0.0)
+                        if max_a > 0:
+                            opt_rel = opt_w / max_a
+                            best_gtf_rel = best_gtf_w / max_a
+                        else:
+                            opt_rel = opt_w
+                            best_gtf_rel = best_gtf_w
+                        if opt_rel - best_gtf_rel > 0.3:
+                            return True  # GT is CAI-critical
 
         # Check if this GT is at a cross-codon boundary where both
         # the preceding codon must end with G and following starts with T

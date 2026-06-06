@@ -188,22 +188,44 @@ _CERT_REQUIRED_KEYS: set[str] = {"version", "design_id", "sequence", "types", "p
 
 @dataclass
 class Certificate:
-    """A machine-checkable guarantee certificate."""
+    """A machine-checkable guarantee certificate.
+
+    Attributes:
+        version: BioCompiler version that generated this certificate.
+        design_id: Hash-based identifier for the certified design.
+            For hash_version=2, this includes sequence + predicate results +
+            optimization parameters.  For hash_version=1 (legacy), this was
+            the SHA-256 of the sequence only.
+        sequence: The DNA sequence being certified.
+        types: List of predicate result dicts (predicate name, verdict, etc.).
+        provenance: Dict with tool version, timestamp, parameters, input_hash, etc.
+        hash_version: Version of the hash computation used for design_id.
+            1 = legacy (sequence-only hash), 2 = full hash covering sequence +
+            sorted predicate results + key optimization parameters.
+            Defaults to 2 for new certificates; certificates deserialized from
+            legacy data default to 1 for backward compatibility.
+    """
     version: str
     design_id: str
     sequence: str
     types: list[dict]
     provenance: dict
+    hash_version: int = 2
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict (JSON-compatible)."""
-        return {
+        d = {
             "version": self.version,
             "design_id": self.design_id,
             "sequence": self.sequence,
             "types": self.types,
             "provenance": self.provenance,
         }
+        # Always include hash_version for v2+ certificates.
+        # Legacy v1 certificates may not have it.
+        if self.hash_version != 1:
+            d["hash_version"] = self.hash_version
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "Certificate":
@@ -213,10 +235,13 @@ class Certificate:
             raise ValueError(
                 f"Cannot deserialize Certificate: missing keys {missing}"
             )
+        # Legacy certificates without hash_version default to v1
+        hash_version = data.get("hash_version", 1)
         return cls(
             version=data["version"],
             design_id=data["design_id"],
             sequence=data["sequence"],
             types=data["types"],
             provenance=data["provenance"],
+            hash_version=hash_version,
         )

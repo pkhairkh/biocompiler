@@ -1044,6 +1044,7 @@ class TestModuleHelpers:
     def test_clear_cache_no_error(self) -> None:
         """clear_cache() runs without error."""
         clear_cache()  # should not raise
+        # Implicit assertion: no exception raised
 
     def test_get_default_cache_returns_cache(self) -> None:
         """_get_default_cache returns a NetMHCpanCache instance."""

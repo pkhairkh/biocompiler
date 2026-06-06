@@ -785,6 +785,7 @@ class TestProgressStep:
         with patch("sys.stderr", new_callable=StringIO):
             with _ProgressStep("Testing"):
                 pass  # no error
+        # Implicit assertion: no exception raised
 
     def test_progress_step_verbose(self):
         """_ProgressStep with verbose=True should include timing."""
@@ -966,6 +967,8 @@ class TestOptimizeCheckIntegration:
             enzymes="",
             splice_low=3.0,
             splice_high=6.0,
+            predicate=None,
+            list_predicates=False,
         )
         with patch("sys.stdout", new_callable=StringIO) as mock_out:
             cmd_check(args)
@@ -980,6 +983,8 @@ class TestOptimizeCheckIntegration:
             enzymes="",
             splice_low=3.0,
             splice_high=6.0,
+            predicate=None,
+            list_predicates=False,
         )
         with pytest.raises(SystemExit) as exc_info:
             cmd_check(args)

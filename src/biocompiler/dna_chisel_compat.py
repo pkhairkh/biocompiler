@@ -341,16 +341,15 @@ def _build_initial_sequence(protein: str, organism: str = "Homo_sapiens") -> str
         if codons:
             sequence_chars.append(codons[0])
         else:
-            # Unknown amino acid — raise rather than silently producing
-            # an incorrect translation. Callers that need lenient
-            # behaviour should pre-validate or strip non-standard codes.
-            raise ValueError(
-                f"Unknown amino acid '{aa}' encountered at position "
-                f"{len(sequence_chars) + 1} of the protein sequence. "
-                f"Only standard single-letter IUPAC codes (A C D E F G H I K L M N P Q R S T V W Y) "
-                f"are supported. Selenocysteine (U) and pyrrolysine (O) are "
-                f"not supported by DNA Chisel's EnforceTranslation constraint."
+            # Unknown / ambiguous amino acid (e.g. 'X') — use NNN
+            # placeholder so the caller gets a sequence of the correct
+            # length that can be further optimised by DNA Chisel.
+            logger.warning(
+                "Unknown amino acid '%s' at position %d — using NNN placeholder",
+                aa,
+                len(sequence_chars) + 1,
             )
+            sequence_chars.append("NNN")
 
     return "".join(sequence_chars)
 

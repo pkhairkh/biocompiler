@@ -1043,8 +1043,41 @@ class ORTOOLSEngine:
         # Cysteine (C) has only TGT and TGC; restricting TGT leaves only
         # TGC (ending in C), which creates cross-codon CpG issues. So we
         # also skip C unless we have 2+ GT-free alternatives.
+        #
+        # CAI-AWARE GT AVOIDANCE: For amino acids where SOME codons lack
+        # GT, we only add the restriction if the best GT-free codon has
+        # CAI weight >= 50% of the best GT-containing codon's weight.
+        # This prevents excessive CAI degradation for amino acids like
+        # Glycine (GGT w=1.0 vs GGA w=0.44 in yeast) where the CAI
+        # penalty of avoiding GT would be catastrophic.
+        cai_data_splice = CODON_ADAPTIVENESS_TABLES.get(
+            self.config.organism, {}
+        )
+        _CAI_GT_AVOIDANCE_RATIO = 0.5
+
         for i, (cvar, domain) in enumerate(zip(codon_vars, codon_domains)):
             gt_free = [c for c in domain if "GT" not in c]
+            gt_containing = [c for c in domain if "GT" in c]
+
+            if not gt_free or not gt_containing:
+                continue
+
+            # Check CAI penalty of avoiding GT
+            best_gt_free_cai = max(
+                cai_data_splice.get(c, 0.01) for c in gt_free
+            )
+            best_gt_containing_cai = max(
+                cai_data_splice.get(c, 0.01) for c in gt_containing
+            )
+
+            if best_gt_containing_cai > 0:
+                cai_ratio = best_gt_free_cai / best_gt_containing_cai
+            else:
+                cai_ratio = 1.0
+
+            # Only add GT restriction if the CAI penalty is acceptable
+            if cai_ratio < _CAI_GT_AVOIDANCE_RATIO:
+                continue
 
             # Only restrict if GT-free alternatives exist AND there are
             # at least 2 alternatives (to avoid cascading infeasibility

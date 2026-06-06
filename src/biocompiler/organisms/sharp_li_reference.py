@@ -35,6 +35,7 @@ Published validation targets (Sharp & Li 1987, Table 4):
 from __future__ import annotations
 
 import math
+import threading
 from typing import Dict
 
 __all__ = [
@@ -53,6 +54,7 @@ __all__ = [
     "SHARP_LI_CODON_USAGE",
     "SHARP_LI_CAI_WEIGHTS",
     "get_sharp_li_cai_weights",
+    "_sharp_li_registry_lock",
     # Function
     "compute_cai_with_reference",
 ]

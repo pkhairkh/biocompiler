@@ -11,6 +11,7 @@ Covers:
    (DecisionRecord, ProvenanceTracker, OptimizationProvenance)
 """
 
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -180,8 +181,11 @@ class TestCertificateDataclass:
         """to_dict should produce a JSON-compatible dict with all fields."""
         cert = _make_certificate()
         d = cert.to_dict()
-        assert set(d.keys()) == {"version", "design_id", "sequence", "types", "provenance"}
+        # v2 certificates include hash_version
+        expected_keys = {"version", "design_id", "sequence", "types", "provenance", "hash_version"}
+        assert set(d.keys()) == expected_keys
         assert d["design_id"] == "TEST_CERT_001"
+        assert d["hash_version"] == 2
 
     def test_from_dict_validates_required_keys(self):
         """from_dict raises ValueError if required keys are missing."""
@@ -283,16 +287,26 @@ class TestComputeCertificate:
         assert "timestamp" in cert.provenance
         assert "input_hash" in cert.provenance
 
-    def test_generate_certificate_design_id_is_hash(self):
-        """design_id should be the SHA-256 hash of the sequence."""
-        import hashlib
+    def test_generate_certificate_design_id_is_v2_hash(self):
+        """design_id should be the v2 hash covering sequence + predicates + params."""
+        from biocompiler.certificate import _compute_certificate_hash
         type_results = _make_type_results()
         cert = generate_certificate(
             sequence=SAMPLE_SEQ,
             type_results=type_results,
             input_params={"gene": "eGFP"},
         )
-        expected = hashlib.sha256(SAMPLE_SEQ.encode()).hexdigest()
+        # v1 hash (sequence-only) should NOT match
+        v1_hash = hashlib.sha256(SAMPLE_SEQ.encode()).hexdigest()
+        assert cert.design_id != v1_hash, "v2 hash must differ from v1 sequence-only hash"
+        # v2 hash should match
+        params = cert.provenance.get("parameters", {})
+        expected = _compute_certificate_hash(
+            sequence=SAMPLE_SEQ,
+            types_list=cert.types,
+            params=params,
+            hash_version=2,
+        )
         assert cert.design_id == expected
 
     def test_generate_certificate_empty_sequence_raises(self):

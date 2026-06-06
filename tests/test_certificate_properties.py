@@ -95,6 +95,11 @@ class TestCertificateRoundTrip:
         """to_dict → from_dict → to_dict yields identical dict."""
         cert = Certificate.from_dict(cert_dict)
         round_tripped = cert.to_dict()
+        # Legacy v1 dicts don't have hash_version, but from_dict defaults to 1
+        # and to_dict omits it for v1. So the roundtrip should still be consistent.
+        # If the original dict lacked hash_version, the roundtrip should too.
+        if "hash_version" not in cert_dict:
+            round_tripped.pop("hash_version", None)
         assert round_tripped == cert_dict
 
     @given(cert_dict=certificate_dict_strategy())
@@ -196,14 +201,25 @@ class TestGenerateCertificateValidity:
         type_results=st.lists(type_check_result_strategy(), min_size=1, max_size=8),
     )
     @settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
-    def test_design_id_is_sha256_of_sequence(self, seq, type_results):
-        """Certificate.design_id equals SHA-256 hex digest of the sequence."""
+    def test_design_id_is_v2_hash(self, seq, type_results):
+        """Certificate.design_id equals the v2 hash (sequence + predicates + params)."""
+        from biocompiler.certificate import _compute_certificate_hash
         cert = generate_certificate(
             sequence=seq,
             type_results=type_results,
             input_params={},
         )
-        expected = hashlib.sha256(seq.encode()).hexdigest()
+        # v1 hash (sequence-only) should NOT match — this was the soundness bug
+        v1_hash = hashlib.sha256(seq.encode()).hexdigest()
+        assert cert.design_id != v1_hash, "v2 hash must differ from v1 sequence-only hash"
+        # v2 hash should match
+        params = cert.provenance.get("parameters", {})
+        expected = _compute_certificate_hash(
+            sequence=seq,
+            types_list=cert.types,
+            params=params,
+            hash_version=2,
+        )
         assert cert.design_id == expected
 
     @given(

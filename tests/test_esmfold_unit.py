@@ -261,14 +261,17 @@ class TestValidateProtein:
     def test_valid_protein_passes(self) -> None:
         """Valid protein sequence does not raise."""
         _validate_protein("ACDEFGHIKLMNPQRSTVWY")  # should not raise
+        # Implicit assertion: no exception raised
 
     def test_short_valid_protein(self) -> None:
         """Short but valid protein sequence does not raise."""
         _validate_protein("MAG")
+        # Implicit assertion: no exception raised
 
     def test_single_residue_passes(self) -> None:
         """Single standard amino acid does not raise."""
         _validate_protein("M")
+        # Implicit assertion: no exception raised
 
     def test_empty_protein_raises(self) -> None:
         """Empty protein string raises ESMFoldError."""
@@ -299,6 +302,7 @@ class TestValidateProtein:
         """
         # The implementation uppercases then checks, so lowercase is accepted
         _validate_protein("mag")  # should not raise
+        # Implicit assertion: no exception raised
 
     def test_esmfold_error_is_engine_error(self) -> None:
         """ESMFoldError should be a subclass of EngineError."""
@@ -847,6 +851,7 @@ class TestModuleHelpers:
     def test_clear_cache_no_error(self) -> None:
         """clear_cache() runs without error."""
         clear_cache()  # should not raise
+        # Implicit assertion: no exception raised
 
     def test_get_default_cache_returns_cache(self) -> None:
         """_get_default_cache returns an ESMFoldCache instance."""

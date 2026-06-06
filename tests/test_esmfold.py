@@ -46,6 +46,8 @@ class TestESMFoldClient:
             success=True,
             error=None,
         )
+        assert result.success is True
+        assert result.mean_plddt == 84.33
 
     def test_esmfold_result_defaults(self):
         """ESMFoldResult has defaults for success, error, execution_time_s."""

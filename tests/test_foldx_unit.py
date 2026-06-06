@@ -858,6 +858,7 @@ class TestModuleCache:
         """Calling clear_cache twice doesn't raise."""
         clear_cache()
         clear_cache()
+        # Implicit assertion: no exception raised
 
     def test_empirical_stability_populates_cache(self) -> None:
         """Running empirical_stability stores result in module cache."""

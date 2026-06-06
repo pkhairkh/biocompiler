@@ -537,16 +537,17 @@ def _format_genbank_features(
     return lines
 
 
-def _format_genbank_sequence(seq: str) -> list[str]:
+def _format_genbank_sequence(seq: str, line_width: int = GENBANK_SEQ_LINE, group_size: int = GENBANK_SEQ_GROUP) -> list[str]:
     """Format the ORIGIN section (numbered sequence) and GenBank terminator."""
     lines: list[str] = []
 
+    seq = seq.upper()
     lines.append("ORIGIN")
 
-    for i in range(0, len(seq), 60):
-        chunk = seq[i:i + 60]
-        # Group in blocks of 10
-        groups = [chunk[j:j + 10] for j in range(0, len(chunk), 10)]
+    for i in range(0, len(seq), line_width):
+        chunk = seq[i:i + line_width]
+        # Group in blocks
+        groups = [chunk[j:j + group_size] for j in range(0, len(chunk), group_size)]
         line_num = i + 1
         lines.append(f"{line_num:>9} {' '.join(groups)}")
 

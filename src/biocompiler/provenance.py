@@ -81,8 +81,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -92,6 +94,7 @@ __all__ = [
     "ProvenanceTracker",
     "OptimizationProvenance",
     "OptimizationRecord",
+    "ProvenanceStore",
     "generate_provenance_report",
     # Decision category constants
     "DECISION_CATEGORY_CAI",
@@ -104,6 +107,12 @@ __all__ = [
     "DECISION_CATEGORY_OTHER",
     "ALL_DECISION_CATEGORIES",
 ]
+
+# UUID format regex — enforces standard lowercase hex UUID format to prevent
+# path traversal attacks when IDs are used as file path components.
+_UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -826,3 +835,128 @@ def generate_provenance_report(records: list[OptimizationRecord]) -> str:
     lines.append("=" * 72)
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# ProvenanceStore — file-backed provenance storage with UUID validation
+# ---------------------------------------------------------------------------
+
+class ProvenanceStore:
+    """File-backed store for :class:`ProvenanceTracker` objects.
+
+    Each provenance record is persisted as a JSON file named ``<uuid>.json``
+    under a configurable base directory.  The UUID format is strictly
+    validated before any filesystem access to prevent **path traversal**
+    attacks (e.g. ``"../../../etc/passwd"``).
+
+    Example::
+
+        store = ProvenanceStore(base_dir=Path("/data/provenance"))
+
+        # Save a tracker
+        tracker = ProvenanceTracker(seed=42)
+        record_id = store.save(tracker)
+
+        # Load it back
+        restored = store.load(record_id)
+
+    Security note:
+        The ``load()`` method validates that the *record_id* matches the
+        standard UUID format (lowercase hexadecimal,
+        ``xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx``) before constructing any
+        file path.  This prevents directory traversal attacks where an
+        attacker could supply ``"../../../etc/passwd"`` to read arbitrary
+        files on the system.
+    """
+
+    def __init__(self, base_dir: Path | str | None = None) -> None:
+        if base_dir is None:
+            base_dir = Path(".") / "provenance_store"
+        self._base_dir = Path(base_dir)
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug("ProvenanceStore initialized at %s", self._base_dir)
+
+    @staticmethod
+    def _validate_uuid(record_id: str) -> None:
+        """Validate that *record_id* is a properly formatted UUID.
+
+        Args:
+            record_id: The ID string to validate.
+
+        Raises:
+            ValueError: If *record_id* does not match the standard UUID format
+                (lowercase hexadecimal, ``xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx``).
+        """
+        if not _UUID_PATTERN.match(record_id):
+            raise ValueError(
+                f"Invalid provenance record ID: {record_id!r}. "
+                f"ID must be a valid UUID in lowercase hexadecimal format "
+                f"(e.g. 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'). "
+                f"This check prevents path traversal attacks."
+            )
+
+    def save(self, tracker: ProvenanceTracker) -> str:
+        """Persist a :class:`ProvenanceTracker` to a JSON file.
+
+        Args:
+            tracker: The provenance tracker to persist.
+
+        Returns:
+            The UUID record ID under which the tracker was stored.
+        """
+        import uuid
+        record_id = str(uuid.uuid4())
+        file_path = self._base_dir / f"{record_id}.json"
+        file_path.write_text(tracker.to_json(), encoding="utf-8")
+        logger.debug("Saved provenance tracker: id=%s path=%s", record_id, file_path)
+        return record_id
+
+    def load(self, record_id: str) -> ProvenanceTracker:
+        """Load a :class:`ProvenanceTracker` from a JSON file by its UUID.
+
+        The *record_id* **must** be a valid UUID string in lowercase
+        hexadecimal format.  This validation prevents path traversal attacks
+        where a malicious caller could supply ``"../../../etc/passwd"`` to
+        read arbitrary files.
+
+        Args:
+            record_id: UUID string identifying the provenance record.
+
+        Returns:
+            The deserialized :class:`ProvenanceTracker`.
+
+        Raises:
+            ValueError: If *record_id* is not a valid UUID format.
+            FileNotFoundError: If no provenance file exists for *record_id*.
+        """
+        self._validate_uuid(record_id)
+        file_path = self._base_dir / f"{record_id}.json"
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"Provenance record not found: {record_id} "
+                f"(expected at {file_path})"
+            )
+        json_str = file_path.read_text(encoding="utf-8")
+        tracker = ProvenanceTracker.from_json(json_str)
+        logger.debug("Loaded provenance tracker: id=%s", record_id)
+        return tracker
+
+    def delete(self, record_id: str) -> None:
+        """Delete a persisted provenance record by its UUID.
+
+        Args:
+            record_id: UUID string identifying the provenance record.
+
+        Raises:
+            ValueError: If *record_id* is not a valid UUID format.
+            FileNotFoundError: If no provenance file exists for *record_id*.
+        """
+        self._validate_uuid(record_id)
+        file_path = self._base_dir / f"{record_id}.json"
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"Provenance record not found: {record_id} "
+                f"(expected at {file_path})"
+            )
+        file_path.unlink()
+        logger.debug("Deleted provenance record: id=%s", record_id)

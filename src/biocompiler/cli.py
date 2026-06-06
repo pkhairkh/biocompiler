@@ -6,7 +6,7 @@ Command-line interface for certified gene optimization and protein analysis.
 Commands:
   optimize            Optimize a protein sequence for a target organism
   batch               Batch-optimize proteins from a file
-  check               Read FASTA, evaluate all 8 predicates, print certificate
+  check               Read FASTA, evaluate all registered predicates, print certificate
   benchmark           Run built-in benchmarks (eGFP, mCherry, LacZ) or named gene sets
   scan                Scan a DNA sequence for features
   serve               Start the REST API server
@@ -59,12 +59,9 @@ logger = logging.getLogger(__name__)
 from . import __version__
 from .optimization import BioOptimizer
 from .type_system import (
-    check_no_stop_codons,
-    check_no_cryptic_splice,
-    check_no_cpg_island,
-    check_no_restriction_site,
-    check_no_avoidable_gt,
-    check_valid_coding_seq,
+    evaluate_all_predicates,
+    registry as predicate_registry,
+    PREDICATE_NAMES,
 )
 from .certificate import format_certificate, compute_certificate
 from .scanner import gc_content
@@ -777,7 +774,33 @@ def cmd_batch(args: argparse.Namespace) -> None:
 # ── Command: check ───────────────────────────────────────────────────────────
 
 def cmd_check(args: argparse.Namespace) -> None:
-    """Handle the 'check' command — evaluate all 8 predicates without optimizing."""
+    """Handle the 'check' command — evaluate all registered predicates without optimizing.
+
+    Uses the predicate registry from type_system to ensure all available
+    predicates are checked, not just a hardcoded subset. Supports filtering
+    with --predicate and listing with --list-predicates.
+    """
+    # ── List predicates mode ─────────────────────────────────────────────
+    if getattr(args, "list_predicates", False):
+        print()
+        print(_section_header("Available Predicates"))
+        registered = predicate_registry.names()
+        for name in registered:
+            if name in PREDICATE_NAMES:
+                idx = PREDICATE_NAMES.index(name) + 1
+                print(f"  {idx:>2}. {name}")
+            else:
+                print(f"   * {name} (registered)")
+        print()
+        print(f"  Total: {len(registered)} predicates registered")
+        print()
+        return
+
+    # Input file is required unless --list-predicates is used
+    if not getattr(args, "input", None):
+        print(_error_msg("Error: Input FASTA file is required. Use --list-predicates to see available predicates."), file=sys.stderr)
+        sys.exit(1)
+
     seq = _read_fasta(args.input)
 
     if len(seq) < 3:
@@ -788,43 +811,46 @@ def cmd_check(args: argparse.Namespace) -> None:
     if args.enzymes:
         enzymes = [e.strip() for e in args.enzymes.split(",") if e.strip()]
 
-    # Evaluate all 8 predicates
+    # Resolve organism
+    from .organisms import resolve_organism as _resolve_org
+    organism = _resolve_org(getattr(args, "species", "human"))
+
+    # ── Evaluate all DNA-level predicates via the registry ───────────────
+    type_results = evaluate_all_predicates(
+        seq=seq,
+        organism=organism,
+        enzymes=enzymes if enzymes else None,
+        cryptic_threshold=getattr(args, "splice_low", 3.0),
+        uncertain_lo=getattr(args, "splice_low", 3.0),
+    )
+
+    # ── Filter by --predicate if specified ───────────────────────────────
+    predicate_filter = getattr(args, "predicate", None)
+    if predicate_filter:
+        predicate_names = [p.strip() for p in predicate_filter.split(",") if p.strip()]
+        registered = set(predicate_registry.names())
+        unknown = [p for p in predicate_names if p not in registered]
+        if unknown:
+            print(_error_msg(f"Error: Unknown predicates: {', '.join(unknown)}"), file=sys.stderr)
+            print(_dim(f"  Use --list-predicates to see available predicates."), file=sys.stderr)
+            sys.exit(1)
+        # Use prefix matching: predicate names may be parameterized,
+        # e.g., "GCInRange(0.3, 0.7)" should match filter "GCInRange"
+        type_results = [
+            r for r in type_results
+            if any(r.predicate == p or r.predicate.startswith(p + "(") for p in predicate_names)
+        ]
+
+    # ── Convert TypeCheckResult → PredicateResult for certificate ────────
     from .type_system import PredicateResult
     results: List[PredicateResult] = []
-    results.append(check_no_stop_codons(seq))
-    results.append(check_no_cryptic_splice(seq, args.splice_low, args.splice_high))
-    results.append(check_no_cpg_island(seq))
-    results.append(check_no_restriction_site(seq, enzymes))
-    results.append(check_no_avoidable_gt(seq))
-    results.append(check_valid_coding_seq(seq))
-
-    # ConservationScore — no optimization was performed, so all AA are self-conserved
-    results.append(PredicateResult(
-        "ConservationScore", True,
-        details="No substitutions (check-only mode); identity conservation by default"
-    ))
-
-    # CodonOptimality
-    from .organisms import CODON_ADAPTIVENESS_TABLES, resolve_organism
-    _canonical = resolve_organism(args.species)
-    species_cai = dict(CODON_ADAPTIVENESS_TABLES.get(
-        _canonical, CODON_ADAPTIVENESS_TABLES["Escherichia_coli"]
-    ))
-    import math
-    log_sum = 0.0
-    count = 0
-    for i in range(0, len(seq) - 2, 3):
-        codon = seq[i:i+3]
-        cai = species_cai.get(codon, 0.0)
-        if cai <= 0:
-            cai = 0.001
-        log_sum += math.log(cai)
-        count += 1
-    overall_cai = math.exp(log_sum / count) if count > 0 else 0.0
-    results.append(PredicateResult(
-        "CodonOptimality", True,
-        details=f"Overall CAI = {overall_cai:.4f} for species '{args.species}'"
-    ))
+    for r in type_results:
+        results.append(PredicateResult(
+            predicate=r.predicate,
+            passed=r.passed,
+            verdict=r.verdict,
+            details=r.violation or "",
+        ))
 
     cert_text = format_certificate(results, seq, args.species)
     cert_level = compute_certificate(results)
@@ -1871,16 +1897,18 @@ def build_parser() -> argparse.ArgumentParser:
     # ── check ──
     check_parser = subparsers.add_parser(
         "check",
-        help="Check a FASTA gene sequence against all 8 predicates",
+        help="Check a FASTA gene sequence against all registered predicates",
     )
     check_parser.add_argument(
         "input",
-        help="Input FASTA file path",
+        nargs="?",
+        default=None,
+        help="Input FASTA file path (not needed with --list-predicates)",
     )
     check_parser.add_argument(
         "--species", default="human",
-        choices=["human", "ecoli"],
-        help="Target species for codon evaluation (default: human)",
+        help="Target species for codon evaluation (default: human). "
+             "Accepts any organism supported by resolve_organism (e.g., ecoli, human, CHO_K1)",
     )
     check_parser.add_argument(
         "--enzymes", default="",
@@ -1893,6 +1921,15 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument(
         "--splice-high", type=float, default=6.0,
         help="High splice score threshold (default: 6.0)",
+    )
+    check_parser.add_argument(
+        "--predicate", default=None, metavar="NAMES",
+        help="Comma-separated predicate names to check (default: all). "
+             "Use --list-predicates to see available names",
+    )
+    check_parser.add_argument(
+        "--list-predicates", action="store_true", default=False,
+        help="List all available predicate names and exit",
     )
 
     # ── benchmark ──

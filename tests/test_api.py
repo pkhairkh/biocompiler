@@ -25,6 +25,8 @@ from biocompiler.api import (
     _check_batch_rate_limit,
     _rate_limiter,
     RATE_LIMIT_RPM,
+    MAX_DNA_SEQUENCE_LENGTH,
+    MAX_PROTEIN_SEQUENCE_LENGTH,
     BATCH_CHECK_MAX,
     BATCH_OPTIMIZE_MAX,
     BATCH_EXPORT_MAX,
@@ -896,6 +898,8 @@ class TestRateLimiting:
         _rate_limiter.clear()
         # Should not raise
         _check_rate_limit("test_client")
+        # Verify the request was recorded
+        assert "test_client" in _rate_limit_store
 
     def test_check_rate_limit_raises_at_limit(self):
         """_check_rate_limit should raise HTTPException when limit is exceeded."""
@@ -924,6 +928,8 @@ class TestRateLimiting:
         _rate_limiter.clear()
         # No previous requests, so all should be available
         _check_batch_rate_limit("test_batch_client_ok", 5)
+        # Verify the batch client was recorded
+        assert "test_batch_client_ok" in _rate_limit_store
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1000,23 +1006,115 @@ class TestOpenAPISchema:
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestCORSMiddleware:
-    """Test that CORS middleware is configured."""
+    """Test CORS middleware security configuration."""
 
-    def test_cors_preflight_allowed(self, client):
-        resp = client.options(
-            "/health",
-            headers={
-                "Origin": "http://localhost:3000",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
-        # CORS preflight should return 200
-        assert resp.status_code == 200
+    def test_default_cors_is_restrictive(self, client):
+        """By default (no env vars), CORS should NOT allow any origins."""
+        resp = client.get("/health")
+        data = resp.json()
+        # Default should have empty CORS origins (no CORS by default)
+        assert data["cors_origins"] == []
+        assert data["cors_allow_credentials"] is False
 
-    def test_cors_origin_header_present(self, client):
+    def test_default_cors_no_origin_header(self, client):
+        """With no CORS origins configured, responses should not have
+        Access-Control-Allow-Origin headers."""
         resp = client.get("/health", headers={"Origin": "http://localhost:3000"})
-        # Default CORS config allows all origins
-        assert "access-control-allow-origin" in resp.headers
+        # No CORS middleware added when origins is empty
+        assert "access-control-allow-origin" not in resp.headers
+
+    def test_cors_with_explicit_origins(self):
+        """When BIOCOMPILER_CORS_ORIGINS is set, CORS should allow those origins."""
+        with patch.dict(os.environ, {
+            "BIOCOMPILER_CORS_ORIGINS": "http://localhost:3000,https://example.com",
+        }):
+            test_app = create_app()
+            test_client = TestClient(test_app)
+            resp = test_client.get("/health")
+            data = resp.json()
+            assert "http://localhost:3000" in data["cors_origins"]
+            assert "https://example.com" in data["cors_origins"]
+            assert data["cors_allow_credentials"] is False
+
+    def test_cors_with_credentials_enabled(self):
+        """When both BIOCOMPILER_CORS_ORIGINS and BIOCOMPILER_CORS_ALLOW_CREDENTIALS
+        are set, credentials should be enabled for specific origins."""
+        with patch.dict(os.environ, {
+            "BIOCOMPILER_CORS_ORIGINS": "https://trusted.example.com",
+            "BIOCOMPILER_CORS_ALLOW_CREDENTIALS": "true",
+        }):
+            test_app = create_app()
+            test_client = TestClient(test_app)
+            resp = test_client.get("/health")
+            data = resp.json()
+            assert data["cors_origins"] == ["https://trusted.example.com"]
+            assert data["cors_allow_credentials"] is True
+
+    def test_wildcard_with_credentials_forced_to_false(self):
+        """When origins is '*' and credentials is True, credentials must be
+        forced to False (CORS spec forbids this combination)."""
+        with patch.dict(os.environ, {
+            "BIOCOMPILER_CORS_ORIGINS": "*",
+            "BIOCOMPILER_CORS_ALLOW_CREDENTIALS": "true",
+        }):
+            test_app = create_app()
+            test_client = TestClient(test_app)
+            resp = test_client.get("/health")
+            data = resp.json()
+            # Wildcard with credentials is forbidden; must be forced to False
+            assert data["cors_origins"] == ["*"]
+            assert data["cors_allow_credentials"] is False
+
+    def test_wildcard_without_credentials_is_allowed(self):
+        """When origins is '*' and credentials is False, that's valid."""
+        with patch.dict(os.environ, {
+            "BIOCOMPILER_CORS_ORIGINS": "*",
+            "BIOCOMPILER_CORS_ALLOW_CREDENTIALS": "false",
+        }):
+            test_app = create_app()
+            test_client = TestClient(test_app)
+            resp = test_client.get("/health")
+            data = resp.json()
+            assert data["cors_origins"] == ["*"]
+            assert data["cors_allow_credentials"] is False
+
+    def test_cors_preflight_with_configured_origins(self):
+        """When CORS origins are configured, preflight requests should succeed."""
+        with patch.dict(os.environ, {
+            "BIOCOMPILER_CORS_ORIGINS": "http://localhost:3000",
+        }):
+            test_app = create_app()
+            test_client = TestClient(test_app)
+            resp = test_client.options(
+                "/health",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            assert resp.status_code == 200
+
+    def test_cors_credentials_truthy_values(self):
+        """BIOCOMPILER_CORS_ALLOW_CREDENTIALS accepts 'true', '1', 'yes'."""
+        for truthy in ("true", "1", "yes"):
+            with patch.dict(os.environ, {
+                "BIOCOMPILER_CORS_ORIGINS": "https://example.com",
+                "BIOCOMPILER_CORS_ALLOW_CREDENTIALS": truthy,
+            }):
+                test_app = create_app()
+                test_client = TestClient(test_app)
+                resp = test_client.get("/health")
+                data = resp.json()
+                assert data["cors_allow_credentials"] is True
+
+    def test_health_reports_cors_config(self, client):
+        """Health endpoint should report CORS configuration."""
+        resp = client.get("/health")
+        data = resp.json()
+        assert "cors_origins" in data
+        assert "cors_allow_credentials" in data
+        assert isinstance(data["cors_origins"], list)
+        assert isinstance(data["cors_allow_credentials"], bool)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1092,3 +1190,81 @@ class TestMethodNotAllowed:
     def test_post_organisms_not_allowed(self, client):
         resp = client.post("/organisms")
         assert resp.status_code == 405
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 12. Input Size Limits (DoS Prevention)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestInputSizeLimits:
+    """Test that input size limits are enforced to prevent DoS."""
+
+    def test_dna_sequence_too_long_rejected(self):
+        """DNA sequences exceeding MAX_DNA_SEQUENCE_LENGTH should be rejected."""
+        with pytest.raises(ValueError, match="DNA sequence too long"):
+            SequenceInput(sequence="A" * (MAX_DNA_SEQUENCE_LENGTH + 1))
+
+    def test_dna_sequence_at_limit_accepted(self):
+        """DNA sequences at exactly MAX_DNA_SEQUENCE_LENGTH should be accepted."""
+        m = SequenceInput(sequence="A" * MAX_DNA_SEQUENCE_LENGTH)
+        assert len(m.sequence) == MAX_DNA_SEQUENCE_LENGTH
+
+    def test_protein_sequence_too_long_rejected(self):
+        """Protein sequences exceeding MAX_PROTEIN_SEQUENCE_LENGTH should be rejected."""
+        with pytest.raises(ValueError, match="Protein sequence too long"):
+            ProteinInput(protein="A" * (MAX_PROTEIN_SEQUENCE_LENGTH + 1))
+
+    def test_protein_sequence_at_limit_accepted(self):
+        """Protein sequences at exactly MAX_PROTEIN_SEQUENCE_LENGTH should be accepted."""
+        m = ProteinInput(protein="A" * MAX_PROTEIN_SEQUENCE_LENGTH)
+        assert len(m.protein) == MAX_PROTEIN_SEQUENCE_LENGTH
+
+    def test_scan_sequence_too_long_rejected(self):
+        """Scan sequences exceeding MAX_DNA_SEQUENCE_LENGTH should be rejected."""
+        with pytest.raises(ValueError, match="DNA sequence too long"):
+            ScanInput(sequence="A" * (MAX_DNA_SEQUENCE_LENGTH + 1))
+
+    def test_export_fasta_sequence_too_long_rejected(self):
+        """FASTA export sequences exceeding MAX_DNA_SEQUENCE_LENGTH should be rejected."""
+        with pytest.raises(ValueError, match="DNA sequence too long"):
+            ExportFastaInput(sequence="A" * (MAX_DNA_SEQUENCE_LENGTH + 1))
+
+    def test_export_genbank_sequence_too_long_rejected(self):
+        """GenBank export sequences exceeding MAX_DNA_SEQUENCE_LENGTH should be rejected."""
+        with pytest.raises(ValueError, match="DNA sequence too long"):
+            ExportGenbankInput(sequence="A" * (MAX_DNA_SEQUENCE_LENGTH + 1))
+
+    def test_batch_check_item_sequence_too_long_rejected(self):
+        """BatchCheckItem DNA sequences exceeding limit should be rejected."""
+        with pytest.raises(ValueError, match="DNA sequence too long"):
+            BatchCheckItem(sequence="A" * (MAX_DNA_SEQUENCE_LENGTH + 1))
+
+    def test_batch_optimize_item_protein_too_long_rejected(self):
+        """BatchOptimizeItem protein sequences exceeding limit should be rejected."""
+        with pytest.raises(ValueError, match="Protein sequence too long"):
+            BatchOptimizeItem(protein="A" * (MAX_PROTEIN_SEQUENCE_LENGTH + 1))
+
+    def test_batch_export_item_sequence_too_long_rejected(self):
+        """BatchExportItem DNA sequences exceeding limit should be rejected."""
+        with pytest.raises(ValueError, match="DNA sequence too long"):
+            BatchExportItem(sequence="A" * (MAX_DNA_SEQUENCE_LENGTH + 1))
+
+    def test_check_endpoint_rejects_oversized_dna(self, client):
+        """POST /check should reject DNA sequences that exceed the limit."""
+        resp = client.post("/check", json={"sequence": "A" * (MAX_DNA_SEQUENCE_LENGTH + 1)})
+        assert resp.status_code == 422
+
+    def test_optimize_endpoint_rejects_oversized_protein(self, client):
+        """POST /optimize should reject protein sequences that exceed the limit."""
+        resp = client.post("/optimize", json={"protein": "A" * (MAX_PROTEIN_SEQUENCE_LENGTH + 1)})
+        assert resp.status_code == 422
+
+    def test_scan_endpoint_rejects_oversized_dna(self, client):
+        """POST /scan should reject DNA sequences that exceed the limit."""
+        resp = client.post("/scan", json={"sequence": "A" * (MAX_DNA_SEQUENCE_LENGTH + 1)})
+        assert resp.status_code == 422
+
+    def test_size_limits_constants_reasonable(self):
+        """Verify size limit constants have reasonable values."""
+        assert MAX_DNA_SEQUENCE_LENGTH == 100_000  # 100kb
+        assert MAX_PROTEIN_SEQUENCE_LENGTH == 10_000  # ~3333 aa

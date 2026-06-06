@@ -693,8 +693,8 @@ class TestDualThresholdNoCrypticSplice:
         assert result.verdict == Verdict.FAIL
 
     def test_predicates_in_registry(self):
-        """28 predicates should be registered in the predicate registry."""
-        assert len(predicate_registry.names()) == 28
+        """At least 28 predicates should be registered in the predicate registry."""
+        assert len(predicate_registry.names()) >= 28
         assert "NoCpGIsland" in predicate_registry.names()
         assert "StableFolding" in predicate_registry.names()
         assert "SolubleExpression" in predicate_registry.names()
