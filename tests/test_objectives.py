@@ -212,9 +212,9 @@ class TestObjectiveRegistry:
         for name, func in OBJECTIVE_REGISTRY.items():
             assert callable(func), f"Registry entry '{name}' is not callable"
 
-    def test_registry_has_four_entries(self):
-        """Registry should have exactly 4 entries."""
-        assert len(OBJECTIVE_REGISTRY) == 4
+    def test_registry_has_five_entries(self):
+        """Registry should have exactly 5 entries (cai, cai_gc_balanced, codon_pair, min_max_gc, tai)."""
+        assert len(OBJECTIVE_REGISTRY) == 5
 
 
 # ════════════════════════════════════════════════════════════════════════════

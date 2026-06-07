@@ -167,7 +167,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════
 
 from .optimizer import BioOptimizer, optimize_sequence, batch_optimize, OptimizationResult, FullConstructResult
-from .objectives import (
+from .optimizer.objectives import (
     ObjectiveFunction,
     cai_objective,
     cai_gc_balanced_objective,
@@ -183,7 +183,7 @@ from .hybrid_optimizer import HybridOptimizer
 # ═══════════════════════════════════════════════════════════════════════
 
 try:
-    from .large_sequence import (
+    from .optimizer.large_sequence import (
         optimize_large_sequence,
         ProteinTooLongError,
         MAX_PROTEIN_LENGTH_DEFAULT,
@@ -198,14 +198,14 @@ except ImportError:
 # Incremental sequence state (O(1) constraint tracking for optimization)
 # ═══════════════════════════════════════════════════════════════════════
 
-from .incremental import IncrementalSequenceState, CodonCache, EnzymeSiteCache
+from .optimizer.incremental import IncrementalSequenceState, CodonCache, EnzymeSiteCache
 
 # ═══════════════════════════════════════════════════════════════════════
 # Grammar, Export, Report
 # ═══════════════════════════════════════════════════════════════════════
 
 try:
-    from .grammar_loader import load_grammar, grammar_to_predicate_params, load_builtin_grammar, list_builtin_grammars
+    from .optimizer.grammar_loader import load_grammar, grammar_to_predicate_params, load_builtin_grammar, list_builtin_grammars
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
     load_grammar = None
@@ -874,7 +874,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════
 
 try:
-    from .multigene import (
+    from .optimizer.multigene import (
         GeneSpec, MultiGeneResult, OperonConfig,
         optimize_multigene, optimize_operon,
     )
@@ -997,7 +997,7 @@ except ImportError:
 # What-If Analysis (original)
 
 try:
-    from .whatif_analysis import WhatIfAnalyzer, WhatIfScenario
+    from .optimizer.whatif_analysis import WhatIfAnalyzer, WhatIfScenario
 except ImportError:
     _logger.debug("Could not import optional module, using None fallbacks")
     WhatIfAnalyzer = None

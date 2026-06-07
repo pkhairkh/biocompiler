@@ -162,7 +162,7 @@ class TestProvenanceStorePersistence:
         """Loading a non-existent record should raise FileNotFoundError."""
         store = ProvenanceStore(store_dir=str(tmp_prov_dir))
         with pytest.raises(FileNotFoundError):
-            store.load("nonexistent-uuid-00000000")
+            store.load("00000000-0000-0000-0000-000000000000")
 
     def test_query_by_organism(self, tmp_prov_dir, sample_trail):
         """Query should filter by organism."""
@@ -223,7 +223,7 @@ class TestGetProvenanceEndpoint:
 
     def test_404_for_nonexistent_record(self, client_with_store):
         """Should return 404 for a non-existent record ID."""
-        resp = client_with_store.get("/provenance/nonexistent-uuid-00000000")
+        resp = client_with_store.get("/provenance/00000000-0000-0000-0000-000000000000")
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 

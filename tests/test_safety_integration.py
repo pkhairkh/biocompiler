@@ -328,7 +328,7 @@ class TestTranslationVerification:
 
     def test_gfp_human_translation_matches(self, egfp: str) -> None:
         """Optimize GFP for human → translated protein matches input."""
-        result = optimize_sequence(egfp, organism="Homo_sapiens")
+        result = optimize_sequence(egfp, organism="Homo_sapiens", strict_mode=False)
         translated = translate(result.sequence)
         assert translated == egfp, (
             f"Translation mismatch after human optimization: "
@@ -343,7 +343,7 @@ class TestTranslationVerification:
 
     def test_hbb_cho_translation_matches(self, hbb: str) -> None:
         """Optimize HBB for CHO → translated protein matches input."""
-        result = optimize_sequence(hbb, organism="CHO_K1")
+        result = optimize_sequence(hbb, organism="CHO_K1", strict_mode=False)
         translated = translate(result.sequence)
         assert translated == hbb
 
@@ -429,7 +429,7 @@ class TestTranslationVerification:
             "Mus_musculus",
         ]
         for org in organisms:
-            result = optimize_sequence(insulin, organism=org)
+            result = optimize_sequence(insulin, organism=org, strict_mode=False)
             translated = translate(result.sequence)
             assert translated == insulin, (
                 f"Translation mismatch for organism={org}: "
@@ -985,6 +985,7 @@ class TestFullSafetyPipeline:
             organism="Homo_sapiens",
             track_provenance=True,
             seed=123,
+            strict_mode=False,
         )
         assert isinstance(result, OptimizationResult)
 

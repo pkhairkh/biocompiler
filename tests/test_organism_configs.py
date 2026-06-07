@@ -1,10 +1,10 @@
 """Tests for organism configuration data in biocompiler.organisms.
 
 Covers:
-1. SPECIES dict has expected organisms (human, ecoli, yeast, mouse, CHO)
+1. SPECIES dict has expected organisms (original 5 + new organisms)
 2. CODON_ADAPTIVENESS_TABLES has entries for each organism
 3. ORGANISM_GC_TARGETS has organism-specific values
-4. SUPPORTED_ORGANISMS list matches SPECIES keys (via canonical names)
+4. SUPPORTED_ORGANISMS list matches CODON_USAGE_TABLES keys
 5. Each organism module exports a codon usage table
 6. Codon tables are valid (all 64 codons represented, only standard amino acids)
 7. GC targets are in valid range [0.1, 0.9]
@@ -40,6 +40,9 @@ from biocompiler.organisms import (
     MOUSE_CODON_ADAPTIVENESS,
     CHO_CODON_ADAPTIVENESS,
     YEAST_CODON_ADAPTIVENESS,
+    # Per-organism name resolution
+    SPECIES_SHORT_NAMES,
+    ORGANISM_ALIASES,
 )
 from biocompiler.type_system import CODON_TABLE
 
@@ -47,16 +50,11 @@ from biocompiler.type_system import CODON_TABLE
 # Constants
 # ---------------------------------------------------------------------------
 
-EXPECTED_SPECIES_KEYS = {"ecoli", "human", "mouse", "cho", "yeast"}
+# SPECIES keys are the short names from SPECIES_SHORT_NAMES
+EXPECTED_SPECIES_KEYS = set(SPECIES_SHORT_NAMES.values())
 
 # Canonical scientific name -> SPECIES short name mapping
-CANONICAL_TO_SHORT = {
-    HUMAN: "human",
-    E_COLI: "ecoli",
-    MOUSE: "mouse",
-    CHO: "cho",
-    YEAST: "yeast",
-}
+CANONICAL_TO_SHORT = dict(SPECIES_SHORT_NAMES)
 
 # All 20 standard amino acid single-letter codes + stop codon
 STANDARD_AA = set("ACDEFGHIKLMNPQRSTVWY*")
@@ -82,6 +80,9 @@ ORGANISM_ADAPTIVENESS = {
 # All 64 codons from the standard genetic code
 ALL_STANDARD_CODONS = set(CODON_TABLE.keys())
 
+# Canonical organism names (without aliases) — the primary entries
+CANONICAL_ORGANISM_NAMES = set(ORGANISM_GC_TARGETS.keys())
+
 
 # ===========================================================================
 # 1. SPECIES dict has expected organisms
@@ -92,7 +93,7 @@ class TestSpeciesRegistry:
     """Tests for the SPECIES registry dict."""
 
     def test_species_has_expected_keys(self):
-        """SPECIES must contain exactly the five expected organisms."""
+        """SPECIES must contain all organisms from SPECIES_SHORT_NAMES."""
         assert EXPECTED_SPECIES_KEYS == set(SPECIES.keys())
 
     @pytest.mark.parametrize("name", sorted(EXPECTED_SPECIES_KEYS))
@@ -135,9 +136,12 @@ class TestCodonAdaptivenessTables:
             f"Organism {organism!r} missing from CODON_ADAPTIVENESS_TABLES"
         )
 
-    def test_adaptiveness_tables_count(self):
-        """Number of adaptiveness tables must equal number of supported organisms."""
-        assert len(CODON_ADAPTIVENESS_TABLES) == len(SUPPORTED_ORGANISMS)
+    def test_adaptiveness_tables_includes_all_supported(self):
+        """CODON_ADAPTIVENESS_TABLES must include all SUPPORTED_ORGANISMS keys."""
+        for org in SUPPORTED_ORGANISMS:
+            assert org in CODON_ADAPTIVENESS_TABLES, (
+                f"SUPPORTED_ORGANISMS entry {org!r} missing from CODON_ADAPTIVENESS_TABLES"
+            )
 
     @pytest.mark.parametrize("organism", sorted(CANONICAL_TO_SHORT.keys()))
     def test_adaptiveness_table_non_empty(self, organism: str):
@@ -161,9 +165,9 @@ class TestOrganismGCTargets:
             f"Organism {organism!r} missing from ORGANISM_GC_TARGETS"
         )
 
-    def test_gc_targets_count(self):
-        """Number of GC targets must equal number of supported organisms."""
-        assert len(ORGANISM_GC_TARGETS) == len(SUPPORTED_ORGANISMS)
+    def test_gc_targets_count_matches_canonical(self):
+        """Number of GC targets must equal number of canonical organisms."""
+        assert len(ORGANISM_GC_TARGETS) == len(CANONICAL_TO_SHORT)
 
     @pytest.mark.parametrize("organism", sorted(CANONICAL_TO_SHORT.keys()))
     def test_gc_targets_are_tuples(self, organism: str):
@@ -195,21 +199,31 @@ class TestOrganismGCTargets:
 class TestSupportedOrganisms:
     """Tests for SUPPORTED_ORGANISMS consistency with SPECIES and other registries."""
 
-    def test_supported_organisms_matches_codon_usage_keys(self):
-        """SUPPORTED_ORGANISMS must equal CODON_USAGE_TABLES keys."""
-        assert set(SUPPORTED_ORGANISMS) == set(CODON_USAGE_TABLES.keys())
+    def test_supported_organisms_subset_of_codon_usage_keys(self):
+        """Every SUPPORTED_ORGANISMS entry must exist in CODON_USAGE_TABLES.
 
-    def test_supported_organisms_maps_to_species_keys(self):
-        """Every SUPPORTED_ORGANISMS entry must map to a SPECIES short key."""
-        for canonical in SUPPORTED_ORGANISMS:
-            assert canonical in CANONICAL_TO_SHORT, (
-                f"Supported organism {canonical!r} has no mapping to SPECIES key"
+        CODON_USAGE_TABLES may contain additional alias keys from
+        ORGANISM_ALIASES, so we only check that SUPPORTED_ORGANISMS
+        entries are present, not that the sets are equal.
+        """
+        for org in SUPPORTED_ORGANISMS:
+            assert org in CODON_USAGE_TABLES, (
+                f"SUPPORTED_ORGANISMS entry {org!r} not in CODON_USAGE_TABLES"
             )
 
-    def test_species_keys_cover_all_supported(self):
-        """Every SPECIES key must be reachable from a SUPPORTED_ORGANISMS entry."""
-        mapped_short_names = {CANONICAL_TO_SHORT[org] for org in SUPPORTED_ORGANISMS}
-        assert mapped_short_names == EXPECTED_SPECIES_KEYS
+    def test_all_canonical_organisms_in_supported(self):
+        """All canonical organism names must be in SUPPORTED_ORGANISMS."""
+        for canonical in CANONICAL_TO_SHORT:
+            assert canonical in SUPPORTED_ORGANISMS, (
+                f"Canonical organism {canonical!r} missing from SUPPORTED_ORGANISMS"
+            )
+
+    def test_species_keys_cover_all_canonical(self):
+        """Every canonical organism must map to a SPECIES short key."""
+        for canonical, short in CANONICAL_TO_SHORT.items():
+            assert short in SPECIES, (
+                f"Canonical {canonical!r} maps to short key {short!r} not in SPECIES"
+            )
 
 
 # ===========================================================================
@@ -234,10 +248,14 @@ class TestOrganismModuleExports:
         assert isinstance(table, dict), f"Adaptiveness for {organism!r} is not a dict"
         assert len(table) > 0, f"Adaptiveness for {organism!r} is empty"
 
-    def test_codon_usage_tables_registry_matches_modules(self):
-        """CODON_USAGE_TABLES registry values must match the module-level exports."""
-        for organism, table in CODON_USAGE_TABLES.items():
-            assert table is ORGANISM_CODON_TABLES[organism], (
+    def test_codon_usage_tables_registry_includes_module_exports(self):
+        """CODON_USAGE_TABLES registry must include each module-level export."""
+        for organism, table in ORGANISM_CODON_TABLES.items():
+            assert organism in CODON_USAGE_TABLES, (
+                f"CODON_USAGE_TABLES missing {organism!r}"
+            )
+            # The values should be the same object
+            assert CODON_USAGE_TABLES[organism] is table, (
                 f"CODON_USAGE_TABLES[{organism!r}] is not the same object as "
                 f"the module-level export"
             )
@@ -353,7 +371,7 @@ class TestAdaptivenessRange:
                 f"outside [0, 1]"
             )
 
-    @pytest.mark.parametrize("organism", sorted(CODON_ADAPTIVENESS_TABLES.keys()))
+    @pytest.mark.parametrize("organism", sorted(CANONICAL_ORGANISM_NAMES))
     def test_at_least_one_adaptiveness_is_one(self, organism: str):
         """For each amino acid group, at least one codon should have adaptiveness 1.0."""
         table = CODON_ADAPTIVENESS_TABLES[organism]
@@ -370,7 +388,7 @@ class TestAdaptivenessRange:
                 f"(max={max(vals)})"
             )
 
-    @pytest.mark.parametrize("organism", sorted(CODON_ADAPTIVENESS_TABLES.keys()))
+    @pytest.mark.parametrize("organism", sorted(CANONICAL_ORGANISM_NAMES))
     def test_adaptiveness_excludes_stop_codons(self, organism: str):
         """Adaptiveness tables should not contain stop codons."""
         table = CODON_ADAPTIVENESS_TABLES[organism]

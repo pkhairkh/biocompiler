@@ -33,9 +33,9 @@ TOP_CAI_ALTERNATIVES: int = 3
 T_RUN_LENGTH_THRESHOLD: int = 6
 SPLICE_DONOR_POTENTIAL_THRESHOLD: float = 0.5
 _MAX_ACCEPTOR_SEARCH_DIST: int = 200
-EUKARYOTE_CAI_GT_COST_THRESHOLD: float = 0.02
-GT_BOUNDARY_CAI_TOLERANCE: float = 0.03
-GT_CAI_LOG_ADAPTIVENESS_COST: float = 0.03
+EUKARYOTE_CAI_GT_COST_THRESHOLD: float = 0.10
+GT_BOUNDARY_CAI_TOLERANCE: float = 0.10
+GT_CAI_LOG_ADAPTIVENESS_COST: float = 0.10
 from ..scanner import gc_content
 from ..sliding_gc import check_sliding_gc, fix_sliding_gc_violations
 from ..maxentscan import score_donor, score_acceptor, max_donor_score, max_acceptor_score
@@ -704,47 +704,40 @@ def _eliminate_cpg_dinucleotides(
         # No CpG island and no individual CGs — nothing to do
         return sequence, []
 
-    # ── Adaptive CAI cost threshold ──
-    # When the sequence FAILS the CpG island check, we need to eliminate CGs
-    # more aggressively (higher max_cai_cost) to break the CpG island.
-    # When it PASSES, CpG avoidance is a soft preference and we use the
-    # user-specified (or default low) max_cai_cost to protect CAI.
-    # For short sequences (< cpg_window), the island check trivially passes,
-    # but a high CG density is still biologically relevant.  In this case,
-    # use a more permissive threshold proportional to the CG density.
-    effective_max_cai_cost = max_cai_cost
-    if not cpg_result.passed:
-        # CpG island detected — allow more CAI sacrifice to fix it.
-        # Use 0.20 as the adaptive ceiling (enough to swap CGT→AGA, etc.)
-        # but still protect against the worst swaps.
-        effective_max_cai_cost = max(max_cai_cost, 0.20)
-        logger.debug(
-            "CpG island detected (Obs/Exp > %.2f): using adaptive "
-            "max_cai_cost=%.4f (up from %.4f) to break the island",
-            cpg_threshold, effective_max_cai_cost, max_cai_cost,
-        )
-    elif cpg_result.passed and total_cg > 0 and len(sequence) < cpg_window:
-        # Short sequence: CpG island check doesn't apply but CGs are present.
-        # Use a density-adaptive threshold: if >30% of dinucleotides are CG,
-        # treat it as aggressively as a CpG island.
-        cg_density = total_cg / max(len(sequence) - 1, 1)
-        if cg_density > 0.30:
-            effective_max_cai_cost = max(max_cai_cost, 0.20)
-            logger.debug(
-                "Short sequence (%d bp < window %d) with high CG density "
-                "(%.1f%%): using adaptive max_cai_cost=%.4f",
-                len(sequence), cpg_window, cg_density * 100,
-                effective_max_cai_cost,
-            )
-
+    # ── CAI-prioritizing CpG handling ──
+    # When the sequence PASSES the CpG island check, individual CG
+    # dinucleotides in the CDS are biologically normal and common in
+    # high-expression genes.  Eliminating them causes significant CAI
+    # loss (often 0.10–0.40 total) for no biological benefit — CG
+    # dinucleotides are only problematic when they cluster into CpG
+    # islands.  Therefore, when the sequence passes the island check,
+    # we SKIP individual CG elimination entirely to protect CAI.
+    #
+    # Exception: for very short sequences (< cpg_window), the CpG
+    # island check trivially passes even with high CG density.  In
+    # that case, we still attempt elimination if CG density is very
+    # high (>30% of dinucleotides are CG).
     if cpg_result.passed and total_cg > 0:
-        # Sequence passes island check but has individual CGs — still attempt
-        # elimination as a best-effort pass (soft preference)
-        logger.debug(
-            "Sequence passes CpG island check but has %d CG dinucleotides — "
-            "attempting elimination as soft preference (max_cai_cost=%.4f)",
-            total_cg, effective_max_cai_cost,
-        )
+        if len(sequence) >= cpg_window:
+            # Sequence is long enough for the island check to be meaningful.
+            # It passed, so individual CGs are fine — don't sacrifice CAI.
+            logger.debug(
+                "Sequence passes CpG island check with %d CG dinucleotides — "
+                "skipping elimination to preserve CAI (individual CGs are "
+                "biologically normal in CDS)",
+                total_cg,
+            )
+            return sequence, []
+        else:
+            # Short sequence — check CG density
+            cg_density = total_cg / max(len(sequence) - 1, 1)
+            if cg_density <= 0.30:
+                logger.debug(
+                    "Short sequence (%d bp) with low CG density (%.1f%%) and "
+                    "%d CG dinucleotides — skipping elimination to preserve CAI",
+                    len(sequence), cg_density * 100, total_cg,
+                )
+                return sequence, []
 
     warnings: list[str] = []
     seq = sequence
@@ -754,6 +747,19 @@ def _eliminate_cpg_dinucleotides(
     # Track the initial GC content to allow swaps that move GC toward the
     # target range even if the current GC is outside the range.
     initial_gc = (seq.count("G") + seq.count("C")) / max(len(seq), 1)
+
+    # ── Adaptive CAI cost threshold ──
+    # Only reached when CpG island is actually detected or short sequence
+    # with very high CG density.  Use more aggressive threshold to break
+    # the island, while still protecting CAI.
+    effective_max_cai_cost = max_cai_cost
+    if not cpg_result.passed:
+        effective_max_cai_cost = max(max_cai_cost, 0.20)
+        logger.debug(
+            "CpG island detected (Obs/Exp > %.2f): using adaptive "
+            "max_cai_cost=%.4f (up from %.4f) to break the island",
+            cpg_threshold, effective_max_cai_cost, max_cai_cost,
+        )
 
     # PERF (Fix B): Track GC count incrementally instead of recounting the
     # entire sequence on every candidate swap.  This avoids O(n) GC counting

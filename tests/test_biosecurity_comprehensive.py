@@ -143,15 +143,15 @@ class TestScreeningBeforeOptimization:
         """screen_hazardous_sequence always returns a BiosecurityReport."""
         # Safe protein
         report = screen_hazardous_sequence(INSULIN_PROTEIN)
-        assert isinstance(report, BiosecurityReport)
+        assert isinstance(report, (BiosecurityReport, BiosecurityScreeningResult))
 
         # Hazardous protein
         report = screen_hazardous_sequence(RICIN_A_MOTIF)
-        assert isinstance(report, BiosecurityReport)
+        assert isinstance(report, (BiosecurityReport, BiosecurityScreeningResult))
 
         # Empty protein
         report = screen_hazardous_sequence("")
-        assert isinstance(report, BiosecurityReport)
+        assert isinstance(report, (BiosecurityReport, BiosecurityScreeningResult))
 
     def test_safe_protein_screen_then_optimize_workflow(self):
         """Complete workflow: screen → optimize → verify for safe protein.
@@ -400,7 +400,7 @@ class TestHardStopMode:
             check_biosecurity_before_optimize(RICIN_A_MOTIF)
         error = exc_info.value
         assert hasattr(error, "report")
-        assert isinstance(error.report, BiosecurityReport)
+        assert isinstance(error.report, (BiosecurityReport, BiosecurityScreeningResult))
         assert error.report.is_hazardous is True
         assert len(error.report.matches) > 0
         assert error.report.risk_level == "critical"

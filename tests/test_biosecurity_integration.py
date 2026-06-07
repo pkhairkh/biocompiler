@@ -65,44 +65,44 @@ class TestBiosecurityScreeningFunction:
 
     def test_anthrax_signature_blocked(self):
         """Anthrax lethal factor signature should be blocked."""
-        result = check_biosecurity_before_optimize(ANTHRAX_SIGNATURE)
+        result = check_biosecurity_before_optimize(ANTHRAX_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert "Bacillus_anthracis" in result.flagged_pathogens
         assert any("CRITICAL" in rl for rl in result.risk_levels)
 
     def test_botulinum_signature_blocked(self):
         """Botulinum toxin signature should be blocked."""
-        result = check_biosecurity_before_optimize(BOTULINUM_SIGNATURE)
+        result = check_biosecurity_before_optimize(BOTULINUM_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert "Clostridium_botulinum" in result.flagged_pathogens
 
     def test_ricin_signature_blocked(self):
         """Ricin toxin signature should be blocked."""
-        result = check_biosecurity_before_optimize(RICIN_SIGNATURE)
+        result = check_biosecurity_before_optimize(RICIN_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert "Ricinus_communis" in result.flagged_pathogens
 
     def test_shiga_signature_blocked(self):
         """Shiga toxin signature should be blocked."""
-        result = check_biosecurity_before_optimize(SHIGA_SIGNATURE)
+        result = check_biosecurity_before_optimize(SHIGA_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert "Shigella_dysenteriae" in result.flagged_pathogens
 
     def test_cholera_signature_blocked(self):
         """Cholera toxin signature should be blocked."""
-        result = check_biosecurity_before_optimize(CHOLERA_SIGNATURE)
+        result = check_biosecurity_before_optimize(CHOLERA_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert "Vibrio_cholerae" in result.flagged_pathogens
 
     def test_diphtheria_signature_blocked(self):
         """Diphtheria toxin signature should be blocked."""
-        result = check_biosecurity_before_optimize(DIPHTHERIA_SIGNATURE)
+        result = check_biosecurity_before_optimize(DIPHTHERIA_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert "Corynebacterium_diphtheriae" in result.flagged_pathogens
 
     def test_plague_signature_blocked(self):
         """Plague V antigen signature should be blocked."""
-        result = check_biosecurity_before_optimize(PLAGUE_V_SIGNATURE)
+        result = check_biosecurity_before_optimize(PLAGUE_V_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert "Yersinia_pestis" in result.flagged_pathogens
 
@@ -110,14 +110,14 @@ class TestBiosecurityScreeningFunction:
         """Pathogen signature embedded in a longer sequence should be caught."""
         # Embed anthrax signature in a longer sequence
         embedded = "AAAAAA" + ANTHRAX_SIGNATURE + "GGGGGG"
-        result = check_biosecurity_before_optimize(embedded)
+        result = check_biosecurity_before_optimize(embedded, biosecurity_mode="warn")
         assert result.passed is False
         assert "Bacillus_anthracis" in result.flagged_pathogens
 
     def test_case_insensitive_matching(self):
         """Biosecurity matching should work with mixed case input."""
         # Lowercase input should still be caught
-        result = check_biosecurity_before_optimize(ANTHRAX_SIGNATURE.lower())
+        result = check_biosecurity_before_optimize(ANTHRAX_SIGNATURE.lower(), biosecurity_mode="warn")
         assert result.passed is False
 
     def test_empty_sequence_raises_error(self):
@@ -154,7 +154,7 @@ class TestBiosecurityScreeningFunction:
 
     def test_match_details_include_position(self):
         """Match details should include the position of the match."""
-        result = check_biosecurity_before_optimize(ANTHRAX_SIGNATURE)
+        result = check_biosecurity_before_optimize(ANTHRAX_SIGNATURE, biosecurity_mode="warn")
         assert result.passed is False
         assert len(result.match_details) > 0
         # Should mention position 0 for exact match at start

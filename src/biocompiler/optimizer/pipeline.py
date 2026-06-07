@@ -353,11 +353,13 @@ def optimize_sequence(
     # In "warn" mode, the finding is logged but optimization proceeds.
     # In "off" mode, screening is skipped entirely.
     from ..biosecurity import check_biosecurity_before_optimize
+    _biosecurity_result = None
     try:
-        check_biosecurity_before_optimize(
+        _biosecurity_result = check_biosecurity_before_optimize(
             target_protein,
             organism=organism,
             biosecurity_mode=biosecurity_mode,
+            skip_biosecurity_check=skip_biosecurity_check,
         )
     except BiosecurityError:
         raise
@@ -483,6 +485,7 @@ def optimize_sequence(
                     convergence_status="converged",
                     iterations_used=1,
                     objective_score=_csp_objective_score,
+                    biosecurity_screening_result=_biosecurity_result,
                 )
         except Exception:
             logger.warning(
@@ -593,7 +596,7 @@ def optimize_sequence(
                     organism=organism,
                     gc_lo=gc_lo,
                     gc_hi=gc_hi,
-                    max_cai_cost=0.50,  # CpG island avoidance takes priority over max CAI
+                    max_cai_cost=0.05,  # Preserve high CAI; CpG avoidance is soft for CDS
                 )
                 _seq_before_cpg = hybrid_result.sequence
                 _cpg_seq_changed = (optimized_seq != _seq_before_cpg)
@@ -863,6 +866,7 @@ def optimize_sequence(
                 convergence_status="converged",
                 iterations_used=1,
                 objective_score=_prok_objective_score,
+                biosecurity_screening_result=_biosecurity_result,
             )
 
         # Fast eukaryotic predicate evaluation — skip BioOptimizer creation
@@ -1572,7 +1576,7 @@ def optimize_sequence(
                 organism=organism,
                 gc_lo=gc_lo,
                 gc_hi=gc_hi,
-                max_cai_cost=0.50,  # CpG island avoidance takes priority over max CAI
+                max_cai_cost=0.05,  # Preserve high CAI; CpG avoidance is soft for CDS
             )
             if _final_cpg_warnings:
                 for _fw in _final_cpg_warnings:
@@ -1582,11 +1586,45 @@ def optimize_sequence(
     # After global GC is satisfied, check that no local window has
     # extreme GC content.  This prevents polymerase stalling and
     # secondary-structure hotspots that the global constraint misses.
+    #
+    # IMPORTANT: Skip sliding-window GC fix for organisms where the
+    # natural coding GC is far from the window bounds.  For example,
+    # yeast coding GC is ~38% — a 50bp window with bounds [0.30, 0.70]
+    # will flag many AT-rich windows as violations and force codon swaps
+    # that destroy CAI (drops of 0.10–0.20 are common).  The sliding GC
+    # fix should only run when the organism's natural GC is well within
+    # the window bounds.
     _effective_gc_window_min = gc_window_min if gc_window_min is not None else gc_lo
     _effective_gc_window_max = gc_window_max if gc_window_max is not None else gc_hi
     _sliding_gc_swaps = 0
 
-    if gc_window_size > 0 and len(optimized_seq) >= gc_window_size:
+    # Check if organism's natural GC is compatible with sliding window bounds
+    _skip_sliding_gc = False
+    _organism_gc_target = ORGANISM_GC_TARGETS.get(organism)
+    if _organism_gc_target is not None and gc_window_size > 0:
+        _org_gc_lo, _org_gc_hi = _organism_gc_target
+        # Skip if the organism's natural GC range is outside the window bounds
+        # by more than 5% — the sliding window fix would force unnatural GC
+        if _org_gc_hi < _effective_gc_window_min + 0.05 or _org_gc_lo > _effective_gc_window_max - 0.05:
+            _skip_sliding_gc = True
+            logger.info(
+                "Sliding-window GC: skipping for %s (natural GC range "
+                "[%.2f, %.2f] is outside window bounds [%.2f, %.2f]) — "
+                "preserving CAI takes priority",
+                organism, _org_gc_lo, _org_gc_hi,
+                _effective_gc_window_min, _effective_gc_window_max,
+            )
+
+    # For the hybrid strategy path, the HybridOptimizer already produces
+    # sequences with organism-appropriate GC content. The sliding GC fix
+    # has been shown to destroy CAI (drops of 0.10-0.40) by forcing
+    # codon swaps to meet local GC window constraints that are biologically
+    # inappropriate for the organism. Skip it entirely for hybrid strategy
+    # to protect CAI.
+    if strategy == "hybrid" and not use_csp_solver:
+        _skip_sliding_gc = True
+
+    if gc_window_size > 0 and len(optimized_seq) >= gc_window_size and not _skip_sliding_gc:
         _sliding_result = check_sliding_gc(
             optimized_seq,
             window_size=gc_window_size,
@@ -1671,7 +1709,7 @@ def optimize_sequence(
                 organism=organism,
                 gc_lo=gc_lo,
                 gc_hi=gc_hi,
-                max_cai_cost=0.50,  # CpG island avoidance takes priority over max CAI
+                max_cai_cost=0.05,  # Preserve high CAI; CpG avoidance is soft for CDS
             )
             if _post_sgc_warnings:
                 for _psw in _post_sgc_warnings:
@@ -1978,6 +2016,7 @@ def optimize_sequence(
         convergence_status=_convergence_status,
         iterations_used=_total_cai_recovery_iterations + 1,  # +1 for the initial optimization pass
         objective_score=_objective_score,
+        biosecurity_screening_result=_biosecurity_result,
     )
 
     # ── Strict mode: refuse sequences with failed predicates ─────────
@@ -1999,6 +2038,7 @@ def batch_optimize(
     cai_threshold: float = 0.5,
     strategy: str = "hybrid",
     full_postprocessing: bool = False,
+    skip_biosecurity_check: bool = False,
     **kwargs,
 ) -> list[OptimizationResult]:
     """Optimize multiple proteins in batch.
@@ -2076,6 +2116,7 @@ def batch_optimize(
                 cai_threshold=cai_threshold,
                 enzymes=enzymes,
                 strategy=strategy,
+                skip_biosecurity_check=skip_biosecurity_check,
                 **kwargs,
             )
             results.append(result)
@@ -2121,6 +2162,15 @@ def batch_optimize(
     results: list[OptimizationResult] = []
     for protein in proteins:
         protein_upper = protein.strip().upper()
+
+        # ── Biosecurity screening ────────────────────────────────────
+        _biosecurity_result = None
+        if not skip_biosecurity_check:
+            from ..biosecurity import check_biosecurity_before_optimize as _check_biosecurity
+            _biosecurity_result = _check_biosecurity(
+                protein_upper,
+                organism=organism,
+            )
 
         # Run hybrid optimization (reuses precomputed data structures)
         hybrid_result = hybrid_opt.optimize(
@@ -2214,6 +2264,7 @@ def batch_optimize(
             protein=protein_upper,
             fallback_used=fallback,
             satisfied_predicates=satisfied,
+            biosecurity_screening_result=_biosecurity_result,
         )
         results.append(result)
 

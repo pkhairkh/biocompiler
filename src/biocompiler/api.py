@@ -632,6 +632,22 @@ class ExportFastaInput(BaseModel):
     description: str = Field("", description="Description line")
     organism: str = Field("Homo_sapiens", description="Source organism")
 
+    @field_validator("sequence")
+    @classmethod
+    def validate_sequence(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Sequence must not be empty")
+        if len(v) > MAX_DNA_LENGTH:
+            raise ValueError(
+                f"DNA sequence too long ({len(v)} bases). "
+                f"Maximum: {MAX_DNA_LENGTH} bases."
+            )
+        v = v.upper()
+        invalid = set(v) - set("ACGTN")
+        if invalid:
+            raise ValueError(f"Invalid nucleotides: {invalid}")
+        return v
+
 
 class ExportGenbankInput(BaseModel):
     """GenBank export input."""
@@ -643,12 +659,44 @@ class ExportGenbankInput(BaseModel):
     exon_boundaries: Optional[list[tuple[int, int]]] = Field(None)
     certificate: Optional[dict] = Field(None, description="Certificate dict to embed")
 
+    @field_validator("sequence")
+    @classmethod
+    def validate_sequence(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Sequence must not be empty")
+        if len(v) > MAX_DNA_LENGTH:
+            raise ValueError(
+                f"DNA sequence too long ({len(v)} bases). "
+                f"Maximum: {MAX_DNA_LENGTH} bases."
+            )
+        v = v.upper()
+        invalid = set(v) - set("ACGTN")
+        if invalid:
+            raise ValueError(f"Invalid nucleotides: {invalid}")
+        return v
+
 
 class ScanInput(BaseModel):
     """Sequence scan input."""
     sequence: str = Field(..., description="DNA sequence")
     enzymes: Optional[list[str]] = Field(None, description="Restriction enzymes to scan for")
     find_orfs: bool = Field(False, description="Find open reading frames")
+
+    @field_validator("sequence")
+    @classmethod
+    def validate_sequence(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Sequence must not be empty")
+        if len(v) > MAX_DNA_LENGTH:
+            raise ValueError(
+                f"DNA sequence too long ({len(v)} bases). "
+                f"Maximum: {MAX_DNA_LENGTH} bases."
+            )
+        v = v.upper()
+        invalid = set(v) - set("ACGTN")
+        if invalid:
+            raise ValueError(f"Invalid nucleotides: {invalid}")
+        return v
 
 
 # ─── Response Models ──────────────────────────────────────────────
@@ -782,6 +830,11 @@ class ExportSbol3Input(BaseModel):
     def validate_sequence(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("Sequence must not be empty")
+        if len(v) > MAX_DNA_LENGTH:
+            raise ValueError(
+                f"DNA sequence too long ({len(v)} bases). "
+                f"Maximum: {MAX_DNA_LENGTH} bases."
+            )
         v = v.upper()
         invalid = set(v) - set("ACGT")
         if invalid:
@@ -863,6 +916,11 @@ class BatchCheckItem(BaseModel):
         invalid = set(v) - set("ACGTN")
         if invalid:
             raise ValueError(f"Invalid nucleotides: {invalid}")
+        if len(v) > MAX_DNA_LENGTH:
+            raise ValueError(
+                f"DNA sequence too long ({len(v)} bases). "
+                f"Maximum: {MAX_DNA_LENGTH} bases."
+            )
         return v
 
     @field_validator("organism")
@@ -1137,6 +1195,22 @@ class BatchExportItem(BaseModel):
     definition: str = Field("BioCompiler designed sequence", description="DEFINITION line (GenBank)")
     gene_name: Optional[str] = Field(None, description="Gene name (GenBank)")
     exon_boundaries: Optional[list[tuple[int, int]]] = Field(None, description="Exon boundaries (GenBank)")
+
+    @field_validator("sequence")
+    @classmethod
+    def validate_sequence(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Sequence must not be empty")
+        if len(v) > MAX_DNA_LENGTH:
+            raise ValueError(
+                f"DNA sequence too long ({len(v)} bases). "
+                f"Maximum: {MAX_DNA_LENGTH} bases."
+            )
+        v = v.upper()
+        invalid = set(v) - set("ACGTN")
+        if invalid:
+            raise ValueError(f"Invalid nucleotides: {invalid}")
+        return v
 
     @field_validator("format")
     @classmethod
@@ -3361,15 +3435,10 @@ def create_app() -> FastAPI:
         """
         try:
             trail = _provenance_store.load(record_id)
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
             raise HTTPException(
                 status_code=404,
                 detail=f"Provenance record not found: {record_id}",
-            )
-        except ValueError:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Corrupted provenance record: {record_id}",
             )
         return {
             "id": record_id,

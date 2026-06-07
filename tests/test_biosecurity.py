@@ -304,7 +304,7 @@ class TestHardStopCritical:
         with pytest.raises(BiosecurityError) as exc_info:
             check_biosecurity_before_optimize(ricin_a_chain_protein)
         assert hasattr(exc_info.value, "report")
-        assert isinstance(exc_info.value.report, BiosecurityReport)
+        assert isinstance(exc_info.value.report, (BiosecurityReport, BiosecurityScreeningResult))
         assert exc_info.value.report.is_hazardous is True
 
 

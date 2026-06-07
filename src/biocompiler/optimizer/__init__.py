@@ -151,3 +151,90 @@ __all__ = [
     "_expand_iupac_site",
     "_check_predicates_via_type_system",
 ]
+
+# ── Re-export moved submodules for convenient access ────────────────────
+# These modules were moved from the top-level biocompiler package into
+# the optimizer subpackage for better organization.
+
+from .constraint_helpers import (  # noqa: E402
+    _expand_iupac_site,
+    _is_unavoidable_gt_aa,
+    _gt_free_cai_ratio,
+    IUPAC_EXPANSION_CAP,
+)
+
+from .gc_adjustment import (  # noqa: E402
+    adjust_gc_content,
+    MAX_GC_ADJUSTMENT_ITERATIONS as _MAX_GC_ADJUSTMENT_ITERATIONS_GA,
+)
+
+from .cpg_disruption import (  # noqa: E402
+    disrupt_cpg_dinucleotides,
+    reconcile_cpg_sites,
+    MAX_CPG_DISRUPTION_ITERATIONS as _MAX_CPG_DISRUPTION_ITERATIONS_CD,
+)
+
+from .splice_elimination import (  # noqa: E402
+    eliminate_cryptic_splice_sites,
+    MAX_SPLICE_ELIMINATION_ITERATIONS as _MAX_SPLICE_ELIMINATION_ITERATIONS_SE,
+    ELIMINATED_SITE_SCORE,
+    TOP_CAI_ALTERNATIVES,
+)
+
+from .objectives import (  # noqa: E402
+    ObjectiveFunction,
+    cai_objective,
+    cai_gc_balanced_objective,
+    codon_pair_objective,
+    min_max_gc_objective,
+    resolve_objective,
+    OBJECTIVE_REGISTRY,
+)
+
+from .incremental import (  # noqa: E402
+    IncrementalSequenceState,
+    CodonCache,
+    EnzymeSiteCache,
+)
+
+from .large_sequence import (  # noqa: E402
+    optimize_large_sequence,
+    ProteinTooLongError,
+    MAX_PROTEIN_LENGTH_DEFAULT,
+)
+
+from .multigene import (  # noqa: E402
+    GeneSpec,
+    MultiGeneResult,
+    OperonConfig,
+    optimize_multigene,
+    optimize_operon,
+)
+
+from .numba_kernels import (  # noqa: E402
+    count_gc,
+    count_dinucleotides,
+    compute_cai_kernel,
+    scan_restriction_sites,
+    find_all_dinucleotide_positions,
+    seq_to_bytes,
+    compute_cai_incremental,
+    batch_codon_swap_score,
+    fast_gc_window,
+    fast_dinucleotide_count,
+    count_gc_parallel,
+    scan_restriction_sites_multi,
+)
+
+from .grammar_loader import (  # noqa: E402
+    load_grammar,
+    grammar_to_predicate_params,
+    load_builtin_grammar,
+    list_builtin_grammars,
+)
+
+from .whatif_analysis import (  # noqa: E402
+    WhatIfScenario,
+    WhatIfAnalyzer,
+    WhatIfReport,
+)

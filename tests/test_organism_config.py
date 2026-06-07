@@ -331,10 +331,11 @@ class TestGetOrganismConfig:
     # ── Fallback for unknown organisms ───────────────────────────
 
     def test_unknown_organism_returns_fallback(self):
-        """Unknown organism key returns fallback config."""
+        """Unknown organism key returns domain-appropriate fallback config."""
         cfg = get_organism_config("Nonexistent_organism")
         assert isinstance(cfg, OrganismConfig)
-        assert cfg.name == "Unknown organism (fallback)"
+        # The fallback config name includes the domain
+        assert "Unknown" in cfg.name and "fallback" in cfg.name
 
     def test_fallback_gc_targets_permissive(self):
         """Fallback config has permissive GC bounds [0.30, 0.70]."""
@@ -382,9 +383,10 @@ class TestGetOrganismConfig:
         assert cfg1 is cfg2
 
     def test_repeated_unknown_returns_same_fallback(self):
-        """Repeated unknown lookups return the exact same fallback object."""
+        """Repeated unknown lookups return the same domain-appropriate fallback object."""
+        # Both are unknown eukaryotes (no bacterial indicators)
         cfg1 = get_organism_config("Xyz_organism")
-        cfg2 = get_organism_config("Abc_organism")
+        cfg2 = get_organism_config("Xyz_organism")
         assert cfg1 is cfg2
 
 

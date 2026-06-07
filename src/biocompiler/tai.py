@@ -48,13 +48,24 @@ doi:10.1093/nar/gkh834
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Optional
 
 from .constants import CODON_TABLE
 from .organisms import resolve_organism
+from .organisms.tai_data import (
+    TRNA_GENE_COPIES,
+    WOBBLE_EFFICIENCY,
+    WOBBLE_RULES,
+    SUPPORTED_ORGANISMS_TAI,
+    compute_tai_weights,
+)
 
 __all__ = [
+    "compute_tai",
     "calculate_tai",
+    "compute_tai_and_cai",
+    "optimize_for_tai",
     "TRNA_GENE_COPIES",
     "WOBBLE_RULES",
     "WOBBLE_EFFICIENCY",
@@ -63,338 +74,73 @@ __all__ = [
 ]
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1. Wobble Base Pairing Efficiency Factors
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Following dos Reis et al. (2004), the efficiency of wobble base pairing
-# between the first position of the anticodon (position 34) and the third
-# position of the codon (position 36) is:
-#
-#   Watson-Crick pairs:     A:U, U:A, G:C, C:G → s = 1.0
-#   Wobble G:U pair:        G:U → s = 0.5 (modified to ~0.6 in some models)
-#   Modified wobble:        Inosine pairs → s varies
-#   Other non-canonical:    s = 0.0
-#
-# The s values below follow the dos Reis et al. (2004) model.
-# Key: (anticodon_first_base, codon_third_base) → efficiency
-
-WOBBLE_EFFICIENCY: dict[tuple[str, str], float] = {
-    # Watson-Crick pairs (perfect match)
-    ("A", "U"): 1.0,  # anticodon A reads codon U (A:U)
-    ("U", "A"): 1.0,  # anticodon U reads codon A (U:A)
-    ("G", "C"): 1.0,  # anticodon G reads codon C (G:C)
-    ("C", "G"): 1.0,  # anticodon C reads codon G (C:G)
-
-    # Wobble G:U pair (G in anticodon, U in codon)
-    ("G", "U"): 0.5,
-
-    # Modified uridines in anticodon (wobble position)
-    # U reads both A and G through wobble (in RNA, U can pair with A and G)
-    ("U", "G"): 0.2,  # weak U:G wobble
-
-    # Inosine (I) — modified adenosine in anticodon
-    # I can pair with U, C, or A at the codon third position
-    ("I", "U"): 0.35,
-    ("I", "C"): 0.65,
-    ("I", "A"): 0.15,
-
-    # Modified Uridines with specific pairing properties
-    # cmo5U (uridine-5-oxyacetic acid) — reads U, A, G
-    ("cmo5U", "U"): 0.45,
-    ("cmo5U", "A"): 0.65,
-    ("cmo5U", "G"): 0.35,
-
-    # xm5U (5-methyluridine derivatives) — reads U, A (limited wobble)
-    ("xm5U", "U"): 0.65,
-    ("xm5U", "A"): 0.45,
-
-    # k2C (lysidine) — modified C that reads A specifically
-    ("k2C", "A"): 1.0,
-
-    # All other pairings: efficiency = 0
-}
-
-# Default efficiency for unlisted pairings
-_DEFAULT_WOBBLE_EFFICIENCY: float = 0.0
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. Wobble Rules
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# For each codon, which anticodons can read it, and with what efficiency.
-# This is derived from the wobble efficiency table above.
-# Format: codon -> list of (anticodon, efficiency)
-
-WOBBLE_RULES: dict[str, list[tuple[str, float]]] = {
-    # ── Phenylalanine ──
-    "UUU": [("GAA", 1.0)],       # GAA anticodon reads UUU (Watson-Crick)
-    "UUC": [("GAA", 1.0)],       # GAA also reads UUC (wobble G:U → G reads U in codon)
-    # ── Leucine ──
-    "UUA": [("UAA", 1.0)],       # UAA anticodon reads UUA
-    "UUG": [("UAA", 0.2), ("CAA", 1.0)],  # UAA wobble + CAA Watson-Crick
-    "CUU": [("GAG", 1.0)],       # GAG reads CUU
-    "CUC": [("GAG", 1.0)],       # GAG reads CUC
-    "CUA": [("UAG", 1.0)],       # UAG reads CUA
-    "CUG": [("UAG", 0.2), ("CAG", 1.0)],  # UAG wobble + CAG Watson-Crick
-    # ── Isoleucine ──
-    "AUU": [("UAU", 1.0), ("CAU", 1.0)],  # UAU + CAU (modified)
-    "AUC": [("UAU", 1.0), ("CAU", 1.0)],  # UAU + CAU
-    "AUA": [("UAU", 0.2), ("k2C", 1.0)],  # UAU wobble + lysidine reads AUA
-    # ── Methionine ──
-    "AUG": [("CAU", 1.0)],       # Only CAU anticodon
-    # ── Valine ──
-    "GUU": [("GAC", 1.0)],       # GAC reads GUU
-    "GUC": [("GAC", 1.0)],       # GAC reads GUC
-    "GUA": [("UAC", 1.0)],       # UAC reads GUA
-    "GUG": [("UAC", 0.2), ("CAC", 1.0)],  # UAC wobble + CAC
-    # ── Serine ──
-    "UCU": [("GGA", 1.0), ("IGA", 0.35)],  # GGA + IGA (Inosine)
-    "UCC": [("GGA", 1.0), ("IGA", 0.65)],
-    "UCA": [("IGA", 0.15), ("UGA", 1.0)],
-    "UCG": [("IGA", 0.15), ("CGA", 1.0)],
-    "AGU": [("GCU", 1.0)],
-    "AGC": [("GCU", 1.0)],
-    # ── Proline ──
-    "CCU": [("GGG", 1.0)],
-    "CCC": [("GGG", 1.0)],
-    "CCA": [("UGG", 1.0)],
-    "CCG": [("UGG", 0.2), ("CGG", 1.0)],
-    # ── Threonine ──
-    "ACU": [("GGU", 1.0), ("IGU", 0.35)],
-    "ACC": [("GGU", 1.0), ("IGU", 0.65)],
-    "ACA": [("IGU", 0.15), ("UGU", 1.0)],
-    "ACG": [("IGU", 0.15), ("CGU", 1.0)],
-    # ── Alanine ──
-    "GCU": [("GGC", 1.0), ("IGC", 0.35)],
-    "GCC": [("GGC", 1.0), ("IGC", 0.65)],
-    "GCA": [("IGC", 0.15), ("UGC", 1.0)],
-    "GCG": [("IGC", 0.15), ("CGC", 1.0)],
-    # ── Tyrosine ──
-    "UAU": [("GUA", 1.0)],
-    "UAC": [("GUA", 1.0)],
-    # ── Histidine ──
-    "CAU": [("GUG", 1.0)],
-    "CAC": [("GUG", 1.0)],
-    # ── Glutamine ──
-    "CAA": [("UUG", 1.0)],
-    "CAG": [("UUG", 0.2), ("CUG", 1.0)],
-    # ── Asparagine ──
-    "AAU": [("GUU", 1.0)],
-    "AAC": [("GUU", 1.0)],
-    # ── Lysine ──
-    "AAA": [("UUU", 1.0)],
-    "AAG": [("UUU", 0.2), ("CUU", 1.0)],
-    # ── Aspartate ──
-    "GAU": [("GUC", 1.0)],
-    "GAC": [("GUC", 1.0)],
-    # ── Glutamate ──
-    "GAA": [("UUC", 1.0)],
-    "GAG": [("UUC", 0.2), ("CUC", 1.0)],
-    # ── Cysteine ──
-    "UGU": [("GCA", 1.0)],
-    "UGC": [("GCA", 1.0)],
-    # ── Tryptophan ──
-    "UGG": [("CCA", 1.0)],
-    # ── Arginine ──
-    "CGU": [("GCG", 1.0), ("ICG", 0.35)],
-    "CGC": [("GCG", 1.0), ("ICG", 0.65)],
-    "CGA": [("ICG", 0.15), ("UCG", 1.0)],
-    "CGG": [("ICG", 0.15), ("CCG", 1.0)],
-    "AGA": [("UCU", 1.0)],
-    "AGG": [("UCU", 0.2), ("CCU", 1.0)],
-    # ── Glycine ──
-    "GGU": [("GCC", 1.0)],
-    "GGC": [("GCC", 1.0)],
-    "GGA": [("UCC", 1.0)],
-    "GGG": [("UCC", 0.2), ("CCC", 1.0)],
-    # ── Stop codons ──
-    "UAA": [("UUA", 1.0)],
-    "UAG": [("CUA", 1.0)],
-    "UGA": [("UCA", 1.0)],
-}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. tRNA Gene Copy Numbers
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Source: GtRNAdb (Genomic tRNA Database)
-# Chan, P.P. & Lowe, T.M. (2016) Nucleic Acids Research 44:D184-D189
-#
-# Format: organism -> {anticodon: gene_copy_number}
-# The anticodon is written 5'→3' (matching the wobble position at position 34).
-
-TRNA_GENE_COPIES: dict[str, dict[str, int]] = {
-    # ── Escherichia coli K-12 MG1655 ─────────────────────────────────
-    # Source: GtRNAdb, E. coli K-12 MG1655 genome
-    # 86 tRNA genes total
-    "e_coli": {
-        # Phenylalanine
-        "GAA": 3,
-        # Leucine
-        "UAA": 1, "CAA": 6, "UAG": 1, "CAG": 3, "GAG": 2,
-        # Isoleucine
-        "UAU": 3, "CAU": 1,
-        # Methionine (initiator + elongator)
-        "CAU": 5,
-        # Valine
-        "GAC": 2, "UAC": 1, "CAC": 3,
-        # Serine
-        "GGA": 1, "CGA": 1, "UGA": 4, "GCU": 2,
-        # Proline
-        "GGG": 2, "UGG": 2, "CGG": 3,
-        # Threonine
-        "GGU": 2, "CGU": 3, "UGU": 2,
-        # Alanine
-        "GGC": 3, "UGC": 2, "CGC": 4,
-        # Tyrosine
-        "GUA": 2,
-        # Histidine
-        "GUG": 1,
-        # Glutamine
-        "UUG": 2, "CUG": 4,
-        # Asparagine
-        "GUU": 3,
-        # Lysine
-        "UUU": 2, "CUU": 3,
-        # Aspartate
-        "GUC": 3,
-        # Glutamate
-        "UUC": 2, "CUC": 4,
-        # Cysteine
-        "GCA": 1,
-        # Tryptophan
-        "CCA": 1,
-        # Arginine
-        "GCG": 2, "CCG": 3, "UCG": 1, "UCU": 1, "CCU": 1,
-        # Glycine
-        "GCC": 3, "UCC": 1, "CCC": 3,
-        # Stop (release factors; no tRNAs, but included for completeness)
-    },
-
-    # ── Homo sapiens ──────────────────────────────────────────────────
-    # Source: GtRNAdb, human genome (GRCh38)
-    # ~610 tRNA genes total (many are pseudogenes; only functional counted)
-    "human": {
-        # Phenylalanine
-        "GAA": 10,
-        # Leucine
-        "UAA": 5, "CAA": 12, "UAG": 4, "CAG": 8, "GAG": 7,
-        # Isoleucine
-        "UAU": 8, "CAU": 4,
-        # Methionine
-        "CAU": 16,
-        # Valine
-        "GAC": 7, "UAC": 5, "CAC": 10,
-        # Serine
-        "GGA": 5, "CGA": 4, "UGA": 8, "GCU": 7,
-        # Proline
-        "GGG": 5, "UGG": 6, "CGG": 7,
-        # Threonine
-        "GGU": 7, "CGU": 5, "UGU": 6,
-        # Alanine
-        "GGC": 10, "UGC": 6, "CGC": 8,
-        # Tyrosine
-        "GUA": 7,
-        # Histidine
-        "GUG": 5,
-        # Glutamine
-        "UUG": 8, "CUG": 11,
-        # Asparagine
-        "GUU": 10,
-        # Lysine
-        "UUU": 8, "CUU": 9,
-        # Aspartate
-        "GUC": 8,
-        # Glutamate
-        "UUC": 12, "CUC": 13,
-        # Cysteine
-        "GCA": 7,
-        # Tryptophan
-        "CCA": 6,
-        # Arginine
-        "GCG": 5, "CCG": 7, "UCG": 4, "UCU": 5, "CCU": 4,
-        # Glycine
-        "GCC": 10, "UCC": 4, "CCC": 8,
-    },
-
-    # ── Saccharomyces cerevisiae S288C ────────────────────────────────
-    # Source: GtRNAdb, S. cerevisiae S288C
-    # 275 tRNA genes total
-    "yeast": {
-        # Phenylalanine
-        "GAA": 5,
-        # Leucine
-        "UAA": 4, "CAA": 8, "UAG": 3, "CAG": 5, "GAG": 4,
-        # Isoleucine
-        "UAU": 5, "CAU": 2,
-        # Methionine
-        "CAU": 8,
-        # Valine
-        "GAC": 5, "UAC": 3, "CAC": 6,
-        # Serine
-        "GGA": 4, "CGA": 3, "UGA": 6, "GCU": 5,
-        # Proline
-        "GGG": 4, "UGG": 4, "CGG": 5,
-        # Threonine
-        "GGU": 5, "CGU": 4, "UGU": 4,
-        # Alanine
-        "GGC": 6, "UGC": 4, "CGC": 5,
-        # Tyrosine
-        "GUA": 4,
-        # Histidine
-        "GUG": 3,
-        # Glutamine
-        "UUG": 5, "CUG": 7,
-        # Asparagine
-        "GUU": 5,
-        # Lysine
-        "UUU": 5, "CUU": 6,
-        # Aspartate
-        "GUC": 5,
-        # Glutamate
-        "UUC": 7, "CUC": 8,
-        # Cysteine
-        "GCA": 4,
-        # Tryptophan
-        "CCA": 3,
-        # Arginine
-        "GCG": 4, "CCG": 5, "UCG": 3, "UCU": 4, "CCU": 3,
-        # Glycine
-        "GCC": 6, "UCC": 3, "CCC": 5,
-    },
-}
-
 # Canonical organism name mapping for tRNA data
 _TAI_ORGANISM_ALIASES: dict[str, str] = {
+    # E. coli
     "Escherichia_coli": "e_coli",
     "e_coli": "e_coli",
     "ecoli": "e_coli",
     "E. coli": "e_coli",
+    "E_coli": "e_coli",
+    # Human
     "Homo_sapiens": "human",
     "human": "human",
     "H. sapiens": "human",
     "h_sapiens": "human",
+    "H_sapiens": "human",
+    # Yeast
     "Saccharomyces_cerevisiae": "yeast",
     "yeast": "yeast",
     "S. cerevisiae": "yeast",
     "s_cerevisiae": "yeast",
+    "S_cerevisiae": "yeast",
+    # Mouse
+    "Mus_musculus": "mouse",
+    "mouse": "mouse",
+    "M. musculus": "mouse",
+    "m_musculus": "mouse",
+    "M_musculus": "mouse",
+    # CHO-K1
+    "CHO_K1": "cho",
+    "cho": "cho",
+    "CHO": "cho",
+    "Cricetulus_griseus": "cho",
+    # C. elegans
+    "Caenorhabditis_elegans": "c_elegans",
+    "c_elegans": "c_elegans",
+    "C. elegans": "c_elegans",
+    "c_elegans": "c_elegans",
+    "C_elegans": "c_elegans",
+    # D. melanogaster
+    "Drosophila_melanogaster": "d_melanogaster",
+    "d_melanogaster": "d_melanogaster",
+    "D. melanogaster": "d_melanogaster",
+    "d_melanogaster": "d_melanogaster",
+    "D_melanogaster": "d_melanogaster",
+    # A. thaliana
+    "Arabidopsis_thaliana": "a_thaliana",
+    "a_thaliana": "a_thaliana",
+    "A. thaliana": "a_thaliana",
+    "a_thaliana": "a_thaliana",
+    "A_thaliana": "a_thaliana",
+    # P. pastoris
+    "Pichia_pastoris": "p_pastoris",
+    "p_pastoris": "p_pastoris",
+    "P. pastoris": "p_pastoris",
+    "p_pastoris": "p_pastoris",
+    "P_pastoris": "p_pastoris",
+    "Komagataella_phaffii": "p_pastoris",
+    # B. subtilis
+    "Bacillus_subtilis": "b_subtilis",
+    "b_subtilis": "b_subtilis",
+    "B. subtilis": "b_subtilis",
+    "b_subtilis": "b_subtilis",
+    "B_subtilis": "b_subtilis",
 }
 
-SUPPORTED_ORGANISMS_TAI: list[str] = list(TRNA_GENE_COPIES.keys())
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4. Core tAI computation
-# ═══════════════════════════════════════════════════════════════════════════════
 
 # Epsilon floor for zero-adaptiveness codons
 _TAI_EPSILON: float = 1e-10
-
-# Minimum copy number to avoid division by zero
-_MIN_COPY_NUMBER: int = 1
 
 
 def _resolve_tai_organism(organism: str) -> str:
@@ -494,7 +240,8 @@ def compute_codon_weights(
     Parameters
     ----------
     organism : str
-        Organism name.
+        Organism name.  Accepts canonical binomials, short keys,
+        or any alias recognised by ``_resolve_tai_organism()``.
 
     Returns
     -------
@@ -502,36 +249,110 @@ def compute_codon_weights(
         Mapping of RNA codon → relative adaptiveness value in [0, 1].
     """
     tai_key = _resolve_tai_organism(organism)
-    trna_copies = TRNA_GENE_COPIES[tai_key]
+    return compute_tai_weights(tai_key)
 
-    # Compute raw weights for all codons
-    raw_weights: dict[str, float] = {}
-    for codon in WOBBLE_RULES:
-        raw_weights[codon] = _compute_codon_weight(codon, trna_copies)
 
-    # Group codons by amino acid and normalize
-    aa_to_codons: dict[str, list[str]] = {}
-    for codon in WOBBLE_RULES:
-        # Convert RNA codon to DNA for CODON_TABLE lookup
-        dna_codon = codon.replace("U", "T")
-        aa = CODON_TABLE.get(dna_codon)
-        if aa is None or aa == "*":
-            continue
-        aa_to_codons.setdefault(aa, []).append(codon)
+def compute_tai(
+    sequence: str,
+    organism: str = "Escherichia_coli",
+    species: str | None = None,
+    *,
+    skip_stop: bool = True,
+    skip_met: bool = True,
+) -> float:
+    """Compute the tRNA Adaptation Index (tAI) for a DNA coding sequence.
 
-    relative_weights: dict[str, float] = {}
-    for aa, codons in aa_to_codons.items():
-        if aa == "M":  # Only one codon, skip
-            continue
-        weights = [raw_weights.get(c, 0.0) for c in codons]
-        max_w = max(weights) if weights else 0.0
-        for codon, w in zip(codons, weights):
-            if max_w > 0:
-                relative_weights[codon] = w / max_w
+    tAI is the geometric mean of relative adaptiveness values for all
+    codons in the sequence (excluding Met and stop codons by default).
+
+    The tAI differs from CAI in that it uses tRNA gene copy numbers
+    (a proxy for tRNA abundance) and wobble pairing rules, rather than
+    codon frequency data from highly expressed genes.
+
+    Organism Specification:
+
+        The target organism can be specified using **either** the
+        ``organism`` parameter **or** the ``species`` parameter.  Both
+        accept the same set of names — short aliases, abbreviated
+        binomials, display names, or full canonical names — and both
+        map to the same internal representation via
+        :func:`~biocompiler.organisms.resolve_organism`.
+
+        If both ``species`` and ``organism`` are provided, ``species``
+        takes precedence and a :class:`DeprecationWarning` is emitted.
+
+    Args:
+        sequence: DNA coding sequence (length must be a multiple of 3).
+        organism: Organism name.  Accepts canonical binomials
+            (e.g., ``'Homo_sapiens'``, ``'Escherichia_coli'``),
+            short keys (``'ecoli'``, ``'human'``), abbreviated
+            binomials (``'E_coli'``, ``'h_sapiens'``), or display
+            names (``'E. coli'``).  All forms are resolved via
+            :func:`~biocompiler.organisms.resolve_organism`.
+        species: Alias for ``organism``.  Accepts the same values.
+            If provided **together with** ``organism``, ``species``
+            takes precedence and a deprecation warning is emitted.
+            Prefer using ``organism`` in new code; ``species`` is
+            retained for backward compatibility.
+        skip_stop: Whether to exclude stop codons from the calculation
+            (default True).
+        skip_met: Whether to exclude the Met (ATG) codon from the
+            calculation (default True, following the CAI convention).
+
+    Returns:
+        tAI value in [0, 1]. Returns 0.0 for empty or invalid sequences.
+
+    Raises:
+        ValueError: If the DNA length is not a multiple of 3.
+        ValueError: If no tRNA data is available for the organism.
+
+    References
+    ----------
+    dos Reis, M., Savva, R. & Wernisch, L. (2004). Solving the riddle of
+    codon usage preferences: a test for translational selection.
+    *Nucleic Acids Research*, 32(17), 5036-5044.
+    """
+    # ── Organism resolution (same pattern as compute_cai) ────────────
+    if species is not None:
+        resolved = resolve_organism(species, strict=False)
+        if organism != "Escherichia_coli":
+            resolved_explicit = resolve_organism(organism, strict=False)
+            if resolved != resolved_explicit:
+                warnings.warn(
+                    f"Both 'species={species!r}' and 'organism={organism!r}' "
+                    f"were provided but resolve to different organisms "
+                    f"({resolved!r} vs {resolved_explicit!r}). "
+                    f"Using 'species' ({resolved!r}). "
+                    f"Prefer using only 'organism' in new code.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
             else:
-                relative_weights[codon] = 0.0
+                warnings.warn(
+                    f"Both 'species' and 'organism' were provided. "
+                    f"Prefer using only 'organism' in new code; "
+                    f"'species' is retained for backward compatibility.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        else:
+            warnings.warn(
+                f"The 'species' parameter is deprecated in favor of 'organism'. "
+                f"Use organism='{resolved}' instead of "
+                f"species='{species}'. Both accept the same aliases.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        organism = resolved
+    else:
+        organism = resolve_organism(organism, strict=False)
 
-    return relative_weights
+    return calculate_tai(
+        sequence,
+        organism,
+        skip_stop=skip_stop,
+        skip_met=skip_met,
+    )
 
 
 def calculate_tai(
@@ -556,7 +377,9 @@ def calculate_tai(
         DNA coding sequence (length must be a multiple of 3).
     organism : str
         Target organism name. Must have tRNA data in TRNA_GENE_COPIES.
-        Currently supports: ``"e_coli"``, ``"human"``, ``"yeast"``
+        Currently supports: ``"e_coli"``, ``"human"``, ``"yeast"``,
+        ``"mouse"``, ``"cho"``, ``"c_elegans"``, ``"d_melanogaster"``,
+        ``"a_thaliana"``, ``"p_pastoris"``, ``"b_subtilis"``
         (and their canonical/alias names).
     skip_stop : bool
         Whether to exclude stop codons from the calculation (default True).
@@ -593,10 +416,9 @@ def calculate_tai(
 
     # Resolve organism and get tRNA data
     tai_key = _resolve_tai_organism(organism)
-    trna_copies = TRNA_GENE_COPIES[tai_key]
 
     # Compute codon weights
-    weights = compute_codon_weights(organism)
+    weights = compute_tai_weights(tai_key)
 
     # Compute tAI as geometric mean
     log_sum: float = 0.0
@@ -626,3 +448,130 @@ def calculate_tai(
 
     tai = math.exp(log_sum / count)
     return round(tai, 4)
+
+
+def compute_tai_and_cai(
+    sequence: str,
+    organism: str = "Escherichia_coli",
+    *,
+    skip_stop: bool = True,
+    skip_met: bool = True,
+) -> dict[str, float]:
+    """Compute both tAI and CAI for a DNA sequence for comparison.
+
+    This function computes both the tRNA Adaptation Index and the
+    Codon Adaptation Index for the same sequence and organism,
+    allowing direct comparison of these complementary metrics.
+
+    tAI reflects tRNA availability (translational efficiency),
+    while CAI reflects codon usage bias in highly expressed genes.
+    They are correlated but capture different aspects of codon
+    optimality.
+
+    Args:
+        sequence: DNA coding sequence (length must be a multiple of 3).
+        organism: Target organism name.
+        skip_stop: Whether to exclude stop codons (default True).
+        skip_met: Whether to exclude Met codons (default True).
+
+    Returns:
+        Dict with keys:
+        - ``"tai"``: tRNA Adaptation Index value in [0, 1]
+        - ``"cai"``: Codon Adaptation Index value in [0, 1]
+        - ``"correlation"``: Simple indicator of alignment.
+          Positive means both metrics agree on direction (both above
+          or both below 0.5); negative means they disagree.
+
+    Raises:
+        ValueError: If the DNA length is not a multiple of 3.
+        ValueError: If no tRNA/CAI data is available for the organism.
+    """
+    from .translation import compute_cai
+
+    tai_val = compute_tai(
+        sequence,
+        organism=organism,
+        skip_stop=skip_stop,
+        skip_met=skip_met,
+    )
+
+    try:
+        cai_val = compute_cai(sequence, organism=organism)
+    except Exception:
+        cai_val = 0.0
+
+    # Simple correlation indicator: +1 if both agree on above/below 0.5
+    if (tai_val >= 0.5 and cai_val >= 0.5) or (tai_val < 0.5 and cai_val < 0.5):
+        correlation = 1.0
+    else:
+        correlation = -1.0
+
+    return {
+        "tai": tai_val,
+        "cai": cai_val,
+        "correlation": correlation,
+    }
+
+
+def optimize_for_tai(
+    protein: str,
+    organism: str = "Escherichia_coli",
+    **kwargs: object,
+) -> str:
+    """Generate a DNA sequence optimized for maximal tAI.
+
+    For each amino acid in the protein, selects the synonymous codon
+    with the highest tAI relative adaptiveness weight.  This produces
+    the theoretical maximum tAI for the given protein and organism.
+
+    The resulting sequence is NOT guaranteed to satisfy other
+    constraints (GC content, restriction sites, mRNA stability, etc.).
+    For a fully constrained optimization, use
+    :func:`~biocompiler.optimizer.pipeline.optimize_sequence` with
+    ``objective="tai"``.
+
+    Args:
+        protein: Amino acid sequence (1-letter codes, no stop).
+        organism: Target organism name.
+        **kwargs: Additional arguments (reserved for future use).
+
+    Returns:
+        DNA sequence optimized for maximum tAI.
+
+    Raises:
+        ValueError: If the protein contains invalid amino acid codes.
+        ValueError: If no tRNA data is available for the organism.
+    """
+    from .constants import AA_TO_CODONS
+
+    protein = protein.upper().strip()
+    valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
+    invalid = set(protein) - valid_aas
+    if invalid:
+        raise ValueError(
+            f"Invalid amino acid codes in protein: {invalid}"
+        )
+
+    # Get tAI weights
+    tai_key = _resolve_tai_organism(organism)
+    weights = compute_tai_weights(tai_key)
+
+    dna_parts: list[str] = []
+    for aa in protein:
+        codons = AA_TO_CODONS.get(aa, [])
+        if not codons:
+            raise ValueError(f"No codons for amino acid '{aa}'")
+
+        # Select codon with highest tAI weight
+        best_codon = codons[0]
+        best_weight = -1.0
+        for codon in codons:
+            rna_codon = codon.replace("T", "U")
+            w = weights.get(rna_codon, 0.0)
+            if w > best_weight:
+                best_weight = w
+                best_codon = codon
+
+        dna_parts.append(best_codon)
+
+    return "".join(dna_parts)

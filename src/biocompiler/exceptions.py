@@ -298,7 +298,7 @@ class BiosecurityError(BioCompilerError):
 
     def __init__(
         self,
-        reason_or_report: "str | BiosecurityReport",  # noqa: F821
+        reason_or_report: "str | BiosecurityReport | None" = None,  # noqa: F821
         risk_level: str | None = None,
         flagged_categories: list[str] | None = None,
         matches: list[Any] | None = None,
@@ -311,14 +311,14 @@ class BiosecurityError(BioCompilerError):
         # Detect report-form: if the first argument is a BiosecurityReport
         # (has is_hazardous, risk_level attributes), extract info from it.
         report = None
-        if hasattr(reason_or_report, "is_hazardous") and hasattr(reason_or_report, "risk_level"):
+        if reason_or_report is not None and hasattr(reason_or_report, "is_hazardous") and hasattr(reason_or_report, "risk_level"):
             report = reason_or_report
             self.reason = f"risk_level={report.risk_level}"
             self.risk_level = report.risk_level
             self.flagged_categories = report.flagged_categories
             self.matches = report.matches
         else:
-            self.reason = reason_or_report  # type: ignore[assignment]
+            self.reason = reason_or_report or "hazardous sequence detected"
             self.risk_level = risk_level
             self.flagged_categories = flagged_categories or []
             self.matches = matches or []
@@ -330,6 +330,16 @@ class BiosecurityError(BioCompilerError):
         self.flagged_pathogens = flagged_pathogens or []
         self.risk_levels = risk_levels or []
         self.match_details = match_details or []
+
+        # If risk_level not already set from report/legacy form, derive from risk_levels
+        if self.risk_level is None and self.risk_levels:
+            priority = {"critical": 4, "high": 3, "medium": 2, "low": 1, "none": 0}
+            self.risk_level = max(self.risk_levels, key=lambda r: priority.get(r.lower(), 0))
+
+        # Derive flagged_categories from report if not set and report is available
+        if not self.flagged_categories and self.report is not None:
+            if hasattr(self.report, "flagged_categories"):
+                self.flagged_categories = list(self.report.flagged_categories)
 
         # Build message
         detail = f" (risk_level={self.risk_level})" if self.risk_level else ""
