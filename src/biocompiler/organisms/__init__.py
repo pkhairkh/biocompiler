@@ -145,8 +145,8 @@ from .drosophila import DROSOPHILA_PREFERRED_CODONS as DROSOPHILA_PREFERRED_CODO
 from .oryza import ORYZA_CODON_USAGE as ORYZA_CODON_USAGE
 from .oryza import ORYZA_CODON_ADAPTIVENESS as ORYZA_CODON_ADAPTIVENESS
 from .oryza import ORYZA_PREFERRED_CODONS as ORYZA_PREFERRED_CODONS
-from ..organism_db import OrganismDatabase as OrganismDatabase
-from ..organism_db import get_database as get_database
+from .db import OrganismDatabase as OrganismDatabase
+from .db import get_database as get_database
 
 __all__: list[str] = [
     # TypedDict for SPECIES entries

@@ -74,6 +74,11 @@ __all__ = [
     "check_consistency",
     "CRYPTIC_SPLICE_THRESHOLD",
     "_EDGE_CASE_SCORE",
+    "_IMPOSSIBLE_SCORE",
+    "_ACCEPTOR_DOWNSTREAM",
+    "_ACCEPTOR_UPSTREAM",
+    "_DONOR_DOWNSTREAM",
+    "_DONOR_UPSTREAM",
 ]
 
 _logger = logging.getLogger(__name__)

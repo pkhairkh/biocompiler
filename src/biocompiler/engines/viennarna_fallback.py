@@ -24,15 +24,7 @@ installed.  Instead of a single-hairpin heuristic, this module implements:
    A stacking bonus of **-0.5 kcal/mol** is applied for each consecutive
    base pair (i.e., pairs (i,j) and (i+1,j-1) both present).
 
-3. **Nearest-Neighbor Thermodynamic Model (NNTM)**: Uses the 10
-   well-known Watson-Crick dinucleotide parameters (Turner 2004) for
-   more accurate ΔG estimates.
-
-4. **GC-based heuristic estimator**: When even the Nussinov algorithm
-   is too expensive, a simple formula provides a rough ΔG estimate:
-   ΔG ≈ -1.5 × (GC_fraction) × (length / 100) kcal/mol.
-
-5. **Windowed Nussinov** for scanning long sequences for stable stem-loops.
+3. **Windowed Nussinov** for scanning long sequences for stable stem-loops.
 
 **IMPORTANT — Accuracy Caveat**
     This fallback is significantly less accurate than ViennaRNA's full
@@ -51,10 +43,6 @@ Pure Python — No External Dependencies
 ---------------------------------------
 This module uses **only** the Python standard library.  It must work
 without NumPy, ViennaRNA, or any other external package.
-
-This module's dataclasses (MFEResult, AccessibilityResult, StemLoop)
-mirror those in ``viennarna.py`` so that callers can treat both paths
-uniformly.
 
 References
 ----------
@@ -90,7 +78,7 @@ __all__ = [
 # ==============================================================================
 
 try:
-    from ..viennarna import MFEResult, StemLoop, AccessibilityResult
+    from .viennarna import MFEResult, StemLoop, AccessibilityResult
 except ImportError:
     # viennarna module not yet available — define types locally.
     # These mirror the viennarna.py dataclasses so that callers can use
@@ -240,68 +228,6 @@ GC_DG_COEFFICIENT: float = -1.5
 # ==============================================================================
 # Helper functions
 # ==============================================================================
-
-def _can_pair(a: str, b: str) -> bool:
-    """Check if two nucleotides can form a Watson-Crick or wobble pair.
-
-    Args:
-        a: First nucleotide (uppercase).
-        b: Second nucleotide (uppercase).
-
-    Returns:
-        True if the pair is GC, AU, or GU (including reverse).
-    """
-    pair = a + b
-    return pair in PAIR_ENERGY
-
-
-def _pair_energy(a: str, b: str) -> float:
-    """Return the simplified nearest-neighbor energy for a base pair.
-
-    Args:
-        a: First nucleotide (uppercase).
-        b: Second nucleotide (uppercase).
-
-    Returns:
-        Free energy in kcal/mol.  Returns 0.0 if the pair cannot form.
-    """
-    pair = a + b
-    return PAIR_ENERGY.get(pair, 0.0)
-
-
-def _transcribe_to_rna(dna_sequence: str) -> str:
-    """Convert a DNA sequence to RNA (T → U).
-
-    Args:
-        dna_sequence: DNA sequence (may contain T or U).
-
-    Returns:
-        RNA sequence with T replaced by U.
-    """
-    return dna_sequence.upper().replace("T", "U")
-
-
-def _loop_penalty(loop_size: int) -> float:
-    """Compute hairpin loop penalty using Turner-inspired formula.
-
-    ΔG_loop = max(MIN_LOOP_PENALTY, HAIRPIN_INITIATION + 1.75 × RT × ln(loop_size))
-
-    For very small loops (< 3 nt), an additional strain penalty is applied.
-
-    Args:
-        loop_size: Number of unpaired nucleotides in the loop.
-
-    Returns:
-        Loop penalty in kcal/mol (positive = destabilizing).
-    """
-    if loop_size <= 0:
-        return 0.0
-    if loop_size >= 3:
-        penalty = HAIRPIN_INITIATION + LOOP_CLOSURE_COEFF * RT_37C * math.log(loop_size)
-        return max(penalty, MIN_LOOP_PENALTY)
-    # Very small loops are extremely strained
-    return MIN_LOOP_PENALTY + 2.0 * (3 - loop_size)
-
 
 # ==============================================================================
 # GC-based ΔG heuristic estimator
@@ -471,6 +397,175 @@ def compute_nntm_dg(
 
         loop_visited[i] = True
         loop_visited[j] = True
+
+    dg += loop_penalty_total
+
+    return round(dg, 2)
+
+
+def _can_pair(a: str, b: str) -> bool:
+    """Check if two nucleotides can form a Watson-Crick or wobble pair.
+
+    Args:
+        a: First nucleotide (uppercase).
+        b: Second nucleotide (uppercase).
+
+    Returns:
+        True if the pair is GC, AU, or GU (including reverse).
+    """
+    pair = a + b
+    return pair in PAIR_ENERGY
+
+
+def _pair_energy(a: str, b: str) -> float:
+    """Return the simplified nearest-neighbor energy for a base pair.
+
+    Args:
+        a: First nucleotide (uppercase).
+        b: Second nucleotide (uppercase).
+
+    Returns:
+        Free energy in kcal/mol.  Returns 0.0 if the pair cannot form.
+    """
+    pair = a + b
+    return PAIR_ENERGY.get(pair, 0.0)
+
+
+def _transcribe_to_rna(dna_sequence: str) -> str:
+    """Convert a DNA sequence to RNA (T → U).
+
+    Args:
+        dna_sequence: DNA sequence (may contain T or U).
+
+    Returns:
+        RNA sequence with T replaced by U.
+    """
+    return dna_sequence.upper().replace("T", "U")
+
+
+def _loop_penalty(loop_size: int) -> float:
+    """Compute hairpin loop penalty using Turner-inspired formula.
+
+    ΔG_loop = max(MIN_LOOP_PENALTY, HAIRPIN_INITIATION + 1.75 × RT × ln(loop_size))
+
+    For very small loops (< 3 nt), an additional strain penalty is applied.
+
+    Args:
+        loop_size: Number of unpaired nucleotides in the loop.
+
+    Returns:
+        Loop penalty in kcal/mol (positive = destabilizing).
+    """
+    if loop_size <= 0:
+        return 0.0
+    if loop_size >= 3:
+        penalty = HAIRPIN_INITIATION + LOOP_CLOSURE_COEFF * RT_37C * math.log(loop_size)
+        return max(penalty, MIN_LOOP_PENALTY)
+    # Very small loops are extremely strained
+    return MIN_LOOP_PENALTY + 2.0 * (3 - loop_size)
+
+
+def _estimate_dg_from_structure(
+    rna_sequence: str,
+    structure: str,
+) -> float:
+    """Estimate ΔG from a dot-bracket structure using simplified NN rules.
+
+    Computes:
+    - Base-pair energies for all paired positions.
+    - Stacking bonuses for consecutive pairs.
+    - Loop penalties (hairpin, internal, bulge) — approximate.
+
+    Args:
+        rna_sequence: RNA sequence (uppercase, with U not T).
+        structure:    Dot-bracket secondary structure string.
+
+    Returns:
+        Estimated free energy in kcal/mol (negative = stable).
+    """
+    n = len(rna_sequence)
+    if n == 0 or len(structure) != n:
+        return 0.0
+
+    # Build pair table: for each position, store its partner (-1 if unpaired)
+    pair_table = [-1] * n
+    stack: list[int] = []
+    for pos, ch in enumerate(structure):
+        if ch == "(":
+            stack.append(pos)
+        elif ch == ")":
+            if stack:
+                partner = stack.pop()
+                pair_table[pos] = partner
+                pair_table[partner] = pos
+
+    dg = 0.0
+
+    # Base-pair energies
+    counted = set()
+    for i in range(n):
+        j = pair_table[i]
+        if j < 0 or (i, j) in counted:
+            continue
+        pair_dg = _pair_energy(rna_sequence[i], rna_sequence[j])
+        dg += pair_dg
+        counted.add((i, j))
+        counted.add((j, i))
+
+    # Stacking bonuses: consecutive pairs (i,j) and (i+1,j-1)
+    stacking_count = 0
+    counted_stacking = set()
+    for i in range(n):
+        j = pair_table[i]
+        if j < 0 or (i, j) in counted_stacking:
+            continue
+        # Walk inward counting stacks
+        si, sj = i, j
+        while (
+            si + 1 < sj - 1
+            and pair_table[si] == sj
+            and pair_table[si + 1] == sj - 1
+        ):
+            stacking_count += 1
+            counted_stacking.add((si, sj))
+            counted_stacking.add((sj, si))
+            si += 1
+            sj -= 1
+        counted_stacking.add((i, j))
+        counted_stacking.add((j, i))
+
+    dg += stacking_count * STACKING_BONUS
+
+    # Loop penalties (Turner 2004 approximate)
+    # Identify each loop by scanning for unpaired regions enclosed by
+    # the outermost pair of a stem.
+    loop_penalty_total = 0.0
+    visited = [False] * n
+
+    for i in range(n):
+        if pair_table[i] < 0 or visited[i]:
+            continue
+        j = pair_table[i]
+        # This is an opening pair; find the loop it encloses
+        loop_size = 0
+        k = i + 1
+        while k < j:
+            if pair_table[k] < 0:
+                # Unpaired nucleotide in this loop
+                loop_size += 1
+                visited[k] = True
+                k += 1
+            else:
+                # Nested pair — skip to its partner
+                visited[k] = True
+                visited[pair_table[k]] = True
+                k = pair_table[k] + 1
+
+        if loop_size > 0:
+            loop_penalty_total += _loop_penalty(loop_size)
+
+        visited[i] = True
+        visited[j] = True
 
     dg += loop_penalty_total
 
@@ -652,117 +747,6 @@ def _backtrack(
         k = -tr - 1
         _backtrack(trace, dp, seq, i, k, structure, min_loop)
         _backtrack(trace, dp, seq, k + 1, j, structure, min_loop)
-
-
-# ==============================================================================
-# Detailed ΔG estimation from structure
-# ==============================================================================
-
-def _estimate_dg_from_structure(
-    rna_sequence: str,
-    structure: str,
-) -> float:
-    """Estimate ΔG from a dot-bracket structure using simplified NN rules.
-
-    Computes:
-    - Base-pair energies for all paired positions.
-    - Stacking bonuses for consecutive pairs.
-    - Loop penalties (hairpin, internal, bulge) — approximate.
-
-    Args:
-        rna_sequence: RNA sequence (uppercase, with U not T).
-        structure:    Dot-bracket secondary structure string.
-
-    Returns:
-        Estimated free energy in kcal/mol (negative = stable).
-    """
-    n = len(rna_sequence)
-    if n == 0 or len(structure) != n:
-        return 0.0
-
-    # Build pair table: for each position, store its partner (-1 if unpaired)
-    pair_table = [-1] * n
-    stack: list[int] = []
-    for pos, ch in enumerate(structure):
-        if ch == "(":
-            stack.append(pos)
-        elif ch == ")":
-            if stack:
-                partner = stack.pop()
-                pair_table[pos] = partner
-                pair_table[partner] = pos
-
-    dg = 0.0
-
-    # Base-pair energies
-    counted = set()
-    for i in range(n):
-        j = pair_table[i]
-        if j < 0 or (i, j) in counted:
-            continue
-        pair_dg = _pair_energy(rna_sequence[i], rna_sequence[j])
-        dg += pair_dg
-        counted.add((i, j))
-        counted.add((j, i))
-
-    # Stacking bonuses: consecutive pairs (i,j) and (i+1,j-1)
-    stacking_count = 0
-    counted_stacking = set()
-    for i in range(n):
-        j = pair_table[i]
-        if j < 0 or (i, j) in counted_stacking:
-            continue
-        # Walk inward counting stacks
-        si, sj = i, j
-        while (
-            si + 1 < sj - 1
-            and pair_table[si] == sj
-            and pair_table[si + 1] == sj - 1
-        ):
-            stacking_count += 1
-            counted_stacking.add((si, sj))
-            counted_stacking.add((sj, si))
-            si += 1
-            sj -= 1
-        counted_stacking.add((i, j))
-        counted_stacking.add((j, i))
-
-    dg += stacking_count * STACKING_BONUS
-
-    # Loop penalties (Turner 2004 approximate)
-    # Identify each loop by scanning for unpaired regions enclosed by
-    # the outermost pair of a stem.
-    loop_penalty_total = 0.0
-    visited = [False] * n
-
-    for i in range(n):
-        if pair_table[i] < 0 or visited[i]:
-            continue
-        j = pair_table[i]
-        # This is an opening pair; find the loop it encloses
-        loop_size = 0
-        k = i + 1
-        while k < j:
-            if pair_table[k] < 0:
-                # Unpaired nucleotide in this loop
-                loop_size += 1
-                visited[k] = True
-                k += 1
-            else:
-                # Nested pair — skip to its partner
-                visited[k] = True
-                visited[pair_table[k]] = True
-                k = pair_table[k] + 1
-
-        if loop_size > 0:
-            loop_penalty_total += _loop_penalty(loop_size)
-
-        visited[i] = True
-        visited[j] = True
-
-    dg += loop_penalty_total
-
-    return round(dg, 2)
 
 
 # ==============================================================================

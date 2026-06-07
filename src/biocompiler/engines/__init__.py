@@ -27,6 +27,12 @@ from .viennarna_fallback import (
     predict_accessibility_fallback,
     find_stable_structures_fallback,
 )
+from .base import *  # noqa: F401,F403
+from .viennarna import *  # noqa: F401,F403
+from .esmfold import *  # noqa: F401,F403
+from .foldx import *  # noqa: F401,F403
+from .camsol import *  # noqa: F401,F403
+from .protein_design import *  # noqa: F401,F403
 
 # Re-export types from viennarna (or local fallbacks).
 # Use __getattr__ to avoid circular imports at module load time: if

@@ -111,6 +111,7 @@ __all__ = [
     "SpliceIsoform",
     "TypeCheckResult",
     "Certificate",
+    "_VERDICT_ORDER",
 ]
 
 

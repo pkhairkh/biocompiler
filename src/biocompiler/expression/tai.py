@@ -69,6 +69,8 @@ __all__ = [
     "WOBBLE_EFFICIENCY",
     "SUPPORTED_ORGANISMS_TAI",
     "compute_codon_weights",
+    "compute_tai_and_cai",
+    "optimize_for_tai",
 ]
 
 
@@ -413,3 +415,75 @@ def calculate_tai(
 
     tai = math.exp(log_sum / count)
     return round(tai, 4)
+
+
+def compute_tai_and_cai(dna: str, organism: str = "Escherichia_coli",
+                        **kwargs) -> dict:
+    """Compute both tAI and CAI for a DNA sequence.
+
+    Convenience function that returns both metrics in a single call,
+    along with a correlation indicator.
+
+    Args:
+        dna: DNA sequence string.
+        organism: Target organism name or alias.
+
+    Returns:
+        Dictionary with keys:
+            - 'tai': tRNA Adaptation Index value (0.0-1.0)
+            - 'cai': Codon Adaptation Index value (0.0-1.0)
+            - 'correlation': +1.0 if both metrics agree on direction,
+              -1.0 if they disagree.
+    """
+    from ..translation import compute_cai
+    tai_val = compute_tai(dna, organism=organism, **kwargs)
+    cai_val = compute_cai(dna, organism=organism)
+    # Simple correlation: both high or both low → +1, otherwise -1
+    mid_tai = 0.5
+    mid_cai = 0.5
+    correlation = 1.0 if (tai_val >= mid_tai) == (cai_val >= mid_cai) else -1.0
+    return {"tai": tai_val, "cai": cai_val, "correlation": correlation}
+
+
+def optimize_for_tai(protein: str, organism: str = "Escherichia_coli") -> str:
+    """Optimize a protein sequence for maximum tAI.
+
+    Selects the codon with the highest tAI weight for each amino acid.
+
+    Args:
+        protein: Amino acid sequence string.
+        organism: Target organism name or alias.
+
+    Returns:
+        Optimized DNA sequence string.
+
+    Raises:
+        ValueError: If protein contains invalid amino acid codes.
+    """
+    from ..constants import CODON_TABLE
+    weights = compute_codon_weights(organism)
+    # Build reverse map: amino acid → list of (codon_dna, weight)
+    aa_to_codons: dict[str, list[tuple[str, float]]] = {}
+    for codon_dna, aas in CODON_TABLE.items():
+        for aa in aas:
+            if aa == "*" or aa == "M":
+                continue
+            codon_rna = codon_dna.replace("T", "U")
+            w = weights.get(codon_rna, 0.0)
+            aa_to_codons.setdefault(aa, []).append((codon_dna, w))
+
+    result_codons = []
+    for aa in protein:
+        if aa == "M":
+            result_codons.append("ATG")
+            continue
+        if aa == "*":
+            result_codons.append("TAA")
+            continue
+        candidates = aa_to_codons.get(aa)
+        if candidates is None:
+            raise ValueError(f"Invalid amino acid: {aa}")
+        best_codon = max(candidates, key=lambda x: x[1])[0]
+        result_codons.append(best_codon)
+
+    return "".join(result_codons)

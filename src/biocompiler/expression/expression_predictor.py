@@ -40,6 +40,10 @@ __all__ = [
     "ExpressionPrediction",
     "predict_expression",
     "ExpressionPredictor",
+    "_compute_gc_optimality",
+    "_FACTOR_WEIGHTS",
+    "_GC_SWEET_SPOT",
+    "_estimate_mrna_stability",
 ]
 
 

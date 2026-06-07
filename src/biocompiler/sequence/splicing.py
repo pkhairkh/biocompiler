@@ -26,6 +26,12 @@ __all__ = [
     "maxent_score_v2",
     "score_splice_sites",
     "compute_splice_isoforms",
+    "_MAXENT_PWM",
+    "_BASE_INDEX",
+    "_MIN_CONTEXT_LEN",
+    "_PWM_CONTEXT_LEN",
+    "_PWM_DOWNSTREAM",
+    "_PWM_UPSTREAM",
 ]
 
 # ==============================================================================

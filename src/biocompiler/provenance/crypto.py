@@ -43,6 +43,8 @@ __all__ = [
     "verify_record",
     "ProvenanceIntegrityError",
     "get_provenance_secret",
+    "_canonical_json",
+    "is_mandatory_provenance",
 ]
 
 # Environment variable for the provenance signing key

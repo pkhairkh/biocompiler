@@ -52,6 +52,10 @@ __all__ = [
     "check_sliding_gc",
     "fix_sliding_gc_violations",
     "evaluate_sliding_gc",
+    "_check_sliding_gc_python",
+    "_FORCE_PYTHON_GC_WINDOW",
+    "_HAS_NUMBA",
+    "_check_sliding_gc_numba",
 ]
 
 

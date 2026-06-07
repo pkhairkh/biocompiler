@@ -64,6 +64,10 @@ __all__ = [
     "_CURRENT_HASH_VERSION",
     "_HASH_ALGORITHM",
     "_V2_HASH_PARAM_KEYS",
+    "CertLevel",
+    "_validate_cert_structure",
+    "_CERT_REQUIRED_KEYS",
+    "_PROVENANCE_REQUIRED_KEYS",
 ]
 
 # Certificate version (integer, incremented when the hash format changes)

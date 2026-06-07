@@ -29,6 +29,10 @@ __all__ = [
     "import_fasta",
     "import_genbank",
     "import_sequence",
+    "_parse_exon_boundaries",
+    "_clean_qualifier_value",
+    "_looks_like_path",
+    "_resolve_input",
 ]
 
 # GenBank format column constants (RFC 8466 / GenBank flat-file spec)

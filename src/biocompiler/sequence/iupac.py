@@ -41,6 +41,7 @@ __all__ = [
     "expand_ambiguous",
     "has_ambiguous",
     "validate_iupac_sequence",
+    "VALID_IUPAC_BASES",
 ]
 
 logger = logging.getLogger(__name__)

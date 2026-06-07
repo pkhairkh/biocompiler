@@ -65,6 +65,8 @@ __all__ = [
     "SCORE_ROUND_DIGITS",
     "KOZAK_UPSTREAM_CONTEXT",
     "KOZAK_DOWNSTREAM_CONTEXT",
+    "_iupac_match",
+    "_score_kozak",
 ]
 
 # Kozak consensus position weights for scoring

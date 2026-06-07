@@ -56,3 +56,15 @@ Thumbs.db
 *.bak
 *.orig
 *_backup.py
+
+# Numba compiled kernels (regenerable)
+*.nbc
+*.nbi
+
+# Benchmark output artifacts (regenerable)
+benchmark_results/*.png
+benchmark_results/*.json
+
+# Hypothesis cache
+.hypothesis/
+
