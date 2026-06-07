@@ -103,7 +103,7 @@ For proteins longer than 10 kb, BioCompiler uses chunk-based optimization:
 
 .. code-block:: python
 
-   from biocompiler.large_sequence import optimize_large_sequence
+   from biocompiler.optimizer.large_sequence import optimize_large_sequence
 
    result = optimize_large_sequence(long_protein, organism="CHO_K1")
 
@@ -147,7 +147,7 @@ BioCompiler supports multiple objective functions for optimization:
 
 .. code-block:: python
 
-   from biocompiler.objectives import resolve_objective, OBJECTIVE_REGISTRY
+   from biocompiler.optimizer.objectives import resolve_objective, OBJECTIVE_REGISTRY
 
    # Available objectives
    print(list(OBJECTIVE_REGISTRY.keys()))

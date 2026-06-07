@@ -11,41 +11,41 @@ This section documents the public API for each top-level module.
    :maxdepth: 2
    :caption: Core Modules
 
-   biocompiler.optimization
+   biocompiler.optimizer
    biocompiler.biosecurity
-   biocompiler.protein_verification
-   biocompiler.objectives
+   biocompiler.validation.protein_verification
+   biocompiler.optimizer.objectives
 
 .. toctree::
    :maxdepth: 2
    :caption: Constraint Modules
 
-   biocompiler.multigene
-   biocompiler.pattern_enforcement
-   biocompiler.iupac
-   biocompiler.sliding_gc
-   biocompiler.local_gc
+   biocompiler.optimizer.multigene
+   biocompiler.sequence.pattern_enforcement
+   biocompiler.sequence.iupac
+   biocompiler.sequence.sliding_gc
+   biocompiler.sequence.local_gc
 
 .. toctree::
    :maxdepth: 2
    :caption: Design & Assembly
 
-   biocompiler.parts
-   biocompiler.assembly
-   biocompiler.sbol_export
-   biocompiler.sbol_import
+   biocompiler.optimizer.parts
+   biocompiler.optimizer.assembly
+   biocompiler.export.sbol_export
+   biocompiler.export.sbol_import
 
 .. toctree::
    :maxdepth: 2
    :caption: Integration & Export
 
    biocompiler.lims
-   biocompiler.annotation
-   biocompiler.genbank_roundtrip
+   biocompiler.export.annotation
+   biocompiler.export.genbank_roundtrip
 
 .. toctree::
    :maxdepth: 2
    :caption: Scoring
 
-   biocompiler.tai
-   biocompiler.wetlab_validation
+   biocompiler.expression.tai
+   biocompiler.validation.wetlab_validation

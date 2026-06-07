@@ -1,7 +1,7 @@
-biocompiler.wetlab\_validation
-===============================
+biocompiler.validation.wetlab\_validation
+==========================================
 
-.. automodule:: biocompiler.wetlab_validation
+.. automodule:: biocompiler.validation.wetlab_validation
    :members:
    :undoc-members:
    :show-inheritance:

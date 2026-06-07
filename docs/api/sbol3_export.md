@@ -6,7 +6,7 @@ such as Benchling, SynBioHub, and Pigeon.
 
 ## Overview
 
-The SBOL3 export module (`biocompiler.sbol_export`) provides a **pure-Python**
+The SBOL3 export module (`biocompiler.export.sbol_export`) provides a **pure-Python**
 SBOL3 XML/JSON-LD generator — no external SBOL library dependency is required.
 The output conforms to the SBOL3 specification and can be validated with
 `sbol-validate` or loaded into any SBOL3-compliant tool.
@@ -59,7 +59,7 @@ BioCompiler maps biological concepts to SO identifiers:
 
 ```python
 from biocompiler.api import optimize_sequence
-from biocompiler.sbol_export import export_sbol
+from biocompiler.export.sbol_export import export_sbol
 
 # Optimize a protein
 result = optimize_sequence(
@@ -90,7 +90,7 @@ path_json = export_sbol(
 
 ```python
 from biocompiler.api import optimize_sequence
-from biocompiler.sbol_export import export_sbol_collection
+from biocompiler.export.sbol_export import export_sbol_collection
 
 # Optimize multiple proteins
 results = []
@@ -323,7 +323,7 @@ for err in report.errors:
 The internal `SBOLComponent` data class represents a single biological component:
 
 ```python
-from biocompiler.sbol_export import SBOLComponent
+from biocompiler.export.sbol_export import SBOLComponent
 
 comp = SBOLComponent(
     identity="",  # auto-assigned by export_sbol

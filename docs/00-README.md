@@ -50,6 +50,8 @@
 | CSP Solver | [16-CSP-Solver.md](16-CSP-Solver.md) | Constraint satisfaction solver (Z3, OR-Tools) for gene optimization |
 | ViennaRNA Integration | [17-ViennaRNA-Integration.md](17-ViennaRNA-Integration.md) | mRNA secondary structure prediction integration |
 | MHCflurry Integration | [18-MHCflurry-Integration.md](18-MHCflurry-Integration.md) | Offline MHC-I binding prediction integration |
+| Competitive Landscape | [19-Competitive-Landscape.md](19-Competitive-Landscape.md) | Competitive landscape analysis and positioning |
+| Case Studies | [20-Case-Studies.md](20-Case-Studies.md) | Real-world use cases and case studies |
 
 ## v12.0.0 Release Highlights
 
@@ -69,20 +71,20 @@ Nygard-format ADRs documenting each major architectural decision: [adr/](adr/)
 
 | ADR | File |
 |---|---|
-| ADR-0001 | [ADR-0001.md](adr/ADR-0001.md) |
-| ADR-0002 | [ADR-0002.md](adr/ADR-0002.md) |
-| ADR-0003 | [ADR-0003.md](adr/ADR-0003.md) |
-| ADR-0004 | [ADR-0004.md](adr/ADR-0004.md) |
-| ADR-0005 | [ADR-0005.md](adr/ADR-0005.md) |
-| ADR-0006 | [ADR-0006.md](adr/ADR-0006.md) |
-| ADR-0007 | [ADR-0007.md](adr/ADR-0007.md) |
-| ADR-0008 | [ADR-0008.md](adr/ADR-0008.md) |
-| ADR-0009 | [ADR-0009.md](adr/ADR-0009.md) |
-| ADR-0010 | [ADR-0010.md](adr/ADR-0010.md) |
+| ADR-0001 | [ADR-0001-pipeline-architecture.md](adr/ADR-0001-pipeline-architecture.md) |
+| ADR-0002 | [ADR-0002-protocol-buffers-ir-schemas.md](adr/ADR-0002-protocol-buffers-ir-schemas.md) |
+| ADR-0003 | [ADR-0003-ndfst-splicing.md](adr/ADR-0003-ndfst-splicing.md) |
+| ADR-0004 | [ADR-0004-constraint-satisfaction-gene-design.md](adr/ADR-0004-constraint-satisfaction-gene-design.md) |
+| ADR-0005 | [ADR-0005-three-valued-logic-verdicts.md](adr/ADR-0005-three-valued-logic-verdicts.md) |
+| ADR-0006 | [ADR-0006-ffi-folding-ptms.md](adr/ADR-0006-ffi-folding-ptms.md) |
+| ADR-0007 | [ADR-0007-declarative-grammar-configuration.md](adr/ADR-0007-declarative-grammar-configuration.md) |
+| ADR-0008 | [ADR-0008-greedy-multi-objective-optimizer.md](adr/ADR-0008-greedy-multi-objective-optimizer.md) |
+| ADR-0009 | [ADR-0009-type-directed-protein-mutagenesis.md](adr/ADR-0009-type-directed-protein-mutagenesis.md) |
+| ADR-0010 | [ADR-0010-graduated-certificates.md](adr/ADR-0010-graduated-certificates.md) |
 | ADR-0011 | [ADR-0011-gt-free-codon-prioritization.md](adr/ADR-0011-gt-free-codon-prioritization.md) |
 | ADR-0012 | [ADR-0012-cpg-avoidance.md](adr/ADR-0012-cpg-avoidance.md) |
 | ADR-0013 | [ADR-0013-mutagenesis-gt-mandatory.md](adr/ADR-0013-mutagenesis-gt-mandatory.md) |
-| ADR-0014 | [ADR-0014.md](adr/ADR-0014.md) |
+| ADR-0014 | [ADR-0014-predicate-checking-delegation.md](adr/ADR-0014-predicate-checking-delegation.md) |
 | ADR-0015 | [ADR-0015-biosecurity-screening.md](adr/ADR-0015-biosecurity-screening.md) |
 | ADR-0016 | [ADR-0016-default-safety-measures.md](adr/ADR-0016-default-safety-measures.md) |
 | ADR-0017 | [ADR-0017-feature-parity-dnachisel.md](adr/ADR-0017-feature-parity-dnachisel.md) |

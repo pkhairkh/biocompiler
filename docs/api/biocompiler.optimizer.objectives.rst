@@ -1,7 +1,7 @@
-biocompiler.protein\_verification
+biocompiler.optimizer.objectives
 =================================
 
-.. automodule:: biocompiler.protein_verification
+.. automodule:: biocompiler.optimizer.objectives
    :members:
    :undoc-members:
    :show-inheritance:

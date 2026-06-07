@@ -1,7 +1,7 @@
-biocompiler.genbank\_roundtrip
+biocompiler.optimizer.assembly
 ===============================
 
-.. automodule:: biocompiler.genbank_roundtrip
+.. automodule:: biocompiler.optimizer.assembly
    :members:
    :undoc-members:
    :show-inheritance:

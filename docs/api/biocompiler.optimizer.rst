@@ -1,7 +1,7 @@
-biocompiler.assembly
+biocompiler.optimizer
 =====================
 
-.. automodule:: biocompiler.assembly
+.. automodule:: biocompiler.optimizer
    :members:
    :undoc-members:
    :show-inheritance:

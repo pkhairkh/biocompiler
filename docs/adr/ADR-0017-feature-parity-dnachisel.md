@@ -36,54 +36,54 @@ The gap between BioCompiler and DNAchisel fell into six categories:
 
 Adopt systematic feature parity (Alternative 3), implementing each DNAchisel feature natively in BioCompiler with the following module assignments:
 
-1. **IUPAC ambiguous base support** (`biocompiler.iupac`):
+1. **IUPAC ambiguous base support** (`biocompiler.sequence.iupac`):
    - `resolve_ambiguous()` with strategies: most_common, cai_optimal, gc_balanced, first
    - `expand_ambiguous()` for enumeration of all concrete sequences
    - `validate_iupac_sequence()` for input validation
    - Integration with the optimizer: IUPAC inputs are resolved before optimization using the `cai_optimal` strategy by default
 
-2. **Pattern enforcement** (`biocompiler.pattern_enforcement`):
+2. **Pattern enforcement** (`biocompiler.sequence.pattern_enforcement`):
    - `PatternConstraint` dataclass with action (enforce/avoid), scope (dna/protein), strand (both/forward/reverse)
    - `check_pattern()` and `enforce_pattern()` for single constraints
    - `enforce_patterns()` for iterative multi-constraint enforcement
    - IUPAC pattern expansion and Aho-Corasick multi-pattern scanning
    - Supersedes the restriction-site-only avoidance; restriction sites are now a special case of avoid-pattern constraints
 
-3. **Custom objectives** (`biocompiler.objectives`):
+3. **Custom objectives** (`biocompiler.optimizer.objectives`):
    - `ObjectiveFunction` Protocol: `(dna, protein, organism) -> float`
    - Built-in objectives: cai, cai_gc_balanced, codon_pair, min_max_gc
    - `resolve_objective()` for name/callable resolution
    - Objective refinement pass after standard optimization
    - `objective_score` field in `OptimizationResult`
 
-4. **Sliding-window GC** (`biocompiler.sliding_gc`):
+4. **Sliding-window GC** (`biocompiler.sequence.sliding_gc`):
    - `check_sliding_gc()` with configurable window size, min/max GC, step
    - `fix_sliding_gc_violations()` using CAI-aware synonymous codon substitution
    - `evaluate_sliding_gc()` as a type-system predicate
    - NUMBA-accelerated kernel with pure-Python fallback
 
-5. **Local GC constraints** (`biocompiler.local_gc`):
+5. **Local GC constraints** (`biocompiler.sequence.local_gc`):
    - `LocalGCConstraint` for region-specific GC bounds
    - `check_local_gc()` and `optimize_local_gc()` for fine-grained regional control
 
-6. **Part libraries** (`biocompiler.parts`):
+6. **Part libraries** (`biocompiler.optimizer.parts`):
    - `Part` dataclass and `PartLibrary` registry
    - Built-in default parts (promoters, RBS, terminators, linkers)
    - YAML/JSON loading from user-provided files
    - Search by type and organism
 
-7. **Assembly planning** (`biocompiler.assembly`):
+7. **Assembly planning** (`biocompiler.optimizer.assembly`):
    - `plan_golden_gate()` for Type IIS restriction enzyme assembly
    - `plan_gibson()` for overlap-based seamless assembly
    - Internal restriction site checking for Golden Gate compatibility
 
-8. **SBOL3 export/import** (`biocompiler.sbol_export`, `biocompiler.sbol_import`):
+8. **SBOL3 export/import** (`biocompiler.export.sbol_export`, `biocompiler.export.sbol_import`):
    - Pure-Python SBOL3 RDF/XML generator (no external SBOL library dependency)
    - Component, Sequence, Measure, Activity, Plan elements
    - JSON-LD alternative serialization
    - Import and conversion to GeneSpec for re-optimization
 
-9. **GenBank round-trip verification** (`biocompiler.genbank_roundtrip`):
+9. **GenBank round-trip verification** (`biocompiler.export.genbank_roundtrip`):
    - `verify_genbank_roundtrip()` for export→import→compare verification
    - Sequence integrity and annotation preservation checks
 
@@ -92,7 +92,7 @@ Adopt systematic feature parity (Alternative 3), implementing each DNAchisel fea
     - `BenchlingExporter` and `LabGuruExporter` concrete implementations
     - Convenience functions `export_to_benchling()`, `export_to_labguru()`
 
-11. **Sequence annotation** (`biocompiler.annotation`):
+11. **Sequence annotation** (`biocompiler.export.annotation`):
     - Automatic feature detection: ORFs, restriction sites, CpG islands, splice sites, repeats, GC/AT-rich regions, RBS
     - `annotate_to_genbank()` for fully-annotated GenBank output
 

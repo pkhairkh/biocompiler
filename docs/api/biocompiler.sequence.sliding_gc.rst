@@ -1,7 +1,7 @@
-biocompiler.pattern\_enforcement
+biocompiler.sequence.sliding\_gc
 =================================
 
-.. automodule:: biocompiler.pattern_enforcement
+.. automodule:: biocompiler.sequence.sliding_gc
    :members:
    :undoc-members:
    :show-inheritance:

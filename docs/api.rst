@@ -105,7 +105,7 @@ Optimizer
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: biocompiler.objectives
+.. automodule:: biocompiler.optimizer.objectives
    :members:
    :undoc-members:
    :show-inheritance:

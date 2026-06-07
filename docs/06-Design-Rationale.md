@@ -326,13 +326,13 @@ The following table compares three approaches across key dimensions:
 ## 5. Architectural Decision Records
 
 > **Note:** Each ADR below is also available as a standalone Nygard-format file in the `adr/` directory:
-> - [ADR-0001: Pipeline Architecture](adr/ADR-0001.md)
-> - [ADR-0002: Protocol Buffers for IR Schemas](adr/ADR-0002.md)
-> - [ADR-0003: Non-Deterministic Finite-State Transducers for Splicing](adr/ADR-0003.md)
-> - [ADR-0004: Constraint Satisfaction for Gene Design](adr/ADR-0004.md)
-> - [ADR-0005: Three-Valued Logic for Verdicts](adr/ADR-0005.md)
-> - [ADR-0006: Foreign Function Interface for Folding and PTMs](adr/ADR-0006.md)
-> - [ADR-0007: Declarative Grammar Configuration](adr/ADR-0007.md)
+> - [ADR-0001: Pipeline Architecture](adr/ADR-0001-pipeline-architecture.md)
+> - [ADR-0002: Protocol Buffers for IR Schemas](adr/ADR-0002-protocol-buffers-ir-schemas.md)
+> - [ADR-0003: Non-Deterministic Finite-State Transducers for Splicing](adr/ADR-0003-ndfst-splicing.md)
+> - [ADR-0004: Constraint Satisfaction for Gene Design](adr/ADR-0004-constraint-satisfaction-gene-design.md)
+> - [ADR-0005: Three-Valued Logic for Verdicts](adr/ADR-0005-three-valued-logic-verdicts.md)
+> - [ADR-0006: Foreign Function Interface for Folding and PTMs](adr/ADR-0006-ffi-folding-ptms.md)
+> - [ADR-0007: Declarative Grammar Configuration](adr/ADR-0007-declarative-grammar-configuration.md)
 >
 > The standalone files follow the Michael Nygard ADR format (Title / Status / Date / Context / Decision / Consequences). The sections below provide the same decisions in the ISO 42010 §7 format used throughout this document, with additional narrative context linking each decision to the critical analysis and deterministic methods framework.
 

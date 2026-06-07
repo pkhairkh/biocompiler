@@ -45,7 +45,7 @@ The wobble rules are:
 
 Adopt Alternative 3: add tAI as an alternative objective alongside CAI.
 
-The `biocompiler.tai` module provides:
+The `biocompiler.expression.tai` module provides:
 
 1. **tAI computation**: `compute_tai(dna, organism)` — computes the tRNA Adaptation Index for a DNA sequence and organism. Uses the same geometric-mean structure as CAI, but with tRNA-based weights.
 
