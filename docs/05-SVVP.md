@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | **Document ID** | DOC-05 |
-| **Version** | 1.0.0-draft |
-| **Status** | ROUGH DRAFT |
-| **Date** | 2026-05-30 |
+| **Version** | 12.0.0 |
+| **Status** | Current |
+| **Date** | 2026-06-07 |
 | **Prepared By** | BioCompiler Project Team |
 | **Reviewed By** | [TBD at baseline review] |
 | **Approved By** | [TBD at baseline review] |
@@ -152,7 +152,7 @@ Integration tests verify that component pairs and multi-component sequences inte
 | TC-I-001 | COMP-01 → COMP-02 (Scanner → Splicing) | Scan a 5-exon pre-mRNA gene, pass token stream to Splicing Engine, verify NDFST receives correct token stream and produces valid isoforms | Splicing Engine receives IR-Seq with all tokens (start codons, splice sites, etc.); produces ≥ 1 isoform with correct exon boundaries |
 | TC-I-002 | COMP-02 → COMP-03 (Splicing → Translation) | Splice a gene with 2 isoforms, translate each isoform, verify each produces a distinct IR-Peptide with correct amino acid sequences | Two IR-Peptide records produced; each has a different amino acid sequence; each references its source isoform ID |
 | TC-I-003 | COMP-03 → COMP-04 (Translation → FFI) | Translate an mRNA, invoke a mock folding adapter, verify IR-Structure is produced with SLOT fields filled | IR-Structure contains C-alpha coordinates and pLDDT scores; provenance metadata recorded; INV-STR-01 and INV-STR-02 invariants hold |
-| TC-I-004 | COMP-03 → COMP-05 (Translation → Type System) | Translate an mRNA, then type-check the resulting IR-Peptide against all seven type predicates | Type checker receives IR-Peptide with valid codon assignments; produces verdicts for all seven predicates; determinism holds |
+| TC-I-004 | COMP-03 → COMP-05 (Translation → Type System) | Translate an mRNA, then type-check the resulting IR-Peptide against all 33 type predicates (13 core + 20 SLOT-dependent) | Type checker receives IR-Peptide with valid codon assignments; produces verdicts for all 33 predicates; determinism holds |
 | TC-I-005 | COMP-05 → COMP-06 (Type System → Optimizer) | Type-check a sequence that produces at least one FAIL verdict (e.g., NoCrypticSplice = FAIL), pass to Optimizer | Optimizer receives FAIL verdicts and constraint definitions; searches for feasible codon assignment that resolves the FAIL |
 | TC-I-006 | COMP-06 → COMP-07 (Optimizer → Certificate) | Optimize a feasible gene design, then generate a guarantee certificate | Certificate includes optimized sequence, all PASS verdicts with derivation traces, CSP constraint set and assignment, and provenance |
 | TC-I-007 | Full Pipeline (COMP-01 through COMP-07) | Execute the complete single-gene pipeline (UC-01 main success scenario): input protein + constraints → optimized mRNA + certificate | Pipeline produces optimized mRNA sequence; all type predicates return PASS; certificate is generated and passes standalone verification |

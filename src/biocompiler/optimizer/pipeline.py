@@ -102,6 +102,8 @@ def optimize_sequence(
     cai_threshold: float = 0.5,
     enzymes: list[str] | None = None,
     strategy: str = "hybrid",
+    source_organism: str | None = None,
+    harmonization_cai_weight: float = 0.5,
     use_csp_solver: bool = False,
     optimize_mrna_stability: bool = True,
     strict_mode: bool = True,
@@ -179,10 +181,23 @@ def optimize_sequence(
             window.  If None (default), uses ``gc_hi``.
         cai_threshold: Minimum CAI score for the CodonAdapted predicate.
         enzymes: List of restriction enzyme names to avoid.
-        strategy: Optimization strategy ('hybrid', 'constraint_first', or 'cai_first').
+        strategy: Optimization strategy ('hybrid', 'constraint_first', 'cai_first',
+            or 'harmonize').
             'hybrid' (default for v10): Greedy init + priority-queue local search + hill climb.
             'constraint_first': Legacy sequential pipeline.
             'cai_first': Maximize CAI first, then fix constraints.
+            'harmonize': Use codon harmonization (Claassens RCA method) as initialization
+            instead of greedy CAI maximization. Preserves translational kinetics by
+            matching the source organism's relative codon usage profile in the target
+            host. Requires ``source_organism`` parameter.
+        source_organism: Source organism for codon harmonization (used with
+            ``strategy='harmonize'``). When specified, the harmonized sequence
+            matches the source organism's Relative Codon Adaptation (RCA) profile
+            in the target host. If ``None`` and ``strategy='harmonize'``, defaults
+            to the target organism (self-harmonization).
+        harmonization_cai_weight: Blend weight for CAI fallback in harmonization
+            (0.0–1.0). 0.0 = pure harmonization, 1.0 = pure CAI maximization.
+            Only used with ``strategy='harmonize'``. Default 0.5.
         use_csp_solver: If True, try CSP/SMT solver before greedy (default False).
         optimize_mrna_stability: If True, run a soft mRNA stability improvement
             pass after CAI optimization. Identifies destabilizing motifs (ATTTA,
@@ -526,6 +541,195 @@ def optimize_sequence(
     effective_avoid_gt = kwargs.get("avoid_gt", not is_prokaryote)
     effective_splice_low = kwargs.get("splice_low", 3.0 if not is_prokaryote else 999.0)
     effective_splice_high = kwargs.get("splice_high", 6.0 if not is_prokaryote else 999.0)
+
+    # ── Harmonize strategy path (Claassens RCA method) ────────────────
+    if strategy == "harmonize":
+        from .codon_harmonization import (
+            harmonize_codons as _harmonize_codons,
+            harmonize_with_cai_fallback as _harmonize_with_cai_fallback,
+            compute_harmonization_score as _compute_harmonization_score,
+        )
+
+        _source_org = source_organism or organism
+
+        if harmonization_cai_weight > 0:
+            optimized_seq = _harmonize_with_cai_fallback(
+                target_protein,
+                source_organism=_source_org,
+                target_organism=organism,
+                cai_weight=harmonization_cai_weight,
+            )
+        else:
+            optimized_seq = _harmonize_codons(
+                target_protein,
+                source_organism=_source_org,
+                target_organism=organism,
+            )
+
+        # Compute metrics
+        from ..scanner import gc_content as _gc_content_harm
+        from ..translation import compute_cai as _compute_cai_harm
+        gc = _gc_content_harm(optimized_seq)
+        try:
+            cai_val = _compute_cai_harm(optimized_seq, organism=organism)
+        except Exception:
+            logger.debug("CAI computation failed for harmonized sequence", exc_info=True)
+            cai_val = 0.0
+
+        # Compute harmonization score
+        try:
+            harm_score = _compute_harmonization_score(
+                optimized_seq,
+                source_organism=_source_org,
+                target_organism=organism,
+            )
+        except Exception:
+            harm_score = 0.0
+
+        # Evaluate predicates
+        from ..type_system import PredicateResult as _PR_harm
+        pred_results = []
+
+        # NoStopCodons
+        from ..type_system import check_no_stop_codons as _check_no_stop
+        pred_results.append(_check_no_stop(optimized_seq))
+
+        # NoRestrictionSite
+        from ..type_system import check_no_restriction_site as _check_no_rs
+        pred_results.append(_check_no_rs(
+            optimized_seq, enzymes or ["EcoRI", "BamHI", "XhoI", "HindIII", "NotI"]
+        ))
+
+        # GCInRange
+        gc_ok = gc_lo <= gc <= gc_hi
+        pred_results.append(_PR_harm(
+            "GCInRange", gc_ok,
+            details=f"GC content: {gc:.3f} (range [{gc_lo}, {gc_hi}])"
+        ))
+
+        # CodonOptimality
+        all_optimal = cai_val >= cai_threshold
+        pred_results.append(_PR_harm(
+            "CodonOptimality", all_optimal,
+            details=f"CAI={cai_val:.4f}, min={cai_threshold}"
+        ))
+
+        # Skip eukaryotic constraints for prokaryotes
+        if is_prokaryote:
+            pred_results.append(_PR_harm(
+                "NoCrypticSplice", True,
+                details="Skipped for prokaryotic organism"
+            ))
+            pred_results.append(_PR_harm(
+                "NoCpGIsland", True,
+                details="Skipped for prokaryotic organism"
+            ))
+            pred_results.append(_PR_harm(
+                "NoGTDinucleotide", True,
+                details="Skipped for prokaryotic organism"
+            ))
+        else:
+            # Eukaryotic predicate checks
+            from ..type_system import check_no_cryptic_splice as _check_splice
+            from ..type_system import check_no_cpg_island as _check_cpg
+            pred_results.append(_check_splice(
+                optimized_seq,
+                low_thresh=effective_splice_low,
+                high_thresh=effective_splice_high,
+            ))
+            pred_results.append(_check_cpg(optimized_seq))
+            if effective_avoid_gt:
+                pred_results.append(_PR_harm(
+                    "NoGTDinucleotide", True,
+                    details="GT avoidance not applied for harmonized sequences"
+                ))
+            else:
+                pred_results.append(_PR_harm(
+                    "NoGTDinucleotide", True,
+                    details="GT avoidance disabled"
+                ))
+
+        # ValidCodingSeq
+        from ..type_system import check_valid_coding_seq as _check_valid
+        pred_results.append(_check_valid(optimized_seq))
+
+        cert_text = format_certificate(pred_results, optimized_seq, species_key)
+
+        failed = [r.predicate for r in pred_results if not r.passed]
+        satisfied = [r.predicate for r in pred_results if r.passed]
+
+        # Translation verification
+        from ..protein_verification import verify_and_raise as _verify_harm
+        _verify_harm(optimized_seq, target_protein, organism=organism)
+
+        # UTR suggestions
+        _utr5_seq = None
+        _utr3_seq = None
+        _utr_score5 = None
+        _utr_score3 = None
+        if include_utr:
+            from ..utr_models import suggest_5utr as _s5h, suggest_3utr as _s3h
+            from ..utr_models import score_5utr as _sc5h, score_3utr as _sc3h
+            try:
+                _utr5_seq = _s5h(organism)
+                _utr_score5 = _sc5h(_utr5_seq, organism)
+            except ValueError:
+                logger.debug("No 5' UTR suggestion for organism '%s'", organism)
+            try:
+                _utr3_seq = _s3h(organism)
+                _utr_score3 = _sc3h(_utr3_seq, organism)
+            except ValueError:
+                logger.debug("No 3' UTR suggestion for organism '%s'", organism)
+
+        # Build provenance record
+        _harm_provenance_record = None
+        try:
+            from ..provenance import OptimizationRecord as _OptRec_harm
+            from ..provenance import _get_biocompiler_version as _get_ver_harm
+            _harm_provenance_record = _OptRec_harm(
+                input_sequence=target_protein,
+                output_sequence=optimized_seq,
+                organism=organism,
+                constraints_applied=sorted([r.predicate for r in pred_results]),
+                mutations_made=[],
+                solver_backend="harmonize",
+                solve_time=round(_time.monotonic() - _start_time, 6),
+                seed_used=seed,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                biocompiler_version=_get_ver_harm(),
+            )
+        except Exception:
+            logger.debug("Provenance record creation failed for harmonize strategy", exc_info=True)
+
+        # Strict mode check
+        if strict_mode and failed:
+            from ..exceptions import OptimizationConstraintError
+            raise OptimizationConstraintError(
+                f"Harmonized sequence fails {len(failed)} predicate(s): {failed}",
+                failed_predicates=failed,
+            )
+
+        return OptimizationResult(
+            sequence=optimized_seq,
+            gc_content=round(gc, 4),
+            cai=cai_val,
+            failed_predicates=failed,
+            predicate_results=pred_results,
+            certificate_text=cert_text,
+            protein=target_protein,
+            fallback_used=False,
+            satisfied_predicates=satisfied,
+            codon_pair_bias=None,
+            suggested_5utr=_utr5_seq,
+            suggested_3utr=_utr3_seq,
+            utr_score_5=_utr_score5,
+            utr_score_3=_utr_score3,
+            convergence_status="converged",
+            iterations_used=1,
+            objective_score=harm_score,
+            provenance=_harm_provenance_record,
+            biosecurity_screening_result=_biosecurity_result,
+        )
 
     # ── Hybrid strategy path (v10 default) ────────────────────────
     if strategy == "hybrid":
@@ -1056,13 +1260,22 @@ def optimize_sequence(
     # ── mRNA stability improvement pass ────────────────────────────
     # PERF: Skip mRNA stability for short sequences (<300aa / <900bp)
     # where the stability improvement is negligible.
+    # Also skip if no ATTTA motifs exist (nothing to remove).
     _MRNA_STABILITY_MIN_LENGTH_BP = 900  # 300aa * 3
 
     mrna_stability_score: float | None = None
     destabilizing_motifs_removed: int = 0
     stability_improvement: float | None = None
 
-    if optimize_mrna_stability and len(optimized_seq) >= _MRNA_STABILITY_MIN_LENGTH_BP:
+    # PERF: Quick pre-check — if no ATTTA motifs exist, the mRNA
+    # stability pass cannot find any destabilizing motifs to remove.
+    _has_destabilizing_motifs = (
+        len(optimized_seq) >= _MRNA_STABILITY_MIN_LENGTH_BP
+        and optimize_mrna_stability
+        and "ATTTA" in optimized_seq
+    )
+
+    if _has_destabilizing_motifs:
         from ..mrna_stability import score_mrna_stability, suggest_mutations_for_stability
 
         initial_stability = score_mrna_stability(optimized_seq, organism)

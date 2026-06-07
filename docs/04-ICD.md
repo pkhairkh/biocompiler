@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | **Document ID** | DOC-04 |
-| **Version** | 1.0.0-draft |
-| **Status** | ROUGH DRAFT |
-| **Date** | 2026-05-30 |
+| **Version** | 12.0.0 |
+| **Status** | Current |
+| **Date** | 2026-06-07 |
 | **Prepared By** | BioCompiler Project Team |
 | **Reviewed By** | [TBD at baseline review] |
 | **Approved By** | [TBD at baseline review] |
@@ -965,7 +965,7 @@ def invoke_ptm_prediction(
 | **Output** | `TypeCheckResult`: For each predicate, a verdict (PASS/FAIL/UNCERTAIN) with derivation trace, violation identification, or knowledge gap specification. |
 | **Error Conditions** | `PredicateError`: A type predicate is malformed or references an unknown property. `MissingPrerequisiteError`: A predicate requires data that is not present in the IR record (e.g., SpliceCorrect requires isoform IDs). |
 | **Determinism** | **Fully deterministic.** Given identical IR records and predicates, the type system produces identical verdicts. Three-valued composition preserves soundness (INV-TYP-01, INV-TYP-03). |
-| **Performance** | Time: O(n × p) where n = sequence length, p = number of predicates. ≤ 2 seconds for n ≤ 10,000 with ≤ 7 predicates. Space: O(n) for token scanning within predicates. ≤ 2 MB. |
+| **Performance** | Time: O(n × p) where n = sequence length, p = number of predicates. ≤ 2 seconds for n ≤ 10,000 with 13 core predicates; ≤ 10 seconds with all 33 predicates. Space: O(n) for token scanning within predicates. ≤ 2 MB. |
 
 #### Data Structures
 
@@ -2086,4 +2086,4 @@ The BioCompiler CLI uses the following exit codes to communicate the pipeline re
 
 ---
 
-*End of DOC-04: Interface Control Document (ICD) — Version 1.0.0-draft — Status: ROUGH DRAFT*
+*End of DOC-04: Interface Control Document (ICD) — Version 12.0.0 — Status: Current*

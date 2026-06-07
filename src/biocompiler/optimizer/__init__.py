@@ -187,8 +187,17 @@ from .objectives import (  # noqa: E402
     cai_gc_balanced_objective,
     codon_pair_objective,
     min_max_gc_objective,
+    harmonization_objective,
+    make_harmonization_objective,
     resolve_objective,
     OBJECTIVE_REGISTRY,
+)
+
+from .codon_harmonization import (  # noqa: E402
+    compute_rca,
+    harmonize_codons,
+    harmonize_with_cai_fallback,
+    compute_harmonization_score,
 )
 
 from .incremental import (  # noqa: E402
@@ -237,4 +246,18 @@ from .whatif_analysis import (  # noqa: E402
     WhatIfScenario,
     WhatIfAnalyzer,
     WhatIfReport,
+)
+
+from .performance import (  # noqa: E402
+    should_skip_constraint,
+    batch_detect_violations,
+    estimate_optimization_complexity,
+    get_fast_path_config,
+    warm_numba_cache,
+    get_organism_data,
+    clear_caches,
+    should_skip_mrna_stability,
+    should_skip_cpg_elimination,
+    should_skip_utr_suggestions,
+    FastPathConfig,
 )

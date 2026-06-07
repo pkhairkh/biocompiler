@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | **Project** | BioCompiler: A Compiler Framework for Deterministic Gene Design |
-| **Version** | 10.0.0 |
+| **Version** | 12.0.0 |
 | **Status** | Production release |
-| **Date** | 2026-03-05 |
+| **Date** | 2026-06-07 |
 
 ## Specification Documents
 
@@ -45,18 +45,22 @@
 |---|---|---|
 | Retrospective Validation | [13-Retrospective-Validation.md](13-Retrospective-Validation.md) | Retrospective validation against known biological data |
 | SLOT Proof-Implementation Gap | [14-SLOT-Proof-Implementation-Gap.md](14-SLOT-Proof-Implementation-Gap.md) | Analysis of gaps between SLOT proofs and running implementation |
-| Technical Reference | [15-Reference.md](15-Reference.md) | 28-predicate tables, unified engine API, HybridOptimizer, TCB, honest limitations |
+| Technical Reference | [15-Reference.md](15-Reference.md) | 33-predicate tables, unified engine API, HybridOptimizer, TCB, honest limitations |
 | CAI Reference Sets | [reference_sets.md](reference_sets.md) | Kazusa vs Sharp-Li reference sets, organism-aware constraint selection, provenance |
 | CSP Solver | [16-CSP-Solver.md](16-CSP-Solver.md) | Constraint satisfaction solver (Z3, OR-Tools) for gene optimization |
 | ViennaRNA Integration | [17-ViennaRNA-Integration.md](17-ViennaRNA-Integration.md) | mRNA secondary structure prediction integration |
 | MHCflurry Integration | [18-MHCflurry-Integration.md](18-MHCflurry-Integration.md) | Offline MHC-I binding prediction integration |
 
-## v10.0.0 Release Highlights
+## v12.0.0 Release Highlights
 
+- **Biosecurity screening**: Automated screening against pathogen/toxin databases, blocks high/critical risk sequences by default
+- **tAI metric**: tRNA Adaptation Index as biologically grounded alternative to CAI
+- **CAI world-class**: Post-processing CAI regression fixed — CAI now consistently >0.99 across organisms
+- **Type system decomposition**: Monolith `type_system.py` → `type_system/` package (codon_tables, checks, predicates, logic, registry)
+- **Optimizer decomposition**: Monolith `optimization.py` → `optimizer/` subpackage (pipeline, greedy, hybrid, incremental, postprocessing)
+- **Strict mode + safety-by-default**: Protein verification, provenance tracking, and sliding-window GC enabled by default
+- **14,600+ tests** (63 specification-level test case IDs; parametrized execution yields 14,600+ individual test invocations): Comprehensive test suite including biosecurity, CAI validation, tAI, and cross-implementation tests
 - **HybridOptimizer**: 3-phase optimizer (greedy init → priority-queue local search → CAI hill climbing)
-- **CAI table unification**: All optimizer backends now use the same unified codon adaptiveness tables (breaking change)
-- **`organism` parameter**: New preferred parameter replacing `species`; both still work
-- **E. coli codon data correction**: 5 amino acid codon usage values updated
 - **Performance**: CAI 0.999 for GFP (E. coli), 2–3× faster than DNAchisel
 
 ## Architecture Decision Records
@@ -79,6 +83,10 @@ Nygard-format ADRs documenting each major architectural decision: [adr/](adr/)
 | ADR-0012 | [ADR-0012-cpg-avoidance.md](adr/ADR-0012-cpg-avoidance.md) |
 | ADR-0013 | [ADR-0013-mutagenesis-gt-mandatory.md](adr/ADR-0013-mutagenesis-gt-mandatory.md) |
 | ADR-0014 | [ADR-0014.md](adr/ADR-0014.md) |
+| ADR-0015 | [ADR-0015-biosecurity-screening.md](adr/ADR-0015-biosecurity-screening.md) |
+| ADR-0016 | [ADR-0016-default-safety-measures.md](adr/ADR-0016-default-safety-measures.md) |
+| ADR-0017 | [ADR-0017-feature-parity-dnachisel.md](adr/ADR-0017-feature-parity-dnachisel.md) |
+| ADR-0018 | [ADR-0018-tai.md](adr/ADR-0018-tai.md) |
 
 ## Conventions
 

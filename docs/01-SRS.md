@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | **Document ID** | DOC-01 |
-| **Version** | 1.0.0-draft |
-| **Status** | ROUGH DRAFT |
-| **Date** | 2026-05-30 |
+| **Version** | 12.0.0 |
+| **Status** | Current |
+| **Date** | 2026-06-07 |
 | **Prepared By** | BioCompiler Project Team |
 | **Reviewed By** | [TBD at baseline review] |
 | **Approved By** | [TBD at baseline review] |
@@ -402,7 +402,9 @@ Detailed constraints are specified in Section 5. In summary:
 
 **REQ-FUNC-030**: The system SHALL implement a type checker that evaluates an mRNA sequence against a set of declared biological correctness types, producing for each type a verdict of PASS, FAIL, or UNCERTAIN. The three-valued verdict system reflects the epistemic status of the system's knowledge: PASS means the property is guaranteed to hold (the system has a proof); FAIL means the property is guaranteed not to hold (the system has a counterexample); UNCERTAIN means the system cannot determine whether the property holds or not (the available knowledge is insufficient to resolve the question). The type checker SHALL NOT produce probabilities, confidence scores, or rankings — only the three-valued verdict.
 
-**REQ-FUNC-031**: The system SHALL support the following type predicates, each of which is a function from an mRNA sequence and its annotations to a three-valued verdict:
+**REQ-FUNC-031**: The system SHALL support 33 type predicates (13 core + 20 SLOT-dependent), each of which is a function from an mRNA sequence and its annotations to a three-valued verdict. The predicates are organized into five categories: DNA-level (12), structure (4), stability (4), solubility (4), and immunogenicity (4). The 13 core predicates are those that can be evaluated without FFI-derived SLOT fields; the 20 SLOT-dependent predicates require SLOT fields filled by FFI adapters or external oracles.
+
+**DNA-level predicates (12):**
 
 - `SpliceCorrect(CellType)`: The mRNA produces exactly the intended splice isoform under the specified cellular context. PASS if the NDFST output set is a singleton containing only the intended isoform; FAIL if the NDFST output set contains an isoform other than the intended one; UNCERTAIN if the NDFST output set contains the intended isoform plus additional isoforms whose production depends on cellular context factors that are not fully characterized.
 - `NoCrypticSplice`: The mRNA contains no sequences matching the splice site grammar above a configurable strength threshold. PASS if no potential splice donor or acceptor site exceeds the threshold in the coding sequence; FAIL if at least one site exceeds the threshold with sufficient evidence; UNCERTAIN if weak sites are present that might or might not function as splice sites depending on the cellular context.
@@ -411,6 +413,39 @@ Detailed constraints are specified in Section 5. In summary:
 - `NoRestrictionSite(EnzymeSet)`: No recognition sites for any enzyme in the specified set are present in the mRNA sequence. PASS if no sites are found; FAIL if at least one site is found (this predicate is never UNCERTAIN, as site presence is a deterministic DFA match).
 - `InFrame`: The reading frame is consistent throughout the coding region, with no premature stop codons. PASS if the start codon is in-frame with the stop codon and no in-frame stop codons occur between them; FAIL if a premature in-frame stop codon is detected; UNCERTAIN if frameshift motifs are present that make frame determination ambiguous.
 - `NoInstabilityMotif`: No known mRNA destabilizing motifs (AUUUA, U-rich elements) are present in the 3' UTR. PASS if no motifs are found; FAIL if at least one motif is found in the 3' UTR; UNCERTAIN if motifs are found in regions whose UTR status is uncertain (e.g., alternative polyadenylation sites).
+- `NoCpGIsland`: The mRNA contains no CpG islands (regions of elevated CpG density) that could trigger epigenetic silencing. PASS if no CpG islands are detected; FAIL if a CpG island exceeding the density threshold is found; UNCERTAIN if borderline CpG density is present.
+- `NoCrypticPromoter(Organism, threshold)`: The mRNA contains no cryptic promoter sequences that could drive unintended transcription initiation. PASS if no promoter-like sequences exceed the threshold; FAIL if a cryptic promoter is detected; UNCERTAIN if weak promoter signals are present.
+- `NoUnexpectedTMDomain(is_cytosolic, threshold)`: A cytosolic protein has not gained unexpected transmembrane domains after codon optimization. PASS if no hydrophobic stretch exceeds the TM threshold for cytosolic proteins; FAIL if an unexpected TM domain is detected; UNCERTAIN if borderline hydrophobicity is present.
+- `mRNASecondaryStructure(window_start, window_end, dg_threshold)`: The mRNA secondary structure around the RBS/start codon is not so stable as to inhibit ribosome binding. PASS if the estimated free energy is above the threshold; FAIL if excessively stable secondary structure is detected; UNCERTAIN if the simplified model cannot resolve the prediction.
+- `CoTranslationalFolding(Organism, min_pause_cai)`: Codon optimization preserves the co-translational folding profile, including the codon ramp and pause sites at domain boundaries. PASS if the ramp and pause sites are preserved; FAIL if the ramp is destroyed or domain boundary pause sites are disrupted; UNCERTAIN if moderate disruption is detected.
+
+**Structure predicates (4, SLOT-dependent):**
+
+- `StructureConfidence`: The predicted protein structure has sufficient confidence (pLDDT) for meaningful analysis. PASS if mean pLDDT exceeds threshold; FAIL if confidence is too low for reliable analysis; UNCERTAIN if FFI folding results are unavailable (SLOT unfilled).
+- `NoMisfoldingRisk`: The predicted structure shows no signs of misfolding (clashes, Ramachandran outliers, rotamer outliers). PASS if no misfolding indicators are present; FAIL if significant structural anomalies are detected; UNCERTAIN if FFI results are unavailable.
+- `CorrectFoldTopology`: The predicted protein fold matches the expected topology class. PASS if the fold topology is consistent with the expected architecture; FAIL if the predicted topology is incompatible; UNCERTAIN if FFI results are unavailable or the expected topology is not specified.
+- `NoUnexpectedInteraction`: The predicted structure does not contain unexpected inter-domain or inter-chain interactions. PASS if no unexpected contacts are detected; FAIL if spurious interactions are found; UNCERTAIN if FFI results are unavailable.
+
+**Stability predicates (4, SLOT-dependent):**
+
+- `StableFolding(stability_threshold)`: The predicted protein structure is thermodynamically stable above the specified threshold. PASS if the folding energy estimate is favorable; FAIL if the structure is predicted to be unstable; UNCERTAIN if FFI-derived energy estimates are unavailable.
+- `NoDestabilizingMutation(max_ddg)`: No mutation in the designed sequence destabilizes the protein beyond the specified ΔΔG threshold. PASS if all predicted ΔΔG values are within tolerance; FAIL if a destabilizing mutation is detected; UNCERTAIN if FFI results are unavailable.
+- `DisulfideBondIntegrity`: Disulfide bonds in the native structure are preserved after codon optimization (no cysteine-disrupting mutations at bond positions). PASS if all disulfide-bonded cysteines are preserved; FAIL if a disulfide bond is disrupted; UNCERTAIN if FFI results are unavailable.
+- `HydrophobicCoreQuality`: The hydrophobic core of the predicted structure is well-packed with no buried polar residues or voids. PASS if core quality metrics are satisfactory; FAIL if core packing defects are detected; UNCERTAIN if FFI results are unavailable.
+
+**Solubility predicates (4, SLOT-dependent):**
+
+- `SolubleExpression(min_solubility_score)`: The predicted solubility of the protein meets or exceeds the specified threshold. PASS if the solubility score is above threshold; FAIL if the protein is predicted to be insoluble; UNCERTAIN if FFI-derived solubility predictions are unavailable.
+- `NoAggregationProneRegion`: The protein sequence contains no aggregation-prone regions (e.g., long stretches of hydrophobic or amyloidogenic residues). PASS if no aggregation-prone regions are found; FAIL if aggregation-prone regions are detected; UNCERTAIN if FFI results are unavailable.
+- `ChargeComposition`: The overall charge composition of the protein is within acceptable bounds for soluble expression. PASS if the net charge and charge distribution are favorable; FAIL if charge composition predicts insolubility; UNCERTAIN if FFI results are unavailable.
+- `NoLongHydrophobicStretch`: The protein contains no excessively long hydrophobic stretches that could cause membrane insertion or aggregation. PASS if all hydrophobic stretches are within tolerance; FAIL if a problematic stretch is detected; UNCERTAIN if FFI results are unavailable.
+
+**Immunogenicity predicates (4, SLOT-dependent):**
+
+- `LowImmunogenicity(max_immunogenicity_score)`: The overall immunogenicity score of the protein is below the specified threshold. PASS if the score is below threshold; FAIL if the protein is predicted to be immunogenic; UNCERTAIN if FFI-derived immunogenicity predictions are unavailable.
+- `NoStrongTCellEpitope(mhc_alleles)`: The protein contains no strong T-cell epitopes for the specified MHC allele set. PASS if no strong epitopes are found; FAIL if a strong T-cell epitope is detected; UNCERTAIN if FFI results or MHC binding predictions are unavailable.
+- `NoDominantBCellEpitope`: The protein contains no dominant B-cell epitopes on its surface. PASS if no dominant epitopes are found; FAIL if a dominant B-cell epitope is detected; UNCERTAIN if FFI results are unavailable.
+- `PopulationCoverageSafe(mhc_alleles)`: The protein's epitope profile is safe across the specified population's MHC allele distribution. PASS if population coverage is within safe bounds; FAIL if a significant subpopulation is at risk; UNCERTAIN if FFI results or population allele frequency data are unavailable.
 
 **REQ-FUNC-032**: The type checker SHALL be deterministic: given the same input mRNA sequence, the same set of type predicates, the same grammar rules, and the same cellular context parameters, the type checker SHALL produce the same set of verdicts. This means: (a) each predicate SHALL produce the same verdict (PASS, FAIL, or UNCERTAIN) across runs; (b) the derivation traces, violation identifications, and knowledge gap descriptions SHALL be identical across runs; (c) the ordering of verdicts in the output SHALL be deterministic (matching the ordering of predicates in the input).
 
@@ -544,7 +579,7 @@ The classification SHALL enable downstream users to prioritize: high-coupling po
 
 **REQ-NFR-003**: The translation FST (COMP-03, implementing REQ-FUNC-020 through REQ-FUNC-023) SHALL translate a 5,000 nucleotide (5 kb) spliced mRNA sequence in under 100 milliseconds on a single CPU core. This includes codon-by-codon transduction, SECIS element detection, selenocysteine and pyrrolysine flagging, and frameshift motif annotation. Translation is the simplest pipeline stage (a single-pass FST with a fixed codon table) and SHALL be the fastest.
 
-**REQ-NFR-004**: The type checker (COMP-05, implementing REQ-FUNC-030 through REQ-FUNC-035) SHALL type-check a single mRNA sequence against all seven type predicates (SpliceCorrect, NoCrypticSplice, CodonAdapted, GCInRange, NoRestrictionSite, InFrame, NoInstabilityMotif) in under 10 seconds on a single CPU core. This includes the re-execution of the NDFST for SpliceCorrect, the re-scanning for NoCrypticSplice and NoRestrictionSite, the CAI computation for CodonAdapted, and the derivation trace generation for all predicates.
+**REQ-NFR-004**: The type checker (COMP-05, implementing REQ-FUNC-030 through REQ-FUNC-035) SHALL type-check a single mRNA sequence against all 33 type predicates (13 core + 20 SLOT-dependent) in under 10 seconds on a single CPU core. The prokaryote fast path (13 core predicates only, no splicing or FFI-dependent checks) SHALL complete in under 2 milliseconds. This includes the re-execution of the NDFST for SpliceCorrect, the re-scanning for NoCrypticSplice and NoRestrictionSite, the CAI computation for CodonAdapted, SLOT field evaluation for structure/stability/solubility/immunogenicity predicates, and the derivation trace generation for all predicates.
 
 **REQ-NFR-005**: The CSP optimizer (COMP-06, implementing REQ-FUNC-040 through REQ-FUNC-045) SHALL find a feasible codon assignment for a protein of up to 1,000 amino acids (corresponding to an mRNA of approximately 3,000 nucleotides) in under 60 seconds on a single CPU core. This performance target assumes a typical constraint set (splicing correctness, CAI ≥ 0.8, GC ∈ [40%, 60%], ≤ 5 restriction enzymes, no instability motifs). For unusually tight constraint sets that require extensive backtracking, the system MAY exceed this target but SHALL provide progress indication and a configurable timeout (default: 60 seconds).
 
@@ -770,6 +805,6 @@ The following table maps every requirement to its architectural component, inter
 
 ---
 
-*End of DOC-01: Software Requirements Specification (SRS), Version 1.0.0-draft*
+*End of DOC-01: Software Requirements Specification (SRS), Version 12.0.0*
 
 *Full bidirectional traceability is maintained in DOC-08 (Traceability Matrix). Requirement IDs are stable across all documents in this set.*

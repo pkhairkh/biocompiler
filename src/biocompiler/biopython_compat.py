@@ -19,6 +19,7 @@ if BioPython is not installed.
 
 import logging
 import math
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -29,7 +30,11 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "to_seqrecord",
     "from_seqrecord",
+    "to_genbank_string",
+    "to_fasta_string",
+    "from_seqio",
     "optimize_to_seqrecord",
+    "optimize_seqrecord",  # SeqRecord in → SeqRecord out
     # Deep BioPython integration
     "CodonUsageResult",
     "load_codon_usage_table",
@@ -58,12 +63,14 @@ def _check_biopython() -> None:
 
 
 def to_seqrecord(
-    sequence: str,
+    sequence: Optional[str] = None,
     organism: str = "Homo_sapiens",
     gene_name: Optional[str] = None,
     exon_boundaries: Optional[list[tuple[int, int]]] = None,
     type_results: Optional[list] = None,
     certificate: Optional[object] = None,
+    *,
+    result: Optional[object] = None,
 ) -> "Bio.SeqRecord.SeqRecord":
     """
     Convert BioCompiler result data to a BioPython SeqRecord with features.
@@ -75,6 +82,10 @@ def to_seqrecord(
     - Type-check results as SeqFeature(type="misc_feature") with notes
     - Certificate embedded in record.annotations
 
+    Can be called with either a ``sequence`` string or a ``result``
+    OptimizationResult object.  When ``result`` is provided, the
+    sequence, organism, and other fields are extracted from it.
+
     Args:
         sequence: DNA sequence string
         organism: Organism name (e.g. "Homo_sapiens")
@@ -83,13 +94,34 @@ def to_seqrecord(
             (0-based, half-open intervals as used internally)
         type_results: Optional list of TypeCheckResult objects
         certificate: Optional Certificate object
+        result: Optional OptimizationResult — when provided, ``sequence`` and
+            ``organism`` are extracted from it, and the positional ``sequence``
+            argument is ignored.
 
     Returns:
         Bio.SeqRecord.SeqRecord with features and annotations
 
     Raises:
         ImportError: If BioPython is not installed
+        TypeError: If neither ``sequence`` nor ``result`` is provided
     """
+    # Handle OptimizationResult input
+    if result is not None:
+        sequence = result.sequence
+        if organism == "Homo_sapiens" and hasattr(result, "organism") and result.organism:
+            organism = result.organism
+        if gene_name is None and hasattr(result, "protein") and result.protein:
+            gene_name = result.protein  # fallback; caller can override
+        exon_boundaries = [(0, len(sequence))]
+        certificate = None
+        type_results = None
+
+    if sequence is None:
+        raise TypeError(
+            "to_seqrecord requires either a 'sequence' string or a 'result' "
+            "OptimizationResult argument"
+        )
+
     _check_biopython()
 
     from Bio.SeqRecord import SeqRecord
@@ -1284,3 +1316,272 @@ def back_translate_protein(
             dna_parts.append(codons[0])
 
     return "".join(dna_parts)
+
+
+# ── Round-trip Export / Import Functions ──────────────────────────────
+
+
+def to_genbank_string(record: "Bio.SeqRecord.SeqRecord") -> str:
+    """Export a BioPython SeqRecord to a GenBank-format string.
+
+    Uses BioPython's ``Bio.SeqIO`` to serialize the record.  Automatically
+    ensures ``molecule_type`` is set in the record's annotations, since
+    GenBank format requires it.
+
+    Args:
+        record: BioPython SeqRecord to export.
+
+    Returns:
+        GenBank-format string representation of the record.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+    """
+    _check_biopython()
+
+    from io import StringIO
+    from Bio import SeqIO
+
+    # Ensure molecule_type is set (required for GenBank format)
+    if "molecule_type" not in record.annotations:
+        record.annotations["molecule_type"] = "DNA"
+
+    handle = StringIO()
+    SeqIO.write(record, handle, "genbank")
+    return handle.getvalue()
+
+
+def to_fasta_string(record: "Bio.SeqRecord.SeqRecord") -> str:
+    """Export a BioPython SeqRecord to a FASTA-format string.
+
+    Uses BioPython's ``Bio.SeqIO`` to serialize the record.
+
+    Args:
+        record: BioPython SeqRecord to export.
+
+    Returns:
+        FASTA-format string representation of the record.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+    """
+    _check_biopython()
+
+    from io import StringIO
+    from Bio import SeqIO
+
+    handle = StringIO()
+    SeqIO.write(record, handle, "fasta")
+    return handle.getvalue()
+
+
+def from_seqio(
+    source,
+    format: str = "fasta",
+) -> list[dict]:
+    """Import sequences from a BioPython SeqIO source.
+
+    Accepts a file path (string), an iterator of SeqRecord objects,
+    or a single SeqRecord.  Returns a list of dictionaries compatible
+    with BioCompiler's internal format (same structure as
+    ``from_seqrecord``).
+
+    Args:
+        source: One of:
+            - A file path (string) to parse with Bio.SeqIO
+            - An iterator/iterable of Bio.SeqRecord objects
+            - A single Bio.SeqRecord object
+        format: File format for Bio.SeqIO.parse (default ``"fasta"``).
+            Ignored when ``source`` is a SeqRecord or iterator.
+
+    Returns:
+        List of dicts with keys: sequence, organism, gene_name,
+        exon_boundaries, protein, certificate, features, gc_content.
+
+    Raises:
+        ImportError: If BioPython is not installed.
+        FileNotFoundError: If ``source`` is a path that does not exist.
+    """
+    _check_biopython()
+
+    from Bio.SeqRecord import SeqRecord as _SeqRecord
+
+    # Single SeqRecord
+    if isinstance(source, _SeqRecord):
+        return [from_seqrecord(source)]
+
+    # Iterator / iterable of SeqRecords
+    if hasattr(source, "__iter__") and not isinstance(source, (str, bytes)):
+        return [from_seqrecord(rec) for rec in source]
+
+    # File path
+    if isinstance(source, (str, os.PathLike)):
+        source = str(source)
+        if not os.path.exists(source):
+            raise FileNotFoundError(f"File not found: {source}")
+
+        from Bio import SeqIO
+
+        records = list(SeqIO.parse(source, format))
+        return [from_seqrecord(rec) for rec in records]
+
+    raise TypeError(
+        f"from_seqio expects a file path, SeqRecord, or iterator of "
+        f"SeqRecords, got {type(source).__name__}"
+    )
+
+
+def optimize_seqrecord(
+    record: "Bio.SeqRecord.SeqRecord",
+    organism: Optional[str] = None,
+    **kwargs,
+) -> "Bio.SeqRecord.SeqRecord":
+    """Optimize the coding sequence in a BioPython SeqRecord.
+
+    Takes a SeqRecord with a CDS feature, extracts the protein,
+    optimizes the codons for the target organism, and returns a new
+    SeqRecord with the optimized sequence while preserving non-BioCompiler
+    features and annotations.
+
+    The organism is resolved from (in order of priority):
+    1. The explicit ``organism`` argument
+    2. ``record.annotations["organism"]``
+    3. Default ``"Homo_sapiens"``
+
+    Args:
+        record: BioPython SeqRecord with a CDS feature and/or coding sequence.
+        organism: Target organism for optimization.  If ``None``, read from
+            the record's annotations.
+        **kwargs: Additional keyword arguments forwarded to
+            ``optimize_sequence`` (e.g. ``gc_lo``, ``gc_hi``,
+            ``cai_threshold``, ``restriction_sites``).
+
+    Returns:
+        A new BioPython SeqRecord with the optimized sequence and
+        regenerated BioCompiler features (gene, CDS, exon).
+
+    Raises:
+        ImportError: If BioPython is not installed.
+        TypeError: If ``record`` is not a SeqRecord.
+        ValueError: If the record cannot be translated to protein.
+    """
+    _check_biopython()
+
+    from Bio.SeqRecord import SeqRecord as _SeqRecord
+    from Bio.Seq import Seq
+    from Bio.SeqFeature import SeqFeature, FeatureLocation
+
+    if not isinstance(record, _SeqRecord):
+        raise TypeError(
+            f"optimize_seqrecord expects a Bio.SeqRecord.SeqRecord, "
+            f"got {type(record).__name__}"
+        )
+
+    # Resolve organism
+    org = organism or record.annotations.get("organism", "Homo_sapiens")
+    # Convert spaces to underscores (e.g. "Homo sapiens" → "Homo_sapiens")
+    org = org.replace(" ", "_")
+
+    # Extract protein from CDS feature or translate the sequence
+    protein = None
+    for feat in record.features:
+        if feat.type == "CDS":
+            translation = feat.qualifiers.get("translation")
+            if translation:
+                protein = translation[0] if isinstance(translation, list) else translation
+            break
+
+    if protein is None:
+        # Fall back to translating the sequence
+        from .translation import translate as _translate
+        protein = _translate(str(record.seq))
+
+    if not protein:
+        from .exceptions import InvalidProteinError
+        raise InvalidProteinError(
+            "Cannot extract a valid protein from the SeqRecord. "
+            "Ensure the record has a CDS feature with a translation "
+            "qualifier or a translatable DNA sequence."
+        )
+
+    # Run optimization
+    from .optimization import optimize_sequence
+    opt_result = optimize_sequence(
+        target_protein=protein,
+        organism=org,
+        **kwargs,
+    )
+
+    optimized_seq = opt_result.sequence
+
+    # Build new SeqRecord preserving non-BioCompiler features
+    new_record = _SeqRecord(
+        Seq(optimized_seq),
+        id=record.id,
+        name=record.name,
+        description=record.description,
+    )
+
+    # Preserve annotations
+    for key, value in record.annotations.items():
+        new_record.annotations[key] = value
+    new_record.annotations["organism"] = org
+    new_record.annotations["molecule_type"] = "DNA"
+    new_record.annotations["biocompiler_original_id"] = record.id
+
+    # Preserve letter annotations if present
+    if record.letter_annotations:
+        # Don't copy if they'd be invalid (e.g. wrong length)
+        pass
+
+    # Gene name from original record
+    gene_name = None
+    for feat in record.features:
+        if feat.type == "gene":
+            gn = feat.qualifiers.get("gene")
+            if gn:
+                gene_name = gn[0] if isinstance(gn, list) else gn
+            break
+    if gene_name is None:
+        for feat in record.features:
+            if feat.type == "CDS":
+                gn = feat.qualifiers.get("gene")
+                if gn:
+                    gene_name = gn[0] if isinstance(gn, list) else gn
+                break
+
+    # BioCompiler-managed features (regenerated)
+    # Gene feature
+    if gene_name:
+        new_record.features.append(SeqFeature(
+            FeatureLocation(0, len(optimized_seq)),
+            type="gene",
+            qualifiers={"gene": [gene_name], "note": ["Designed by BioCompiler"]},
+        ))
+
+    # CDS feature
+    from .translation import translate as _translate
+    new_protein = _translate(optimized_seq)
+    cds_qualifiers = {
+        "note": ["Designed by BioCompiler"],
+        "codon_start": ["1"],
+        "transl_table": ["1"],
+    }
+    if gene_name:
+        cds_qualifiers["gene"] = [gene_name]
+    if new_protein:
+        cds_qualifiers["translation"] = [new_protein]
+
+    new_record.features.append(SeqFeature(
+        FeatureLocation(0, len(optimized_seq)),
+        type="CDS",
+        qualifiers=cds_qualifiers,
+    ))
+
+    # Preserve non-BioCompiler features (promoter, terminator, etc.)
+    biocompiler_types = {"gene", "CDS", "exon"}
+    for feat in record.features:
+        if feat.type not in biocompiler_types:
+            new_record.features.append(feat)
+
+    return new_record

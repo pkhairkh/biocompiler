@@ -5,7 +5,7 @@
 | **Document ID** | DOC-11 |
 | **Version** | 3.0.0 |
 | **Status** | COMPLETE — 0 sorry, 0 axioms |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 | **Companion Code** | proof/ (Lean4 formalization) |
 | **Companion Implementation** | src/ (Python proof of concept) |
 | **Supersedes** | DOC-11 v2.0.0 (had 3 sorry), DOC-11 v1.0.0 (had 6+ sorry, 12+ axioms) |

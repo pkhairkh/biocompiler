@@ -3,9 +3,9 @@
 | Field    | Value              |
 |----------|--------------------|
 | ID       | DOC-02             |
-| Version  | 1.0.0-draft        |
-| Status   | ROUGH DRAFT        |
-| Date     | 2026-05-30         |
+| Version  | 12.0.0        |
+| Status   | Current        |
+| Date     | 2026-06-07         |
 | Project  | BioCompiler        |
 | Standard | ISO/IEC/IEEE 42010 |
 

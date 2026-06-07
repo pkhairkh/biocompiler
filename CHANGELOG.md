@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 12.0.0 (2026-03-05)
+## 12.0.0 (2026-06-07)
 
 ### BREAKING CHANGES
 - **Version bumped to 12.0.0**: Major version reflects the cumulative scope of new features and safety infrastructure added since v11.1.0.
@@ -48,11 +48,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Grammar-driven optimization**: `grammar_loader` with YAML grammar definitions for HBB/HEK293T and EGFP/HEK293T.
 - **Formal verification proofs**: Lean4 proofs for soundness, SLOT verification, NDFST, compositional reasoning, mutagenesis, type system, certificates, oracle proofs, three-valued logic, refinement mapping, and scanner correctness.
 
+- **tRNA Adaptation Index (tAI)**: `tai` module with tRNA gene copy number data, wobble pairing rules, and organism-specific tAI computation for E. coli, H. sapiens, S. cerevisiae, M. musculus, and CHO-K1.
+- **Type system decomposition**: Monolithic `type_system.py` decomposed into a `type_system/` package with focused submodules: `codon_tables`, `checks`, `predicates`, `logic`, `registry`.
+- **Optimizer decomposition**: Monolithic `optimization.py` decomposed into `optimizer/` subpackage with pipeline, greedy, hybrid, incremental, and postprocessing modules.
+- **Biosecurity subpackage**: `biosecurity/` subpackage with `screening`, `hazard_signatures`, `pathogen_signatures`, `kmer_similarity`, and `types` modules.
+- **BiosecurityScreeningResult**: New dataclass replacing direct BiosecurityError raises in `check_biosecurity_before_optimize`. Supports `enforce` mode (raises on critical/high) and `warn` mode (emits UserWarning, continues).
+- **Backward-compat shim modules**: Deprecated top-level modules (`whatif_analysis`, `grammar_loader`, `large_sequence`, `multigene`, `optimization_cpg`, `optimization_gc`, `optimization_helpers`, `optimization_splice`) emit DeprecationWarnings and redirect to `optimizer/` subpackage.
+
 ### Bug Fixes
-- All fixes from v10.0.0 and v11.1.0 carried forward
-- Biosecurity gate correctly blocks optimization for high/critical risk sequences
-- Translation verification catches codon table mismatches after optimization
-- Strict mode prevents returning sequences with failed predicates
+- **CAI regression fixed**: Post-processing passes (CpG elimination, sliding GC) were destroying CAI by swapping optimal codons without CAI awareness. Fixed by adding `max_cai_cost` parameter (default 0.05) and always recomputing CAI after all post-processing. CAI now consistently >0.99 for most organisms.
+- **Sharp-Li tables expanded**: Added missing organism entries for Sharp & Li (1987) CAI reference validation.
+- **BiosecurityError constructor**: Fixed keyword-only constructor not populating `flagged_categories`, `risk_level`, and `report` attributes from `BiosecurityScreeningResult`.
+- **Biosecurity gate correctly blocks optimization for high/critical risk sequences**
+- **Translation verification catches codon table mismatches after optimization**
+- **Strict mode prevents returning sequences with failed predicates**
+- **All fixes from v10.0.0 and v11.1.0 carried forward**
 
 ---
 
@@ -87,12 +97,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## 9.2.0 (2025-12-15)
+## 9.2.0 (2026-05-30)
 
 ### New Features
 - Unified engine API: BaseEngineResult, MutationResult, BatchResult shared across all 6 analysis engines (ESMFold, FoldX, CamSol, Immunogenicity, Deimmunization, Protein Design)
-- 28-predicate type system: 12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity predicates
-- SLOT architecture: 13 core predicates (PASS/FAIL) + 19 SLOT-dependent predicates (always UNCERTAIN); Lean4 proof covers all 28 predicates
+- 33-predicate type system: 13 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity + 4 extended DNA predicates
+- SLOT architecture: 13 core predicates (PASS/FAIL) + 20 SLOT-dependent predicates (always UNCERTAIN); Lean4 proof covers all 33 predicates
 - HBB full pass: all 8 optimizer predicates pass simultaneously
 - CpG reconciliation, CAI reconciliation, cross-codon coordination
 

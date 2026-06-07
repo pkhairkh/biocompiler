@@ -58,7 +58,7 @@ BioCompiler maps biological concepts to SO identifiers:
 ### Single Gene Export
 
 ```python
-from biocompiler.optimization import optimize_sequence
+from biocompiler.api import optimize_sequence
 from biocompiler.sbol_export import export_sbol
 
 # Optimize a protein
@@ -89,7 +89,7 @@ path_json = export_sbol(
 ### Collection Export (Multiple Genes)
 
 ```python
-from biocompiler.optimization import optimize_sequence
+from biocompiler.api import optimize_sequence
 from biocompiler.sbol_export import export_sbol_collection
 
 # Optimize multiple proteins
@@ -170,7 +170,7 @@ biocompiler optimize --input gfp.fasta \
 Protein sequence for eGFP, optimized for E. coli:
 
 ```python
-from biocompiler.optimization import optimize_sequence
+from biocompiler.api import optimize_sequence
 
 result = optimize_sequence(
     "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGE",

@@ -17,6 +17,7 @@ from .predicates import (
     evaluate_gc_in_range,
     evaluate_in_frame,
     evaluate_mrna_secondary_structure,
+    evaluate_no_blast_matches,
     evaluate_no_cpg_island,
     evaluate_no_cryptic_promoter,
     evaluate_no_cryptic_splice,
@@ -25,6 +26,7 @@ from .predicates import (
     evaluate_no_restriction_site,
     evaluate_no_stop_codons,
     evaluate_no_unexpected_tm_domain,
+    evaluate_primer_compatibility,
     evaluate_splice_correct,
     evaluate_valid_coding_seq,
 )
@@ -308,6 +310,28 @@ registry.register(
         "window_start": "window_start",
         "window_end": "window_end",
         "dg_threshold": "dg_threshold",
+    },
+)
+
+registry.register(
+    "NoBlastMatches",
+    evaluate_no_blast_matches,
+    verify_param_map={
+        "seq": "seq",
+        "reference_sequences": "reference_sequences",
+        "k": "k",
+    },
+)
+
+registry.register(
+    "PrimerCompatibility",
+    evaluate_primer_compatibility,
+    verify_param_map={
+        "seq": "seq",
+        "region_start": "region_start",
+        "region_end": "region_end",
+        "min_tm": "min_tm",
+        "max_tm": "max_tm",
     },
 )
 

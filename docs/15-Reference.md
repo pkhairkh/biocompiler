@@ -1,8 +1,8 @@
 # DOC-15: Technical Reference
 
 **Document ID:** DOC-15
-**Version:** 1.0.0
-**Date:** 2026-03-04
+**Version:** 12.0.0
+**Date:** 2026-06-07
 **Classification:** Reference Documentation
 
 ---
@@ -11,62 +11,69 @@ This document consolidates detailed technical reference material previously in t
 
 ---
 
-## 1. 28-Predicate Type System (v9.0.0)
+## 1. Type Predicate System (v12.0.0)
 
-BioCompiler v9.0.0 extends the type system from 8 to 28 predicates, organized into five domains. The Lean4 soundness proof covers all 28 predicates: 13 core predicates produce PASS/FAIL verdicts (individually proved sound), and 19 SLOT-dependent predicates always return UNCERTAIN (vacuously sound — they never produce PASS, so the implication `evaluate(P) = PASS → propertyHolds(P)` holds trivially).
+BioCompiler v12.0.0 features a type predicate system organized into five domains. The Lean4 soundness proof in `TypeSystem.lean` defines **33 type predicates** (13 core + 20 SLOT-dependent). The Python implementation evaluates a context-dependent subset by default (typically 12 for short sequences, up to 33 for full analysis with all engines available).
 
-### DNA-Level Predicates (12)
+The core/SLOT classification follows the Lean4 formal model: core predicates evaluate deterministically from the sequence and context alone, while SLOT-dependent predicates require external tool output (FFI) and return UNCERTAIN in conservative mode.
+
+### DNA-Level Predicates (13)
 
 | # | Predicate | Checks | Category |
 |---|-----------|--------|----------|
-| 1 | `NoStopCodons` | No internal stop codons | Core |
+| 1 | `SpliceCorrect` | Splice isoform correctness for cell type | Core |
 | 2 | `NoCrypticSplice` | No splice-site-like motifs exceeding MaxEntScan threshold | Core |
-| 3 | `NoCpGIsland` | No CpG islands (sliding window GC + Obs/Exp CG ratio) | Core |
-| 4 | `NoRestrictionSite` | No enzyme recognition sites present | Core |
-| 5 | `NoGTDinucleotide` | No avoidable GT dinucleotides (cross-codon aware) | Core |
-| 6 | `ValidCodingSeq` | In-frame, valid codons only | Core |
-| 7 | `ConservationScore` | BLOSUM62-based AA conservation | Core |
-| 8 | `CodonOptimality` | Geometric mean CAI ≥ threshold | Core |
-| 9 | `NoCrypticPromoter` | Cryptic promoter avoidance | SLOT-dependent |
-| 10 | `NoUnexpectedTMDomain` | Unexpected transmembrane domain detection | SLOT-dependent |
-| 11 | `mRNASecondaryStructure` | mRNA secondary structure around RBS | SLOT-dependent |
-| 12 | `CoTranslationalFolding` | Co-translational folding pause-site preservation | SLOT-dependent |
+| 3 | `CodonAdapted` | CAI ≥ threshold for target organism | Core |
+| 4 | `GCInRange` | Global GC% within [lo, hi] bounds | Core |
+| 5 | `NoRestrictionSite` | No enzyme recognition sites present | Core |
+| 6 | `InFrame` | Reading frame and exon boundary integrity | Core |
+| 7 | `NoInstabilityMotif` | No known instability motifs (e.g., AT-rich repeats) | Core |
+| 8 | `NoCpGIsland` | No CpG islands (sliding window GC + Obs/Exp CG ratio) | Core |
+| 9 | `NoGTDinucleotide` | No avoidable GT dinucleotides (cross-codon aware) | Core |
+| 10 | `NoStopCodons` | No internal stop codons | Core |
+| 11 | `ValidCodingSeq` | In-frame, valid codons only | Core |
+| 12 | `CodonOptimality` | Geometric mean CAI ≥ threshold | Core |
+| 13 | `NoCrypticPromoter` | Cryptic promoter avoidance | Core |
+| 14 | `ConservationScore` | BLOSUM62-based AA conservation | SLOT-dependent |
+| 15 | `NoUnexpectedTMDomain` | Unexpected transmembrane domain detection | SLOT-dependent |
+| 16 | `mRNASecondaryStructure` | mRNA secondary structure around RBS | SLOT-dependent |
+| 17 | `CoTranslationalFolding` | Co-translational folding pause-site preservation | SLOT-dependent |
 
 ### Structure Predicates (4)
 
 | # | Predicate | Checks | Category |
 |---|-----------|--------|----------|
-| 13 | `StructureConfidence` | ESMFold structure quality confidence | SLOT-dependent |
-| 14 | `NoMisfoldingRisk` | Misfolding risk indicators | SLOT-dependent |
-| 15 | `CorrectFoldTopology` | Fold topology validation | SLOT-dependent |
-| 16 | `NoUnexpectedInteraction` | Unwanted protein-protein interactions | SLOT-dependent |
+| 18 | `StructureConfidence` | ESMFold structure quality confidence | SLOT-dependent |
+| 19 | `NoMisfoldingRisk` | Misfolding risk indicators | SLOT-dependent |
+| 20 | `CorrectFoldTopology` | Fold topology validation | SLOT-dependent |
+| 21 | `NoUnexpectedInteraction` | Unwanted protein-protein interactions | SLOT-dependent |
 
 ### Stability Predicates (4)
 
 | # | Predicate | Checks | Category |
 |---|-----------|--------|----------|
-| 17 | `StableFolding` | Thermodynamic stability (ΔG) | SLOT-dependent |
-| 18 | `NoDestabilizingMutation` | No high-ΔΔG mutations | SLOT-dependent |
-| 19 | `DisulfideBondIntegrity` | Cysteine pairing check | SLOT-dependent |
-| 20 | `HydrophobicCoreQuality` | Hydrophobic core composition | SLOT-dependent |
+| 22 | `StableFolding` | Thermodynamic stability (ΔG) | SLOT-dependent |
+| 23 | `NoDestabilizingMutation` | No high-ΔΔG mutations | SLOT-dependent |
+| 24 | `DisulfideBondIntegrity` | Cysteine pairing check | SLOT-dependent |
+| 25 | `HydrophobicCoreQuality` | Hydrophobic core composition | SLOT-dependent |
 
 ### Solubility Predicates (4)
 
 | # | Predicate | Checks | Category |
 |---|-----------|--------|----------|
-| 21 | `SolubleExpression` | CamSol solubility score | SLOT-dependent |
-| 22 | `NoAggregationProneRegion` | Aggregation-prone region detection | SLOT-dependent |
-| 23 | `ChargeComposition` | Charge balance and pI | Core |
-| 24 | `NoLongHydrophobicStretch` | Long hydrophobic stretch detection | Core |
+| 26 | `SolubleExpression` | CamSol solubility score | SLOT-dependent |
+| 27 | `NoAggregationProneRegion` | Aggregation-prone region detection | SLOT-dependent |
+| 28 | `ChargeComposition` | Charge balance and pI | SLOT-dependent |
+| 29 | `NoLongHydrophobicStretch` | Long hydrophobic stretch detection | SLOT-dependent |
 
 ### Immunogenicity Predicates (4)
 
 | # | Predicate | Checks | Category |
 |---|-----------|--------|----------|
-| 25 | `LowImmunogenicity` | Overall immunogenicity score | SLOT-dependent |
-| 26 | `NoStrongTCellEpitope` | MHC binding epitope detection | SLOT-dependent |
-| 27 | `NoDominantBCellEpitope` | B-cell epitope coverage | SLOT-dependent |
-| 28 | `PopulationCoverageSafe` | MHC allele population coverage | SLOT-dependent |
+| 30 | `LowImmunogenicity` | Overall immunogenicity score | SLOT-dependent |
+| 31 | `NoStrongTCellEpitope` | MHC binding epitope detection | SLOT-dependent |
+| 32 | `NoDominantBCellEpitope` | B-cell epitope coverage | SLOT-dependent |
+| 33 | `PopulationCoverageSafe` | MHC allele population coverage | SLOT-dependent |
 
 > **Note on SLOT-dependent predicates:** SLOT-dependent predicates rely on external tool output (FFI) and cannot produce PASS in the formal model. They always return UNCERTAIN, which is the correct and safe behavior — the system declines to guarantee what it cannot verify deterministically. The Lean4 proof formally establishes that SLOT-dependent predicates never produce PASS (`ffi_never_pass`), so they cannot compromise compositional soundness. Certificate validity is independent of SLOT values. See [DOC-14: SLOT Predicate Proof-Implementation Gap](14-SLOT-Proof-Implementation-Gap.md).
 
@@ -74,11 +81,11 @@ BioCompiler v9.0.0 extends the type system from 8 to 28 predicates, organized in
 
 ## 2. SLOT Architecture
 
-The 28-predicate type system is partitioned into **core** and **SLOT-dependent** predicates based on whether evaluation requires external tool output (FFI).
+The 33-predicate type system is partitioned into **core** and **SLOT-dependent** predicates based on whether evaluation requires external tool output (FFI).
 
 **Core predicates** (13) evaluate deterministically from the nucleotide sequence and grammar rules alone. They produce PASS or FAIL verdicts and are individually proved sound in Lean4.
 
-**SLOT-dependent predicates** (19) require external tool output — structure prediction (AlphaFold/ESMFold), stability calculation (FoldX), solubility scoring (CamSol), immunogenicity prediction (MHC binding), etc. In the formal model, these always return UNCERTAIN because the external tool is treated as a non-deterministic black box.
+**SLOT-dependent predicates** (20) require external tool output — structure prediction (AlphaFold/ESMFold), stability calculation (FoldX), solubility scoring (CamSol), immunogenicity prediction (MHC binding), etc. In the formal model, these always return UNCERTAIN because the external tool is treated as a non-deterministic black box.
 
 The Lean4 proof establishes three key properties:
 
@@ -90,7 +97,7 @@ This means the soundness guarantee is preserved even when the type system includ
 
 ---
 
-## 3. Unified Engine API (v9.0.0)
+## 3. Unified Engine API (v12.0.0)
 
 All six analysis engines (ESMFold, FoldX, CamSol, Immunogenicity, Deimmunization, Protein Design) share a unified result type hierarchy:
 
@@ -185,15 +192,17 @@ biocompiler/
 │   ├── scanner.py                # Multi-DFA motif detection
 │   ├── splicing.py               # NDFST isoform computation
 │   ├── translation.py            # Codon-to-amino-acid FST + CAI computation
-│   ├── type_system.py            # Predicate registry + evaluator functions
-│   ├── optimization.py           # Greedy multi-phase optimizer + mutagenesis loop
+│   ├── type_system/              # Predicate registry + evaluator functions (decomposed)
+│   ├── optimizer/                 # Greedy multi-phase optimizer + mutagenesis loop (decomposed)
 │   ├── mutagenesis.py            # Type-directed mutagenesis
 │   ├── certificate.py            # Graduated certificate generation + verification
 │   ├── engine_base.py            # Unified engine API (BaseEngineResult, MutationResult)
-│   ├── organisms/                # Organism-specific data (5 organisms)
+│   ├── organisms/                # Organism-specific data (25 organisms + tAI)
+│   ├── biosecurity/              # Biosecurity screening (v12)
+│   ├── tai.py                    # tRNA Adaptation Index (v12)
 │   ├── api.py                    # REST API (FastAPI)
 │   └── cli.py                    # Command-line interface
-├── tests/                        # Test suite (420+ tests)
-├── docs/                         # Complete SE specification (14 docs + ADRs)
+├── tests/                        # Test suite (14,600+ tests)
+├── docs/                         # Complete SE specification (19 docs + 18 ADRs)
 └── paper/                        # LaTeX manuscript
 ```

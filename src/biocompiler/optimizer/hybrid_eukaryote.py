@@ -14,6 +14,12 @@ from typing import Any
 from ..type_system import CODON_TABLE, AA_TO_CODONS
 from .hybrid_types import HybridResult, GT_CAI_COST_THRESHOLD as _GT_CAI_COST_THRESHOLD
 from .hybrid_prokaryote import _codon_pair_bias_optimize_prokaryote as codon_pair_bias_optimize_prokaryote
+from .performance import (
+    estimate_optimization_complexity,
+    get_fast_path_config,
+    _EUKARYOTE_CAI_REDUCE_HILLCLIMB,
+    should_skip_cpg_elimination,
+)
 
 # ── Fast MaxEntScan integration ────────────────────────────────────
 try:
@@ -56,6 +62,16 @@ def _optimize_eukaryote_fast(optimizer, protein: str) -> HybridResult:
 
     Target: <5ms for HBB (444bp) in Human, CAI ≥ 0.99
     """
+    # ── Performance: estimate complexity and get tuned config ──
+    _complexity = estimate_optimization_complexity(
+        protein,
+        optimizer.organism,
+        optimizer.enzymes,
+        optimizer.gc_lo,
+        optimizer.gc_hi,
+    )
+    _config = get_fast_path_config(_complexity, is_prokaryote=False)
+
     species_cai = optimizer.species_cai
     max_adapt = optimizer._max_adapt
     optimal_codon = optimizer.optimal_codon
@@ -686,48 +702,51 @@ def _optimize_eukaryote_fast(optimizer, protein: str) -> HybridResult:
     # For cross-codon CGs, try both sides of the boundary.
     # Allow creating GT/AG during CpG fix (MaxEntScan will handle
     # any cryptic splice sites that result).
+    # PERF: Skip CpG elimination entirely if no CpG dinucleotides exist
     seq_str = seq_buf.decode('ascii')
-    for _cpg_iter in range(30):
-        seq_str = seq_buf.decode('ascii')
-        found_cpg = False
+    _skip_cpg = should_skip_cpg_elimination(is_prokaryote=False, sequence=seq_str)
+    if not _skip_cpg:
+        for _cpg_iter in range(_config.cpg_max_iterations):
+            seq_str = seq_buf.decode('ascii')
+            found_cpg = False
 
-        for i in range(n_bases - 1):
-            if seq_str[i] == 'C' and seq_str[i + 1] == 'G':
-                codon_idx = i // 3
-                next_codon_start = codon_idx * 3 + 3
-                is_within = (i + 1) < next_codon_start
+            for i in range(n_bases - 1):
+                if seq_str[i] == 'C' and seq_str[i + 1] == 'G':
+                    codon_idx = i // 3
+                    next_codon_start = codon_idx * 3 + 3
+                    is_within = (i + 1) < next_codon_start
 
-                if is_within:
-                    aa = protein[codon_idx] if codon_idx < len(protein) else None
-                    if aa is None or aa == "*":
-                        continue
-
-                    current = "".join(seq_chars[codon_idx*3:codon_idx*3+3])
-                    # Try CG-free alternatives (CAI-sorted)
-                    # First try without creating GT/AG, then allow GT/AG
-                    fixed = False
-                    for alt in sorted_codons.get(aa, []):
-                        if alt == current or "CG" in alt:
+                    if is_within:
+                        aa = protein[codon_idx] if codon_idx < len(protein) else None
+                        if aa is None or aa == "*":
                             continue
-                        old_codon = _apply_swap(codon_idx, alt)
-                        creates_gt, creates_ag = _creates_new_gt_or_ag(codon_idx, alt)
-                        if not creates_gt and not creates_ag and not _has_rs_local(codon_idx):
-                            violations_fixed += 1
-                            found_cpg = True
-                            fixed = True
-                            break
-                        else:
-                            _rollback_swap(codon_idx, old_codon)
 
-                    if not fixed:
-                        # Allow GT/AG creation for CpG elimination
+                        current = "".join(seq_chars[codon_idx*3:codon_idx*3+3])
+                        # Try CG-free alternatives (CAI-sorted)
+                        # First try without creating GT/AG, then allow GT/AG
+                        fixed = False
                         for alt in sorted_codons.get(aa, []):
                             if alt == current or "CG" in alt:
                                 continue
                             old_codon = _apply_swap(codon_idx, alt)
-                            if not _has_rs_local(codon_idx):
+                            creates_gt, creates_ag = _creates_new_gt_or_ag(codon_idx, alt)
+                            if not creates_gt and not creates_ag and not _has_rs_local(codon_idx):
                                 violations_fixed += 1
                                 found_cpg = True
+                                fixed = True
+                                break
+                            else:
+                                _rollback_swap(codon_idx, old_codon)
+
+                        if not fixed:
+                            # Allow GT/AG creation for CpG elimination
+                            for alt in sorted_codons.get(aa, []):
+                                if alt == current or "CG" in alt:
+                                    continue
+                                old_codon = _apply_swap(codon_idx, alt)
+                                if not _has_rs_local(codon_idx):
+                                    violations_fixed += 1
+                                    found_cpg = True
                                 fixed = True
                                 break
                             else:
@@ -810,8 +829,8 @@ def _optimize_eukaryote_fast(optimizer, protein: str) -> HybridResult:
                     if fixed:
                         break
 
-        if not found_cpg:
-            break
+            if not found_cpg:
+                break
 
     # ── Phase 5: CAI recovery hill climb ──
     # Upgrade codons while maintaining all constraints.
@@ -837,7 +856,7 @@ def _optimize_eukaryote_fast(optimizer, protein: str) -> HybridResult:
     except ImportError:
         pass
 
-    for _iteration in range(5):
+    for _iteration in range(_config.hill_climb_passes):
         upgrade_plan: dict[int, str] = {}
 
         for ci in range(n_codons):

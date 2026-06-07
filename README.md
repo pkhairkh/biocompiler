@@ -65,7 +65,7 @@ print(f"Min local GC: {result.min_local_gc:.2%}")
 Users can now define custom optimization objectives beyond the built-in CAI, GC, and constraint predicates. Custom objectives are scored alongside native objectives and influence codon selection during the hill-climbing phase.
 
 ```python
-from biocompiler.objectives import CustomObjective
+from biocompiler.optimizer.objectives import CustomObjective, cai_objective, gc_objective
 
 my_obj = CustomObjective(name="avoid_homopolymers", weight=0.5, evaluate_fn=...)
 result = optimize_sequence(protein, organism='Escherichia_coli', custom_objectives=[my_obj])
@@ -76,9 +76,9 @@ result = optimize_sequence(protein, organism='Escherichia_coli', custom_objectiv
 First-class support for optimizing multiple genes as a single construct — with shared promoter/terminator regions, per-gene constraint tracking, and construct-level GC and restriction-site management.
 
 ```python
-from biocompiler.multigene import optimize_construct
+from biocompiler.optimizer.multigene import optimize_multigene, optimize_operon
 
-result = optimize_construct(
+result = optimize_multigene(
     genes={"gene_a": protein_a, "gene_b": protein_b},
     organism='Homo_sapiens',
 )
@@ -113,13 +113,13 @@ parts = [lib.get("T7_promoter"), lib.get("His_tag"), lib.get("T7_terminator")]
 
 ### Assembly Planning
 
-Automated assembly plan generation given a set of parts and a target construct. BioCompiler selects optimal restriction enzymes, generates fragment boundaries, and produces step-by-step assembly protocols compatible with Golden Gate, Gibson, and traditional restriction-ligation methods.
+Automated assembly plan generation given a set of parts and a target construct. BioCompiler supports Golden Gate and Gibson assembly methods with automatic fragment boundary generation and restriction enzyme selection.
 
 ```python
-from biocompiler.assembly import plan_assembly
+from biocompiler.assembly import plan_golden_gate, plan_gibson
 
-plan = plan_assembly(parts, method='golden_gate')
-print(plan.protocol_steps)
+gg_plan = plan_golden_gate(parts)
+gibson_plan = plan_gibson(parts)
 ```
 
 ### SBOL Support
@@ -139,13 +139,17 @@ design = import_sbol("design.xml")
 
 ### LIMS Integration
 
-A built-in LIMS (Laboratory Information Management System) integration module for tracking optimization runs, storing results, and managing sample metadata. Supports SQLite (default) and PostgreSQL backends.
+A built-in LIMS (Laboratory Information Management System) integration module for exporting optimization results to popular LIMS platforms. Provides Benchling and LabGuru exporters with structured JSON payloads, custom fields, and annotation support.
 
 ```python
-from biocompiler.lims import LIMSClient
+from biocompiler.lims import BenchlingExporter, LabGuruExporter
 
-lims = LIMSClient()  # SQLite by default
-run_id = lims.record_optimization(result, metadata={"project": "gene_therapy_v2"})
+benchling = BenchlingExporter(base_url='https://benchling.com/api/v2', api_token='...')
+payload = benchling.export_to_benchling(result)
+design_id = benchling.submit_design(result, project_id='PRJ-001')
+
+labguru = LabGuruExporter(base_url='https://my.labguru.com/api', api_token='...')
+payload = labguru.export_to_labguru(result)
 ```
 
 ### tAI Metric
@@ -214,9 +218,9 @@ Codon usage data for 5 amino acids in E. coli has been corrected to match the la
 |------|----------|:---:|:----:|:------------:|
 | GFP | E. coli | 0.999 | 2ms | 2.4× |
 | HBB | E. coli | 1.000 | 3ms | — |
-| GFP | Human | 0.983 | 15ms | — |
+| GFP | Human | 0.995 | 15ms | — |
 | Insulin | E. coli | 0.998 | 1ms | 3.0× |
-| HBB | Human | 0.97 | 18ms | — |
+| HBB | Human | 0.993 | 18ms | — |
 
 The HybridOptimizer achieves **2–3× speedup** over DNAchisel on standard benchmark genes while producing equal or higher CAI values.
 
@@ -231,8 +235,8 @@ GFP (714bp, E. coli):
 
 GFP (714bp, Human):
   Phase 1 (Greedy):     CAI 0.997
-  Phase 2 (Constraints): CAI 0.975  (8 violations fixed)
-  Phase 3 (Hill Climb):  CAI 0.983  (3 improvements)
+  Phase 2 (Constraints): CAI 0.985  (8 violations fixed)
+  Phase 3 (Hill Climb):  CAI 0.995  (3 improvements)
   Total: 15ms
 ```
 
@@ -399,10 +403,10 @@ Codon usage frequencies for Ala, Arg, Gly, Leu, and Val in E. coli have been upd
 | **Soundness proof** — 0 `sorry`, 0 axioms, 5 TCB assumptions | Lean4 formalization |
 | **Compositional soundness** — composing predicates preserves soundness under three-valued logic | Proved in Lean4 |
 | **SLOT independence** — FFI calls never produce PASS | Proved in Lean4 |
-| **Per-predicate soundness** — 13 core proved sound + 19 SLOT-dependent proved UNCERTAIN | Proved in Lean4 |
-| **Production pipeline** — Scanner → NDFST → Translation → TypeCheck → Certificate → Verify | Python (420+ tests) |
+| **Per-predicate soundness** — 13 core proved sound + 20 SLOT-dependent proved UNCERTAIN | Proved in Lean4 |
+| **Production pipeline** — Scanner → NDFST → Translation → TypeCheck → Certificate → Verify | Python (14,600+ tests) |
 | **HBB full pass** — 8 optimizer predicates pass simultaneously | HBB CAI=0.97 |
-| **28-predicate type system** — 12 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity | 13 core + 19 SLOT |
+| **33-predicate type system** — 13 DNA + 4 structure + 4 stability + 4 solubility + 4 immunogenicity + 4 extended DNA | 13 core + 20 SLOT |
 | **HybridOptimizer** — 3-phase optimizer with priority-based local search | CAI 0.999, 2ms (GFP) |
 | **Biosecurity screening** — pathogen/toxin homology checks on by default | v12 safety-by-default |
 | **Protein verification** — post-opt back-translation check on by default | v12 safety-by-default |
@@ -413,9 +417,9 @@ Codon usage frequencies for Ala, Arg, Gly, Leu, and Val in E. coli have been upd
 | **IUPAC support** — ambiguity codes resolved deterministically | v12 |
 | **Part libraries + assembly planning** — Golden Gate, Gibson, restriction-ligation | v12 |
 | **SBOL import/export** — interoperability with SBOL tools and registries | v12 |
-| **LIMS integration** — SQLite and PostgreSQL backends for run tracking | v12 |
+| **LIMS integration** — Benchling and LabGuru export with structured JSON payloads | v12 |
 | **Type-directed mutagenesis** — V→I substitutions make HBB feasible (BLOSUM62=+3) | Proof of concept |
-| **SE specification** — 11 IEEE/ISO-standard documents + 16 ADRs | Complete |
+| **SE specification** — 11 IEEE/ISO-standard documents + 18 ADRs | Complete |
 
 ---
 
@@ -441,7 +445,7 @@ Protein Sequence
   Optimized DNA Sequence
 ```
 
-The pipeline processes gene sequences through typed intermediate representations. Core predicates (13) evaluate deterministically; SLOT-dependent predicates (19) delegate to external tools and return UNCERTAIN in the formal model. Type-directed mutagenesis proposes conservative amino acid substitutions when no codon assignment satisfies all predicates.
+The pipeline processes gene sequences through typed intermediate representations. Core predicates (13) evaluate deterministically; SLOT-dependent predicates (20) delegate to external tools and return UNCERTAIN in the formal model. Type-directed mutagenesis proposes conservative amino acid substitutions when no codon assignment satisfies all predicates.
 
 ### Repository Structure
 
@@ -450,12 +454,18 @@ biocompiler/
 ├── proof/              # Lean4 soundness proof
 ├── src/biocompiler/    # Production Python package
 │   ├── hybrid_optimizer.py   # HybridOptimizer (3-phase)
-│   ├── optimization.py       # BioOptimizer + optimize_sequence API
-│   ├── biosecurity.py        # Pathogen/toxin screening (v12)
-│   ├── protein_verification.py # Post-opt verification (v12)
+│   ├── optimizer/            # Optimization pipeline (decomposed from monolithic)
+│   │   ├── pipeline.py       # BioOptimizer + optimize_sequence API + protein verification
+│   │   ├── codon_harmonization.py  # RCA codon harmonization (Claassens method)
+│   │   ├── blast_avoidance.py     # BLAST match avoidance constraint
+│   │   ├── primer_design.py       # Primer design constraints (Tm, homopolymer)
+│   │   ├── postprocessing.py      # Post-optimization CAI recovery
+│   │   └── ...
+│   ├── biosecurity/          # Pathogen/toxin screening (v12)
+│   ├── expression/tai.py     # tRNA Adaptation Index (v12)
 │   ├── sliding_gc.py         # Sliding-window GC (v12)
-│   ├── objectives.py         # Custom objectives (v12)
-│   ├── multigene.py          # Multi-gene constructs (v12)
+│   ├── optimizer/objectives.py   # Custom objectives (v12)
+│   ├── optimizer/multigene.py    # Multi-gene constructs (v12)
 │   ├── iupac.py              # IUPAC ambiguity support (v12)
 │   ├── pattern_enforcement.py # Pattern enforce/avoid (v12)
 │   ├── parts.py              # Part libraries (v12)
@@ -463,11 +473,19 @@ biocompiler/
 │   ├── sbol_export.py        # SBOL export (v12)
 │   ├── sbol_import.py        # SBOL import (v12)
 │   ├── lims.py               # LIMS integration (v12)
+│   ├── benchmarking/         # Benchmarking and CAI validation
+│   ├── expression/           # Expression prediction models
+│   ├── organisms/            # Organism-specific codon tables and config
+│   ├── provenance/           # Provenance tracking and audit
+│   ├── sequence/             # Sequence analysis utilities
+│   ├── solver/               # Z3 constraint solver integration
+│   ├── type_system/          # 33-predicate type system
+│   ├── validation/           # Input/output validation
 │   ├── api.py                # FastAPI REST API
 │   └── ...
 ├── scripts/            # Benchmark and utility scripts
-├── tests/              # Test suite (420+ tests)
-├── docs/               # Full SE specification (14 docs + 16 ADRs)
+├── tests/              # Test suite (14,600+ tests)
+├── docs/               # Full SE specification (18 docs + 18 ADRs)
 └── paper/              # LaTeX manuscript
 ```
 
@@ -479,7 +497,7 @@ BioCompiler supports two CAI (Codon Adaptation Index) reference sets for computi
 
 | Reference Set | Source | Coverage | Best For |
 |---------------|--------|----------|----------|
-| **Kazusa** | Kazusa Codon Usage Database (high-expression subsets) | 5 organisms (E. coli, H. sapiens, S. cerevisiae, M. musculus, CHO-K1) | General-purpose optimization, cross-organism comparisons |
+| **Kazusa** | Kazusa Codon Usage Database (high-expression subsets) | 25 organisms (full curated list) | General-purpose optimization, cross-organism comparisons |
 | **Sharp-Li** | Sharp & Li (1987), 24 highly expressed E. coli genes | E. coli only | Comparing against published literature values, CAIcal validation |
 
 The Sharp-Li reference set reproduces the exact relative adaptiveness values from the original CAI paper, enabling direct comparison with published CAI values. For low-expression genes like lacZ, the two sets can differ by >0.4 CAI — see [`docs/reference_sets.md`](docs/reference_sets.md) for detailed guidance on when to use each.
@@ -516,15 +534,49 @@ Every optimization decision is tracked with full provenance — including which 
 
 ## Supported Organisms
 
+BioCompiler ships with **27 curated organisms** with full codon usage tables, organism-aware constraint profiles, and flexible name resolution (canonical names, short keys, abbreviations, and common names all accepted).
+
 | Organism | Canonical Name | Short Key | Domain |
 |----------|---------------|-----------|--------|
 | *Escherichia coli* | `Escherichia_coli` | `ecoli` | Prokaryote |
+| *Bacillus subtilis* | `Bacillus_subtilis` | `bacillus` | Prokaryote |
+| *Corynebacterium glutamicum* | `Corynebacterium_glutamicum` | `corynebacterium` | Prokaryote |
+| *Pseudomonas putida* | `Pseudomonas_putida` | `pseudomonas` | Prokaryote |
 | *Homo sapiens* | `Homo_sapiens` | `human` | Eukaryote |
 | *Mus musculus* | `Mus_musculus` | `mouse` | Eukaryote |
+| *Rattus norvegicus* | `Rattus_norvegicus` | `rat` | Eukaryote |
 | *Saccharomyces cerevisiae* | `Saccharomyces_cerevisiae` | `yeast` | Eukaryote |
-| CHO-K1 | `CHO_K1` | `cho` | Eukaryote |
+| *Pichia pastoris* | `Pichia_pastoris` | `pichia` | Eukaryote |
+| *Kluyveromyces lactis* | `Kluyveromyces_lactis` | `kluyveromyces` | Eukaryote |
+| CHO-K1 | `Cricetulus_griseus` | `cho` | Eukaryote |
+| HEK-293 | `HEK293` | `hek293` | Eukaryote |
+| *Danio rerio* | `Danio_rerio` | `danio` | Eukaryote |
+| *Xenopus laevis* | `Xenopus_laevis` | `xenopus` | Eukaryote |
+| *Drosophila melanogaster* | `D_melanogaster` | — | Eukaryote |
+| *Caenorhabditis elegans* | `Caenorhabditis_elegans` | `caenorhabditis` | Eukaryote |
+| *Arabidopsis thaliana* | `Arabidopsis_thaliana` | `arabidopsis` | Eukaryote |
+| *Glycine max* | `Glycine_max` | `glycine` | Eukaryote |
+| *Zea mays* | `Zea_mays` | `zea` | Eukaryote |
+| *Gossypium hirsutum* | `Gossypium_hirsutum` | `gossypium` | Eukaryote |
+| *Nicotiana benthamiana* | `Nicotiana_benthamiana` | `nicotiana` | Eukaryote |
+| *Bos taurus* | `Bos_taurus` | `bos` | Eukaryote |
+| *Gallus gallus* | `Gallus_gallus` | `gallus` | Eukaryote |
+| *Spodoptera frugiperda* | `Spodoptera_frugiperda` | `sf9` | Eukaryote |
+| *Trichoplusia ni* | `Trichoplusia_ni` | `hi5` | Eukaryote |
+| *Drosophila melanogaster* | `D_melanogaster` | `drosophila` | Eukaryote |
+| *Oryza sativa* | `Oryza_sativa` | `oryza` | Eukaryote |
+
+tAI (tRNA Adaptation Index) is available for 10 organisms: E. coli, Human, Mouse, Yeast, CHO, C. elegans, Drosophila, Arabidopsis, Pichia, and Bacillus.
 
 The domain is auto-detected from the organism name. You can override it with the `organism_domain` parameter (`'auto'`, `'eukaryote'`, `'prokaryote'`).
+
+Additional organisms can be loaded dynamically via the Kazusa Codon Usage Database auto-downloader:
+
+```python
+from biocompiler.organisms import resolve_or_download_organism
+
+resolve_or_download_organism('Thermus_thermophilus')  # Auto-downloads from Kazusa
+```
 
 ---
 
@@ -539,9 +591,9 @@ Full technical documentation is in [`docs/`](docs/):
 | [DOC-06](docs/06-Design-Rationale.md) | Design Rationale and critical analysis of the original proposal |
 | [DOC-10](docs/10-Deterministic-Methods.md) | Six deterministic methods for non-deterministic biology |
 | [DOC-14](docs/14-SLOT-Proof-Implementation-Gap.md) | SLOT predicate proof-implementation gap |
-| [DOC-15](docs/15-Reference.md) | Technical reference: 28-predicate tables, engine API, TCB, limitations |
+| [DOC-15](docs/15-Reference.md) | Technical reference: 33-predicate tables, engine API, TCB, limitations |
 | [Reference Sets](docs/reference_sets.md) | CAI reference sets (Kazusa vs Sharp-Li): when to use each, example usage, expected differences |
-| [docs/adr/](docs/adr/) | 14 Architecture Decision Records |
+| [docs/adr/](docs/adr/) | 18 Architecture Decision Records |
 
 ---
 

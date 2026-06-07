@@ -13,14 +13,14 @@ This document formally describes the proof-implementation gap between the Lean4 
 
 ## 2. The SLOT Predicate Class
 
-BioCompiler classifies its 32 type predicates into two exclusive categories:
+BioCompiler classifies its 33 type predicates into two exclusive categories:
 
 | Category | Count | Can produce PASS? | Formal proof |
 |----------|-------|--------------------|--------------|
 | Core (deterministic) | 13 | Yes | Full soundness proof |
-| SLOT-dependent | 19 | Mode-dependent | Varies by mode |
+| SLOT-dependent | 20 | Mode-dependent | Varies by mode |
 
-The 19 SLOT predicates depend on external tools (MaxEntScan, ESMFold, FoldX, CamSol, NetMHC, etc.) whose behavior cannot be formally verified within Lean4:
+The 20 SLOT predicates depend on external tools (MaxEntScan, ESMFold, FoldX, CamSol, NetMHC, etc.) whose behavior cannot be formally verified within Lean4:
 
 1. ConservationScore (BLOSUM62 heuristic)
 2. NoUnexpectedTMDomain (hydrophobic fraction heuristic)
@@ -165,7 +165,7 @@ There is no soundness theorem for permissive mode because none can hold in gener
 
 ### 6.1 The Practical Argument
 
-A system that returns UNCERTAIN for 19 of 32 predicates is formally impeccable but practically useless. Users need:
+A system that returns UNCERTAIN for 20 of 33 predicates is formally impeccable but practically useless. Users need:
 - **Actionable results**: knowing a sequence is safe (PASS) or unsafe (FAIL), not just "maybe"
 - **Risk assessment**: evidence-based PASS is more useful than no-information UNCERTAIN
 - **Progressive trust**: start conservative, upgrade to verified as confidence grows

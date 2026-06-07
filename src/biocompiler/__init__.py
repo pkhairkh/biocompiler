@@ -176,6 +176,12 @@ from .optimizer.objectives import (
     resolve_objective,
     OBJECTIVE_REGISTRY,
 )
+from .optimizer.codon_harmonization import (
+    compute_rca,
+    harmonize_codons,
+    harmonize_with_cai_fallback,
+    compute_harmonization_score,
+)
 from .hybrid_optimizer import HybridOptimizer
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -289,6 +295,24 @@ except ImportError:
     HUMAN_CAI = None
     compute_cai_weights = None
     get_species_cai_weights = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Kazusa Codon Usage Database auto-downloader
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .organisms import (
+        fetch_codon_usage_from_kazusa,
+        fetch_codon_usage_by_name,
+        register_dynamic_organism,
+        resolve_or_download_organism,
+    )
+except ImportError:
+    _logger.debug("Could not import Kazusa downloader, using None fallbacks")
+    fetch_codon_usage_from_kazusa = None
+    fetch_codon_usage_by_name = None
+    register_dynamic_organism = None
+    resolve_or_download_organism = None
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tissue data

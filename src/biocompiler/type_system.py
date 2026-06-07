@@ -1,7 +1,7 @@
 """
 BioCompiler Type System v9.2.0
 ==============================
-Defines the core types, codon tables, BLOSUM62 matrix, and 28 predicate classes
+Defines the core types, codon tables, BLOSUM62 matrix, and 33 predicate classes
 for certified gene optimization: 12 DNA-level + 4 structure + 4 stability +
 4 solubility + 4 immunogenicity.
 """

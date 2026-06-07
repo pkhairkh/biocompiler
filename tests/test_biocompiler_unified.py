@@ -893,6 +893,7 @@ class TestCrypticSplicePassRate:
                 gc_lo=0.30, gc_hi=0.70,
                 cai_threshold=0.2,
                 strict_mode=False,
+                biosecurity_mode="warn",
             )
             total += 1
             if "NoCrypticSplice" not in result.failed_predicates:

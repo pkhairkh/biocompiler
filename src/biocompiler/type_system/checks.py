@@ -1627,3 +1627,96 @@ def check_mrna_stability(
         "MRNAStability", passed, verdict=verdict,
         details=details,
     )
+
+
+# ────────────────────────────────────────────────────────────
+# BLAST match avoidance and primer compatibility checks
+# ────────────────────────────────────────────────────────────
+
+def check_no_blast_matches(
+    seq: str,
+    reference_sequences: list[str] | None = None,
+    k: int = 15,
+) -> PredicateResult:
+    """Check that the sequence has no significant k-mer matches against references.
+
+    Uses k-mer overlap detection to find matching subsequences. If any
+    k-mer of length >= k is shared with a reference sequence, the predicate
+    FAILS.
+
+    Args:
+        seq: DNA sequence to check (uppercase).
+        reference_sequences: List of reference DNA sequences.
+        k: Minimum k-mer size to consider significant (default 15).
+
+    Returns:
+        PredicateResult with PASS/FAIL verdict.
+    """
+    if not reference_sequences:
+        return PredicateResult(
+            "NoBlastMatches", True, verdict=Verdict.PASS,
+            details="No reference sequences provided for BLAST match check",
+        )
+
+    from ..optimizer.blast_avoidance import check_kmer_overlap
+
+    seq = seq.upper()
+    overlaps = check_kmer_overlap(seq, reference_sequences, k=k)
+
+    if overlaps:
+        positions = [start for start, _length, _kmer in overlaps]
+        return PredicateResult(
+            "NoBlastMatches", False, verdict=Verdict.FAIL,
+            details=f"Found {len(overlaps)} k-mer overlap(s) against reference sequences",
+            positions=positions,
+        )
+
+    return PredicateResult(
+        "NoBlastMatches", True, verdict=Verdict.PASS,
+        details=f"No k-mer overlaps (k={k}) found against reference sequences",
+    )
+
+
+def check_primer_compatibility(
+    seq: str,
+    region_start: int = 0,
+    region_end: int | None = None,
+    min_tm: float = 55.0,
+    max_tm: float = 65.0,
+) -> PredicateResult:
+    """Check that the sequence is compatible with primer design for the given region.
+
+    Designs primers flanking the specified region and validates that they
+    meet Tm, GC clamp, and secondary structure requirements.
+
+    Args:
+        seq: Template DNA sequence.
+        region_start: Start of the target region (0-based).
+        region_end: End of the target region (0-based, exclusive).
+            If None, uses the full sequence length.
+        min_tm: Minimum acceptable Tm (°C).
+        max_tm: Maximum acceptable Tm (°C).
+
+    Returns:
+        PredicateResult with PASS/FAIL verdict.
+    """
+    if region_end is None:
+        region_end = len(seq)
+
+    from ..optimizer.primer_design import evaluate_primer_constraint
+
+    result = evaluate_primer_constraint(
+        seq, region_start, region_end, min_tm=min_tm, max_tm=max_tm,
+    )
+
+    if result.satisfied:
+        return PredicateResult(
+            "PrimerCompatibility", True, verdict=Verdict.PASS,
+            details="Sequence is primer-compatible",
+        )
+
+    issues_str = "; ".join(result.issues) if result.issues else "Unknown primer design issue"
+    return PredicateResult(
+        "PrimerCompatibility", False, verdict=Verdict.FAIL,
+        details=f"Primer compatibility issues: {issues_str}",
+    )

@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | **Document ID** | DOC-06 |
-| **Version** | 1.0.0-draft |
-| **Status** | ROUGH DRAFT |
-| **Date** | 2026-05-30 |
+| **Version** | 12.0.0 |
+| **Status** | Current |
+| **Date** | 2026-06-07 |
 | **Prepared By** | BioCompiler Project Team |
 | **Reviewed By** | [TBD at baseline review] |
 | **Approved By** | [TBD at baseline review] |
@@ -342,7 +342,7 @@ The following table compares three approaches across key dimensions:
 |---|---|
 | **Decision** | Use a staged pipeline architecture with typed IRs (not monolith, not microservices) |
 | **Status** | Accepted |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 
 **Context:** The BioCompiler system needs to process gene sequences through multiple transformation stages — scanning, splicing, translation, type checking, optimization, and certification — with well-defined interfaces between stages. The stages have different computational characteristics: some are purely symbolic (scanning, translation), some are non-deterministic (splicing), and some require external tools (folding, PTM prediction). The architecture must support independent development, testing, and replacement of stages while maintaining end-to-end correctness guarantees.
 
@@ -370,7 +370,7 @@ The following table compares three approaches across key dimensions:
 |---|---|
 | **Decision** | Define IR schemas in Protocol Buffers (.proto files) |
 | **Status** | Accepted |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 
 **Context:** The IR Bus requires schemas that define the structure of each IR level (IR-Seq, IR-Peptide, IR-Structure, IR-Circuit). These schemas must be enforced at runtime, support backward-compatible evolution, support efficient serialization for persistence and inter-process communication, and ideally support code generation for multiple programming languages.
 
@@ -398,7 +398,7 @@ The following table compares three approaches across key dimensions:
 |---|---|
 | **Decision** | Model splicing as a Non-Deterministic Finite-State Transducer (NDFST) producing set-valued output (no probabilities) |
 | **Status** | Accepted |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 
 **Context:** The splicing stage must model alternative splicing — the process by which a single pre-mRNA sequence can produce multiple distinct mRNA isoforms through different combinations of exon inclusion and exclusion. The model must capture the essential non-determinism of the process (multiple valid isoforms for the same input) while maintaining deterministic computation (the same input always produces the same isoform set). The model must also support cellular context parameterization (different cell types produce different isoform sets due to different splicing factor concentrations).
 
@@ -428,7 +428,7 @@ The following table compares three approaches across key dimensions:
 |---|---|
 | **Decision** | Use Constraint Satisfaction Problem (CSP) with hard constraints rather than weighted optimization |
 | **Status** | Accepted |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 
 **Context:** The gene design problem is to find an mRNA sequence that translates to a target protein and satisfies multiple biological correctness constraints: splicing correctness (no cryptic splice sites, correct splicing pattern), codon adaptation (CAI above a threshold), GC content (within a specified range), restriction site absence, reading frame consistency, and instability motif absence. The problem is an inverse problem: given a target protein and a set of constraints, find an mRNA sequence that satisfies all constraints.
 
@@ -460,7 +460,7 @@ The CSP formulation also supports the three-valued logic of the type system: a P
 |---|---|
 | **Decision** | Use PASS/FAIL/UNCERTAIN instead of probabilities or binary pass/fail |
 | **Status** | Accepted |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 
 **Context:** The type system must produce verdicts for each biological correctness property checked against an mRNA sequence. The verdict must honestly represent the system's state of knowledge: guaranteed correct, guaranteed incorrect, or cannot determine. The verdict must also compose: when multiple properties are checked, the combined verdict must accurately represent the combined state of knowledge.
 
@@ -490,7 +490,7 @@ The three-valued logic also maps directly to abstract interpretation (Method 1, 
 |---|---|
 | **Decision** | Invoke folding and PTM prediction as external tools through a Foreign Function Interface (FFI), not internal models |
 | **Status** | Accepted |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 
 **Context:** Protein folding and post-translational modification prediction are essential for full gene-to-protein analysis, but they are not formalizable as string transformations (Flaw #1, Flaw #2). The system must incorporate their predictions without compromising the determinism and formal guarantees of the core pipeline. The FFI boundary must cleanly separate the deterministic core (which provides guarantees) from the non-deterministic periphery (which provides enrichment).
 
@@ -518,7 +518,7 @@ The three-valued logic also maps directly to abstract interpretation (Method 1, 
 |---|---|
 | **Decision** | Splicing grammar rules in YAML configuration files, not hardcoded in source code |
 | **Status** | Accepted |
-| **Date** | 2026-05-30 |
+| **Date** | 2026-06-07 |
 
 **Context:** The splicing grammar defines the rules that the NDFST uses to parse pre-mRNA sequences: splice donor and acceptor consensus sequences, branch point motifs, polypyrimidine tract requirements, exonic and intronic splicing enhancer and silencer patterns, and cellular context thresholds. These rules are scientific knowledge that evolves as new splice sites are annotated, new regulatory elements are discovered, and new cell-type-specific splicing data becomes available.
 
@@ -713,4 +713,4 @@ Readers who need the technical details behind a flaw or a method should consult 
 
 ---
 
-*End of DOC-06: Design Rationale — Version 1.0.0-draft*
+*End of DOC-06: Design Rationale — Version 12.0.0*

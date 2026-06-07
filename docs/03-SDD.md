@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | **Document ID** | DOC-03 |
-| **Version** | 1.0.0-draft |
-| **Status** | ROUGH DRAFT |
-| **Date** | 2026-05-30 |
+| **Version** | 12.0.0 |
+| **Status** | Current |
+| **Date** | 2026-06-07 |
 
 ---
 
@@ -896,10 +896,10 @@ Input FASTA
 
 | ID | Decision | Rationale | Alternatives Considered | Date |
 |---|---|---|---|---|
-| DD-01 | AC-3 for constraint propagation | Well-understood, efficient for CSPs with small domains (1–6 per variable) | Forward checking only; full look-ahead | 2026-05-30 |
-| DD-02 | Backtracking with CAI-ordered domain values | Prioritizes high-CAI codons, finding near-optimal solutions faster | Random ordering; least-constraining value | 2026-05-30 |
-| DD-03 | Deletion-based MUS computation | Simple, correct, sufficient for constraint sets of size ≤ 10 | QuickXPlain; SAT-based MUS extraction | 2026-05-30 |
-| DD-04 | Complementary region detection via simple string matching | O(n²) but n ≤ 10,000 bp per transcript; fast enough | Smith-Waterman; RNAhybrid | 2026-05-30 |
-| DD-05 | JSON for certificates (not protobuf) | Human-readable; easily inspectable by regulators | Protocol buffers; XML | 2026-05-30 |
-| DD-06 | Protocol buffers for IR (not JSON) | Schema enforcement, efficient serialization, code generation | JSON Schema; HDF5; pickle | 2026-05-30 |
-| DD-07 | SHA-256 for certificate design_id | Cryptographic integrity; universally available | MD5; BLAKE2; no hash | 2026-05-30 |
+| DD-01 | AC-3 for constraint propagation | Well-understood, efficient for CSPs with small domains (1–6 per variable) | Forward checking only; full look-ahead | 2026-06-07 |
+| DD-02 | Backtracking with CAI-ordered domain values | Prioritizes high-CAI codons, finding near-optimal solutions faster | Random ordering; least-constraining value | 2026-06-07 |
+| DD-03 | Deletion-based MUS computation | Simple, correct, sufficient for constraint sets of size ≤ 10 | QuickXPlain; SAT-based MUS extraction | 2026-06-07 |
+| DD-04 | Complementary region detection via simple string matching | O(n²) but n ≤ 10,000 bp per transcript; fast enough | Smith-Waterman; RNAhybrid | 2026-06-07 |
+| DD-05 | JSON for certificates (not protobuf) | Human-readable; easily inspectable by regulators | Protocol buffers; XML | 2026-06-07 |
+| DD-06 | Protocol buffers for IR (not JSON) | Schema enforcement, efficient serialization, code generation | JSON Schema; HDF5; pickle | 2026-06-07 |
+| DD-07 | SHA-256 for certificate design_id | Cryptographic integrity; universally available | MD5; BLAKE2; no hash | 2026-06-07 |

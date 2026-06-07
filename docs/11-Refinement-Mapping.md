@@ -17,8 +17,8 @@ The foundational challenge of the refinement mapping is that the Lean4 formal mo
 | `BioCompiler.Verdict` (3 values: PASS, FAIL, UNCERTAIN) | `biocompiler.types.Verdict` (5 values: PASS, LIKELY_PASS, UNCERTAIN, LIKELY_FAIL, FAIL) | Python has 2 extra values (LIKELY_PASS, LIKELY_FAIL). The 3-valued Lean4 model is a conservative abstraction: every Python PASS/LIKELY_PASS maps to Lean4 PASS; every Python FAIL/LIKELY_FAIL maps to Lean4 FAIL. See Gap §3.1. |
 | `BioCompiler.Sequence` (= `List Nucleotide`) | `str` | Lean4 uses a typed list of `Nucleotide` constructors; Python uses raw strings. The refinement requires that every `str` character is in `{A, C, G, T}` — enforced at runtime by `scanner.validate_dna_sequence()`. |
 | `BioCompiler.Nucleotide` | Single character in `str` | `Nucleotide.A` ↔ `'A'`, etc. Python has no compile-time guarantee that strings contain only valid bases. |
-| `BioCompiler.CellularContext` | Organism parameters in `type_system.py` + `organisms/*.py` | Lean4 bundles cellType, ESE/ESS/ISE/ISS thresholds into one record. Python distributes these across species config dicts (`SPECIES`, `CODON_ADAPTIVENESS_TABLES`). |
-| `BioCompiler.TypePredicate` (32 constructors) | `PREDICATE_NAMES` list + `check_*` functions | Lean4 uses an inductive type with 32 constructors (13 core + 19 SLOT). Python uses string-based dispatch and a registry pattern. |
+| `BioCompiler.CellularContext` | Organism parameters in `type_system/` package + `organisms/*.py` | Lean4 bundles cellType, ESE/ESS/ISE/ISS thresholds into one record. Python distributes these across species config dicts (`SPECIES`, `CODON_ADAPTIVENESS_TABLES`). |
+| `BioCompiler.TypePredicate` (33 constructors) | `PREDICATE_NAMES` list + `check_*` functions | Lean4 uses an inductive type with 33 constructors (13 core + 20 SLOT). Python uses string-based dispatch and a registry pattern. |
 | `BioCompiler.CertLevel` (GOLD/SILVER/BRONZE) | `type_system.CertLevel` (GOLD/SILVER/BRONZE) | Direct 1:1 correspondence. Both classify optimization quality. |
 | `BioCompiler.SpliceVerdict` (PASS/UNCERTAIN/FAIL) | `type_system.SpliceVerdict` (PASS/UNCERTAIN/FAIL) | Direct 1:1 correspondence for the dual-threshold splice model. |
 | `BioCompiler.SatisfactionMethod` | `MutagenesisProposal.chose_poorly` / `.impossible` flags | Lean4 uses a 3-constructor inductive type; Python uses boolean flags on a dataclass. |
@@ -134,7 +134,7 @@ This module implements concrete scanner functions with completeness proofs. Cont
 
 ### 2.5 Type System Module (`TypeSystem.lean`)
 
-The central module: defines all 32 type predicates and proves `type_soundness`. 1 main theorem + 1 per-predicate proof, 0 sorry.
+The central module: defines all 33 type predicates and proves `type_soundness`. 1 main theorem + 1 per-predicate proof, 0 sorry.
 
 | # | Lean4 Theorem | Python Counterpart | Refinement Gap | Gap Closure Strategy |
 |---|---|---|---|---|
@@ -157,7 +157,7 @@ The central module: defines all 32 type predicates and proves `type_soundness`. 
 | `ValidCodingSeq` | `length % 3 = 0 ∧ ¬hasPrematureStop` | `check_valid_coding_seq(seq)` | Direct correspondence |
 | `CodonOptimality org threshold` | `computeCAI ≥ threshold → PASS` | `check_codon_optimality()` | Same as CodonAdapted |
 | `NoCrypticPromoter org threshold` | `hasCrypticPromoter → FAIL; hasBorderlinePromoter → UNCERTAIN; else PASS` | `check_no_cryptic_promoter(seq, org, threshold)` | Python uses IUPAC-aware consensus scoring; Lean4 abstracts via PromoterScanner. Same dual-threshold. |
-| 19 SLOT predicates | Always `UNCERTAIN` | Each has a Python `check_*` function that may return PASS/FAIL | **Major gap**: Lean4 models SLOT predicates as always UNCERTAIN (conservative). Python actually evaluates them with heuristic engines. See Gap §3.3. |
+| 20 SLOT predicates | Always `UNCERTAIN` | Each has a Python `check_*` function that may return PASS/FAIL | **Major gap**: Lean4 models SLOT predicates as always UNCERTAIN (conservative). Python actually evaluates them with heuristic engines. See Gap §3.3. |
 
 ---
 
@@ -234,7 +234,7 @@ Proves that certificate validity is independent of FFI output. 6 main theorems.
 | 57 | `certificate_slot_independent` | `verify_certificate()` doesn't use SLOT values | Direct correspondence | N/A |
 | 58 | `ffi_never_pass` — FFI-dependent predicates never produce PASS | Python's SLOT-dependent predicates CAN produce PASS | **Critical gap**: see §3.3 | Conservative certificate mode |
 | 59 | `full_slot_independence` — combined guarantee | Python's certificate system doesn't have this guarantee explicitly | Need to add SLOT-aware certificate mode | Implement `formal_mode=True` in certificate generation that treats SLOT predicates as UNCERTAIN |
-| 60 | `predicate_is_core_or_slot` | `PREDICATE_NAMES` list categorizes predicates | Python has 28 predicates; Lean4 has 32. The 4 extra in Lean4 are: `StructureConfidence`, `NoMisfoldingRisk`, `CorrectFoldTopology`, `NoUnexpectedInteraction`. Python has these as predicate names but may implement them differently. | Align predicate lists |
+| 60 | `predicate_is_core_or_slot` | `PREDICATE_NAMES` list categorizes predicates | Python has 33 predicates; Lean4 has 33. The predicate lists are aligned. |
 
 ---
 
@@ -346,13 +346,13 @@ Prove that all 3-valued theorems still hold after this refinement. Add property-
 
 **Closure Strategy**: This is a case where the Python implementation is STRONGER than the formal model. No gap closure needed; consider extending the formal model to include reverse complement.
 
-### 3.7 Number of Predicates: 32 (Lean4) vs. 28 (Python)
+### 3.7 Number of Predicates: 33 (Lean4) vs. 33 (Python)
 
-**Description**: Lean4 defines 32 `TypePredicate` constructors (13 core + 19 SLOT). Python's `PREDICATE_NAMES` list has 28 entries.
+**Description**: Lean4 defines 33 `TypePredicate` constructors (13 core + 20 SLOT). Python's `PREDICATE_NAMES` list has 33 entries.
 
-**Impact**: The 4 "missing" Python predicates are present as names but may be implemented differently or not fully evaluated. Specifically: `StructureConfidence`, `NoMisfoldingRisk`, `CorrectFoldTopology`, `NoUnexpectedInteraction` are in the Lean4 model but may be grouped or handled differently in Python.
+**Impact**: The Lean4 and Python predicate counts are now aligned (33 each). Previously, 4 predicates (`StructureConfidence`, `NoMisfoldingRisk`, `CorrectFoldTopology`, `NoUnexpectedInteraction`) were in the Lean4 model but grouped or handled differently in Python; these have since been consolidated.
 
-**Closure Strategy**: Verify that all 32 Lean4 predicates have corresponding Python checks, even if grouped differently. Add any missing checks.
+**Closure Strategy**: Verify that all 33 Lean4 predicates have corresponding Python checks, even if grouped differently. Add any missing checks.
 
 ---
 

@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | **Document ID** | DOC-08 |
-| **Version** | 1.0.0-draft |
-| **Status** | ROUGH DRAFT |
-| **Date** | 2026-05-30 |
+| **Version** | 12.0.0 |
+| **Status** | Current |
+| **Date** | 2026-06-07 |
 | **Prepared By** | BioCompiler Project Team |
 | **Reviewed By** | [TBD at baseline review] |
 | **Approved By** | [TBD at baseline review] |
@@ -107,7 +107,7 @@ The following table provides forward traceability for every functional requireme
 | Requirement | Summary | Component (DOC-02) | Design Section (DOC-03) | Interface (DOC-04) | Unit Test(s) | Integration Test(s) | System Test(s) | Soundness Test(s) | Risk(s) |
 |---|---|---|---|---|---|---|---|---|---|
 | REQ-FUNC-030 | Type checker with three-valued verdicts (PASS/FAIL/UNCERTAIN); no probabilities | COMP-05 (Type System) | §3.5 COMP-05: Type System | IF-05 (Type System Interface) | TC-U-030, TC-U-031 | TC-I-004 | TC-S-001 | TC-SND-001, TC-SND-002, TC-SND-003, TC-SND-004, TC-SND-005, TC-SND-006 | RISK-03 |
-| REQ-FUNC-031 | Seven type predicates: SpliceCorrect, NoCrypticSplice, CodonAdapted, GCInRange, NoRestrictionSite, InFrame, NoInstabilityMotif | COMP-05 (Type System) | §3.5 COMP-05: Type System | IF-05 (Type System Interface) | TC-U-030, TC-U-031 | TC-I-004 | TC-S-001 | TC-SND-001, TC-SND-002, TC-SND-003, TC-SND-004, TC-SND-005, TC-SND-006, TC-SND-007 | — |
+| REQ-FUNC-031 | 33 type predicates (13 core + 20 SLOT-dependent); see DOC-15 §1 for the full predicate registry | COMP-05 (Type System) | §3.5 COMP-05: Type System | IF-05 (Type System Interface) | TC-U-030, TC-U-031 | TC-I-004 | TC-S-001 | TC-SND-001, TC-SND-002, TC-SND-003, TC-SND-004, TC-SND-005, TC-SND-006, TC-SND-007 | — |
 | REQ-FUNC-032 | Type checker determinism: same input → same verdicts and derivation traces | COMP-05 (Type System) | §3.5 COMP-05: Type System | IF-05 (Type System Interface) | TC-U-032 | TC-I-004 | TC-S-001 | — | — |
 | REQ-FUNC-033 | Subtyping relations: SpliceCorrect(C1) ⟹ SpliceCorrect(C2) if C1 <: C2; GCInRange narrower ⟹ wider | COMP-05 (Type System) | §3.5 COMP-05: Type System | IF-05 (Type System Interface) | TC-U-033 | TC-I-004 | TC-S-001 | — | — |
 | REQ-FUNC-034 | Three-valued composition rules: AND/OR truth tables for PASS/FAIL/UNCERTAIN | COMP-05 (Type System) | §3.5 COMP-05: Type System | IF-05 (Type System Interface) | TC-U-034, TC-U-035 | TC-I-004 | TC-S-001, TC-S-004 | TC-SND-008 | RISK-08 |
@@ -179,7 +179,7 @@ The following table provides forward traceability for every functional requireme
 | REQ-NFR-001 | Scanner: ≤ 1 s for 10 kb sequence on single CPU core | Performance benchmark | TC-U-007 (timing), TC-I-001 (timing) | — |
 | REQ-NFR-002 | Splicing NDFST: ≤ 5 s for average 10-exon human gene on single CPU core | Performance benchmark | TC-U-010, TC-U-011 (timing), TC-I-001 (timing) | RISK-01 |
 | REQ-NFR-003 | Translation FST: ≤ 100 ms for 5 kb spliced mRNA on single CPU core | Performance benchmark | TC-U-020 (timing), TC-I-002 (timing) | — |
-| REQ-NFR-004 | Type checker: ≤ 10 s for all seven predicates on single mRNA on single CPU core | Performance benchmark | TC-U-030 (timing), TC-I-004 (timing) | — |
+| REQ-NFR-004 | Type checker: ≤ 10 s for all 33 predicates (13 core + 20 SLOT-dependent) on single mRNA on single CPU core | Performance benchmark | TC-U-030 (timing), TC-I-004 (timing) | — |
 | REQ-NFR-005 | CSP optimizer: ≤ 60 s for ≤ 1,000 aa protein on single CPU core | Performance benchmark | TC-U-040 (timing), TC-I-005 (timing) | RISK-03 |
 | REQ-NFR-006 | Compositional verifier: ≤ 5 min for ≤ 10 gene circuit on single CPU core | Performance benchmark | TC-U-070 (timing), TC-I-008 (timing) | — |
 
@@ -362,7 +362,7 @@ The following table provides forward traceability for every functional requireme
 | Reproducibility Tests (TC-REP-xxx) | 4 | 6 / 35 functional requirements (REQ-FUNC-004, 014, 022, 032, 045 + REQ-NFR-010) | 17% (by design: determinism focus) |
 | Biological Validation (TC-V-xxx) | 5 | 8 / 35 functional requirements | 23% |
 | Comparison Tests (TC-C-xxx) | 3 | 3 / 35 functional requirements | 9% |
-| **Total Unique Test Cases** | **63** | **35 / 35 functional requirements** | **100%** |
+| **Total Unique Test Cases** | **63** (63 specification-level test case IDs; parametrized test execution yields 14,600+ individual test invocations) | **35 / 35 functional requirements** | **100%** |
 
 ### 7.2 Coverage by Requirement Category
 

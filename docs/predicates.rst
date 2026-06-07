@@ -1,7 +1,7 @@
 Predicate System
 ================
 
-BioCompiler implements a comprehensive **28-predicate** type system for
+BioCompiler implements a comprehensive **33-predicate** type system for
 certified gene optimization. Each predicate evaluates a specific biological
 constraint and returns a three-valued verdict: **PASS**, **FAIL**, or
 **UNCERTAIN**.
@@ -54,7 +54,7 @@ LIKELY_PASS → UNCERTAIN and LIKELY_FAIL → FAIL. This ensures that the
 Lean4 soundness proofs remain valid when applied to five-valued verdicts.
 
 
-28 Predicates
+33 Predicates
 -------------
 
 DNA-Level Predicates (12)

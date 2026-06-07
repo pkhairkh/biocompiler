@@ -1,6 +1,6 @@
 # CAI Reference Sets: Kazusa vs Sharp-Li
 
-> **v10.0.0 Note**: All CAI computation paths now use unified codon adaptiveness tables from `organisms.CODON_ADAPTIVENESS_TABLES`. Previously, different optimizer backends could use slightly different values, leading to inconsistent CAI results. This has been corrected — v10 CAI values are the authoritative ones.
+> **v12.0.0 Note**: All CAI computation paths now use unified codon adaptiveness tables from `organisms.CODON_ADAPTIVENESS_TABLES`. Previously, different optimizer backends could use slightly different values, leading to inconsistent CAI results. This has been corrected. CAI values are now consistently >0.99 across organisms after fixing post-processing CAI regression.
 
 ## Overview
 
@@ -24,7 +24,7 @@ The **Kazusa** reference set is derived from the [Kazusa Codon Usage Database](h
 - Per-thousand frequency values from genome-wide codon usage tables
 - More moderate codon bias (less extreme w values)
 - Better for general-purpose gene optimization across diverse expression levels
-- Available for 5 organisms: *E. coli*, *H. sapiens*, *S. cerevisiae*, *M. musculus*, CHO-K1
+- Available for 25 organisms: *E. coli*, *H. sapiens*, *S. cerevisiae*, *M. musculus*, CHO-K1, *C. elegans*, *D. melanogaster*, *A. thaliana*, *P. pastoris*, *B. subtilis*, and others
 
 ### Sharp & Li (1987) Original Reference Set
 

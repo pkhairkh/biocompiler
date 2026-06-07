@@ -14,6 +14,12 @@ from typing import Any
 from ..type_system import CODON_TABLE, AA_TO_CODONS
 from ..decision_provenance import CodonDecision, ConstraintDecision
 from .hybrid_types import HybridResult, GT_CAI_COST_THRESHOLD as _GT_CAI_COST_THRESHOLD
+from .performance import (
+    estimate_optimization_complexity,
+    get_fast_path_config,
+    should_skip_constraint,
+    _PROKARYOTE_CAI_SKIP_HILLCLIMB,
+)
 
 # ── NUMBA integration ──────────────────────────────────────────────
 try:
@@ -69,6 +75,17 @@ def _optimize_prokaryote_fast(optimizer, protein: str) -> HybridResult:
     # prokaryotes) and by the is_prokaryote flag.  The GT-related code
     # paths (gt_free, ag_free, _fix_avoidable_gt, etc.) are never
     # reached on this fast path.
+
+    # ── Performance: estimate complexity and get tuned config ──
+    _complexity = estimate_optimization_complexity(
+        protein,
+        optimizer.organism,
+        optimizer.enzymes,
+        optimizer.gc_lo,
+        optimizer.gc_hi,
+    )
+    _config = get_fast_path_config(_complexity, is_prokaryote=True)
+
     species_cai = optimizer.species_cai
     max_adapt = optimizer._max_adapt
     optimal_codon = optimizer.optimal_codon
@@ -440,7 +457,7 @@ def _optimize_prokaryote_fast(optimizer, protein: str) -> HybridResult:
 
     # ── Phase 2c: Fix ATTTA motifs ──
     seq_str = "".join(seq_chars)
-    for _iter in range(100):
+    for _iter in range(_config.attta_max_iterations):
         pos = seq_str.find("ATTTA")
         if pos == -1:
             break
@@ -478,7 +495,7 @@ def _optimize_prokaryote_fast(optimizer, protein: str) -> HybridResult:
             break
 
     # ── Phase 2d: Fix T-runs (6+ consecutive T) ──
-    for _iter in range(100):
+    for _iter in range(_config.trun_max_iterations):
         # Find longest T-run
         max_run = 0
         max_pos = -1
@@ -551,65 +568,73 @@ def _optimize_prokaryote_fast(optimizer, protein: str) -> HybridResult:
     # ── Phase 2g: CAI hill climbing for prokaryotes ──
     # After fixing all constraints, try to upgrade any suboptimal codons
     # back to higher-CAI alternatives without breaking constraints.
+    # PERF: Skip hill climbing entirely if CAI is already very high
+    # (prokaryotes start with max CAI from greedy init; only constraint
+    # fixes reduce it, and many sequences retain CAI > 0.95).
     hill_climb_improvements = 0
-    for _hc_iter in range(3):  # Limited passes to avoid excessive runtime
-        improved = False
-        for ci in range(n_codons):
-            aa = protein[ci] if ci < len(protein) else None
-            if aa is None or aa == "*":
-                continue
-            current = "".join(seq_chars[ci*3:ci*3+3])
-            current_cai = species_cai.get(current, 0.0)
+    _skip_hill_climb = (
+        _config.skip_hill_climbing
+        and final_cai >= _PROKARYOTE_CAI_SKIP_HILLCLIMB
+    )
+    if not _skip_hill_climb:
+        for _hc_iter in range(_config.hill_climb_passes):
+            improved = False
+            for ci in range(n_codons):
+                aa = protein[ci] if ci < len(protein) else None
+                if aa is None or aa == "*":
+                    continue
+                current = "".join(seq_chars[ci*3:ci*3+3])
+                current_cai = species_cai.get(current, 0.0)
 
-            # Find the best alternative that's better than current
-            for alt in sorted_codons.get(aa, []):
-                if alt == current:
-                    continue
-                alt_cai = species_cai.get(alt, 0.0)
-                if alt_cai <= current_cai:
-                    continue
-                # Check that this swap doesn't break constraints
-                old_codon = _apply_swap(ci, alt)
-                # Check no RS introduced locally
-                if _has_rs_local(ci):
-                    _rollback_swap(ci, old_codon)
-                    continue
-                # Check GC still in range
-                new_gc_val = gc_count / n_bases
-                if not (gc_lo <= new_gc_val <= gc_hi):
-                    _rollback_swap(ci, old_codon)
-                    continue
-                # Check no ATTTA introduced locally
-                local_window = "".join(seq_chars[max(0, ci*3-5):min(n_bases, ci*3+8)])
-                if "ATTTA" in local_window:
-                    _rollback_swap(ci, old_codon)
-                    continue
-                # Check no long T-run introduced
-                check_start = max(0, ci * 3 - 6)
-                check_end = min(n_bases, ci * 3 + 9)
-                has_long_run = False
-                j = check_start
-                while j < check_end:
-                    if seq_chars[j] == 'T':
-                        k = j
-                        while k < check_end and seq_chars[k] == 'T':
-                            k += 1
-                        if k - j >= 6:
-                            has_long_run = True
-                            break
-                        j = k
-                    else:
-                        j += 1
-                if has_long_run:
-                    _rollback_swap(ci, old_codon)
-                    continue
-                # This swap is safe and improves CAI
-                hill_climb_improvements += 1
-                improved = True
-                break  # First valid alt in sorted order is the best
+                # Find the best alternative that's better than current
+                for alt in sorted_codons.get(aa, []):
+                    if alt == current:
+                        continue
+                    alt_cai = species_cai.get(alt, 0.0)
+                    if alt_cai <= current_cai:
+                        continue
+                    # Check that this swap doesn't break constraints
+                    old_codon = _apply_swap(ci, alt)
+                    # Check no RS introduced locally
+                    if _has_rs_local(ci):
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check GC still in range
+                    new_gc_val = gc_count / n_bases
+                    if not (gc_lo <= new_gc_val <= gc_hi):
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check no ATTTA introduced locally
+                    local_window = "".join(seq_chars[max(0, ci*3-5):min(n_bases, ci*3+8)])
+                    if "ATTTA" in local_window:
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # Check no long T-run introduced
+                    check_start = max(0, ci * 3 - 6)
+                    check_end = min(n_bases, ci * 3 + 9)
+                    has_long_run = False
+                    j = check_start
+                    while j < check_end:
+                        if seq_chars[j] == 'T':
+                            k = j
+                            while k < check_end and seq_chars[k] == 'T':
+                                k += 1
+                            if k - j >= 6:
+                                has_long_run = True
+                                break
+                            j = k
+                        else:
+                            j += 1
+                    if has_long_run:
+                        _rollback_swap(ci, old_codon)
+                        continue
+                    # This swap is safe and improves CAI
+                    hill_climb_improvements += 1
+                    improved = True
+                    break  # First valid alt in sorted order is the best
 
-        if not improved:
-            break
+            if not improved:
+                break
 
     # ── Phase 2h: CAI micro-optimization with constraint recheck ──
     # After all constraint phases, some codons may be suboptimal because
@@ -619,7 +644,7 @@ def _optimize_prokaryote_fast(optimizer, protein: str) -> HybridResult:
     # two-codon swaps: if upgrading codon A creates a RS, maybe changing
     # a neighboring codon B simultaneously resolves it with a net CAI gain.
     micro_opt_improvements = 0
-    for _micro_iter in range(5):
+    for _micro_iter in range(_config.micro_optimization_passes):
         any_micro_improved = False
 
         for ci in range(n_codons):
@@ -788,7 +813,7 @@ def _optimize_prokaryote_fast(optimizer, protein: str) -> HybridResult:
     # restriction site) may now be safe to upgrade because nearby codons
     # changed during later phases.  This final pass systematically tries
     # ALL higher-CAI alternatives, not just the optimal codon.
-    for _micro_iter in range(3):
+    for _micro_iter in range(_config.micro_optimization_passes):
         any_micro_upgrade = False
         for ci in range(n_codons):
             aa = protein[ci] if ci < len(protein) else None

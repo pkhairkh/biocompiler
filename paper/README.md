@@ -6,7 +6,7 @@
 
 - Document class: `acmart` (ACM format, anonymous review)
 - Title: "Well-Typed Genes Don't Go Wrong: A Type System for Machine-Verified Gene Design"
-- 28 type predicates across five biological domains (DNA-level, structure, stability, solubility, immunogenicity)
+- 33 type predicates across five biological domains (DNA-level, structure, stability, solubility, immunogenicity)
 - SLOT (Sealed Local Oracle Theory) framework with refinement theorem
 - Lean 4 soundness proof: 18 modules, 7,930 LOC, zero sorry, zero axioms
 - Self-contained: all sections inline (no `\input`/`\include`)

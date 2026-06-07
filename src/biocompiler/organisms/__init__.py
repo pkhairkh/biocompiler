@@ -81,6 +81,70 @@ from .spodoptera import SPODOPTERA_PREFERRED_CODONS as SPODOPTERA_PREFERRED_CODO
 from .trichoplusia import TRICHOPLUSIA_CODON_USAGE as TRICHOPLUSIA_CODON_USAGE
 from .trichoplusia import TRICHOPLUSIA_CODON_ADAPTIVENESS as TRICHOPLUSIA_CODON_ADAPTIVENESS
 from .trichoplusia import TRICHOPLUSIA_PREFERRED_CODONS as TRICHOPLUSIA_PREFERRED_CODONS
+# New organisms (Kazusa expansion)
+from .pichia import PICHIA_CODON_USAGE as PICHIA_CODON_USAGE
+from .pichia import PICHIA_CODON_ADAPTIVENESS as PICHIA_CODON_ADAPTIVENESS
+from .pichia import PICHIA_PREFERRED_CODONS as PICHIA_PREFERRED_CODONS
+from .hek293 import HEK293_CODON_USAGE as HEK293_CODON_USAGE
+from .hek293 import HEK293_CODON_ADAPTIVENESS as HEK293_CODON_ADAPTIVENESS
+from .hek293 import HEK293_PREFERRED_CODONS as HEK293_PREFERRED_CODONS
+from .ns0 import NS0_CODON_USAGE as NS0_CODON_USAGE
+from .ns0 import NS0_CODON_ADAPTIVENESS as NS0_CODON_ADAPTIVENESS
+from .ns0 import NS0_PREFERRED_CODONS as NS0_PREFERRED_CODONS
+from .per_c6 import PER_C6_CODON_USAGE as PER_C6_CODON_USAGE
+from .per_c6 import PER_C6_CODON_ADAPTIVENESS as PER_C6_CODON_ADAPTIVENESS
+from .per_c6 import PER_C6_PREFERRED_CODONS as PER_C6_PREFERRED_CODONS
+from .cricetulus import CRICETULUS_CODON_USAGE as CRICETULUS_CODON_USAGE
+from .cricetulus import CRICETULUS_CODON_ADAPTIVENESS as CRICETULUS_CODON_ADAPTIVENESS
+from .cricetulus import CRICETULUS_PREFERRED_CODONS as CRICETULUS_PREFERRED_CODONS
+from .bacillus import BACILLUS_CODON_USAGE as BACILLUS_CODON_USAGE
+from .bacillus import BACILLUS_CODON_ADAPTIVENESS as BACILLUS_CODON_ADAPTIVENESS
+from .bacillus import BACILLUS_PREFERRED_CODONS as BACILLUS_PREFERRED_CODONS
+from .pseudomonas import PSEUDOMONAS_CODON_USAGE as PSEUDOMONAS_CODON_USAGE
+from .pseudomonas import PSEUDOMONAS_CODON_ADAPTIVENESS as PSEUDOMONAS_CODON_ADAPTIVENESS
+from .pseudomonas import PSEUDOMONAS_PREFERRED_CODONS as PSEUDOMONAS_PREFERRED_CODONS
+from .corynebacterium import CORYNEBACTERIUM_CODON_USAGE as CORYNEBACTERIUM_CODON_USAGE
+from .corynebacterium import CORYNEBACTERIUM_CODON_ADAPTIVENESS as CORYNEBACTERIUM_CODON_ADAPTIVENESS
+from .corynebacterium import CORYNEBACTERIUM_PREFERRED_CODONS as CORYNEBACTERIUM_PREFERRED_CODONS
+from .kluyveromyces import KLUYVEROMYCES_CODON_USAGE as KLUYVEROMYCES_CODON_USAGE
+from .kluyveromyces import KLUYVEROMYCES_CODON_ADAPTIVENESS as KLUYVEROMYCES_CODON_ADAPTIVENESS
+from .kluyveromyces import KLUYVEROMYCES_PREFERRED_CODONS as KLUYVEROMYCES_PREFERRED_CODONS
+from .danio import DANIO_CODON_USAGE as DANIO_CODON_USAGE
+from .danio import DANIO_CODON_ADAPTIVENESS as DANIO_CODON_ADAPTIVENESS
+from .danio import DANIO_PREFERRED_CODONS as DANIO_PREFERRED_CODONS
+from .caenorhabditis import CAENORHABDITIS_CODON_USAGE as CAENORHABDITIS_CODON_USAGE
+from .caenorhabditis import CAENORHABDITIS_CODON_ADAPTIVENESS as CAENORHABDITIS_CODON_ADAPTIVENESS
+from .caenorhabditis import CAENORHABDITIS_PREFERRED_CODONS as CAENORHABDITIS_PREFERRED_CODONS
+from .xenopus import XENOPUS_CODON_USAGE as XENOPUS_CODON_USAGE
+from .xenopus import XENOPUS_CODON_ADAPTIVENESS as XENOPUS_CODON_ADAPTIVENESS
+from .xenopus import XENOPUS_PREFERRED_CODONS as XENOPUS_PREFERRED_CODONS
+from .rattus import RATTUS_CODON_USAGE as RATTUS_CODON_USAGE
+from .rattus import RATTUS_CODON_ADAPTIVENESS as RATTUS_CODON_ADAPTIVENESS
+from .rattus import RATTUS_PREFERRED_CODONS as RATTUS_PREFERRED_CODONS
+from .canis import CANIS_CODON_USAGE as CANIS_CODON_USAGE
+from .canis import CANIS_CODON_ADAPTIVENESS as CANIS_CODON_ADAPTIVENESS
+from .canis import CANIS_PREFERRED_CODONS as CANIS_PREFERRED_CODONS
+from .bos import BOS_CODON_USAGE as BOS_CODON_USAGE
+from .bos import BOS_CODON_ADAPTIVENESS as BOS_CODON_ADAPTIVENESS
+from .bos import BOS_PREFERRED_CODONS as BOS_PREFERRED_CODONS
+from .gallus import GALLUS_CODON_USAGE as GALLUS_CODON_USAGE
+from .gallus import GALLUS_CODON_ADAPTIVENESS as GALLUS_CODON_ADAPTIVENESS
+from .gallus import GALLUS_PREFERRED_CODONS as GALLUS_PREFERRED_CODONS
+from .zea import ZEA_CODON_USAGE as ZEA_CODON_USAGE
+from .zea import ZEA_CODON_ADAPTIVENESS as ZEA_CODON_ADAPTIVENESS
+from .zea import ZEA_PREFERRED_CODONS as ZEA_PREFERRED_CODONS
+from .glycine import GLYCINE_CODON_USAGE as GLYCINE_CODON_USAGE
+from .glycine import GLYCINE_CODON_ADAPTIVENESS as GLYCINE_CODON_ADAPTIVENESS
+from .glycine import GLYCINE_PREFERRED_CODONS as GLYCINE_PREFERRED_CODONS
+from .gossypium import GOSSYPIUM_CODON_USAGE as GOSSYPIUM_CODON_USAGE
+from .gossypium import GOSSYPIUM_CODON_ADAPTIVENESS as GOSSYPIUM_CODON_ADAPTIVENESS
+from .gossypium import GOSSYPIUM_PREFERRED_CODONS as GOSSYPIUM_PREFERRED_CODONS
+from .drosophila import DROSOPHILA_CODON_USAGE as DROSOPHILA_CODON_USAGE
+from .drosophila import DROSOPHILA_CODON_ADAPTIVENESS as DROSOPHILA_CODON_ADAPTIVENESS
+from .drosophila import DROSOPHILA_PREFERRED_CODONS as DROSOPHILA_PREFERRED_CODONS
+from .oryza import ORYZA_CODON_USAGE as ORYZA_CODON_USAGE
+from .oryza import ORYZA_CODON_ADAPTIVENESS as ORYZA_CODON_ADAPTIVENESS
+from .oryza import ORYZA_PREFERRED_CODONS as ORYZA_PREFERRED_CODONS
 from ..organism_db import OrganismDatabase as OrganismDatabase
 from ..organism_db import get_database as get_database
 
@@ -162,6 +226,76 @@ __all__: list[str] = [
     "TRICHOPLUSIA_CODON_USAGE",
     "TRICHOPLUSIA_CODON_ADAPTIVENESS",
     "TRICHOPLUSIA_PREFERRED_CODONS",
+    # New organism re-exports (Kazusa expansion)
+    "PICHIA_CODON_USAGE",
+    "PICHIA_CODON_ADAPTIVENESS",
+    "PICHIA_PREFERRED_CODONS",
+    "HEK293_CODON_USAGE",
+    "HEK293_CODON_ADAPTIVENESS",
+    "HEK293_PREFERRED_CODONS",
+    "NS0_CODON_USAGE",
+    "NS0_CODON_ADAPTIVENESS",
+    "NS0_PREFERRED_CODONS",
+    "PER_C6_CODON_USAGE",
+    "PER_C6_CODON_ADAPTIVENESS",
+    "PER_C6_PREFERRED_CODONS",
+    "CRICETULUS_CODON_USAGE",
+    "CRICETULUS_CODON_ADAPTIVENESS",
+    "CRICETULUS_PREFERRED_CODONS",
+    "BACILLUS_CODON_USAGE",
+    "BACILLUS_CODON_ADAPTIVENESS",
+    "BACILLUS_PREFERRED_CODONS",
+    "PSEUDOMONAS_CODON_USAGE",
+    "PSEUDOMONAS_CODON_ADAPTIVENESS",
+    "PSEUDOMONAS_PREFERRED_CODONS",
+    "CORYNEBACTERIUM_CODON_USAGE",
+    "CORYNEBACTERIUM_CODON_ADAPTIVENESS",
+    "CORYNEBACTERIUM_PREFERRED_CODONS",
+    "KLUYVEROMYCES_CODON_USAGE",
+    "KLUYVEROMYCES_CODON_ADAPTIVENESS",
+    "KLUYVEROMYCES_PREFERRED_CODONS",
+    "DANIO_CODON_USAGE",
+    "DANIO_CODON_ADAPTIVENESS",
+    "DANIO_PREFERRED_CODONS",
+    "CAENORHABDITIS_CODON_USAGE",
+    "CAENORHABDITIS_CODON_ADAPTIVENESS",
+    "CAENORHABDITIS_PREFERRED_CODONS",
+    "XENOPUS_CODON_USAGE",
+    "XENOPUS_CODON_ADAPTIVENESS",
+    "XENOPUS_PREFERRED_CODONS",
+    "RATTUS_CODON_USAGE",
+    "RATTUS_CODON_ADAPTIVENESS",
+    "RATTUS_PREFERRED_CODONS",
+    "CANIS_CODON_USAGE",
+    "CANIS_CODON_ADAPTIVENESS",
+    "CANIS_PREFERRED_CODONS",
+    "BOS_CODON_USAGE",
+    "BOS_CODON_ADAPTIVENESS",
+    "BOS_PREFERRED_CODONS",
+    "GALLUS_CODON_USAGE",
+    "GALLUS_CODON_ADAPTIVENESS",
+    "GALLUS_PREFERRED_CODONS",
+    "ZEA_CODON_USAGE",
+    "ZEA_CODON_ADAPTIVENESS",
+    "ZEA_PREFERRED_CODONS",
+    "GLYCINE_CODON_USAGE",
+    "GLYCINE_CODON_ADAPTIVENESS",
+    "GLYCINE_PREFERRED_CODONS",
+    "GOSSYPIUM_CODON_USAGE",
+    "GOSSYPIUM_CODON_ADAPTIVENESS",
+    "GOSSYPIUM_PREFERRED_CODONS",
+    # New organism re-exports (Drosophila & Oryza)
+    "DROSOPHILA_CODON_USAGE",
+    "DROSOPHILA_CODON_ADAPTIVENESS",
+    "DROSOPHILA_PREFERRED_CODONS",
+    "ORYZA_CODON_USAGE",
+    "ORYZA_CODON_ADAPTIVENESS",
+    "ORYZA_PREFERRED_CODONS",
+    # Kazusa auto-downloader
+    "fetch_codon_usage_from_kazusa",
+    "fetch_codon_usage_by_name",
+    "register_dynamic_organism",
+    "resolve_or_download_organism",
     # External re-exports
     "OrganismDatabase",
     "get_database",
@@ -230,6 +364,50 @@ CODON_USAGE_TABLES: dict[str, dict[str, tuple[str, float, float, int]]] = {
     "sf9": SPODOPTERA_CODON_USAGE,
     "Trichoplusia_ni": TRICHOPLUSIA_CODON_USAGE,
     "hi5": TRICHOPLUSIA_CODON_USAGE,
+    # New organisms (Kazusa expansion)
+    "Komagataella_phaffii": PICHIA_CODON_USAGE,
+    "pichia": PICHIA_CODON_USAGE,
+    "HEK293T": HEK293_CODON_USAGE,
+    "hek293": HEK293_CODON_USAGE,
+    "NS0": NS0_CODON_USAGE,
+    "ns0": NS0_CODON_USAGE,
+    "PER_C6": PER_C6_CODON_USAGE,
+    "per_c6": PER_C6_CODON_USAGE,
+    "Cricetulus_griseus_wt": CRICETULUS_CODON_USAGE,
+    "cricetulus": CRICETULUS_CODON_USAGE,
+    "Bacillus_subtilis": BACILLUS_CODON_USAGE,
+    "bacillus": BACILLUS_CODON_USAGE,
+    "Pseudomonas_putida": PSEUDOMONAS_CODON_USAGE,
+    "pseudomonas": PSEUDOMONAS_CODON_USAGE,
+    "Corynebacterium_glutamicum": CORYNEBACTERIUM_CODON_USAGE,
+    "corynebacterium": CORYNEBACTERIUM_CODON_USAGE,
+    "Kluyveromyces_lactis": KLUYVEROMYCES_CODON_USAGE,
+    "kluyveromyces": KLUYVEROMYCES_CODON_USAGE,
+    "Danio_rerio": DANIO_CODON_USAGE,
+    "danio": DANIO_CODON_USAGE,
+    "Caenorhabditis_elegans": CAENORHABDITIS_CODON_USAGE,
+    "caenorhabditis": CAENORHABDITIS_CODON_USAGE,
+    "Xenopus_laevis": XENOPUS_CODON_USAGE,
+    "xenopus": XENOPUS_CODON_USAGE,
+    "Rattus_norvegicus": RATTUS_CODON_USAGE,
+    "rattus": RATTUS_CODON_USAGE,
+    "Canis_familiaris": CANIS_CODON_USAGE,
+    "canis": CANIS_CODON_USAGE,
+    "Bos_taurus": BOS_CODON_USAGE,
+    "bos": BOS_CODON_USAGE,
+    "Gallus_gallus": GALLUS_CODON_USAGE,
+    "gallus": GALLUS_CODON_USAGE,
+    "Zea_mays": ZEA_CODON_USAGE,
+    "zea": ZEA_CODON_USAGE,
+    "Glycine_max": GLYCINE_CODON_USAGE,
+    "glycine": GLYCINE_CODON_USAGE,
+    "Gossypium_hirsutum": GOSSYPIUM_CODON_USAGE,
+    "gossypium": GOSSYPIUM_CODON_USAGE,
+    # New organisms (Drosophila & Oryza)
+    "D_melanogaster": DROSOPHILA_CODON_USAGE,
+    "drosophila": DROSOPHILA_CODON_USAGE,
+    "Oryza_sativa": ORYZA_CODON_USAGE,
+    "oryza": ORYZA_CODON_USAGE,
 }
 
 CODON_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {
@@ -252,6 +430,50 @@ CODON_ADAPTIVENESS_TABLES: dict[str, dict[str, float]] = {
     "sf9": SPODOPTERA_CODON_ADAPTIVENESS,
     "Trichoplusia_ni": TRICHOPLUSIA_CODON_ADAPTIVENESS,
     "hi5": TRICHOPLUSIA_CODON_ADAPTIVENESS,
+    # New organisms (Kazusa expansion)
+    "Komagataella_phaffii": PICHIA_CODON_ADAPTIVENESS,
+    "pichia": PICHIA_CODON_ADAPTIVENESS,
+    "HEK293T": HEK293_CODON_ADAPTIVENESS,
+    "hek293": HEK293_CODON_ADAPTIVENESS,
+    "NS0": NS0_CODON_ADAPTIVENESS,
+    "ns0": NS0_CODON_ADAPTIVENESS,
+    "PER_C6": PER_C6_CODON_ADAPTIVENESS,
+    "per_c6": PER_C6_CODON_ADAPTIVENESS,
+    "Cricetulus_griseus_wt": CRICETULUS_CODON_ADAPTIVENESS,
+    "cricetulus": CRICETULUS_CODON_ADAPTIVENESS,
+    "Bacillus_subtilis": BACILLUS_CODON_ADAPTIVENESS,
+    "bacillus": BACILLUS_CODON_ADAPTIVENESS,
+    "Pseudomonas_putida": PSEUDOMONAS_CODON_ADAPTIVENESS,
+    "pseudomonas": PSEUDOMONAS_CODON_ADAPTIVENESS,
+    "Corynebacterium_glutamicum": CORYNEBACTERIUM_CODON_ADAPTIVENESS,
+    "corynebacterium": CORYNEBACTERIUM_CODON_ADAPTIVENESS,
+    "Kluyveromyces_lactis": KLUYVEROMYCES_CODON_ADAPTIVENESS,
+    "kluyveromyces": KLUYVEROMYCES_CODON_ADAPTIVENESS,
+    "Danio_rerio": DANIO_CODON_ADAPTIVENESS,
+    "danio": DANIO_CODON_ADAPTIVENESS,
+    "Caenorhabditis_elegans": CAENORHABDITIS_CODON_ADAPTIVENESS,
+    "caenorhabditis": CAENORHABDITIS_CODON_ADAPTIVENESS,
+    "Xenopus_laevis": XENOPUS_CODON_ADAPTIVENESS,
+    "xenopus": XENOPUS_CODON_ADAPTIVENESS,
+    "Rattus_norvegicus": RATTUS_CODON_ADAPTIVENESS,
+    "rattus": RATTUS_CODON_ADAPTIVENESS,
+    "Canis_familiaris": CANIS_CODON_ADAPTIVENESS,
+    "canis": CANIS_CODON_ADAPTIVENESS,
+    "Bos_taurus": BOS_CODON_ADAPTIVENESS,
+    "bos": BOS_CODON_ADAPTIVENESS,
+    "Gallus_gallus": GALLUS_CODON_ADAPTIVENESS,
+    "gallus": GALLUS_CODON_ADAPTIVENESS,
+    "Zea_mays": ZEA_CODON_ADAPTIVENESS,
+    "zea": ZEA_CODON_ADAPTIVENESS,
+    "Glycine_max": GLYCINE_CODON_ADAPTIVENESS,
+    "glycine": GLYCINE_CODON_ADAPTIVENESS,
+    "Gossypium_hirsutum": GOSSYPIUM_CODON_ADAPTIVENESS,
+    "gossypium": GOSSYPIUM_CODON_ADAPTIVENESS,
+    # New organisms (Drosophila & Oryza)
+    "D_melanogaster": DROSOPHILA_CODON_ADAPTIVENESS,
+    "drosophila": DROSOPHILA_CODON_ADAPTIVENESS,
+    "Oryza_sativa": ORYZA_CODON_ADAPTIVENESS,
+    "oryza": ORYZA_CODON_ADAPTIVENESS,
 }
 
 PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
@@ -274,6 +496,50 @@ PREFERRED_CODON_TABLES: dict[str, dict[str, str]] = {
     "sf9": SPODOPTERA_PREFERRED_CODONS,
     "Trichoplusia_ni": TRICHOPLUSIA_PREFERRED_CODONS,
     "hi5": TRICHOPLUSIA_PREFERRED_CODONS,
+    # New organisms (Kazusa expansion)
+    "Komagataella_phaffii": PICHIA_PREFERRED_CODONS,
+    "pichia": PICHIA_PREFERRED_CODONS,
+    "HEK293T": HEK293_PREFERRED_CODONS,
+    "hek293": HEK293_PREFERRED_CODONS,
+    "NS0": NS0_PREFERRED_CODONS,
+    "ns0": NS0_PREFERRED_CODONS,
+    "PER_C6": PER_C6_PREFERRED_CODONS,
+    "per_c6": PER_C6_PREFERRED_CODONS,
+    "Cricetulus_griseus_wt": CRICETULUS_PREFERRED_CODONS,
+    "cricetulus": CRICETULUS_PREFERRED_CODONS,
+    "Bacillus_subtilis": BACILLUS_PREFERRED_CODONS,
+    "bacillus": BACILLUS_PREFERRED_CODONS,
+    "Pseudomonas_putida": PSEUDOMONAS_PREFERRED_CODONS,
+    "pseudomonas": PSEUDOMONAS_PREFERRED_CODONS,
+    "Corynebacterium_glutamicum": CORYNEBACTERIUM_PREFERRED_CODONS,
+    "corynebacterium": CORYNEBACTERIUM_PREFERRED_CODONS,
+    "Kluyveromyces_lactis": KLUYVEROMYCES_PREFERRED_CODONS,
+    "kluyveromyces": KLUYVEROMYCES_PREFERRED_CODONS,
+    "Danio_rerio": DANIO_PREFERRED_CODONS,
+    "danio": DANIO_PREFERRED_CODONS,
+    "Caenorhabditis_elegans": CAENORHABDITIS_PREFERRED_CODONS,
+    "caenorhabditis": CAENORHABDITIS_PREFERRED_CODONS,
+    "Xenopus_laevis": XENOPUS_PREFERRED_CODONS,
+    "xenopus": XENOPUS_PREFERRED_CODONS,
+    "Rattus_norvegicus": RATTUS_PREFERRED_CODONS,
+    "rattus": RATTUS_PREFERRED_CODONS,
+    "Canis_familiaris": CANIS_PREFERRED_CODONS,
+    "canis": CANIS_PREFERRED_CODONS,
+    "Bos_taurus": BOS_PREFERRED_CODONS,
+    "bos": BOS_PREFERRED_CODONS,
+    "Gallus_gallus": GALLUS_PREFERRED_CODONS,
+    "gallus": GALLUS_PREFERRED_CODONS,
+    "Zea_mays": ZEA_PREFERRED_CODONS,
+    "zea": ZEA_PREFERRED_CODONS,
+    "Glycine_max": GLYCINE_PREFERRED_CODONS,
+    "glycine": GLYCINE_PREFERRED_CODONS,
+    "Gossypium_hirsutum": GOSSYPIUM_PREFERRED_CODONS,
+    "gossypium": GOSSYPIUM_PREFERRED_CODONS,
+    # New organisms (Drosophila & Oryza)
+    "D_melanogaster": DROSOPHILA_PREFERRED_CODONS,
+    "drosophila": DROSOPHILA_PREFERRED_CODONS,
+    "Oryza_sativa": ORYZA_PREFERRED_CODONS,
+    "oryza": ORYZA_PREFERRED_CODONS,
 }
 
 SUPPORTED_ORGANISMS: list[str] = list(CODON_USAGE_TABLES.keys())
@@ -295,6 +561,29 @@ ORGANISM_GC_TARGETS: dict[str, tuple[float, float]] = {
     "Nicotiana_benthamiana": (0.35, 0.45),       # N. benthamiana coding GC ~43%
     "Spodoptera_frugiperda": (0.40, 0.55),       # Sf9 coding GC ~43.5%
     "Trichoplusia_ni": (0.40, 0.55),              # Hi5 coding GC ~42%
+    # New organisms (Kazusa expansion)
+    "Komagataella_phaffii": (0.35, 0.50),          # P. pastoris coding GC ~41.5%
+    "HEK293T": (0.40, 0.60),                       # HEK293T human cell line
+    "NS0": (0.40, 0.55),                            # NS0 mouse myeloma
+    "PER_C6": (0.40, 0.60),                         # PER.C6 human cell line
+    "Cricetulus_griseus_wt": (0.40, 0.55),          # Chinese hamster coding GC ~44%
+    "Bacillus_subtilis": (0.40, 0.50),              # B. subtilis coding GC ~43.5%
+    "Pseudomonas_putida": (0.55, 0.68),             # P. putida coding GC ~61.5%
+    "Corynebacterium_glutamicum": (0.48, 0.60),     # C. glutamicum coding GC ~53.8%
+    "Kluyveromyces_lactis": (0.32, 0.48),           # K. lactis coding GC ~38.6%
+    "Danio_rerio": (0.45, 0.60),                    # Zebrafish coding GC ~53.5%
+    "Caenorhabditis_elegans": (0.35, 0.50),         # C. elegans coding GC ~43%
+    "Xenopus_laevis": (0.38, 0.52),                 # Xenopus coding GC ~45.2%
+    "Rattus_norvegicus": (0.40, 0.60),              # Rat coding GC ~51.5%
+    "Canis_familiaris": (0.35, 0.52),               # Dog coding GC ~43.5%
+    "Bos_taurus": (0.42, 0.60),                     # Cow coding GC ~52.2%
+    "Gallus_gallus": (0.38, 0.55),                  # Chicken coding GC ~47.5%
+    "Zea_mays": (0.48, 0.64),                       # Maize coding GC ~55.8%
+    "Glycine_max": (0.38, 0.52),                    # Soybean coding GC ~45.5%
+    "Gossypium_hirsutum": (0.35, 0.50),             # Cotton coding GC ~43.8%
+    # New organisms (Drosophila & Oryza)
+    "D_melanogaster": (0.50, 0.60),                    # D. melanogaster coding GC ~54.1%
+    "Oryza_sativa": (0.50, 0.65),                      # O. sativa coding GC ~55.2%
 }
 
 # ────────────────────────────────────────────────────────────
@@ -470,6 +759,166 @@ ORGANISM_ALIASES: dict[str, str] = {
     "cabbage looper": "Trichoplusia_ni",
     "Trichoplusia_ni": "Trichoplusia_ni",
     "Trichoplusia ni": "Trichoplusia_ni",
+    # ── Komagataella phaffii / Pichia pastoris (Kazusa expansion) ──
+    "pichia": "Komagataella_phaffii",
+    "Pichia": "Komagataella_phaffii",
+    "Pichia_pastoris": "Komagataella_phaffii",
+    "pichia_pastoris": "Komagataella_phaffii",
+    "P. pastoris": "Komagataella_phaffii",
+    "K_phaffii": "Komagataella_phaffii",
+    "Komagataella_phaffii": "Komagataella_phaffii",
+    "Komagataella phaffii": "Komagataella_phaffii",
+    # ── HEK293T (Kazusa expansion) ──
+    "hek293": "HEK293T",
+    "HEK293": "HEK293T",
+    "HEK293T": "HEK293T",
+    "hek293t": "HEK293T",
+    "HEK-293": "HEK293T",
+    "hek-293": "HEK293T",
+    # ── NS0 mouse myeloma (Kazusa expansion) ──
+    "ns0": "NS0",
+    "NS0": "NS0",
+    "NS0_cell": "NS0",
+    "ns0_cell": "NS0",
+    # ── PER.C6 (Kazusa expansion) ──
+    "per_c6": "PER_C6",
+    "PER.C6": "PER_C6",
+    "PERC6": "PER_C6",
+    "perc6": "PER_C6",
+    "PER_C6": "PER_C6",
+    # ── Cricetulus griseus wild-type (Kazusa expansion) ──
+    "cricetulus": "Cricetulus_griseus_wt",
+    "Cricetulus_griseus": "Cricetulus_griseus_wt",
+    "C_griseus": "Cricetulus_griseus_wt",
+    "chinese hamster": "Cricetulus_griseus_wt",
+    "Cricetulus_griseus_wt": "Cricetulus_griseus_wt",
+    "Cricetulus griseus": "Cricetulus_griseus_wt",
+    # ── Bacillus subtilis (Kazusa expansion) ──
+    "bacillus": "Bacillus_subtilis",
+    "B_subtilis": "Bacillus_subtilis",
+    "b_subtilis": "Bacillus_subtilis",
+    "B. subtilis": "Bacillus_subtilis",
+    "Bacillus_subtilis": "Bacillus_subtilis",
+    "Bacillus subtilis": "Bacillus_subtilis",
+    # ── Pseudomonas putida (Kazusa expansion) ──
+    "pseudomonas": "Pseudomonas_putida",
+    "P_putida": "Pseudomonas_putida",
+    "p_putida": "Pseudomonas_putida",
+    "P. putida": "Pseudomonas_putida",
+    "Pseudomonas_putida": "Pseudomonas_putida",
+    "Pseudomonas putida": "Pseudomonas_putida",
+    # ── Corynebacterium glutamicum (Kazusa expansion) ──
+    "corynebacterium": "Corynebacterium_glutamicum",
+    "C_glutamicum": "Corynebacterium_glutamicum",
+    "c_glutamicum": "Corynebacterium_glutamicum",
+    "C. glutamicum": "Corynebacterium_glutamicum",
+    "Corynebacterium_glutamicum": "Corynebacterium_glutamicum",
+    "Corynebacterium glutamicum": "Corynebacterium_glutamicum",
+    # ── Kluyveromyces lactis (Kazusa expansion) ──
+    "kluyveromyces": "Kluyveromyces_lactis",
+    "K_lactis": "Kluyveromyces_lactis",
+    "k_lactis": "Kluyveromyces_lactis",
+    "K. lactis": "Kluyveromyces_lactis",
+    "Kluyveromyces_lactis": "Kluyveromyces_lactis",
+    "Kluyveromyces lactis": "Kluyveromyces_lactis",
+    # ── Danio rerio / Zebrafish (Kazusa expansion) ──
+    "danio": "Danio_rerio",
+    "zebrafish": "Danio_rerio",
+    "D_rerio": "Danio_rerio",
+    "d_rerio": "Danio_rerio",
+    "D. rerio": "Danio_rerio",
+    "Danio_rerio": "Danio_rerio",
+    "Danio rerio": "Danio_rerio",
+    # ── Caenorhabditis elegans (Kazusa expansion) ──
+    "caenorhabditis": "Caenorhabditis_elegans",
+    "c_elegans": "Caenorhabditis_elegans",
+    "C_elegans": "Caenorhabditis_elegans",
+    "C. elegans": "Caenorhabditis_elegans",
+    "Caenorhabditis_elegans": "Caenorhabditis_elegans",
+    "Caenorhabditis elegans": "Caenorhabditis_elegans",
+    # ── Xenopus laevis (Kazusa expansion) ──
+    "xenopus": "Xenopus_laevis",
+    "X_laevis": "Xenopus_laevis",
+    "x_laevis": "Xenopus_laevis",
+    "X. laevis": "Xenopus_laevis",
+    "Xenopus_laevis": "Xenopus_laevis",
+    "Xenopus laevis": "Xenopus_laevis",
+    "african clawed frog": "Xenopus_laevis",
+    # ── Rattus norvegicus / Rat (Kazusa expansion) ──
+    "rattus": "Rattus_norvegicus",
+    "rat": "Rattus_norvegicus",
+    "R_norvegicus": "Rattus_norvegicus",
+    "r_norvegicus": "Rattus_norvegicus",
+    "R. norvegicus": "Rattus_norvegicus",
+    "Rattus_norvegicus": "Rattus_norvegicus",
+    "Rattus norvegicus": "Rattus_norvegicus",
+    # ── Canis familiaris / Dog (Kazusa expansion) ──
+    "canis": "Canis_familiaris",
+    "dog": "Canis_familiaris",
+    "C_familiaris": "Canis_familiaris",
+    "c_familiaris": "Canis_familiaris",
+    "C. familiaris": "Canis_familiaris",
+    "Canis_familiaris": "Canis_familiaris",
+    "Canis familiaris": "Canis_familiaris",
+    "Canis_lupus_familiaris": "Canis_familiaris",
+    # ── Bos taurus / Cow (Kazusa expansion) ──
+    "bos": "Bos_taurus",
+    "cow": "Bos_taurus",
+    "B_taurus": "Bos_taurus",
+    "b_taurus": "Bos_taurus",
+    "B. taurus": "Bos_taurus",
+    "Bos_taurus": "Bos_taurus",
+    "Bos taurus": "Bos_taurus",
+    "cattle": "Bos_taurus",
+    # ── Gallus gallus / Chicken (Kazusa expansion) ──
+    "gallus": "Gallus_gallus",
+    "chicken": "Gallus_gallus",
+    "G_gallus": "Gallus_gallus",
+    "g_gallus": "Gallus_gallus",
+    "G. gallus": "Gallus_gallus",
+    "Gallus_gallus": "Gallus_gallus",
+    "Gallus gallus": "Gallus_gallus",
+    # ── Zea mays / Maize (Kazusa expansion) ──
+    "zea": "Zea_mays",
+    "maize": "Zea_mays",
+    "corn": "Zea_mays",
+    "Z_mays": "Zea_mays",
+    "z_mays": "Zea_mays",
+    "Z. mays": "Zea_mays",
+    "Zea_mays": "Zea_mays",
+    "Zea mays": "Zea_mays",
+    # ── Glycine max / Soybean (Kazusa expansion) ──
+    "glycine": "Glycine_max",
+    "soybean": "Glycine_max",
+    "G_max": "Glycine_max",
+    "g_max": "Glycine_max",
+    "G. max": "Glycine_max",
+    "Glycine_max": "Glycine_max",
+    "Glycine max": "Glycine_max",
+    # ── Gossypium hirsutum / Cotton (Kazusa expansion) ──
+    "gossypium": "Gossypium_hirsutum",
+    "cotton": "Gossypium_hirsutum",
+    "G_hirsutum": "Gossypium_hirsutum",
+    "g_hirsutum": "Gossypium_hirsutum",
+    "G. hirsutum": "Gossypium_hirsutum",
+    "Gossypium_hirsutum": "Gossypium_hirsutum",
+    "Gossypium hirsutum": "Gossypium_hirsutum",
+    # ── Drosophila melanogaster / Fruit fly ──
+    "drosophila": "D_melanogaster",
+    "D_melanogaster": "D_melanogaster",
+    "d_melanogaster": "D_melanogaster",
+    "D. melanogaster": "D_melanogaster",
+    "fruit fly": "D_melanogaster",
+    "Drosophila_melanogaster": "D_melanogaster",
+    "Drosophila melanogaster": "D_melanogaster",
+    # ── Oryza sativa / Rice ──
+    "oryza": "Oryza_sativa",
+    "O_sativa": "Oryza_sativa",
+    "o_sativa": "Oryza_sativa",
+    "O. sativa": "Oryza_sativa",
+    "rice": "Oryza_sativa",
+    "Oryza_sativa": "Oryza_sativa",
+    "Oryza sativa": "Oryza_sativa",
 }
 
 # ────────────────────────────────────────────────────────────
@@ -503,6 +952,26 @@ SPECIES_SHORT_NAMES: dict[str, str] = {
     "Nicotiana_benthamiana": "nicotiana",
     "Spodoptera_frugiperda": "sf9",
     "Trichoplusia_ni": "hi5",
+    # New organisms (Kazusa expansion)
+    "Komagataella_phaffii": "pichia",
+    "HEK293T": "hek293",
+    "NS0": "ns0",
+    "PER_C6": "per_c6",
+    "Cricetulus_griseus_wt": "cricetulus",
+    "Bacillus_subtilis": "bacillus",
+    "Pseudomonas_putida": "pseudomonas",
+    "Corynebacterium_glutamicum": "corynebacterium",
+    "Kluyveromyces_lactis": "kluyveromyces",
+    "Danio_rerio": "danio",
+    "Caenorhabditis_elegans": "caenorhabditis",
+    "Xenopus_laevis": "xenopus",
+    "Rattus_norvegicus": "rattus",
+    "Canis_familiaris": "canis",
+    "Bos_taurus": "bos",
+    "Gallus_gallus": "gallus",
+    "Zea_mays": "zea",
+    "Glycine_max": "glycine",
+    "Gossypium_hirsutum": "gossypium",
 }
 
 
@@ -777,6 +1246,17 @@ from .sharp_li_reference import SHARP_LI_CAI_WEIGHTS as SHARP_LI_CAI_WEIGHTS
 from .sharp_li_reference import SHARP_LI_PUBLISHED_CAI as SHARP_LI_PUBLISHED_CAI
 from .sharp_li_reference import get_sharp_li_cai_weights as get_sharp_li_cai_weights
 from .sharp_li_reference import compute_cai_with_reference as compute_cai_with_reference
+
+# ────────────────────────────────────────────────────────────
+# Kazusa Codon Usage Database auto-downloader
+#
+# Provides dynamic organism support — any organism with a
+# Kazusa entry (35,000+) can be used by downloading on demand.
+# ────────────────────────────────────────────────────────────
+from .kazusa_downloader import fetch_codon_usage_from_kazusa as fetch_codon_usage_from_kazusa
+from .kazusa_downloader import fetch_codon_usage_by_name as fetch_codon_usage_by_name
+from .kazusa_downloader import register_dynamic_organism as register_dynamic_organism
+from .kazusa_downloader import resolve_or_download_organism as resolve_or_download_organism
 
 
 # ────────────────────────────────────────────────────────────

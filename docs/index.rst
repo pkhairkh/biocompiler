@@ -2,7 +2,7 @@ BioCompiler Documentation
 =========================
 
 BioCompiler is a compiler framework for machine-verified gene design with a
-comprehensive 28-predicate system, unified CAI tables, hybrid optimization,
+comprehensive 33-predicate system, unified CAI tables, hybrid optimization,
 and deterministic type checking.
 
 The compilation pipeline follows a deterministic flow:

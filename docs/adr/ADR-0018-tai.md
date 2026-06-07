@@ -49,7 +49,7 @@ The `biocompiler.tai` module provides:
 
 1. **tAI computation**: `compute_tai(dna, organism)` — computes the tRNA Adaptation Index for a DNA sequence and organism. Uses the same geometric-mean structure as CAI, but with tRNA-based weights.
 
-2. **tRNA gene copy number database**: Per-organism tRNA gene copy numbers derived from the Genomic tRNA Database (GtRNAdb). Supported organisms: E. coli, human, mouse, CHO, yeast. Users can provide custom tRNA copy number data for organisms not in the built-in database.
+2. **tRNA gene copy number database**: Per-organism tRNA gene copy numbers derived from the Genomic tRNA Database (GtRNAdb). Supported organisms: E. coli, human, yeast, mouse, CHO, C. elegans, D. melanogaster, A. thaliana, P. pastoris, B. subtilis (10 organisms). Users can provide custom tRNA copy number data for organisms not in the built-in database.
 
 3. **Wobble pairing rules**: Configurable wobble efficiency weights based on dos Reis et al. (2004). Default weights:
    - Watson-Crick pairing: 1.0

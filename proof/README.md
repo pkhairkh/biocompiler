@@ -36,7 +36,7 @@ Theorem 4: Compositional Soundness (Compositional.lean)
   + slot_predicates_dont_affect_pass: SLOT in list → no PASS
                     │
 Theorem 3: Per-Predicate Soundness (TypeSystem.lean)
-  evaluate P = PASS → holds(P)  (32 predicates: 15 core + 17 SLOT)
+  evaluate P = PASS → holds(P)  (33 predicates: 13 core + 20 SLOT)
                     │
       ┌─────────────┼─────────────┐
       │             │             │
@@ -70,7 +70,7 @@ FAIL sticky   computation    depend on FFI
 
 | Module | Description |
 |--------|-------------|
-| `TypeSystem.lean` | 32 type predicates (15 core + 17 SLOT), evaluation, and per-predicate soundness |
+| `TypeSystem.lean` | 33 type predicates (13 core + 20 SLOT), evaluation, and per-predicate soundness |
 | `Compositional.lean` | Compositional soundness: overall PASS implies all properties hold |
 | `Certificates.lean` | Guarantee certificate structure and certificate soundness |
 | `SLOTIndependence.lean` | SLOT independence: certificates don't depend on FFI output |
@@ -144,7 +144,7 @@ Four SLOT predicates have non-vacuous semantic definitions:
 | `SolubleExpression` | camSolScore ≥ minScore |
 | `LowImmunogenicity` | ∀ pos, mhcBindingAffinity > maxScore |
 
-The remaining 15 SLOT predicates use vacuous `True` semantics, awaiting
+The remaining 16 SLOT predicates use vacuous `True` semantics, awaiting
 progressive strengthening.
 
 ## CI Integration

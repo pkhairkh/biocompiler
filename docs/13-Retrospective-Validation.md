@@ -291,7 +291,7 @@ None of the BioCompiler predictions have been confirmed by wet-lab experiments. 
 
 ### 5.4 Formal Verification Gaps
 
-1. **SLOT predicates:** The Lean4 model treats all 19 SLOT predicates as always returning UNCERTAIN, but the Python implementation evaluates them with heuristic engines and returns PASS/FAIL. This means Python certificates may claim PASS for predicates that the formal model considers unverified.
+1. **SLOT predicates:** The Lean4 model treats all 20 SLOT predicates as always returning UNCERTAIN, but the Python implementation evaluates them with heuristic engines and returns PASS/FAIL. This means Python certificates may claim PASS for predicates that the formal model considers unverified.
 2. **5-valued vs 3-valued logic:** Python extends the Lean4 3-valued logic (PASS/UNCERTAIN/FAIL) to 5-valued (PASS/LIKELY_PASS/UNCERTAIN/LIKELY_FAIL/FAIL). The extension is conservative (3-valued subset tests pass), but the additional values are not formally verified.
 3. **Float vs. Rat:** Lean4 uses arbitrary-precision rationals; Python uses IEEE 754 doubles. The epsilon tolerance in property tests (1e-9) bridges this gap for practical purposes.
 4. **Remaining 10 axioms:** The Trusted Computing Base has been reduced from 18 to 10 axioms, but 10 remain unproven (primarily MaxEntScan scoring, codon adaptiveness tables, and organism-specific databases).
@@ -305,7 +305,7 @@ None of the BioCompiler predictions have been confirmed by wet-lab experiments. 
 | Feature | BioCompiler | DNA Chisel |
 |---------|-------------|------------|
 | **Core paradigm** | Certified type system with formal proofs | Constraint solver with cost optimization |
-| **Predicate system** | 28 typed predicates with PASS/UNCERTAIN/FAIL | Flat constraint specifications |
+| **Predicate system** | 33 typed predicates with PASS/UNCERTAIN/FAIL | Flat constraint specifications |
 | **Formal verification** | Lean4 soundness proofs, 76 theorem mappings | None |
 | **Certificate system** | GOLD/SILVER/BRONZE with SHA-256 hashes | No certification |
 | **Stability analysis** | FoldX integration (CLI + empirical) | Not supported |
@@ -314,7 +314,7 @@ None of the BioCompiler predictions have been confirmed by wet-lab experiments. 
 | **Structure prediction** | ESMFold integration | Not supported |
 | **Splice site analysis** | MaxEntScan dual-threshold | Basic motif scanning |
 | **Mutagenesis** | BLOSUM62-conserved synonymous + AA substitutions | Codon substitution only |
-| **Species support** | 5 organisms (human, E. coli, yeast, CHO, mouse) | Arbitrary (user-defined) |
+| **Species support** | 25 organisms | Arbitrary (user-defined) |
 | **Open reading frame** | ValidCodingSeq predicate enforced | Not enforced by default |
 | **API** | Python API + CLI + Jupyter | Python API + CLI |
 | **Retrospective validation** | 1,447 tests, 37-protein FoldX benchmark, 28-protein CamSol benchmark | Limited unit tests |
@@ -346,9 +346,9 @@ None of the BioCompiler predictions have been confirmed by wet-lab experiments. 
 | Feature | BioCompiler | JCat |
 |---------|-------------|------|
 | **Core paradigm** | Multi-predicate certified optimization | Codon adaptation only |
-| **Scope** | 28 predicates across 5 biological domains | CAI optimization only |
+| **Scope** | 33 predicates across 5 biological domains | CAI optimization only |
 | **Adaptation method** | Geometric mean CAI | Geometric mean CAI |
-| **Organism tables** | 5 detailed tables | 250+ organisms |
+| **Organism tables** | 25 detailed tables | 250+ organisms |
 | **RBS optimization** | mRNA secondary structure predicate | Not supported |
 | **GC content control** | Range constraint [gc_lo, gc_hi] | Not available |
 | **Formal verification** | Lean4 proofs | None |
@@ -373,7 +373,7 @@ None of the BioCompiler predictions have been confirmed by wet-lab experiments. 
 | Structure prediction | ✓ | ✗ | ✗ | ✗ |
 | Splice site analysis | ✓ (MaxEnt) | ✓ (basic) | ✓ (basic) | ✗ |
 | Restriction sites | ✓ (6 enzymes) | ✓ (flexible) | ✓ (800+) | ✗ |
-| Organism support | 5 | Arbitrary | Custom | 250+ |
+| Organism support | 25 | Arbitrary | Custom | 250+ |
 | Retrospective validation | 1,447 tests | Limited | None | None |
 
 ---
@@ -426,7 +426,7 @@ None of the BioCompiler predictions have been confirmed by wet-lab experiments. 
 1. **CamSol IDP sensitivity:** Only 33.3% of aggregation-prone proteins detected. Root cause: Wimley-White scale does not penalize charged-residue-rich IDPs.
 2. **FoldX large-protein accuracy:** MAE 9.8 kcal/mol for proteins >300 aa. The length_bonus heuristic grows too aggressively.
 3. **No offline structure prediction:** ESMFold requires API or GPU; no heuristic fallback exists.
-4. **Limited organism support:** Only 5 organisms vs. 250+ in JCat.
+4. **Limited organism support:** 25 organisms vs. 250+ in JCat.
 5. **No wet-lab validation:** All accuracy claims are computational or literature-based.
 
 ### 8.3 Recommendations for Future Work

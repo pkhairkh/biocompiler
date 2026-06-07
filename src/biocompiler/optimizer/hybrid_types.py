@@ -43,6 +43,8 @@ SEVERITY_WEIGHTS = {
     "cpg_island": 20.0,           # Soft — methylation risk
     "atttta_motif": 15.0,         # Soft — mRNA instability
     "t_run": 10.0,                # Soft — polymerase slippage
+    "blast_match": 80.0,          # Significant — unwanted homology
+    "primer_incompatible": 70.0,  # Significant — PCR failure risk
 }
 
 

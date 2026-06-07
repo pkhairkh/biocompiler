@@ -908,3 +908,85 @@ def evaluate_all_predicates(
         ordered = results
 
     return ordered
+
+
+# ────────────────────────────────────────────────────────────
+# BLAST match avoidance and primer compatibility predicates
+# ────────────────────────────────────────────────────────────
+
+def evaluate_no_blast_matches(
+    seq: str,
+    reference_sequences: list[str] | None = None,
+    k: int = 15,
+) -> TypeCheckResult:
+    """Evaluate whether the sequence has no significant BLAST matches.
+
+    Args:
+        seq: DNA sequence to evaluate.
+        reference_sequences: List of reference DNA sequences for k-mer matching.
+        k: Minimum k-mer size to consider significant.
+
+    Returns:
+        TypeCheckResult with verdict.
+    """
+    from .checks import check_no_blast_matches
+
+    result = check_no_blast_matches(seq, reference_sequences, k)
+
+    if result.verdict == Verdict.FAIL:
+        return TypeCheckResult(
+            predicate=f"NoBlastMatches(k={k})",
+            verdict=Verdict.FAIL,
+            violation=result.details,
+        )
+    elif result.verdict == Verdict.UNCERTAIN:
+        return TypeCheckResult(
+            predicate=f"NoBlastMatches(k={k})",
+            verdict=Verdict.UNCERTAIN,
+            violation=result.details,
+        )
+    return TypeCheckResult(
+        predicate=f"NoBlastMatches(k={k})",
+        verdict=Verdict.PASS,
+    )
+
+
+def evaluate_primer_compatibility(
+    seq: str,
+    region_start: int = 0,
+    region_end: int | None = None,
+    min_tm: float = 55.0,
+    max_tm: float = 65.0,
+) -> TypeCheckResult:
+    """Evaluate whether the sequence is compatible with primer design.
+
+    Args:
+        seq: Template DNA sequence.
+        region_start: Start of the target region (0-based).
+        region_end: End of the target region (0-based, exclusive).
+        min_tm: Minimum acceptable Tm (°C).
+        max_tm: Maximum acceptable Tm (°C).
+
+    Returns:
+        TypeCheckResult with verdict.
+    """
+    from .checks import check_primer_compatibility
+
+    result = check_primer_compatibility(seq, region_start, region_end, min_tm, max_tm)
+
+    if result.verdict == Verdict.FAIL:
+        return TypeCheckResult(
+            predicate=f"PrimerCompatibility({min_tm}, {max_tm})",
+            verdict=Verdict.FAIL,
+            violation=result.details,
+        )
+    elif result.verdict == Verdict.UNCERTAIN:
+        return TypeCheckResult(
+            predicate=f"PrimerCompatibility({min_tm}, {max_tm})",
+            verdict=Verdict.UNCERTAIN,
+            violation=result.details,
+        )
+    return TypeCheckResult(
+        predicate=f"PrimerCompatibility({min_tm}, {max_tm})",
+        verdict=Verdict.PASS,
+    )

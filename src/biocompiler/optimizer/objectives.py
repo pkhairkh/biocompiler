@@ -55,6 +55,8 @@ __all__ = [
     "codon_pair_objective",
     "min_max_gc_objective",
     "tai_objective",
+    "harmonization_objective",
+    "make_harmonization_objective",
     "resolve_objective",
     "OBJECTIVE_REGISTRY",
 ]
@@ -231,6 +233,90 @@ def min_max_gc_objective(
     return max(0.0, 1.0 - deviation * deviation * 4.0)
 
 
+def harmonization_objective(
+    dna: str,
+    protein: str,
+    organism: str,
+    source_organism: str | None = None,
+) -> float:
+    """Maximize codon harmonization score (RCA profile matching).
+
+    Measures how well the sequence's codon usage matches the source
+    organism's Relative Codon Adaptation (RCA) profile when expressed
+    in the target host.  This preserves translational kinetics —
+    including rare codons at domain boundaries that are important
+    for co-translational folding.
+
+    When ``source_organism`` is ``None`` (default), it is set to the
+    target ``organism``, resulting in self-harmonization scoring
+    (how well the sequence matches its own organism's RCA profile).
+    For cross-organism harmonization, specify the source organism
+    explicitly, or use :func:`make_harmonization_objective` to create
+    a pre-configured objective.
+
+    Args:
+        dna: Full coding DNA sequence (uppercase, length % 3 == 0).
+        protein: Amino acid sequence (1-letter codes, no stop).
+        organism: Resolved canonical target organism name.
+        source_organism: Source organism for RCA profile matching.
+            If None, defaults to the target organism (self-harmonization).
+
+    Returns:
+        Harmonization score in [0.0, 1.0].  1.0 = perfect RCA profile
+        match.  Returns 0.0 for empty/invalid sequences.
+
+    References
+    ----------
+    Claassens, N.J. et al. (2017). Exploiting the genetic diversity of
+    the TATA-binding protein for engineering of translational efficiency.
+    *Nucleic Acids Research*, 45(6), 3342–3356. PMID: 28250820.
+    """
+    if not dna or len(dna) < 3:
+        return 0.0
+    from .codon_harmonization import compute_harmonization_score
+    try:
+        return compute_harmonization_score(
+            dna,
+            source_organism=source_organism or organism,
+            target_organism=organism,
+        )
+    except Exception:
+        return 0.0
+
+
+def make_harmonization_objective(source_organism: str) -> Callable[..., float]:
+    """Create a harmonization objective pre-configured with a source organism.
+
+    This factory returns a callable with the standard objective signature
+    ``(dna, protein, organism) -> float`` that computes the harmonization
+    score against the specified source organism.  This is the recommended
+    way to use the harmonization objective for cross-organism optimization.
+
+    Usage::
+
+        from biocompiler.optimizer.objectives import make_harmonization_objective
+        obj = make_harmonization_objective("Escherichia_coli")
+        result = optimize_sequence("MVHLTPEEK", organism="Homo_sapiens",
+                                   objective=obj)
+
+    Args:
+        source_organism: Source organism for RCA profile matching.
+
+    Returns:
+        A callable ``(dna, protein, organism) -> float`` that computes
+        the harmonization score against the source organism.
+    """
+    def _harmonization_obj(dna: str, protein: str, organism: str) -> float:
+        return harmonization_objective(
+            dna, protein, organism, source_organism=source_organism
+        )
+    _harmonization_obj.__name__ = f"harmonization_objective({source_organism!r})"
+    _harmonization_obj.__doc__ = (
+        f"Harmonization objective with source organism '{source_organism}'."
+    )
+    return _harmonization_obj
+
+
 def tai_objective(dna: str, protein: str, organism: str) -> float:
     """Maximize tRNA Adaptation Index (tAI).
 
@@ -278,6 +364,7 @@ OBJECTIVE_REGISTRY: dict[str, Callable[..., float]] = {
     "codon_pair": codon_pair_objective,
     "min_max_gc": min_max_gc_objective,
     "tai": tai_objective,
+    "harmonization": harmonization_objective,
 }
 """Built-in objective name → callable mapping.
 
@@ -287,6 +374,7 @@ Keys:
     - ``"codon_pair"``: :func:`codon_pair_objective`
     - ``"min_max_gc"``: :func:`min_max_gc_objective`
     - ``"tai"``: :func:`tai_objective` (tRNA Adaptation Index)
+    - ``"harmonization"``: :func:`harmonization_objective` (RCA profile matching)
 """
 
 
