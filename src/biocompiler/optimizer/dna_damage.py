@@ -30,6 +30,24 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
+# Import from repair_pathways to deduplicate compute_net_mutation_risk
+try:
+    from .repair_pathways import compute_net_mutation_risk as _compute_net_mutation_risk
+except ImportError:
+    _compute_net_mutation_risk = None  # type: ignore[assignment]
+
+# Import from cosmic_signatures for full COSMIC signature integration
+try:
+    from .cosmic_signatures import (
+        compute_damage_susceptibility_profile as _compute_cosmic_profile,
+        get_signature_weights_for_tissue as _get_cosmic_tissue_weights,
+    )
+    _HAS_COSMIC_MODULE = True
+except ImportError:
+    _compute_cosmic_profile = None  # type: ignore[assignment]
+    _get_cosmic_tissue_weights = None  # type: ignore[assignment]
+    _HAS_COSMIC_MODULE = False
+
 __all__ = [
     "DNADamageReport",
     "CpGIsland",
@@ -120,11 +138,12 @@ class CpGIsland:
 class DamageHotspot:
     """A detected DNA damage hotspot."""
     position: int
-    damage_type: str         # cpg_deamination, uv_cpd, uv_64pp, 8oxog, alu, 5hmc
+    damage_type: str         # cpg_deamination, uv_cpd, uv_64pp, 8oxog, alu, 5hmc, cosmic_signature
     severity: float          # 0-1
     context: str = ""        # Surrounding sequence context
     strand: str = "+"        # + or -
     repair_pathway: str = "" # BER, NER, MMR, DRM, etc.
+    evidence: list[str] = field(default_factory=list)  # Supporting evidence tags
 
     def adjusted_severity(self, exposure_level: float = 1.0) -> float:
         """Return severity scaled by exposure level (dose-response)."""
@@ -656,6 +675,9 @@ def check_dna_degradation(
     check_alu: bool = True,
     check_5hmc: bool = True,
     check_methylation: bool = True,
+    transcription_active: bool = True,
+    chromatin_open: Optional[bool] = None,
+    tissue_type: str = "generic",
 ) -> DNADamageReport:
     """Comprehensive DNA damage and degradation assessment.
 
@@ -671,6 +693,12 @@ def check_dna_degradation(
         check_alu: Whether to check for Alu elements.
         check_5hmc: Whether to check for 5hmC hotspots.
         check_methylation: Whether to compute methylation-adjusted risks.
+        transcription_active: Whether the gene is actively transcribed
+            (default True for coding genes). Enables TCR boost for NER lesions.
+        chromatin_open: Whether chromatin is in open/euchromatic state.
+            None = auto-detect from sequence features.
+        tissue_type: Tissue type for COSMIC signature weighting
+            (e.g. "generic", "skin", "colorectal", "lung").
 
     Returns:
         DNADamageReport with all findings.
@@ -681,6 +709,15 @@ def check_dna_degradation(
         organism=organism,
         exposure_level=exposure_level,
     )
+
+    # Auto-detect chromatin state if not provided
+    if chromatin_open is None:
+        try:
+            from .chromatin_context import predict_chromatin_state
+            chromatin_result = predict_chromatin_state(seq)
+            chromatin_open = chromatin_result.get("state", "euchromatin") == "euchromatin"
+        except Exception:
+            chromatin_open = True  # default for coding genes
 
     # Detect CpG islands first (needed for methylation context)
     report.cpg_islands = detect_cpg_islands(seq)
@@ -705,14 +742,34 @@ def check_dna_degradation(
         report.hotspots.extend(hmc_hotspots)
 
     # Add CpG deamination hotspots for each CpG dinucleotide
-    # Context-dependent rates from Alexandrov et al. 2013 (COSMIC SBS1)
-    _CPG_DEAMINATION_RATES = {
-        "CCG": 0.45,   # enhanced deamination in CCG context
-        "TCG": 0.40,   # TCG context
-        "ACG": 0.30,   # ACG context
-        "GCG": 0.30,   # GCG context
-    }
-    _CPG_BASELINE_RATE = 0.35  # CpG→TpG baseline
+    # Use full COSMIC module if available, otherwise fall back to mini system
+    if _HAS_COSMIC_MODULE and _get_cosmic_tissue_weights is not None:
+        # Full COSMIC SBS1-driven CpG deamination rates
+        try:
+            tissue_weights = _get_cosmic_tissue_weights(tissue_type)
+            sbs1_weight = tissue_weights.get("SBS1", 1.0)
+            _CPG_DEAMINATION_RATES = {
+                "CCG": min(1.0, 0.45 * (1.0 + sbs1_weight)),
+                "TCG": min(1.0, 0.40 * (1.0 + sbs1_weight)),
+                "ACG": min(1.0, 0.30 * (1.0 + sbs1_weight)),
+                "GCG": min(1.0, 0.30 * (1.0 + sbs1_weight)),
+            }
+            _CPG_BASELINE_RATE = min(1.0, 0.35 * (1.0 + sbs1_weight))
+        except Exception:
+            # Fallback to hardcoded rates
+            _CPG_DEAMINATION_RATES = {
+                "CCG": 0.45, "TCG": 0.40, "ACG": 0.30, "GCG": 0.30,
+            }
+            _CPG_BASELINE_RATE = 0.35
+    else:
+        # Fallback: simplified mini 4-signature system
+        _CPG_DEAMINATION_RATES = {
+            "CCG": 0.45,   # enhanced deamination in CCG context
+            "TCG": 0.40,   # TCG context
+            "ACG": 0.30,   # ACG context
+            "GCG": 0.30,   # GCG context
+        }
+        _CPG_BASELINE_RATE = 0.35  # CpG→TpG baseline
 
     for i in range(len(seq) - 1):
         if seq[i:i + 2] == "CG":
@@ -726,7 +783,7 @@ def check_dna_degradation(
             report.hotspots.append(DamageHotspot(
                 position=i, damage_type="cpg_deamination", severity=adjusted,
                 context=seq[max(0, i - 2):min(len(seq), i + 4)],
-                strand="+", repair_pathway="DRM"
+                strand="+", repair_pathway="DRM",
             ))
 
     # Compute methylation-adjusted risk for CpG positions
@@ -741,8 +798,36 @@ def check_dna_degradation(
                 )
                 hotspot.severity = risk["net_risk"]
 
+    # COSMIC signature-based susceptibility profiling
+    if _HAS_COSMIC_MODULE and _compute_cosmic_profile is not None:
+        try:
+            cosmic_profile = _compute_cosmic_profile(
+                seq=seq,
+                tissue=tissue_type,
+            )
+            for pos, (sig_contribs, total_weight) in cosmic_profile.items():
+                if total_weight > 0.3:  # threshold for hotspot reporting
+                    # Add or update hotspot
+                    for hs in report.hotspots:
+                        if hs.position == pos:
+                            hs.severity = max(hs.severity, total_weight)
+                            hs.evidence.append(f"COSMIC_SBS:{','.join(sig_contribs.keys())}")
+                            break
+                    else:
+                        # Create new hotspot for COSMIC-only findings
+                        hotspot = DamageHotspot(
+                            position=pos,
+                            damage_type="cosmic_signature",
+                            severity=total_weight,
+                            context=seq[max(0, pos - 1):min(len(seq), pos + 2)],
+                            evidence=[f"COSMIC_SBS:{','.join(sig_contribs.keys())}"],
+                        )
+                        report.hotspots.append(hotspot)
+        except Exception as e:
+            logger.warning("COSMIC signature profiling failed: %s", e)
+
     # Compute net mutation risk accounting for repair capacity
-    # Uses literature-derived repair rates from _REPAIR_RATES
+    # Uses the canonical compute_net_mutation_risk from repair_pathways
     for hotspot in report.hotspots:
         # Determine if CpG site is methylated from methylation probability
         methylated = False
@@ -760,11 +845,16 @@ def check_dna_degradation(
             damage_type_key = "uv_cpd"
         elif damage_type_key == "uv_64pp":
             damage_type_key = "uv_6-4pp"
+        elif damage_type_key == "cosmic_signature":
+            damage_type_key = "cpg_deamination"  # COSMIC signatures are predominantly CpG-driven
 
-        net_result = compute_net_mutation_risk(
+        # Use canonical compute_net_mutation_risk from repair_pathways
+        net_result = _call_compute_net_mutation_risk(
             damage_severity=hotspot.severity,
             damage_type=damage_type_key,
             methylated=methylated,
+            transcription_active=transcription_active,
+            chromatin_open=chromatin_open,
         )
         # Reduce hotspot severity by repair capacity
         hotspot.severity = net_result["net_risk"]
@@ -806,23 +896,29 @@ _REPAIR_RATES: list[RepairPathwayRate] = [
 ]
 
 
-def compute_net_mutation_risk(damage_severity: float, damage_type: str,
-                              methylated: bool = False,
-                              transcription_active: bool = False,
-                              chromatin_open: bool = True) -> dict:
-    """Compute net mutation risk = formation_rate × (1 - repair_efficiency).
+def _call_compute_net_mutation_risk(
+    damage_severity: float,
+    damage_type: str,
+    methylated: bool = False,
+    transcription_active: bool = False,
+    chromatin_open: bool = True,
+) -> dict:
+    """Delegate to canonical compute_net_mutation_risk from repair_pathways.
 
-    Args:
-        damage_severity: 0-1 severity score from detection
-        damage_type: Type key (cpg_deamination, 8oxog, uv_photoproduct, etc.)
-        methylated: Whether CpG is methylated (affects deamination repair)
-        transcription_active: Whether gene is actively transcribed (TCR boost)
-        chromatin_open: Whether chromatin is open (affects repair access)
-
-    Returns:
-        Dict with net_risk, repair_rate, formation_rate, pathway
+    Falls back to a local simplified implementation if the import failed.
+    This ensures backward compatibility when repair_pathways is unavailable.
     """
-    # Find matching repair rate
+    if _compute_net_mutation_risk is not None:
+        # Use the canonical version from repair_pathways
+        return _compute_net_mutation_risk(
+            formation_severity=damage_severity,
+            lesion_type=damage_type,
+            context={"methylated": methylated},
+            transcription_active=transcription_active,
+            chromatin_open=chromatin_open,
+        )
+
+    # Fallback: simplified local implementation when repair_pathways unavailable
     repair_eff = 0.5  # default
     pathway = "unknown"
     half_life = 24.0
@@ -834,18 +930,15 @@ def compute_net_mutation_risk(damage_severity: float, damage_type: str,
             half_life = r.half_life_hours
             break
 
-    # Adjust for methylation (methylated CpG deamination is poorly repaired)
     if damage_type == "cpg_deamination" and methylated:
         for r in _REPAIR_RATES:
             if r.lesion_type == "cpg_deamination_methylated":
                 repair_eff = r.repair_efficiency_24h
                 break
 
-    # TCR boost: transcribed strand gets 2-10x NER enhancement
     if transcription_active and pathway == "NER":
         repair_eff = min(0.99, repair_eff * 3.0)
 
-    # Chromatin accessibility: open chromatin = better repair access
     if not chromatin_open:
         repair_eff = max(0.05, repair_eff * 0.5)
 
@@ -861,11 +954,40 @@ def compute_net_mutation_risk(damage_severity: float, damage_type: str,
     }
 
 
+def compute_net_mutation_risk(damage_severity: float, damage_type: str,
+                              methylated: bool = False,
+                              transcription_active: bool = False,
+                              chromatin_open: bool = True) -> dict:
+    """Compute net mutation risk = formation_rate × (1 - repair_efficiency).
+
+    Delegates to the canonical implementation in repair_pathways.compute_net_mutation_risk
+    when available, otherwise uses a local fallback.
+
+    Args:
+        damage_severity: 0-1 severity score from detection
+        damage_type: Type key (cpg_deamination, 8oxog, uv_photoproduct, etc.)
+        methylated: Whether CpG is methylated (affects deamination repair)
+        transcription_active: Whether gene is actively transcribed (TCR boost)
+        chromatin_open: Whether chromatin is open (affects repair access)
+
+    Returns:
+        Dict with net_risk, repair_rate, formation_rate, pathway
+    """
+    return _call_compute_net_mutation_risk(
+        damage_severity=damage_severity,
+        damage_type=damage_type,
+        methylated=methylated,
+        transcription_active=transcription_active,
+        chromatin_open=chromatin_open,
+    )
+
+
 # ==============================================================================
 # 12. SOTA Upgrade 2: COSMIC Mutational Signature Integration
 # ==============================================================================
 
-# COSMIC SBS signature trinucleotide contexts (top signatures relevant to therapeutics)
+# Simplified COSMIC SBS signature weights (fallback when cosmic_signatures module unavailable)
+# The full 12-signature, 96-context system is in cosmic_signatures.py
 _SBS1_WEIGHTS: dict[str, float] = {  # CpG deamination
     "ACG": 0.08, "CCG": 0.12, "GCG": 0.10, "TCG": 0.15,
     "AAG": 0.02, "AGG": 0.03, "CGG": 0.04, "TGG": 0.02,

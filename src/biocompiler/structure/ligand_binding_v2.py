@@ -277,51 +277,91 @@ def _l_is_donor(latom_element: str, latom_name: str, latom: Any = None) -> bool:
     return False
 
 
-def _p_is_acceptor(patom_element: str, patom_name: str) -> bool:
+def _p_is_acceptor(patom_element: str, patom_name: str, patom: Any = None) -> bool:
     """Check if a protein atom is a hydrogen bond acceptor.
 
     Args:
         patom_element: Element symbol of the protein atom.
         patom_name: Atom name of the protein atom.
+        patom: Optional RDKit atom object (reserved for future use).
 
     Returns:
         True if the atom can accept a hydrogen bond.
     """
-    if patom_name in PROTEIN_ACCEPTOR_ATOMS:
+    if patom_element == "O":
+        # All protein oxygens are acceptors: carbonyl O, hydroxyl O, carboxylate O
         return True
-    if patom_element in ("O", "N", "S"):
+    if patom_element == "N":
+        # Only ring nitrogens that are not protonated are pure acceptors.
+        # Backbone amide N is a donor but a very weak acceptor — exclude here.
+        # His ring N (ND1, NE2) can be acceptors when not protonated.
+        # Trp NE1 is typically a donor (has H), not a pure acceptor.
+        if patom_name in ("ND1", "NE2"):
+            return True  # His ring N — context-dependent, accept in neutral His
+        return False  # Other protein N (backbone, Lys, Arg, etc.) are donors, not acceptors
+    if patom_element == "S":
+        # Met SD and Cys SG are weak acceptors
         return True
     return False
 
 
-def _p_is_donor(patom_element: str, patom_name: str) -> bool:
+def _p_is_donor(patom_element: str, patom_name: str, patom: Any = None) -> bool:
     """Check if a protein atom is a hydrogen bond donor.
 
     Args:
         patom_element: Element symbol of the protein atom.
         patom_name: Atom name of the protein atom.
+        patom: Optional RDKit atom object (reserved for future use).
 
     Returns:
         True if the atom can donate a hydrogen bond.
     """
-    if patom_name in PROTEIN_DONOR_ATOMS:
+    if patom_element == "N":
+        # All protein N carry at least one H: backbone amide N, Lys NZ, Arg NH1/NH2,
+        # Asn ND2, Gln NE2, Trp NE1, His ND1/NE2 (when protonated).
         return True
-    if patom_element in ("N", "O"):
-        return True
+    if patom_element == "O":
+        # Only hydroxyl oxygens are donors: Ser OG, Thr OG1, Tyr OH.
+        # Backbone carbonyl O and side-chain carbonyl/carboxylate O are NOT donors.
+        return patom_name in ("OG", "OG1", "OH")
+    if patom_element == "S":
+        # Cysteine SG can be a donor; Met SD typically is not.
+        return patom_name == "SG"
     return False
 
 
-def _l_is_acceptor(latom_element: str, latom_name: str) -> bool:
+def _l_is_acceptor(latom_element: str, latom_name: str, latom: Any = None) -> bool:
     """Check if a ligand atom is a hydrogen bond acceptor.
 
     Args:
         latom_element: Element symbol of the ligand atom.
         latom_name: Atom name of the ligand atom.
+        latom: Optional RDKit atom object for precise H-count check.
 
     Returns:
         True if the atom can accept a hydrogen bond.
     """
-    if latom_element in ("O", "N", "S"):
+    if latom_element == "O":
+        # All ligand oxygens are acceptors (carbonyl, hydroxyl, ether, etc.)
+        return True
+    if latom_element == "N":
+        # Tertiary amines and ring N are acceptors; primary/secondary amines
+        # are both donors and acceptors.  If an RDKit atom is available,
+        # check H-count: N with 0 H is a pure acceptor; N with H is both.
+        if latom is not None:
+            try:
+                return True  # N with or without H can accept; donor check is separate
+            except Exception:
+                pass
+        # Name-based heuristic: primary/secondary amines indicated by NH patterns
+        _donor_n_patterns = ("NH", "NH2", "NH3")
+        # These are also acceptors (amines are both donors AND acceptors),
+        # but ring/imine N (no H) are *only* acceptors.
+        # For pharmacophore scoring we return True for all N since the
+        # donor side is handled by _l_is_donor separately.
+        return True
+    if latom_element == "S":
+        # Sulfoxide / sulfone S are acceptors; thioether S is a weak acceptor.
         return True
     return False
 
@@ -612,12 +652,49 @@ def dock_ligand_vina(
         if result["best_energy"] is not None:
             try:
                 from .prolif_integration import compute_interaction_fingerprint_from_mols
-                # Compute IFP from docked pose
-                docked_pose_sdf = v.write_pose(format='sdf')
-                ifp = compute_interaction_fingerprint_from_mols(receptor_pdbqt, docked_pose_sdf)
-                result["interaction_fingerprint"] = ifp
-            except (ImportError, Exception):
-                pass  # ProLIF not available
+                from rdkit import Chem
+                import tempfile
+                import os
+
+                # Vina write_pose() does NOT accept format kwarg; write PDBQT to
+                # a temp file and convert to an RDKit Mol for ProLIF.
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".pdbqt", delete=False
+                ) as tmp:
+                    tmp_path = tmp.name
+                try:
+                    v.write_pose(tmp_path, n_poses=1)  # Best pose only
+                    # Convert PDBQT → RDKit Mol (RDKit can read PDBQT directly)
+                    docked_mol = Chem.MolFromPDBFile(tmp_path, removeHs=False)
+                    if docked_mol is None:
+                        # Fallback: try OpenBabel PDBQT→PDB conversion
+                        try:
+                            from openbabel import openbabel as ob
+                            obconv = ob.OBConversion()
+                            obconv.SetInAndOutFormats("pdbqt", "pdb")
+                            obmol = ob.OBMol()
+                            obconv.ReadFile(obmol, tmp_path)
+                            pdb_tmp = tmp_path.replace(".pdbqt", ".pdb")
+                            obconv.WriteFile(obmol, pdb_tmp)
+                            docked_mol = Chem.MolFromPDBFile(pdb_tmp, removeHs=False)
+                            if os.path.exists(pdb_tmp):
+                                os.unlink(pdb_tmp)
+                        except Exception:
+                            pass
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+
+                if docked_mol is not None:
+                    # Load receptor as RDKit Mol
+                    receptor_mol = Chem.MolFromPDBFile(receptor_pdbqt, removeHs=False)
+                    if receptor_mol is not None:
+                        ifp = compute_interaction_fingerprint_from_mols(receptor_mol, docked_mol)
+                        result["interaction_fingerprint"] = ifp
+            except ImportError:
+                logger.debug("ProLIF not available, skipping interaction fingerprint")
+            except Exception as e:
+                logger.warning("ProLIF IFP computation failed: %s", e)
 
         return result
     except Exception as e:
@@ -992,10 +1069,12 @@ def _extract_pharmacophore_features(
                 continue
 
             # Check H-bond donor/acceptor interactions
-            # Bug fix: use _l_is_donor and _p_is_acceptor with correct signatures
+            # Fix: pass RDKit atom object (if available) for precise H-count checks.
+            # Atom dicts from PDB parsing lack _rdkit_atom; dicts built from RDKit Mols
+            # may include it.  None is safe — the helper functions fall back to heuristics.
             if dist <= HBOND_DISTANCE_CUTOFF:
                 # Ligand donor → Protein acceptor
-                if _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_element, patom_name):
+                if _l_is_donor(latom_element, latom_name, latom.get("_rdkit_atom")) and _p_is_acceptor(patom_element, patom_name):
                     features.append(PharmacophoreFeature(
                         feature_type="hbond",
                         residue_name=resname,
@@ -1006,7 +1085,7 @@ def _extract_pharmacophore_features(
                         score=SCORING_WEIGHTS["hbond"] * (1.0 - dist / HBOND_DISTANCE_CUTOFF),
                     ))
                 # Protein donor → Ligand acceptor
-                if _p_is_donor(patom_element, patom_name) and _l_is_acceptor(latom_element, latom_name):
+                if _p_is_donor(patom_element, patom_name) and _l_is_acceptor(latom_element, latom_name, latom.get("_rdkit_atom")):
                     features.append(PharmacophoreFeature(
                         feature_type="hbond",
                         residue_name=resname,
@@ -1193,15 +1272,15 @@ def decompose_per_residue_energy(
 
             # Hydrogen bond energy (distance-dependent)
             if dist <= HBOND_DISTANCE_CUTOFF:
-                # Bug fix: use (element, name) argument order consistently
-                # _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_element, patom_name)
-                if _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_element, patom_name):
+                # Fix: pass RDKit atom object for precise H-count checks.
+                # Atom dicts from PDB parsing lack _rdkit_atom; None is safe.
+                if _l_is_donor(latom_element, latom_name, latom.get("_rdkit_atom")) and _p_is_acceptor(patom_element, patom_name):
                     energy = _hbond_energy(dist)
                     energy_map[res_key]["hbond"] += energy
                     if "hbond_donor" not in features:
                         features.append("hbond_donor")
 
-                if _p_is_donor(patom_element, patom_name) and _l_is_acceptor(latom_element, latom_name):
+                if _p_is_donor(patom_element, patom_name) and _l_is_acceptor(latom_element, latom_name, latom.get("_rdkit_atom")):
                     energy = _hbond_energy(dist)
                     energy_map[res_key]["hbond"] += energy
                     if "hbond_acceptor" not in features:

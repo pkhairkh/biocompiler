@@ -712,7 +712,7 @@ def benchmark_nucleosome() -> list[BenchmarkResult]:
     try:
         from biocompiler.optimizer.nucleosome import (
             predict_nucleosome_occupancy,
-            score_segal_pssm,
+            score_kaplan_pssm,
         )
     except (ImportError, AttributeError) as _imp_err:
         for gt in NUCLEOSOME_GROUND_TRUTH:

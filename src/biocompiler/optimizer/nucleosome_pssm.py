@@ -178,11 +178,11 @@ def _position_envelope(pos: int, size: int = NUCLEOSOME_SIZE) -> float:
 
 
 def generate_kaplan_pssm() -> np.ndarray:
-    """Generate the 147×16 Kaplan 2009 empirical PSSM.
+    """Generate the 147×16 Kaplan 2009 nucleosome positioning PSSM.
 
-    Creates a position-specific scoring matrix based on the empirically-derived
-    position-specific dinucleotide preferences from genome-wide nucleosome
-    positioning data (Kaplan et al. 2009, Nature 458:362-366).
+    Attempts to load empirical data from the Kaplan 2009 supplementary
+    data file.  Falls back to a parametric cosine approximation if the
+    data file is unavailable.
 
     Key improvements over the legacy Segal PSSM:
 
@@ -205,10 +205,12 @@ def generate_kaplan_pssm() -> np.ndarray:
 
     Notes
     -----
-    The parameters are calibrated to reproduce the key features of the
-    published Kaplan 2009 supplementary data.  For the exact numerical
-    values from the Kaplan Lab, use :func:`load_kaplan_model` or
-    :func:`parse_kaplan_perl_model` to load the original model files.
+    When the empirical data file is available (``data/kaplan2009_pssm.json``),
+    the PSSM is loaded directly from the Kaplan 2009 supplementary values.
+    Otherwise, a parametric approximation based on cosine functions is used.
+    For the exact numerical values from the Kaplan Lab, you can also use
+    :func:`load_kaplan_model` or :func:`parse_kaplan_perl_model` to load
+    the original model files.
 
     Examples
     --------
@@ -216,6 +218,41 @@ def generate_kaplan_pssm() -> np.ndarray:
     >>> pssm.shape
     (147, 16)
     """
+    # Try loading empirical data from Kaplan 2009 supplementary
+    data_path = os.path.join(
+        os.path.dirname(__file__), "data", "kaplan2009_pssm.json"
+    )
+    if os.path.exists(data_path):
+        try:
+            import json as _json
+
+            with open(data_path) as f:
+                pssm_data = _json.load(f)
+            loaded = np.array(pssm_data["pssm"], dtype=np.float64)
+            if loaded.shape == (NUCLEOSOME_SIZE, 16):
+                logger.info(
+                    "Loaded empirical Kaplan 2009 PSSM from %s", data_path
+                )
+                return loaded
+            else:
+                logger.warning(
+                    "Kaplan 2009 PSSM data has unexpected shape %s, "
+                    "using parametric model",
+                    loaded.shape,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to load Kaplan 2009 PSSM data: %s, "
+                "using parametric model",
+                e,
+            )
+
+    logger.info(
+        "Using parametric Kaplan 2009 PSSM approximation "
+        "(install empirical data for better accuracy)"
+    )
+
+    # Fallback: parametric cosine model
     pssm = np.zeros((NUCLEOSOME_SIZE, 16), dtype=np.float64)
 
     # Trapezoidal amplitude envelope
@@ -282,7 +319,7 @@ def generate_segal_pssm() -> np.ndarray:
     position in nucleosomal DNA versus linker DNA.
 
     Note: This is the legacy version kept for backward compatibility.
-    Prefer :func:`generate_kaplan_pssm` for SOTA accuracy, which adds
+    Prefer :func:`generate_kaplan_pssm` for improved accuracy, which adds
     a trapezoidal amplitude envelope, dyad-adjacent TA penalty, and
     position-dependent non-periodic dinucleotide scores.
 
@@ -310,7 +347,7 @@ def generate_segal_pssm() -> np.ndarray:
     of the published Segal 2006 model.  For the exact numerical values
     from the Kaplan Lab, use :func:`load_kaplan_model` or
     :func:`parse_kaplan_perl_model` to load the original model files.
-    For the empirically-grounded Kaplan 2009 model with trapezoidal
+    For the Kaplan 2009 model with trapezoidal
     envelope and position-dependent non-periodic scores, use
     :func:`generate_kaplan_pssm`.
 

@@ -177,7 +177,8 @@ __all__ = [
     "compute_net_mutation_risk",
     "compute_cosmic_context_weights",
     "infer_gene_strand",
-    # Nucleosome positioning (Segal, NuPoP, Enformer)
+    # Nucleosome positioning (Kaplan, Segal, NuPoP, Enformer)
+    "score_kaplan_pssm",
     "score_segal_pssm",
     "predict_nucleosome_nupop",
     "predict_occupancy_with_exclusion",
@@ -390,7 +391,8 @@ from .nucleosome import (  # noqa: E402
     HELICAL_PERIOD,
     DINUCLEOTIDES,
     NUPOP_SPECIES,
-    score_segal_pssm,
+    score_kaplan_pssm,
+    score_segal_pssm,  # backward compatibility alias for score_kaplan_pssm
     predict_nucleosome_nupop,
     predict_occupancy_with_exclusion,
     predict_histone_marks_enformer,

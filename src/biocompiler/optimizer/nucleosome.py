@@ -2,7 +2,7 @@
 BioCompiler Nucleosome Positioning Predictor
 ==============================================
 
-State-of-the-art nucleosome occupancy prediction for synthetic gene design.
+Multi-model nucleosome positioning analysis for synthetic gene design.
 
 This module provides multiple prediction backends with increasing accuracy:
 
@@ -89,13 +89,12 @@ _DINUC_IDX: dict[str, int] = {d: i for i, d in enumerate(DINUCLEOTIDES)}
 
 
 def _generate_kaplan_pssm():
-    """Generate nucleosome PSSM based on Kaplan et al. 2009 Nature data.
+    """Generate Kaplan 2009 nucleosome positioning PSSM.
 
-    Uses empirically-derived position-specific dinucleotide preferences
-    from genome-wide nucleosome positioning data (Kaplan et al. 2009,
-    Nature 458:362-366).
+    Attempts to load empirical data from Kaplan 2009 supplementary.
+    Falls back to parametric cosine model if data file is unavailable.
 
-    Key features of the real Kaplan 2009 matrix that this reproduces:
+    Key features of the Kaplan 2009 matrix:
     - AA/TT shows ~10.2bp periodicity with amplitude varying by position
       (stronger in center, weaker at edges) via a trapezoidal envelope
     - GC/CG shows inverse phase periodicity
@@ -105,8 +104,43 @@ def _generate_kaplan_pssm():
     Returns:
         Tuple of (147x16 numpy array of log-likelihood ratios, dinucleotide list)
     """
+    import json
+
     import numpy as np
 
+    # Try loading empirical data from Kaplan 2009 supplementary
+    data_path = os.path.join(
+        os.path.dirname(__file__), "data", "kaplan2009_pssm.json"
+    )
+    if os.path.exists(data_path):
+        try:
+            with open(data_path) as f:
+                pssm_data = json.load(f)
+            loaded = np.array(pssm_data["pssm"], dtype=np.float64)
+            if loaded.shape == (147, 16):
+                logger.info(
+                    "Loaded empirical Kaplan 2009 PSSM from %s", data_path
+                )
+                return loaded
+            else:
+                logger.warning(
+                    "Kaplan 2009 PSSM data has unexpected shape %s, "
+                    "using parametric model",
+                    loaded.shape,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to load Kaplan 2009 PSSM data: %s, "
+                "using parametric model",
+                e,
+            )
+
+    logger.info(
+        "Using parametric Kaplan 2009 PSSM approximation "
+        "(install empirical data for better accuracy)"
+    )
+
+    # Fallback: parametric cosine model
     positions = 147
     dinucleotides = ['AA', 'TT', 'AT', 'TA', 'CA', 'TG', 'GC', 'CG',
                      'AC', 'GT', 'AG', 'CT', 'GA', 'TC', 'GG', 'CC']
@@ -187,7 +221,7 @@ def _generate_segal_pssm() -> "np.ndarray":  # noqa: F821
     - TA dinucleotides are uniformly depleted
 
     Note: This is the legacy version kept for backward compatibility.
-    Prefer :func:`_generate_kaplan_pssm` for SOTA accuracy.
+    Prefer :func:`_generate_kaplan_pssm` for improved accuracy.
 
     Returns:
         147x16 numpy array of log-likelihood ratios
@@ -261,11 +295,14 @@ except ImportError:
     _SEGAL_PSSM = None
 
 
-def score_segal_pssm(seq: str) -> float:
+def score_kaplan_pssm(seq: str) -> float:
     """Score a 147 bp sequence using the Kaplan 2009 PSSM (default).
 
-    Uses the empirically-grounded Kaplan 2009 PSSM with trapezoidal
-    amplitude envelope and position-dependent non-periodic scores.
+    Uses the Kaplan 2009 PSSM with trapezoidal amplitude envelope
+    and position-dependent non-periodic scores.  When the empirical
+    data file is available, loads the PSSM from Kaplan 2009
+    supplementary; otherwise uses a parametric approximation based on
+    cosine functions.
 
     Args:
         seq: DNA sequence (must be at least 147 bp)
@@ -285,6 +322,11 @@ def score_segal_pssm(seq: str) -> float:
             score += float(_KAPLAN_PSSM[pos, _DINUC_IDX[dinuc]])
 
     return score
+
+
+# Backward compatibility alias: score_segal_pssm was actually scoring the
+# Kaplan 2009 PSSM, not the Segal 2006 PSSM.  Keep the old name working.
+score_segal_pssm = score_kaplan_pssm
 
 
 def score_segal_legacy_pssm(seq: str) -> float:
@@ -332,7 +374,7 @@ def _score_segal_legacy(seq: str) -> float:
     """Score a 147 bp sequence using the legacy parametric cosine model.
 
     This is the original 7-parameter approximation kept for backward
-    compatibility.  Prefer :func:`score_segal_pssm` for SOTA accuracy.
+    compatibility.  Prefer :func:`score_kaplan_pssm` for improved accuracy.
 
     Args:
         seq: DNA sequence (at least 147 bp)
@@ -489,7 +531,8 @@ def _solve_percus_equation(
     boltzmann = np.exp(-(np.array(energies, dtype=np.float64) - mu) / kT)
     occupancy = boltzmann / (1.0 + boltzmann)
 
-    # Self-consistent iteration
+    # Self-consistent iteration with damping for stability
+    damping = 0.5
     for iteration in range(max_iter):
         old_occupancy = occupancy.copy()
 
@@ -502,9 +545,13 @@ def _solve_percus_equation(
                 if j != i:
                     exclusion *= (1.0 - old_occupancy[j])
 
-            # Update with exclusion
+            # Update with exclusion and damping to prevent oscillation
             w = boltzmann[i] * exclusion
-            occupancy[i] = w / (1.0 + w)
+            new_occupancy = w / (1.0 + w)
+            occupancy[i] = (
+                damping * old_occupancy[i]
+                + (1.0 - damping) * new_occupancy
+            )
 
         # Check convergence
         diff = np.max(np.abs(occupancy - old_occupancy))
@@ -622,11 +669,39 @@ def predict_histone_marks_enformer(
 
         # Extract histone mark predictions
         # Enformer outputs 5313 tracks at 128 bp resolution
+        #
+        # Approximate track indices for common histone marks.
+        # WARNING: These indices are approximate and should be verified
+        # against the Enformer model card / head index mapping.  Different
+        # Enformer checkpoints may assign different track ranges.
+        HISTONE_MARK_TRACKS: dict[str, tuple[int, int]] = {
+            "H3K4me3": (0, 50),
+            "H3K27me3": (50, 100),
+            "H3K9me3": (100, 150),
+            "H3K36me3": (150, 200),
+            "H3K27ac": (200, 250),
+            "H3K4me1": (250, 300),
+            "H3K9ac": (300, 350),
+        }
+
         result: dict[str, Any] = {}
         if marks:
-            avg_pred = predictions.mean(dim=1).squeeze().numpy()
+            predictions_np = predictions.squeeze(0).numpy()  # (896, 5313)
             for mark in marks:
-                result[mark] = float(avg_pred.mean())
+                if mark in HISTONE_MARK_TRACKS:
+                    start, end = HISTONE_MARK_TRACKS[mark]
+                    mark_preds = predictions_np[:, start:end]
+                    mark_score = float(mark_preds.mean())
+                else:
+                    # Unknown mark: average over all tracks with a warning
+                    logger.warning(
+                        "No specific track range for histone mark '%s'; "
+                        "averaging over all predictions.  Verify track "
+                        "indices against the Enformer model card.",
+                        mark,
+                    )
+                    mark_score = float(predictions_np.mean())
+                result[mark] = mark_score
         else:
             result["avg_signal"] = float(predictions.mean().item())
 
@@ -754,7 +829,7 @@ def predict_nucleosome_occupancy(
 
     # Select scoring function
     if model == "segal_pssm":
-        scorer = score_segal_pssm
+        scorer = score_kaplan_pssm
     elif model == "segal_legacy":
         scorer = score_segal_legacy_pssm
     else:
@@ -978,7 +1053,8 @@ __all__ = [
     "DINUCLEOTIDES",
     "NUPOP_SPECIES",
     # PSSM (Upgrade 1)
-    "score_segal_pssm",
+    "score_kaplan_pssm",
+    "score_segal_pssm",  # backward compatibility alias
     "_generate_segal_pssm",
     # NuPoP (Upgrade 2)
     "predict_nucleosome_nupop",

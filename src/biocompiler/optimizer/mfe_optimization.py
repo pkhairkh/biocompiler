@@ -251,8 +251,49 @@ def _rebuild_seq(codons: list[str], pos: int, new_codon: str) -> str:
     return "".join(temp)
 
 
+def _compute_mfe_rna_nn(dna_seq: str) -> float:
+    """Compute MFE using RNA nearest-neighbor stacking approximation.
+
+    Uses Turner 2004 (Mathews et al.) average stacking free energies
+    per dinucleotide step.  This is more accurate than the scalar GC
+    heuristic because it accounts for AU/GC/GU composition differences
+    and sequence order effects.
+
+    NOTE: This is still an approximation — it assumes perfect base-pairing
+    (no loops, bulges, or unpaired regions).  For accurate MFE, install
+    ViennaRNA (RNAfold).
+
+    Args:
+        dna_seq: DNA coding sequence (uppercase ACGT).
+
+    Returns:
+        Approximate MFE in kcal/mol (negative = stable).
+    """
+    # Convert DNA to RNA
+    rna = dna_seq.upper().replace("T", "U")
+
+    # Turner 2004 average stacking ΔG (kcal/mol) per dinucleotide
+    # These are averaged over the Watson-Crick complement stacks
+    _RNA_DINUC_DG = {
+        'AA': -1.00, 'AU': -1.10, 'AC': -1.55, 'AG': -1.55,
+        'UA': -1.00, 'UU': -0.70, 'UC': -1.25, 'UG': -1.25,
+        'CA': -1.90, 'CU': -1.60, 'CC': -2.10, 'CG': -2.40,
+        'GA': -1.55, 'GU': -1.40, 'GC': -2.40, 'GG': -1.90,
+    }
+
+    mfe = 0.0
+    for i in range(len(rna) - 1):
+        dinuc = rna[i:i + 2]
+        mfe += _RNA_DINUC_DG.get(dinuc, -1.0)  # default average
+
+    # Initiation penalty (~2 × initiation + terminal AU penalties)
+    mfe += 3.4
+
+    return mfe
+
+
 def _compute_mfe_with_fallback(dna_seq: str) -> float:
-    """Compute MFE using ViennaRNA; fall back to GC heuristic with warning."""
+    """Compute MFE using ViennaRNA; fall back to RNA NN approximation with warning."""
     rna_seq = dna_seq.upper().replace("T", "U")
     try:
         import RNA
@@ -262,16 +303,13 @@ def _compute_mfe_with_fallback(dna_seq: str) -> float:
     except ImportError:
         pass
 
-    # Improved heuristic fallback based on average NN pair energies
-    # (-1.75 kcal/mol per GC-involving stack; SantaLucia 1998 / Turner 2004).
-    # This is an approximation — install ViennaRNA for accurate MFE.
+    # RNA nearest-neighbor stacking approximation (Turner 2004)
     logger.warning(
-        "ViennaRNA not available; MFE is an approximation using "
-        "average nearest-neighbor energies. Install ViennaRNA "
-        "(pip install ViennaRNA) for accurate MFE computation."
+        "ViennaRNA not available; Using RNA NN stacking approximation "
+        "(Turner 2004). Install ViennaRNA (pip install ViennaRNA) for "
+        "accurate MFE computation."
     )
-    gc_fraction = sum(1 for b in dna_seq.upper() if b in "GC") / max(1, len(dna_seq))
-    return -1.75 * gc_fraction * len(dna_seq) / 2
+    return _compute_mfe_rna_nn(dna_seq)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -455,12 +493,11 @@ def optimize_mfe_simulated_annealing(
             fc = RNA.fold_compound(rna_seq)
             mfe = fc.mfe()[1]
         except ImportError:
-            # Improved heuristic: -1.75 kcal/mol per GC-involving stack
-            gc_fraction = sum(1 for b in dna_seq.upper() if b in "GC") / max(1, len(dna_seq))
-            mfe = -1.75 * gc_fraction * len(dna_seq) / 2
+            # RNA nearest-neighbor stacking approximation (Turner 2004)
+            mfe = _compute_mfe_rna_nn(dna_seq)
             logger.warning(
-                "ViennaRNA not available; SA scoring uses approximate MFE "
-                "(average NN pair energies). Install ViennaRNA for accuracy."
+                "ViennaRNA not available; SA scoring uses RNA NN stacking "
+                "approximation (Turner 2004). Install ViennaRNA for accuracy."
             )
 
         cai = _compute_cai_local(dna_seq, organism)
@@ -497,7 +534,8 @@ def optimize_mfe_simulated_annealing(
                 new_score = score(new_seq)
 
                 delta = new_score - current_score
-                if delta < 0 or rng.random() < math.exp(-delta / max(temp, 1e-10)):
+                normalized_delta = delta / max(len(new_seq), 1)
+                if delta < 0 or rng.random() < math.exp(-normalized_delta / max(temp, 1e-10)):
                     current_score = new_score
                     if current_score < best_score:
                         best_seq = new_seq
@@ -523,7 +561,8 @@ def optimize_mfe_simulated_annealing(
             new_score = score(new_seq)
 
             delta = new_score - current_score
-            if delta < 0 or rng.random() < math.exp(-delta / max(temp, 1e-10)):
+            normalized_delta = delta / max(len(new_seq), 1)
+            if delta < 0 or rng.random() < math.exp(-normalized_delta / max(temp, 1e-10)):
                 current_score = new_score
                 if current_score < best_score:
                     best_seq = new_seq
@@ -539,14 +578,13 @@ def optimize_mfe_simulated_annealing(
         rna_seq = best_seq.upper().replace("T", "U")
         final_mfe = RNA.fold(rna_seq)[1]
     except ImportError:
-        # Improved heuristic: -1.75 kcal/mol per GC-involving stack
+        # RNA nearest-neighbor stacking approximation (Turner 2004)
         logger.warning(
-            "ViennaRNA not available; final MFE is an approximation using "
-            "average nearest-neighbor energies. Install ViennaRNA "
+            "ViennaRNA not available; final MFE uses RNA NN stacking "
+            "approximation (Turner 2004). Install ViennaRNA "
             "(pip install ViennaRNA) for accurate MFE computation."
         )
-        gc_fraction = sum(1 for b in best_seq.upper() if b in "GC") / max(1, len(best_seq))
-        final_mfe = -1.75 * gc_fraction * len(best_seq) / 2
+        final_mfe = _compute_mfe_rna_nn(best_seq)
 
     final_cai = _compute_cai_local(best_seq, organism)
 

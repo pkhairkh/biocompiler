@@ -281,8 +281,49 @@ def accept_move(
 # ══════════════════════════════════════════════════════════════
 
 
+def _compute_mfe_rna_nn(dna_seq: str) -> float:
+    """Compute MFE using RNA nearest-neighbor stacking approximation.
+
+    Uses Turner 2004 (Mathews et al.) average stacking free energies
+    per dinucleotide step.  This is more accurate than the scalar GC
+    heuristic because it accounts for AU/GC/GU composition differences
+    and sequence order effects.
+
+    NOTE: This is still an approximation — it assumes perfect base-pairing
+    (no loops, bulges, or unpaired regions).  For accurate MFE, install
+    ViennaRNA (RNAfold).
+
+    Args:
+        dna_seq: DNA coding sequence (uppercase ACGT).
+
+    Returns:
+        Approximate MFE in kcal/mol (negative = stable).
+    """
+    # Convert DNA to RNA
+    rna = dna_seq.upper().replace("T", "U")
+
+    # Turner 2004 average stacking ΔG (kcal/mol) per dinucleotide
+    # These are averaged over the Watson-Crick complement stacks
+    _RNA_DINUC_DG = {
+        'AA': -1.00, 'AU': -1.10, 'AC': -1.55, 'AG': -1.55,
+        'UA': -1.00, 'UU': -0.70, 'UC': -1.25, 'UG': -1.25,
+        'CA': -1.90, 'CU': -1.60, 'CC': -2.10, 'CG': -2.40,
+        'GA': -1.55, 'GU': -1.40, 'GC': -2.40, 'GG': -1.90,
+    }
+
+    mfe = 0.0
+    for i in range(len(rna) - 1):
+        dinuc = rna[i:i + 2]
+        mfe += _RNA_DINUC_DG.get(dinuc, -1.0)  # default average
+
+    # Initiation penalty (~2 × initiation + terminal AU penalties)
+    mfe += 3.4
+
+    return mfe
+
+
 def _compute_mfe(dna_seq: str) -> float:
-    """Compute MFE using ViennaRNA; fall back to GC heuristic with warning."""
+    """Compute MFE using ViennaRNA; fall back to RNA NN approximation with warning."""
     rna_seq = dna_seq.upper().replace("T", "U")
     try:
         import RNA  # type: ignore[import-untyped]
@@ -292,15 +333,15 @@ def _compute_mfe(dna_seq: str) -> float:
     except ImportError:
         pass
 
-    # GC heuristic fallback
+    # RNA nearest-neighbor stacking approximation (Turner 2004)
     warnings.warn(
-        "GC-content heuristic for MFE is highly inaccurate. "
-        "Install ViennaRNA (pip install ViennaRNA) for accurate MFE computation.",
+        "ViennaRNA not available; Using RNA NN stacking approximation "
+        "(Turner 2004) for MFE. Install ViennaRNA (pip install ViennaRNA) "
+        "for accurate MFE computation.",
         UserWarning,
         stacklevel=3,
     )
-    gc = sum(1 for b in dna_seq.upper() if b in "GC") / max(1, len(dna_seq))
-    return -0.4 * gc * (len(dna_seq) / 2)
+    return _compute_mfe_rna_nn(dna_seq)
 
 
 def _compute_cai(dna_seq: str, organism: str) -> float:

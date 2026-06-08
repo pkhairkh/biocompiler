@@ -74,7 +74,7 @@ from __future__ import annotations
 
 import re
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -282,6 +282,7 @@ def score_m6a_confidence(
     position: int,
     sequence_context: str,
     utr_type: str,
+    transcript_length: int | None = None,
 ) -> float:
     """Score m6A site confidence using sequence and positional features.
 
@@ -310,6 +311,10 @@ def score_m6a_confidence(
             centered on the site) used to compute local GC content.
         utr_type: One of ``"3UTR"``, ``"CDS"``, or ``"5UTR"``
             indicating the transcript region containing the site.
+        transcript_length: Full length of the transcript sequence.
+            When provided, used for junction proximity scoring
+            instead of the short motif context length.  When
+            ``None``, falls back to a heuristic default of 1000.
 
     Returns:
         Confidence score in [0, 1].  Sites below 0.3 are considered
@@ -341,21 +346,19 @@ def score_m6a_confidence(
     # A more precise implementation would accept junction coordinates.
     junction_score = 0.5  # neutral default
 
-    ctx_len = len(sequence_context)
-    if ctx_len > 0:
-        # Relative position within the context window
-        # (higher = closer to 3' end = closer to stop codon/junction)
-        rel_pos = min(1.0, position / max(ctx_len, 1))
-        # m6A peak is around 75-90% of transcript length
-        # (near stop codon / 3'UTR boundary)
-        if 0.70 <= rel_pos <= 0.95:
-            junction_score = 1.0
-        elif 0.50 <= rel_pos < 0.70:
-            junction_score = 0.7
-        elif 0.95 < rel_pos:
-            junction_score = 0.6
-        else:
-            junction_score = 0.3
+    # Use full transcript length for junction proximity, not motif context
+    tlen = transcript_length if transcript_length is not None and transcript_length > 20 else 1000
+    rel_pos = min(1.0, position / max(tlen, 1))
+    # m6A peak is around 75-90% of transcript length
+    # (near stop codon / 3'UTR boundary)
+    if 0.70 <= rel_pos <= 0.95:
+        junction_score = 1.0
+    elif 0.50 <= rel_pos < 0.70:
+        junction_score = 0.7
+    elif 0.95 < rel_pos:
+        junction_score = 0.6
+    else:
+        junction_score = 0.3
 
     # --- Weighted combination ---
     confidence = (
@@ -416,9 +419,9 @@ def detect_m6a_sites(
 
         # Position-dependent severity:
         # m6A near stop codon / 3'UTR boundary is more impactful
-        if 0.75 < frac < 0.90:
+        if 0.75 < frac < 0.85:
             base_severity = 0.6
-        elif frac > 0.85:
+        elif frac >= 0.85:
             base_severity = 0.4
         else:
             base_severity = 0.2
@@ -426,9 +429,6 @@ def detect_m6a_sites(
         # Boost severity if the site also matches the extended RRACH
         if mod_pos in rrach_positions:
             base_severity = min(1.0, base_severity * 1.3)
-            motif_label = "m6A RRACH"
-        else:
-            motif_label = "m6A DRACH"
 
         # Determine UTR type from position fraction
         if apply_confidence_filter:
@@ -440,6 +440,7 @@ def detect_m6a_sites(
                 utr_type = "CDS"
             confidence = score_m6a_confidence(
                 mod_pos, match.group(), utr_type,
+                transcript_length=n,
             )
             conf_label = (
                 "high" if confidence >= 0.6
@@ -470,9 +471,9 @@ def detect_m6a_sites(
         mod_pos = match.start() + 3
         if mod_pos not in drach_positions:
             frac = match.start() / max(n, 1)
-            if 0.75 < frac < 0.90:
+            if 0.75 < frac < 0.85:
                 base_severity = 0.55
-            elif frac > 0.85:
+            elif frac >= 0.85:
                 base_severity = 0.35
             else:
                 base_severity = 0.18
@@ -486,6 +487,7 @@ def detect_m6a_sites(
                     utr_type = "CDS"
                 confidence = score_m6a_confidence(
                     mod_pos, match.group(), utr_type,
+                    transcript_length=n,
                 )
                 conf_label = (
                     "high" if confidence >= 0.6
@@ -511,28 +513,75 @@ def detect_m6a_sites(
 
 
 # ────────────────────────────────────────────────────────────
+# 3b. Basic Confidence Scoring for Non-m6A Marks
+# ────────────────────────────────────────────────────────────
+
+
+def _compute_basic_confidence(
+    match_start: int,
+    match_end: int,
+    sequence: str,
+) -> float:
+    """Compute basic confidence score for non-m6A modifications.
+
+    Uses position-based and local GC-content heuristics to estimate
+    confidence.  Modifications near the 3' end / stop codon are more
+    likely to be functional; moderate GC content is associated with
+    more stable RNA.
+
+    Args:
+        match_start: 0-based start position of the motif match.
+        match_end: 0-based end position of the motif match.
+        sequence: Full transcript sequence.
+
+    Returns:
+        Confidence score in [0, 1].
+    """
+    # Position-based: modifications near 3' end / stop codon
+    # more likely functional
+    frac = match_start / max(len(sequence), 1)
+    pos_score = 0.5 + 0.5 * frac  # Higher toward 3' end
+
+    # GC content: moderate GC associated with more stable RNA
+    local_start = max(0, match_start - 20)
+    local_end = min(len(sequence), match_end + 20)
+    local_seq = sequence[local_start:local_end].upper()
+    gc = sum(1 for b in local_seq if b in "GC") / max(len(local_seq), 1)
+    gc_score = 1.0 - abs(gc - 0.5) * 2  # Peak at 50% GC
+
+    return 0.6 * pos_score + 0.4 * gc_score
+
+
+# ────────────────────────────────────────────────────────────
 # 4. m5C (5-Methylcytosine) Detection
 # ────────────────────────────────────────────────────────────
 
 # m5C consensus motifs for different writer enzymes
 # (Squires et al. 2012 NAR; Yang et al. 2017 Mol Cell)
-_M5C_MOTIFS: list[tuple[re.Pattern[str], str, str, float]] = [
-    # (compiled regex, enzyme name, motif description, base_severity)
+# Each tuple: (compiled regex, enzyme name, motif description, base_severity, c_offset)
+# c_offset: 0-based offset of the modified C within the matched motif.
+# For motifs with multiple C positions, the correct offset is enzyme-specific.
+_M5C_MOTIFS: list[tuple[re.Pattern[str], str, str, float, int]] = [
     # DNMT2: recognises tRNA-like CCGG motif in mRNA
-    (re.compile(r"CCGG"), "DNMT2", "DNMT2-type m5C methylation (CCGG)", 0.45),
-    # NSUN1 (DNMT1 homolog): TCG context in gene bodies (most common
-    # NSUN1/DNMT1 m5C context; broad CG motif caused massive false positives)
-    (re.compile(r"TCG"), "NSUN1", "NSUN1-type m5C methylation (TCG)", 0.25),
+    (re.compile(r"CCGG"), "DNMT2", "DNMT2-type m5C methylation (CCGG)", 0.45, 0),
+    # NSUN1 (DNMT1 homolog): [AT]CG[AT] context (Yang et al. 2017 Mol Cell)
+    # The modified C is at position 1 in [AT]CG[AT]
+    (re.compile(r"[AT]CG[AT]"), "NSUN1", "NSUN1-type m5C methylation ([AT]CG[AT] context)", 0.25, 1),
     # NSUN2: C-rich context with flanking purines
-    (re.compile(r"[AT]C[AT]C[AT]"), "NSUN2", "NSUN2-type m5C methylation (NCNCN)", 0.35),
+    # The second C (position 3) is the modified base in [AT]C[AT]C[AT]
+    (re.compile(r"[AT]C[AT]C[AT]"), "NSUN2", "NSUN2-type m5C methylation (NCNCN)", 0.35, 3),
     # NSUN3: mitochondrial, CC motif near start
-    (re.compile(r"CC[AT]C"), "NSUN3", "NSUN3-type m5C methylation (CCNC)", 0.30),
+    # The first C (position 0) is modified in CC[AT]C
+    (re.compile(r"CC[AT]C"), "NSUN3", "NSUN3-type m5C methylation (CCNC)", 0.30, 0),
     # NSUN4: C in GC-rich context
-    (re.compile(r"GC[GC]C"), "NSUN4", "NSUN4-type m5C methylation (GCSC)", 0.30),
+    # The third position C is modified in GC[GC]C
+    (re.compile(r"GC[GC]C"), "NSUN4", "NSUN4-type m5C methylation (GCSC)", 0.30, 3),
     # NSUN6: CCUCC motif
-    (re.compile(r"CC[ATGC]CC"), "NSUN6", "NSUN6-type m5C methylation (CCNCC)", 0.28),
+    # The first C (position 0) is modified in CC[ATGC]CC
+    (re.compile(r"CC[ATGC]CC"), "NSUN6", "NSUN6-type m5C methylation (CCNCC)", 0.28, 0),
     # NSUN7: GCUG context (DNA: GCTG)
-    (re.compile(r"GCTG"), "NSUN7", "NSUN7-type m5C methylation (GCTG)", 0.25),
+    # The C at position 1 is modified
+    (re.compile(r"GCTG"), "NSUN7", "NSUN7-type m5C methylation (GCTG)", 0.25, 1),
 ]
 
 
@@ -557,10 +606,12 @@ def detect_m5c_sites(seq: str) -> list[EpitranscriptomicSite]:
 
     seen: set[tuple[str, int]] = set()  # (enzyme, position) dedup
 
-    for pattern, enzyme, description, base_severity in _M5C_MOTIFS:
+    for pattern, enzyme, description, base_severity, c_offset in _M5C_MOTIFS:
         for match in pattern.finditer(seq_upper):
-            # The modified C is typically the first C in the motif
-            mod_pos = match.start() + match.group().index("C")
+            # Use enzyme-specific offset for the modified C position
+            # instead of .index("C") which finds the FIRST C (wrong for
+            # multi-C motifs like NSUN2's [AT]C[AT]C[AT])
+            mod_pos = match.start() + c_offset
             key = (enzyme, mod_pos)
             if key in seen:
                 continue
@@ -581,6 +632,9 @@ def detect_m5c_sites(seq: str) -> list[EpitranscriptomicSite]:
                 severity=severity,
                 enzyme=enzyme,
                 reference="Squires et al. 2012 NAR",
+                confidence=_compute_basic_confidence(
+                    match.start(), match.end(), seq_upper,
+                ),
             ))
 
     return sites
@@ -597,9 +651,10 @@ _PSI_MOTIFS: list[tuple[re.Pattern[str], str, str, float]] = [
     # RNA: GURUC → DNA: G[AT]RTC  (R=A/G)
     (re.compile(r"G[AT][AG]TC"), "Pus1",
      "Pus1-mediated pseudouridylation (GURUC)", 0.45),
-    # Pus1 alternative: AUUC context
-    (re.compile(r"ATTC"), "Pus1",
-     "Pus1-mediated pseudouridylation (AUUC)", 0.35),
+    # Pus1 alternative: extended 6-nt context to reduce false positives
+    # vs the overshort r"ATTC" which matches every ATTC tetranucleotide
+    (re.compile(r"[AT]{2}T[AT]C[AT]"), "Pus1",
+     "Pus1-mediated pseudouridylation (extended AUUC context)", 0.35),
     # Pus4: highly conserved U2 snRNA-like motif
     # RNA: GUNUC → DNA: G[AT]TC
     (re.compile(r"GA[AT]C"), "Pus4",
@@ -673,6 +728,9 @@ def detect_pseudouridine_sites(seq: str) -> list[EpitranscriptomicSite]:
                 severity=severity,
                 enzyme=enzyme,
                 reference="Carlile et al. 2014 Nature",
+                confidence=_compute_basic_confidence(
+                    match.start(), match.end(), seq_upper,
+                ),
             ))
 
     return sites
@@ -689,10 +747,13 @@ _M1A_MOTIFS: list[tuple[re.Pattern[str], str, str, float]] = [
     # RNA: G/A-G-m1A-G/A-G-C → DNA: [AG][AG]A[AG][AG]C
     (re.compile(r"[AG][AG]A[AG][AG]C"), "TRMT6/61A",
      "TRMT6/61A m1A consensus (G/AGAG/AC)", 0.50),
-    # tRNA T-loop consensus: TΨC loop → DNA: T[AT]C
-    # The m1A at position 58 in tRNA is in the TΨC loop context
-    (re.compile(r"T[AT]C"), "TRMT61B",
-     "tRNA T-loop m1A (TΨC context)", 0.40),
+    # tRNA T-loop consensus: TΨC loop → extended 5-nt context
+    # The m1A at position 58 in tRNA is in the TΨC loop context.
+    # Previous r"T[AT]C" was only 3 nt and matched every TAC/TTC,
+    # causing massive false positives.  Extended based on m1A-seq
+    # data (Safra et al. 2017).
+    (re.compile(r"GA[AT]C[AT]"), "TRMT61B",
+     "tRNA T-loop m1A (GA[AT]C[AT] context)", 0.40),
     # m1A near start codon (5'UTR/cap-proximal)
     # Dominissini 2016 found m1A enriched near TSS/GU-rich context
     (re.compile(r"GA[AG]C[AT]G"), "TRMT6/61A",
@@ -755,6 +816,9 @@ def detect_m1a_sites(seq: str) -> list[EpitranscriptomicSite]:
                 severity=severity,
                 enzyme=enzyme,
                 reference="Dominissini et al. 2016 Nature",
+                confidence=_compute_basic_confidence(
+                    match.start(), match.end(), seq_upper,
+                ),
             ))
 
     return sites
@@ -781,9 +845,11 @@ _2OM_MOTIFS: list[tuple[re.Pattern[str], str, str, float]] = [
     # Cm in CGG context (common in rRNA-like motifs)
     (re.compile(r"CGG"), "Fibrillarin/snoRNA",
      "C/D box snoRNA-guided 2'-O-Me (CGG)", 0.28),
-    # Gm in AGC context
-    (re.compile(r"AGC"), "Fibrillarin/snoRNA",
-     "C/D box snoRNA-guided 2'-O-Me (AGC)", 0.25),
+    # Gm in AGC context — extended to 4-5 nt to reduce false positives.
+    # The previous r"AGC" matched the extremely common AGC codon.
+    # Extended based on snoRNA-guided specificity (Dong 2012).
+    (re.compile(r"GG[AT]C[AT]"), "Fibrillarin/snoRNA",
+     "C/D box snoRNA-guided 2'-O-Me (GG[AT]C[AT])", 0.25),
     # Cap 2'-O-Me at position 1 (first transcribed nucleotide)
     # detected separately in m6Am detection
 ]
@@ -838,6 +904,9 @@ def detect_2om_sites(seq: str) -> list[EpitranscriptomicSite]:
                 severity=severity,
                 enzyme=enzyme,
                 reference="Karijolich et al. 2015 RNA; Dong et al. 2012 NAR",
+                confidence=_compute_basic_confidence(
+                    match.start(), match.end(), seq_upper,
+                ),
             ))
 
     return sites
@@ -935,12 +1004,20 @@ _ALL_MARKS: list[str] = ["m6a", "m5c", "pseudouridine", "m1a", "2om", "m6am"]
 def detect_all_epitranscriptomic_marks(
     seq: str,
     marks: list[str] | None = None,
+    apply_confidence_filter: bool = True,
+    confidence_threshold: float = _M6A_LOW_CONFIDENCE_THRESHOLD,
 ) -> list[EpitranscriptomicSite]:
     """Detect all requested epitranscriptomic modification marks in mRNA.
 
     Runs the specified modification detectors and returns combined
     results sorted by severity (highest first).  When *marks* is
     ``None``, all six modification types are detected.
+
+    When *apply_confidence_filter* is ``True`` (the default), confidence
+    scores are computed for each site and low-confidence sites are
+    flagged with ``confidence_label = "low"``.  For m6A, the full
+    :func:`score_m6a_confidence` model is used; for other marks, the
+    simpler :func:`_compute_basic_confidence` heuristic is applied.
 
     Args:
         seq: mRNA sequence (DNA alphabet, T not U).
@@ -949,6 +1026,11 @@ def detect_all_epitranscriptomic_marks(
             ``"pseudouridine"`` (or ``"psi"``), ``"m1a"``, ``"2om"``
             (or ``"2ome"``, ``"2'o-me"``), ``"m6am"``.  Defaults to
             ``None`` (detect all).
+        apply_confidence_filter: If ``True``, compute confidence scores
+            for each site and flag low-confidence sites.  Defaults to
+            ``True``.
+        confidence_threshold: Confidence score below which a site is
+            flagged as low confidence.  Defaults to 0.3.
 
     Returns:
         Combined list of :class:`EpitranscriptomicSite` objects from
@@ -973,7 +1055,25 @@ def detect_all_epitranscriptomic_marks(
             )
         detector_fn, description = entry
         try:
-            sites = detector_fn(seq)
+            # Pass confidence parameters to detectors that support them
+            # (currently only detect_m6a_sites accepts these kwargs)
+            import inspect
+            sig = inspect.signature(detector_fn)
+            kwargs: dict[str, Any] = {}
+            if "apply_confidence_filter" in sig.parameters:
+                kwargs["apply_confidence_filter"] = apply_confidence_filter
+            if "confidence_threshold" in sig.parameters:
+                kwargs["confidence_threshold"] = confidence_threshold
+            sites = detector_fn(seq, **kwargs)
+            # For non-m6A detectors, apply confidence label filtering
+            if apply_confidence_filter and mark_lower != "m6a":
+                for site in sites:
+                    if site.confidence < confidence_threshold:
+                        site.confidence_label = "low"
+                    elif site.confidence < 0.6:
+                        site.confidence_label = "medium"
+                    else:
+                        site.confidence_label = "high"
             all_sites.extend(sites)
         except Exception:
             logger.warning(

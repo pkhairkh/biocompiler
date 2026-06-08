@@ -68,7 +68,6 @@ __all__ = [
     "detect_rqc_signals",
     "compute_mrna_structure_elongation_mod",
     "predict_secondary_structure_modern",
-    "_predict_ss_chou_fasman",
 ]
 
 logger = logging.getLogger(__name__)
@@ -226,6 +225,7 @@ def simulate_tasep_gillespie(dwell_times: list[float],
     codon_occupancy = [0] * n_codons
     collision_count = 0
     sample_count = 0
+    _ribosome_count_sum = 0
 
     while time < max_time:
         # 1. Compute all reaction rates
@@ -289,6 +289,7 @@ def simulate_tasep_gillespie(dwell_times: list[float],
 
         # 5. Sample occupancy
         sample_count += 1
+        _ribosome_count_sum += len(ribosomes)
         for pos in ribosomes:
             if 0 <= pos < n_codons:
                 codon_occupancy[pos] += 1
@@ -308,7 +309,7 @@ def simulate_tasep_gillespie(dwell_times: list[float],
         "stall_sites": stall_sites,
         "collisions": collision_count,
         "time_elapsed": time,
-        "ribosome_count_mean": len(ribosomes),
+        "ribosome_count_mean": _ribosome_count_sum / max(1, sample_count),
         "method": "gillespie",
     }
 
@@ -367,6 +368,7 @@ def simulate_tasep_ensemble(dwell_times: list[float],
     # Discard burn-in runs
     n_burnin = int(n_runs * burnin_fraction)
     all_densities = all_densities[n_burnin:]
+    all_stalls = all_stalls[n_burnin:]
 
     n_codons = len(dwell_times)
     n_kept = len(all_densities)
@@ -461,7 +463,7 @@ def detect_rqc_signals(protein_seq: str, codon_density: list[float],
         mean_density = sum(codon_density) / max(1, len(codon_density))
 
     # 1. Polybasic runs
-    for i in range(len(protein_seq) - 2):
+    for i in range(max(1, len(protein_seq) - 2)):
         run_len = 0
         for j in range(i, min(i + 10, len(protein_seq))):
             if protein_seq[j] in "KR":
@@ -654,8 +656,12 @@ def predict_secondary_structure_modern(protein_seq: str, method: str = "auto") -
                         return list(ss_str)
 
                 os.unlink(fasta_path)
-        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-            pass
+        except FileNotFoundError:
+            logger.debug("s4pred not found at %s, falling back to Chou-Fasman", _s4pred_path)
+        except subprocess.TimeoutExpired:
+            logger.warning("s4pred timed out after 30s, falling back to Chou-Fasman")
+        except Exception as e:
+            logger.warning("s4pred failed: %s, falling back to Chou-Fasman", e)
 
     # Fallback: Chou-Fasman (~50% Q3 accuracy)
     logger.warning(

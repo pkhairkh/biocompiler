@@ -46,6 +46,7 @@ __all__ = [
     "scan_signature_hotspots",
     "assign_signatures",
     "compute_damage_susceptibility_profile",
+    "get_signature_weights_for_tissue",
     "assign_signatures_sigprofiler",
 ]
 
@@ -1044,16 +1045,38 @@ def assign_signatures(
     }
 
 
+def get_signature_weights_for_tissue(tissue: str) -> dict[str, float]:
+    """Return the tissue-specific signature activity weights.
+
+    Args:
+        tissue: Tissue type (e.g. "generic", "skin", "colorectal", "lung",
+            "ovary", "bladder", "cervix", "stomach", "breast", "neuroblastoma").
+
+    Returns:
+        Dict mapping signature name (e.g. "SBS1") to relative activity weight.
+
+    Raises:
+        ValueError: If tissue type is not recognized.
+    """
+    if tissue not in _TISSUE_SIGNATURE_WEIGHTS:
+        valid = sorted(_TISSUE_SIGNATURE_WEIGHTS.keys())
+        raise ValueError(
+            f"Unknown tissue type '{tissue}'. "
+            f"Supported: {valid}"
+        )
+    return dict(_TISSUE_SIGNATURE_WEIGHTS[tissue])
+
+
 def compute_damage_susceptibility_profile(
     seq: str,
     tissue: str = "generic",
-) -> list[float]:
+) -> dict[int, tuple[dict[str, float], float]]:
     """Compute per-position damage susceptibility based on COSMIC signatures.
 
-    For each position in the sequence, computes a weighted sum of signature
-    probabilities using tissue-specific signature activity weights. This
-    produces a profile of mutational susceptibility across the entire
-    sequence, useful for identifying fragile sites in therapeutic gene design.
+    For each position in the sequence, computes the tissue-weighted signature
+    contributions and a total susceptibility weight. This produces a profile
+    of mutational susceptibility across the entire sequence, useful for
+    identifying fragile sites in therapeutic gene design.
 
     Args:
         seq: DNA sequence (uppercase or mixed case).
@@ -1062,20 +1085,13 @@ def compute_damage_susceptibility_profile(
             "bladder", "cervix", "stomach", "breast", "neuroblastoma".
 
     Returns:
-        List of float values, one per position. Each value represents
-        the weighted mutational susceptibility (0-1 scale). Positions
-        at sequence boundaries have reduced values due to incomplete
-        trinucleotide context.
+        Dict mapping position (int) to a tuple of:
+            - sig_contribs: dict mapping signature name to weighted probability
+            - total_weight: sum of all weighted contributions (0-1 scale)
+        Positions at sequence boundaries are omitted.
 
     Raises:
         ValueError: If tissue type is not recognized.
-
-    Examples:
-        >>> profile = compute_damage_susceptibility_profile("ATCGATCGA", "generic")
-        >>> len(profile) == 9
-        True
-        >>> all(0.0 <= v <= 1.0 for v in profile)
-        True
     """
     seq = seq.upper()
     n = len(seq)
@@ -1088,31 +1104,32 @@ def compute_damage_susceptibility_profile(
         )
 
     tissue_weights = _TISSUE_SIGNATURE_WEIGHTS[tissue]
-    profile: list[float] = [0.0] * n
+    total_tissue_weight = sum(tissue_weights.values())
+    profile: dict[int, tuple[dict[str, float], float]] = {}
 
-    for pos in range(n):
-        # Boundary positions get partial context
-        if pos < 1 or pos >= n - 1:
-            profile[pos] = 0.0
-            continue
-
+    for pos in range(1, n - 1):
         trinuc = seq[pos - 1:pos + 2]
         if trinuc not in _CONTEXT_LOOKUP:
-            profile[pos] = 0.0
             continue
 
         available = _CONTEXT_LOOKUP[trinuc]
+        sig_contribs: dict[str, float] = {}
         weighted_sum = 0.0
         for sig_name, prob in available.items():
             tissue_w = tissue_weights.get(sig_name, 0.0)
-            weighted_sum += prob * tissue_w
+            contrib = prob * tissue_w
+            if contrib > 0:
+                sig_contribs[sig_name] = contrib
+            weighted_sum += contrib
 
         # Normalize by total tissue weight to keep in 0-1 range
-        total_tissue_weight = sum(tissue_weights.values())
         if total_tissue_weight > 0:
-            profile[pos] = min(1.0, weighted_sum / total_tissue_weight)
+            total_weight = min(1.0, weighted_sum / total_tissue_weight)
         else:
-            profile[pos] = 0.0
+            total_weight = 0.0
+
+        if total_weight > 0:
+            profile[pos] = (sig_contribs, total_weight)
 
     return profile
 

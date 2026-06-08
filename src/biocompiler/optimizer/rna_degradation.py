@@ -75,10 +75,12 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+
+from .mirna_database import _BUILTIN_MIRNA_DB, load_mirbase_database
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +176,7 @@ _MIRNA_DATABASE: dict[str, dict[str, Any]] = {
     "miR-145": {
         "name": "miR-145",
         "mature_seq": "GUCCAGUUUUCCCAGGAAUCCC",
-        "seed_2_8": "UCCAGUU",
+        "seed_2_8": "TCCAGTT",
         "tissue": ["colon", "breast", "vascular_smooth_muscle"],
         "disease_relevance": "Colorectal cancer, vascular disease",
         "conservation": "high",
@@ -365,9 +367,9 @@ def detect_m6a_sites(seq: str) -> list[DegradationSignal]:
         frac = match.start() / max(len(seq_upper), 1)
 
         # m6A near stop codon / 3'UTR boundary is more impactful
-        if 0.75 < frac < 0.90:
+        if 0.75 < frac < 0.85:
             severity = 0.6  # Near stop codon — strong effect
-        elif frac > 0.85:
+        elif frac >= 0.85:
             severity = 0.4  # 3'UTR — moderate effect
         else:
             severity = 0.2  # CDS — weaker effect
@@ -449,7 +451,6 @@ def detect_eukaryotic_decay_signals(seq: str, are_class: str = "none",
         List of DegradationSignal objects for activated decay pathways
     """
     signals: list[DegradationSignal] = []
-    seq_upper = seq.upper()
 
     # CCR4-NOT deadenylation rate
     ccr4_rate = _EUKARYOTIC_DECAY_PATHWAYS["ccr4_not_deadenylation"]["rate_by_are_class"]
@@ -585,7 +586,8 @@ def detect_nmd_triggers(seq: str, orf_start: int = 0, orf_end: int | None = None
 # m5C (5-methylcytosine) consensus motifs (Squires et al. 2012)
 _M5C_CONSENSUS = [
     (r"[CT]C[ACT]G", "m5C_DNMT2", 0.4, "DNMT2-type m5C methylation motif"),
-    (r"CC[AT]C", "m5C_NSCUN1", 0.3, "NSUN1-type m5C methylation motif"),
+    (r"TCG", "m5C_NSUN1", 0.3, "NSUN1-type m5C methylation motif (TCG context)"),
+    (r"CC[AT]C", "m5C_NSUN3", 0.25, "NSUN3-type m5C methylation motif (CC[AT]C context)"),
     (r"[AT]C[AT]C[AT]", "m5C_NSCUN2", 0.35, "NSUN2-type m5C methylation motif"),
 ]
 
@@ -770,12 +772,6 @@ def compute_mrna_accessibility(seq: str, window: int = 80, span: int = 40,
 # 9. miRNA Binding Site Detection (with accessibility)
 # ────────────────────────────────────────────────────────────
 
-def _reverse_complement_dna(seq: str) -> str:
-    """Return the reverse complement of a DNA sequence."""
-    complement = {"A": "T", "T": "A", "G": "C", "C": "G"}
-    return "".join(complement.get(b, "N") for b in reversed(seq.upper()))
-
-
 def match_mirna_seed(mrna_seq, mirna_seq, position=0):
     """Match miRNA seed region against mRNA with multiple seed types.
 
@@ -833,11 +829,21 @@ def match_mirna_seed(mrna_seq, mirna_seq, position=0):
         if mrna[i:i+6] == seed_offset_comp:
             results.append(('offset-6mer', 0.30, i))
 
-    return results
+    # Deduplicate: offset-6mer can overlap with 6-mer hits at same position
+    seen_positions: set[tuple[int, str]] = set()
+    unique_results: list[tuple[str, float, int]] = []
+    for match_type, efficacy, start_pos in results:
+        key = (start_pos, match_type)
+        if key not in seen_positions:
+            seen_positions.add(key)
+            unique_results.append((match_type, efficacy, start_pos))
+
+    return unique_results
 
 
 def detect_mirna_sites(seq: str, tissue: str | None = None,
-                        accessibility: list[float] | None = None) -> list[DegradationSignal]:
+                        accessibility: list[float] | None = None,
+                        mirna_db_path: str | None = None) -> list[DegradationSignal]:
     """Detect miRNA binding sites in an mRNA sequence.
 
     Scans for seed-match complementarity using multiple seed types
@@ -853,6 +859,12 @@ def detect_mirna_sites(seq: str, tissue: str | None = None,
         accessibility: Optional per-position accessibility scores from
             :func:`compute_mrna_accessibility`.  When provided,
             inaccessible sites have reduced severity.
+        mirna_db_path: Optional path to a miRBase FASTA file.  If
+            provided, the miRNA database is loaded from this file via
+            :func:`load_mirbase_database`.  Otherwise, the expanded
+            built-in database (256 entries) from
+            :mod:`mirna_database` is used, falling back to the
+            module-level ``_MIRNA_DATABASE`` (16 entries).
 
     Returns:
         List of DegradationSignal objects for detected miRNA binding sites.
@@ -862,14 +874,26 @@ def detect_mirna_sites(seq: str, tissue: str | None = None,
     # Convert to RNA for seed matching (match_mirna_seed uses RNA alphabet)
     seq_rna = seq_upper.replace("T", "U")
 
-    for mirna_id, mirna_data in _MIRNA_DATABASE.items():
+    # Select miRNA database
+    if mirna_db_path:
+        mirna_db = load_mirbase_database(mirna_db_path)
+    else:
+        try:
+            # Use expanded database if available (returns dict keyed by name)
+            mirna_db = load_mirbase_database()
+            logger.debug("Using expanded miRNA database (%d entries)", len(mirna_db))
+        except (ImportError, NameError):
+            mirna_db = _MIRNA_DATABASE
+            logger.debug("Using built-in miRNA database (%d entries)", len(mirna_db))
+
+    for mirna_id, mirna_data in mirna_db.items():
         # Tissue filter
         if tissue is not None:
             if tissue.lower() not in [t.lower() for t in mirna_data["tissue"]] \
                     and "ubiquitous" not in [t.lower() for t in mirna_data["tissue"]]:
                 continue
 
-        mature_seq = mirna_data["mature_seq"]
+        mature_seq = mirna_data.get("mature_seq") or mirna_data.get("mature_sequence", "")
         if not mature_seq or len(mature_seq) < 9:
             logger.warning(
                 "Skipping miRNA %s: mature_seq too short (%d nt, need >= 9)",
@@ -882,7 +906,13 @@ def detect_mirna_sites(seq: str, tissue: str | None = None,
 
         for match_type, efficacy, start_pos in seed_matches:
             # Base severity from seed type efficacy and conservation
-            conservation = mirna_data.get("conservation", "medium")
+            conservation_raw = mirna_data.get("conservation", "medium")
+            if isinstance(conservation_raw, list):
+                # Expanded DB uses a species list; derive level from length
+                conservation = "high" if len(conservation_raw) >= 3 else (
+                    "medium" if len(conservation_raw) >= 2 else "low")
+            else:
+                conservation = conservation_raw
             if conservation == "high":
                 conservation_mult = 0.7
             elif conservation == "medium":
@@ -1006,6 +1036,7 @@ def analyze_rna_degradation(
     has_introns: bool = False,
     last_exon_junction: int | None = None,
     use_accessibility: bool = True,
+    mirna_db_path: str | None = None,
 ) -> list[DegradationSignal]:
     """Run comprehensive RNA degradation signal analysis.
 
@@ -1029,6 +1060,9 @@ def analyze_rna_degradation(
         last_exon_junction: Position of last exon-exon junction.
         use_accessibility: Whether to compute and use mRNA accessibility
             for miRNA severity adjustment (default True).
+        mirna_db_path: Optional path to a miRBase FASTA file.  If
+            provided, the miRNA database is loaded from this file.
+            Otherwise, the expanded built-in database is used.
 
     Returns:
         Combined list of DegradationSignal objects from all detectors,
@@ -1080,7 +1114,8 @@ def analyze_rna_degradation(
         # Eukaryotic pathways
         # miRNA detection with accessibility
         all_signals.extend(detect_mirna_sites(seq, tissue=tissue,
-                                               accessibility=accessibility))
+                                               accessibility=accessibility,
+                                               mirna_db_path=mirna_db_path))
 
         # Eukaryotic decay pathways
         all_signals.extend(detect_eukaryotic_decay_signals(

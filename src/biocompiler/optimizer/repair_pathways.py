@@ -540,6 +540,9 @@ def compute_net_mutation_risk(
     formation_severity: float,
     lesion_type: str,
     context: dict | None = None,
+    *,
+    transcription_active: bool | None = None,
+    chromatin_open: bool | None = None,
 ) -> dict:
     """Compute net mutation risk accounting for DNA repair.
 
@@ -561,6 +564,11 @@ def compute_net_mutation_risk(
             - 'chromatin_state' (str): 'open', 'heterochromatin', etc.
             - 'cell_cycle' (str): 'G1', 'S', 'G2', 'M'
             - 'position' (int): Genomic position
+        transcription_active: Whether the gene is actively transcribed.
+            Enables TCR boost for NER-pathway lesions. Takes precedence
+            over context['transcribed_strand'] if provided.
+        chromatin_open: Whether chromatin is in an open/euchromatic state.
+            Takes precedence over context['chromatin_open'] if provided.
 
     Returns:
         Dict with keys:
@@ -578,8 +586,15 @@ def compute_net_mutation_risk(
         context = {}
 
     methylated: bool = context.get("methylated", False)
-    transcribed_strand: bool = context.get("transcribed_strand", False)
-    chromatin_open: bool = context.get("chromatin_open", True)
+    # Direct keyword args take precedence over context dict
+    if transcription_active is not None:
+        transcribed_strand: bool = transcription_active
+    else:
+        transcribed_strand = context.get("transcribed_strand", False)
+    if chromatin_open is not None:
+        _chromatin_open: bool = chromatin_open
+    else:
+        _chromatin_open = context.get("chromatin_open", True)
     chromatin_state: str | None = context.get("chromatin_state", None)
     cell_cycle: str = context.get("cell_cycle", "S")
     position: int = context.get("position", -1)
@@ -589,7 +604,7 @@ def compute_net_mutation_risk(
         lesion_type=lesion_type,
         methylated=methylated,
         transcribed_strand=transcribed_strand,
-        chromatin_open=chromatin_open,
+        chromatin_open=_chromatin_open,
         cell_cycle=cell_cycle,
     )
 
@@ -613,7 +628,7 @@ def compute_net_mutation_risk(
         context_applied["tcr_enhancement"] = True
     if chromatin_state is not None:
         context_applied["chromatin_state"] = chromatin_state
-    elif not chromatin_open:
+    elif not _chromatin_open:
         context_applied["chromatin_state"] = "heterochromatin"
     if "dsb" in lesion_type.lower() or "double_strand" in lesion_type.lower():
         context_applied["cell_cycle_pathway"] = prediction.pathway
