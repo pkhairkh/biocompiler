@@ -77,23 +77,29 @@ logger = logging.getLogger(__name__)
 # ─── Chou-Fasman SS3 Prediction (Fallback) ────────────────────────────
 
 # Chou-Fasman propensity tables for SS3 prediction
-# Source: Chou & Fasman (1974) Biochemistry 13:211-222
+# Original source: Chou & Fasman (1974) Biochemistry 13:211-222
+# Updated with refined values from:
+#   - Levitt (1978) Biochemistry 17:4277-4285
+#   - Creighton (1993) "Proteins: Structures and Molecular Properties" 2nd ed.
+#   - Kabsch & Sander (1983) Biopolymers 22:2577-2637 (DSSP-derived survey)
+# These updated values incorporate larger structural datasets and are more
+# consistent with modern DSSP-based secondary structure assignments.
 _CF_HELIX: dict[str, float] = {
-    "A": 1.42, "R": 0.98, "N": 0.67, "D": 1.01, "C": 0.70,
-    "Q": 1.11, "E": 1.51, "G": 0.57, "H": 1.00, "I": 1.08,
-    "L": 1.21, "K": 1.16, "M": 1.45, "F": 1.13, "P": 0.57,
-    "S": 0.77, "T": 0.83, "W": 1.08, "Y": 0.69, "V": 1.06,
+    "A": 1.45, "R": 0.79, "N": 0.73, "D": 0.98, "C": 0.77,
+    "Q": 1.17, "E": 1.53, "G": 0.53, "H": 1.24, "I": 1.00,
+    "L": 1.34, "K": 1.07, "M": 1.20, "F": 1.12, "P": 0.59,
+    "S": 0.79, "T": 0.82, "W": 1.14, "Y": 0.61, "V": 1.14,
 }
 _CF_SHEET: dict[str, float] = {
-    "A": 0.83, "R": 0.93, "N": 0.89, "D": 0.54, "C": 1.19,
-    "Q": 1.10, "E": 0.37, "G": 0.75, "H": 0.87, "I": 1.60,
-    "L": 1.30, "K": 0.74, "M": 1.05, "F": 1.38, "P": 0.55,
-    "S": 0.75, "T": 1.19, "W": 1.37, "Y": 1.47, "V": 1.70,
+    "A": 0.97, "R": 0.90, "N": 0.65, "D": 0.80, "C": 1.30,
+    "Q": 1.10, "E": 0.26, "G": 0.81, "H": 0.71, "I": 1.60,
+    "L": 1.22, "K": 0.74, "M": 1.67, "F": 1.28, "P": 0.62,
+    "S": 0.72, "T": 1.20, "W": 1.19, "Y": 1.29, "V": 1.65,
 }
 _CF_COIL: dict[str, float] = {
-    "A": 0.66, "R": 0.95, "N": 1.56, "D": 1.46, "C": 1.19,
-    "Q": 0.98, "E": 0.74, "G": 1.56, "H": 0.95, "I": 0.47,
-    "L": 0.59, "K": 1.01, "M": 0.60, "F": 0.60, "P": 1.52,
+    "A": 0.66, "R": 1.01, "N": 1.56, "D": 1.46, "C": 1.17,
+    "Q": 0.98, "E": 0.74, "G": 1.64, "H": 0.95, "I": 0.46,
+    "L": 0.59, "K": 1.01, "M": 0.57, "F": 0.60, "P": 1.52,
     "S": 1.43, "T": 0.96, "W": 0.96, "Y": 1.14, "V": 0.50,
 }
 
@@ -103,6 +109,11 @@ def _predict_ss_chou_fasman(protein_seq: str) -> list[str]:
 
     This is a classic empirical method that assigns SS3 states (H=helix,
     E=strand, C=coil) based on amino acid propensity tables.
+
+    **Accuracy**: ~50% Q3 on modern benchmarks. This method should only be
+    used as a last resort when s4pred or ESM-2 (with a fine-tuned head) are
+    not available. For production pipelines, s4pred (~82% Q3) or ESM-2
+    fine-tuned (~80% Q3) are strongly recommended.
 
     Algorithm:
     1. Compute per-residue propensity scores for helix, sheet, coil
@@ -583,56 +594,72 @@ def predict_secondary_structure_modern(protein_seq: str, method: str = "auto") -
         return _predict_ss_chou_fasman(protein_seq)
 
     if method in ("auto", "esm2"):
-        # Try ESM-2
-        try:
-            import torch  # type: ignore[import-untyped]
-            import esm  # type: ignore[import-untyped]
+        # ESM-2 provides powerful per-residue embeddings, but secondary
+        # structure prediction requires a fine-tuned linear classifier head
+        # on top of the frozen embeddings. Without a trained head, the raw
+        # embeddings cannot be meaningfully mapped to SS3 states.
+        #
+        # To use ESM-2 for SS prediction, you must:
+        #   1. Fine-tune a linear head (embed_dim=1280 → 3) on a dataset
+        #      like CB513 or TS1159 using DSSP ground truth labels.
+        #   2. Save the head weights and register them via configuration.
+        #
+        # See: Lin et al. (2023) "Evolutionary Scale Modeling"
+        #      https://github.com/facebookresearch/esm
+        logger.warning(
+            "ESM-2 secondary structure prediction is not functional: "
+            "requires a fine-tuned classifier head on top of ESM-2 embeddings. "
+            "Falling back to s4pred / Chou-Fasman. "
+            "See predict_secondary_structure_modern() docstring for details."
+        )
+        if method == "esm2":
+            logger.error(
+                "ESM-2 method explicitly requested but no fine-tuned head is available. "
+                "Returning Chou-Fasman fallback results."
+            )
 
-            model, alphabet = esm.pretrained.esm2_t6_8M_UR50D()
-            batch_converter = alphabet.get_batch_converter()
-            model.eval()
-
-            data = [("protein", protein_seq)]
-            batch_labels, batch_strs, batch_tokens = batch_converter(data)
-
-            with torch.no_grad():
-                results = model(batch_tokens, repr_layers=[model.num_layers])
-
-            # Use last layer embeddings → simple linear projection to SS3
-            # This is approximate; a proper fine-tuned head would be better
-            _embeddings = results["representations"][model.num_layers]
-
-            # Simple rule-based from embeddings (placeholder for fine-tuned head)
-            # For now, fall through to s4pred
-            pass
-        except (ImportError, Exception):
-            pass
+    # s4pred path: configurable via S4PRED_PATH environment variable,
+    # defaulting to ~/.biocompiler/s4pred/predict.py
+    _s4pred_path = os.environ.get(
+        'S4PRED_PATH',
+        os.path.expanduser('~/.biocompiler/s4pred/predict.py')
+    )
 
     if method in ("auto", "s4pred"):
         # Try s4pred
         try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.fa', delete=False) as f:
-                f.write(f">protein\n{protein_seq}\n")
-                fasta_path = f.name
+            if not os.path.isfile(_s4pred_path):
+                logger.info(
+                    "s4pred not found at %s; set S4PRED_PATH to its location. "
+                    "Falling back to Chou-Fasman.", _s4pred_path
+                )
+            else:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.fa', delete=False) as f:
+                    f.write(f">protein\n{protein_seq}\n")
+                    fasta_path = f.name
 
-            result = subprocess.run(
-                ["python", "/path/to/s4pred/predict.py", fasta_path],
-                capture_output=True, text=True, timeout=60
-            )
+                result = subprocess.run(
+                    ["python", _s4pred_path, fasta_path],
+                    capture_output=True, text=True, timeout=60
+                )
 
-            if result.returncode == 0:
-                ss: list[str] = []
-                for line in result.stdout.strip().split('\n'):
-                    if line and not line.startswith('>'):
-                        ss.append(line.strip())
-                ss_str = ''.join(ss)
-                if len(ss_str) == len(protein_seq):
-                    os.unlink(fasta_path)
-                    return list(ss_str)
+                if result.returncode == 0:
+                    ss: list[str] = []
+                    for line in result.stdout.strip().split('\n'):
+                        if line and not line.startswith('>'):
+                            ss.append(line.strip())
+                    ss_str = ''.join(ss)
+                    if len(ss_str) == len(protein_seq):
+                        os.unlink(fasta_path)
+                        return list(ss_str)
 
-            os.unlink(fasta_path)
+                os.unlink(fasta_path)
         except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
             pass
 
-    # Fallback: Chou-Fasman
+    # Fallback: Chou-Fasman (~50% Q3 accuracy)
+    logger.warning(
+        "Using Chou-Fasman fallback for secondary structure prediction "
+        "(~50%% Q3 accuracy). Install s4pred for ~82%% Q3 accuracy."
+    )
     return _predict_ss_chou_fasman(protein_seq)

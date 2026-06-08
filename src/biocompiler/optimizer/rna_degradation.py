@@ -78,6 +78,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -678,6 +680,49 @@ def detect_epitranscriptomic_marks(seq: str) -> list[DegradationSignal]:
 # ────────────────────────────────────────────────────────────
 
 
+def _estimate_accessibility_heuristic(sequence, window_size=80):
+    """Estimate mRNA accessibility without ViennaRNA.
+
+    Uses a sliding-window dinucleotide stability model based on
+    empirical RNA duplex stability data.
+    """
+    # Dinucleotide stability scores (approximate ΔG/2, kcal/mol)
+    # More negative = more stable = less accessible
+    di_stability = {
+        'AA': -1.00, 'AU': -1.10, 'AC': -1.40, 'AG': -1.40,
+        'UA': -1.10, 'UU': -0.90, 'UC': -1.20, 'UG': -1.20,
+        'CA': -1.50, 'CU': -1.30, 'CC': -1.80, 'CG': -2.00,
+        'GA': -1.30, 'GU': -1.40, 'GC': -2.20, 'GG': -1.80,
+    }
+
+    seq = sequence.upper()
+    n = len(seq)
+    accessibility = np.zeros(n)
+
+    for i in range(n):
+        start = max(0, i - window_size // 2)
+        end = min(n, i + window_size // 2)
+        window = seq[start:end]
+
+        # Sum dinucleotide stabilities
+        total_dg = 0.0
+        count = 0
+        for j in range(len(window) - 1):
+            di = window[j:j+2]
+            if di in di_stability:
+                total_dg += di_stability[di]
+                count += 1
+
+        # Normalize: more stable (negative) = less accessible
+        if count > 0:
+            avg_dg = total_dg / count
+            # Convert to accessibility: 0 (fully paired) to 1 (fully accessible)
+            # Typical range: -0.9 to -2.2 kcal/mol per dinucleotide
+            accessibility[i] = max(0.0, min(1.0, (avg_dg + 2.2) / 1.3))
+
+    return accessibility
+
+
 def compute_mrna_accessibility(seq: str, window: int = 80, span: int = 40,
                                 unpaired_region: int = 20) -> list[float]:
     """Compute per-position mRNA accessibility (unpaired probability).
@@ -717,18 +762,8 @@ def compute_mrna_accessibility(seq: str, window: int = 80, span: int = 40,
         return [max(0.0, min(1.0, p)) for p in unpaired[1:]]
 
     except ImportError:
-        # Fallback: GC-content heuristic for accessibility
-        n = len(seq)
-        accessibility = [0.5] * n
-        for i in range(n):
-            start = max(0, i - window // 2)
-            end = min(n, i + window // 2)
-            window_seq = seq[start:end].upper()
-            gc = sum(1 for b in window_seq if b in "GC") / max(1, len(window_seq))
-            # Higher GC = more structure = less accessible
-            accessibility[i] = max(0.0, min(1.0, 1.0 - gc))
-
-        return accessibility
+        # Fallback: dinucleotide stability heuristic for accessibility
+        return _estimate_accessibility_heuristic(seq, window).tolist()
 
 
 # ────────────────────────────────────────────────────────────
@@ -741,15 +776,75 @@ def _reverse_complement_dna(seq: str) -> str:
     return "".join(complement.get(b, "N") for b in reversed(seq.upper()))
 
 
+def match_mirna_seed(mrna_seq, mirna_seq, position=0):
+    """Match miRNA seed region against mRNA with multiple seed types.
+
+    Implements Bartel 2009 seed classification:
+    - 8-mer: positions 2-9 match + A at position 1
+    - 7-mer-m8: positions 2-8 match
+    - 7-mer-A1: positions 2-7 match + A at position 1
+    - 6-mer: positions 2-7 match
+    - offset 6-mer: positions 3-8 match
+
+    Returns list of (match_type, efficacy, start_pos) tuples.
+    """
+    results = []
+    mrna = mrna_seq.upper()
+    mirna = mirna_seq.upper()
+
+    if len(mirna) < 9:
+        return results
+
+    # Seed sequences (miRNA is 5'→3', binds antiparallel to mRNA)
+    seed_8 = mirna[1:9]      # positions 2-9
+    seed_7m8 = mirna[1:8]    # positions 2-8
+    seed_6 = mirna[1:7]      # positions 2-7
+    seed_offset = mirna[2:8]  # positions 3-8
+
+    # Complement (miRNA binds antiparallel)
+    def complement(seq):
+        comp = {'A': 'U', 'U': 'A', 'G': 'C', 'C': 'G', 'T': 'A'}
+        return ''.join(comp.get(c, 'N') for c in seq)
+
+    seed_8_comp = complement(seed_8)[::-1]
+    seed_7m8_comp = complement(seed_7m8)[::-1]
+    seed_6_comp = complement(seed_6)[::-1]
+    seed_offset_comp = complement(seed_offset)[::-1]
+
+    # Search along mRNA
+    for i in range(len(mrna) - 8):
+        # 8-mer: seed match + A at position 1 of miRNA
+        if (mrna[i:i+8] == seed_8_comp and
+                i > 0 and mrna[i-1] == 'A'):  # A at position 1
+            results.append(('8-mer', 1.0, i))
+        # 7-mer-m8
+        elif mrna[i:i+7] == seed_7m8_comp:
+            results.append(('7-mer-m8', 0.85, i))
+        # 7-mer-A1
+        elif (mrna[i:i+6] == seed_6_comp and
+              i > 0 and mrna[i-1] == 'A'):
+            results.append(('7-mer-A1', 0.70, i))
+        # 6-mer
+        elif mrna[i:i+6] == seed_6_comp:
+            results.append(('6-mer', 0.50, i))
+
+    # Offset 6-mer (search separately)
+    for i in range(len(mrna) - 6):
+        if mrna[i:i+6] == seed_offset_comp:
+            results.append(('offset-6mer', 0.30, i))
+
+    return results
+
+
 def detect_mirna_sites(seq: str, tissue: str | None = None,
                         accessibility: list[float] | None = None) -> list[DegradationSignal]:
     """Detect miRNA binding sites in an mRNA sequence.
 
-    Scans for seed-match complementarity (positions 2-8 of the miRNA)
-    against the curated miRNA database.  When accessibility data is
-    provided, sites in regions with accessibility < 0.05 have their
-    severity reduced by 80% (the site is buried in secondary structure
-    and inaccessible).
+    Scans for seed-match complementarity using multiple seed types
+    (8-mer, 7-mer-m8, 7-mer-A1, 6-mer, offset 6-mer) per Bartel 2009.
+    When accessibility data is provided, sites in regions with
+    accessibility < 0.05 have their severity reduced by 80% (the site
+    is buried in secondary structure and inaccessible).
 
     Args:
         seq: mRNA sequence (DNA alphabet, T not U).
@@ -764,6 +859,8 @@ def detect_mirna_sites(seq: str, tissue: str | None = None,
     """
     signals: list[DegradationSignal] = []
     seq_upper = seq.upper()
+    # Convert to RNA for seed matching (match_mirna_seed uses RNA alphabet)
+    seq_rna = seq_upper.replace("T", "U")
 
     for mirna_id, mirna_data in _MIRNA_DATABASE.items():
         # Tissue filter
@@ -772,33 +869,29 @@ def detect_mirna_sites(seq: str, tissue: str | None = None,
                     and "ubiquitous" not in [t.lower() for t in mirna_data["tissue"]]:
                 continue
 
-        seed = mirna_data["seed_2_8"]
-        if not seed or len(seed) != 7:
+        mature_seq = mirna_data["mature_seq"]
+        if not mature_seq or len(mature_seq) < 9:
             logger.warning(
-                "Skipping miRNA %s: seed_2_8 is %d nt (expected 7)",
-                mirna_id, len(seed) if seed else 0,
+                "Skipping miRNA %s: mature_seq too short (%d nt, need >= 9)",
+                mirna_id, len(mature_seq) if mature_seq else 0,
             )
             continue
 
-        # The miRNA seed (positions 2-8) binds the mRNA target.
-        # We search for the reverse complement of the seed on the
-        # mRNA coding strand (the seed in the miRNA pairs with the
-        # target, so we look for the complement).
-        seed_rc = _reverse_complement_dna(seed)
+        # Multi-seed-type matching per Bartel 2009
+        seed_matches = match_mirna_seed(seq_rna, mature_seq)
 
-        # Search for seed match
-        for match in re.finditer(seed_rc, seq_upper):
-            # Base severity from conservation
+        for match_type, efficacy, start_pos in seed_matches:
+            # Base severity from seed type efficacy and conservation
             conservation = mirna_data.get("conservation", "medium")
             if conservation == "high":
-                base_severity = 0.7
+                conservation_mult = 0.7
             elif conservation == "medium":
-                base_severity = 0.5
+                conservation_mult = 0.5
             else:
-                base_severity = 0.3
+                conservation_mult = 0.3
 
             # Position-dependent modifier: 3'UTR sites are more potent
-            frac = match.start() / max(len(seq_upper), 1)
+            frac = start_pos / max(len(seq_upper), 1)
             if frac > 0.85:
                 position_mult = 1.3  # 3'UTR
             elif frac > 0.75:
@@ -806,19 +899,25 @@ def detect_mirna_sites(seq: str, tissue: str | None = None,
             else:
                 position_mult = 0.8  # CDS — less effective due to ribosomes
 
-            severity = min(1.0, base_severity * position_mult)
+            severity = min(1.0, efficacy * conservation_mult * position_mult)
+
+            # Get sequence context in DNA alphabet
+            match_len = {
+                '8-mer': 8, '7-mer-m8': 7, '7-mer-A1': 6,
+                '6-mer': 6, 'offset-6mer': 6,
+            }.get(match_type, 7)
+            ctx_end = min(start_pos + match_len, len(seq_upper))
+            context = seq_upper[start_pos:ctx_end]
 
             # Accessibility-based severity adjustment
             if accessibility is not None:
-                # Check the accessibility of the binding site region
-                site_start = match.start()
-                site_end = match.end()
+                site_start = start_pos
+                site_end = start_pos + match_len
                 if site_end <= len(accessibility):
                     site_accessibility = sum(
                         accessibility[site_start:site_end]
                     ) / max(1, site_end - site_start)
 
-                    # If accessibility < 0.05, reduce severity by 80%
                     if site_accessibility < 0.05:
                         severity *= 0.2
                         accessibility_note = " (80% reduced: site buried in structure)"
@@ -830,14 +929,14 @@ def detect_mirna_sites(seq: str, tissue: str | None = None,
                 accessibility_note = ""
 
             signals.append(DegradationSignal(
-                signal_type="mirna",
-                position=match.start(),
-                sequence_context=match.group(),
+                signal_type=f"mirna_{match_type.replace('-', '_')}",
+                position=start_pos,
+                sequence_context=context,
                 severity=severity,
                 description=(
-                    f"miRNA {mirna_data['name']} seed match at position "
-                    f"{match.start()}: {match.group()} (seed RC of "
-                    f"{seed}){accessibility_note}"
+                    f"miRNA {mirna_data['name']} {match_type} seed match at position "
+                    f"{start_pos}: {context} (efficacy={efficacy:.2f})"
+                    f"{accessibility_note}"
                 ),
                 pathway="mirna",
             ))

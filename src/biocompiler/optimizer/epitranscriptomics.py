@@ -91,6 +91,7 @@ __all__ = [
     "assess_stability_impact",
     "get_modification_function",
     "MODIFICATION_FUNCTIONS",
+    "score_m6a_confidence",
 ]
 
 # ────────────────────────────────────────────────────────────
@@ -116,6 +117,11 @@ class EpitranscriptomicSite:
             ``"Pus1"``).
         reference: Literature reference for the modification motif
             (e.g., ``"Dominissini et al. 2012 Nature"``).
+        confidence: Confidence score in ``[0, 1]`` indicating how
+            likely the site is a genuine modification.  Default 1.0.
+        confidence_label: One of ``"high"``, ``"medium"``, or
+            ``"low"``.  Sites below the confidence threshold (0.3)
+            are labelled ``"low"`` rather than removed.
     """
 
     modification_type: str
@@ -124,9 +130,14 @@ class EpitranscriptomicSite:
     severity: float
     enzyme: str
     reference: str
+    confidence: float = 1.0
+    confidence_label: str = "high"
 
     def __post_init__(self) -> None:
         self.severity = max(0.0, min(1.0, self.severity))
+        self.confidence = max(0.0, min(1.0, self.confidence))
+        if self.confidence_label not in ("high", "medium", "low"):
+            self.confidence_label = "low"
 
 
 # ────────────────────────────────────────────────────────────
@@ -255,8 +266,112 @@ _M6A_DRACH = re.compile(r"[AG][AG]AC[ACT]")
 # [AG][AG][AG]AC[ACT] — i.e. RRACH with a leading R.
 _M6A_RRACH = re.compile(r"[AG][AG][AG]AC[ACT]")
 
+# UTR-type weights for m6A confidence scoring
+# m6A is enriched in 3'UTRs near stop codons (Dominissini 2012, Meyer 2012)
+_UTR_WEIGHTS: dict[str, float] = {
+    "3UTR": 0.40,
+    "CDS": 0.25,
+    "5UTR": 0.10,
+}
 
-def detect_m6a_sites(seq: str) -> list[EpitranscriptomicSite]:
+# Confidence threshold below which sites are flagged "low confidence"
+_M6A_LOW_CONFIDENCE_THRESHOLD: float = 0.30
+
+
+def score_m6a_confidence(
+    position: int,
+    sequence_context: str,
+    utr_type: str,
+) -> float:
+    """Score m6A site confidence using sequence and positional features.
+
+    Applies a simple multi-feature scoring model to assess the
+    likelihood that a DRACH/RRACH motif match represents a genuine
+    m6A modification site rather than a false positive.
+
+    Scoring components (each in [0, 1], weighted sum → normalised):
+
+    1. **UTR type** (weight 0.40): m6A is strongly enriched in
+       3'UTRs and near stop codons (Dominissini et al. 2012;
+       Meyer et al. 2012).  3'UTR sites receive the highest
+       score, CDS sites intermediate, and 5'UTR sites the lowest.
+    2. **Local GC content** (weight 0.35): m6A sites prefer
+       moderate GC content (40–60%).  Very low (<30%) or very high
+       (>70%) GC content reduces confidence.
+    3. **Distance from splice junction** (weight 0.25): m6A is
+       enriched near exonic junctions (Zhao et al. 2020 Nat Rev
+       Genet).  Sites within ~300 nt of a splice junction receive
+       higher scores.
+
+    Args:
+        position: 0-based position of the m6A site in the full
+            transcript sequence.
+        sequence_context: The surrounding sequence (ideally ≥20 nt
+            centered on the site) used to compute local GC content.
+        utr_type: One of ``"3UTR"``, ``"CDS"``, or ``"5UTR"``
+            indicating the transcript region containing the site.
+
+    Returns:
+        Confidence score in [0, 1].  Sites below 0.3 are considered
+        "low confidence" and should be flagged rather than removed.
+    """
+    # --- Component 1: UTR type weight ---
+    utr_score = _UTR_WEIGHTS.get(utr_type, 0.15)
+    # Normalise to [0, 1] range (max weight is 0.40)
+    utr_norm = utr_score / max(_UTR_WEIGHTS["3UTR"], 1e-9)
+
+    # --- Component 2: Local GC content ---
+    ctx = sequence_context.upper()
+    gc_count = ctx.count("G") + ctx.count("C")
+    gc_frac = gc_count / max(len(ctx), 1)
+
+    # m6A prefers moderate GC (40-60%); bell-shaped curve
+    if 0.40 <= gc_frac <= 0.60:
+        gc_score = 1.0
+    elif 0.30 <= gc_frac < 0.40:
+        gc_score = (gc_frac - 0.30) / 0.10  # linear ramp 0→1
+    elif 0.60 < gc_frac <= 0.70:
+        gc_score = 1.0 - (gc_frac - 0.60) / 0.10  # linear ramp 1→0
+    else:
+        gc_score = 0.0  # <30% or >70%
+
+    # --- Component 3: Distance from splice junction ---
+    # Heuristic: use relative position as a proxy for proximity to
+    # the stop-codon / 3'UTR boundary where m6A is most enriched.
+    # A more precise implementation would accept junction coordinates.
+    junction_score = 0.5  # neutral default
+
+    ctx_len = len(sequence_context)
+    if ctx_len > 0:
+        # Relative position within the context window
+        # (higher = closer to 3' end = closer to stop codon/junction)
+        rel_pos = min(1.0, position / max(ctx_len, 1))
+        # m6A peak is around 75-90% of transcript length
+        # (near stop codon / 3'UTR boundary)
+        if 0.70 <= rel_pos <= 0.95:
+            junction_score = 1.0
+        elif 0.50 <= rel_pos < 0.70:
+            junction_score = 0.7
+        elif 0.95 < rel_pos:
+            junction_score = 0.6
+        else:
+            junction_score = 0.3
+
+    # --- Weighted combination ---
+    confidence = (
+        0.40 * utr_norm
+        + 0.35 * gc_score
+        + 0.25 * junction_score
+    )
+
+    return max(0.0, min(1.0, confidence))
+
+
+def detect_m6a_sites(
+    seq: str,
+    apply_confidence_filter: bool = False,
+    confidence_threshold: float = _M6A_LOW_CONFIDENCE_THRESHOLD,
+) -> list[EpitranscriptomicSite]:
     """Detect m6A (N6-methyladenosine) consensus motifs in mRNA.
 
     Scans for both the DRACH consensus (D=A/G/U, R=A/G, H=A/C/U)
@@ -267,8 +382,18 @@ def detect_m6a_sites(seq: str) -> list[EpitranscriptomicSite]:
     DRACH matches that are also part of an RRACH match receive a
     higher severity score due to stronger consensus support.
 
+    When *apply_confidence_filter* is ``True``, an optional
+    second-pass confidence scoring is applied using
+    :func:`score_m6a_confidence`.  Sites below *confidence_threshold*
+    are flagged as ``"low"`` confidence rather than removed.
+
     Args:
         seq: mRNA sequence (DNA alphabet, T not U).
+        apply_confidence_filter: If ``True``, compute confidence
+            scores for each site using :func:`score_m6a_confidence`
+            and flag low-confidence sites.  Defaults to ``False``.
+        confidence_threshold: Confidence score below which a site
+            is flagged as low confidence.  Defaults to 0.3.
 
     Returns:
         List of :class:`EpitranscriptomicSite` objects for predicted
@@ -305,6 +430,26 @@ def detect_m6a_sites(seq: str) -> list[EpitranscriptomicSite]:
         else:
             motif_label = "m6A DRACH"
 
+        # Determine UTR type from position fraction
+        if apply_confidence_filter:
+            if frac > 0.85:
+                utr_type = "3UTR"
+            elif frac < 0.10:
+                utr_type = "5UTR"
+            else:
+                utr_type = "CDS"
+            confidence = score_m6a_confidence(
+                mod_pos, match.group(), utr_type,
+            )
+            conf_label = (
+                "high" if confidence >= 0.6
+                else "medium" if confidence >= confidence_threshold
+                else "low"
+            )
+        else:
+            confidence = 1.0
+            conf_label = "high"
+
         sites.append(EpitranscriptomicSite(
             modification_type="m6A",
             position=mod_pos,
@@ -312,6 +457,8 @@ def detect_m6a_sites(seq: str) -> list[EpitranscriptomicSite]:
             severity=base_severity,
             enzyme="METTL3/METTL14",
             reference="Dominissini et al. 2012 Nature; Meyer et al. 2012 Cell",
+            confidence=confidence,
+            confidence_label=conf_label,
         ))
 
     # Add RRACH-only sites (those not already covered by DRACH)
@@ -330,6 +477,25 @@ def detect_m6a_sites(seq: str) -> list[EpitranscriptomicSite]:
             else:
                 base_severity = 0.18
 
+            if apply_confidence_filter:
+                if frac > 0.85:
+                    utr_type = "3UTR"
+                elif frac < 0.10:
+                    utr_type = "5UTR"
+                else:
+                    utr_type = "CDS"
+                confidence = score_m6a_confidence(
+                    mod_pos, match.group(), utr_type,
+                )
+                conf_label = (
+                    "high" if confidence >= 0.6
+                    else "medium" if confidence >= confidence_threshold
+                    else "low"
+                )
+            else:
+                confidence = 1.0
+                conf_label = "high"
+
             sites.append(EpitranscriptomicSite(
                 modification_type="m6A",
                 position=mod_pos,
@@ -337,6 +503,8 @@ def detect_m6a_sites(seq: str) -> list[EpitranscriptomicSite]:
                 severity=base_severity,
                 enzyme="METTL3/METTL14",
                 reference="Dominissini et al. 2012 Nature; Meyer et al. 2012 Cell",
+                confidence=confidence,
+                confidence_label=conf_label,
             ))
 
     return sites
@@ -352,8 +520,9 @@ _M5C_MOTIFS: list[tuple[re.Pattern[str], str, str, float]] = [
     # (compiled regex, enzyme name, motif description, base_severity)
     # DNMT2: recognises tRNA-like CCGG motif in mRNA
     (re.compile(r"CCGG"), "DNMT2", "DNMT2-type m5C methylation (CCGG)", 0.45),
-    # NSUN1 (DNMT1 homolog): CpG context in mRNA
-    (re.compile(r"CG"), "NSUN1", "NSUN1-type m5C methylation (CpG)", 0.25),
+    # NSUN1 (DNMT1 homolog): TCG context in gene bodies (most common
+    # NSUN1/DNMT1 m5C context; broad CG motif caused massive false positives)
+    (re.compile(r"TCG"), "NSUN1", "NSUN1-type m5C methylation (TCG)", 0.25),
     # NSUN2: C-rich context with flanking purines
     (re.compile(r"[AT]C[AT]C[AT]"), "NSUN2", "NSUN2-type m5C methylation (NCNCN)", 0.35),
     # NSUN3: mitochondrial, CC motif near start

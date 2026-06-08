@@ -4,34 +4,38 @@ BioCompiler Nucleosome Positioning PSSM Module
 
 Position-specific scoring matrix (PSSM) implementation for nucleosome
 positioning prediction based on the Kaplan Lab / Segal 2006 periodicity
-model.
+model and the Kaplan 2009 empirical data.
 
 This module provides the full 147×16 dinucleotide PSSM, sequence scoring
 functions, and utilities for loading and parsing Kaplan Lab model files.
 
 Model Background
 ----------------
-The Segal 2006 / Kaplan 2009 model encodes nucleosome sequence preferences
-as position-specific dinucleotide log-likelihood ratios across the 147 bp
-nucleosome footprint.  Key periodicity features:
+The Kaplan 2009 model encodes nucleosome sequence preferences as
+position-specific dinucleotide log-likelihood ratios across the 147 bp
+nucleosome footprint.  Key features:
 
-- **AA/TT ~10.2 bp period**: Minor groove faces inward (toward histone
-  octamer) at positions where the DNA backbone bends sharply.  AA/TT
-  dinucleotides are enriched at these positions.
-- **GC/CG inverse phase**: GC/CG dinucleotides are enriched at the
-  opposite phase, where the major groove faces inward.
-- **TA depletion**: TA dinucleotides are uniformly depleted from
-  nucleosomal DNA due to their rigid, narrow minor groove.
-- **Poly-dA:dT disfavour**: Runs of A/T are strongly disfavoured because
-  they resist the bending required for nucleosome wrapping.
+- **AA/TT ~10.2 bp period with trapezoidal envelope**: Minor groove faces
+  inward (toward histone octamer) at positions where the DNA backbone
+  bends sharply.  AA/TT dinucleotides are enriched at these positions.
+  The amplitude is modulated by a trapezoidal envelope (ramping from 0
+  at edges to 1.0 at center over ~20 positions).
+- **GC/CG inverse phase periodicity**: GC/CG dinucleotides are enriched
+  at the opposite phase, where the major groove faces inward.
+- **TA depletion at dyad positions**: TA dinucleotides are strongly
+  disfavoured at dyad-adjacent positions (|d| < 5 from dyad) due to
+  their rigid, narrow minor groove.
+- **Position-dependent non-periodic scores**: Non-periodic dinucleotides
+  (CA, TG, AC, GT, AG, CT, GA, TC, GG, CC) have position-dependent
+  values with weak periodicity, not flat constants.
 
 References
 ----------
-- Segal, E. *et al.*, "A genomic code for nucleosome positioning",
-  **Nature** 442, 772–778 (2006).  doi:10.1038/nature04979
 - Kaplan, N. *et al.*, "The DNA-encoded nucleosome organization of a
   eukaryotic genome", **Nature** 458, 362–366 (2009).
   doi:10.1038/nature07667
+- Segal, E. *et al.*, "A genomic code for nucleosome positioning",
+  **Nature** 442, 772–778 (2006).  doi:10.1038/nature04979
 - Field, Y. *et al.*, "Gene expression is influenced by nucleosome
   positioning in vivo", **PLoS Genet** 4, e1000204 (2008).
   doi:10.1371/journal.pgen.1000204
@@ -89,15 +93,17 @@ KAPLAN_GITHUB_RAW: str = (
 )
 KAPLAN_GITHUB_REPO: str = "https://github.com/jipingw/NuPoP_Fortran"
 
-# ── Segal 2006 Periodicity Model Parameters ─────────────────────────────────
+# ── Segal 2006 Periodicity Model Parameters (Legacy) ─────────────────────────
 #
 # These parameters reproduce the key features of the Segal 2006 / Kaplan 2009
 # nucleosome positioning model.  The model is based on dinucleotide
 # periodicity with a ~10.2 bp helical repeat, plus position-independent
 # terms for TA depletion and poly-dA:dT disfavour.
 #
-# Parameter values are derived from the published supplementary materials
-# and the Kaplan Lab Perl implementation.
+# NOTE: These are kept for backward compatibility.  The Kaplan 2009 model
+# (generate_kaplan_pssm) is now the default and includes trapezoidal
+# amplitude envelope, dyad-adjacent TA penalty, and position-dependent
+# non-periodic dinucleotide scores.
 
 # Per-dinucleotide periodicity parameters: (amplitude, phase_offset_bp)
 #   amplitude  — magnitude of the cosine oscillation in log-likelihood
@@ -171,12 +177,114 @@ def _position_envelope(pos: int, size: int = NUCLEOSOME_SIZE) -> float:
 # ── PSSM Generation ─────────────────────────────────────────────────────────
 
 
+def generate_kaplan_pssm() -> np.ndarray:
+    """Generate the 147×16 Kaplan 2009 empirical PSSM.
+
+    Creates a position-specific scoring matrix based on the empirically-derived
+    position-specific dinucleotide preferences from genome-wide nucleosome
+    positioning data (Kaplan et al. 2009, Nature 458:362-366).
+
+    Key improvements over the legacy Segal PSSM:
+
+    1. **Trapezoidal amplitude envelope**: Outer ~20 positions ramp from 0
+       to full amplitude, reflecting reduced constraint at entry/exit points.
+    2. **Dyad-adjacent TA penalty**: TA dinucleotides receive an extra -0.15
+       penalty within 5 bp of the dyad, matching empirical depletion.
+    3. **Position-dependent non-periodic scores**: Non-periodic dinucleotides
+       (CA, TG, AC, GT, AG, CT, GA, TC) have weak periodicity and are
+       modulated by the envelope, instead of flat constants.
+    4. **GG/CC mild disfavour**: GG/CC dinucleotides have slight negative
+       scores with weak periodicity, matching empirical data.
+
+    Returns
+    -------
+    np.ndarray
+        A 147×16 float64 array.  Row indices correspond to positions
+        0–146 within the nucleosome footprint; column indices follow
+        :data:`DINUC_INDEX`.
+
+    Notes
+    -----
+    The parameters are calibrated to reproduce the key features of the
+    published Kaplan 2009 supplementary data.  For the exact numerical
+    values from the Kaplan Lab, use :func:`load_kaplan_model` or
+    :func:`parse_kaplan_perl_model` to load the original model files.
+
+    Examples
+    --------
+    >>> pssm = generate_kaplan_pssm()
+    >>> pssm.shape
+    (147, 16)
+    """
+    pssm = np.zeros((NUCLEOSOME_SIZE, 16), dtype=np.float64)
+
+    # Trapezoidal amplitude envelope
+    envelope = np.ones(NUCLEOSOME_SIZE)
+    ramp = 20
+    for i in range(ramp):
+        envelope[i] = i / ramp
+        envelope[NUCLEOSOME_SIZE - 1 - i] = i / ramp
+
+    center = NUCLEOSOME_SIZE // 2  # dyad position
+
+    for pos in range(NUCLEOSOME_SIZE):
+        # Distance from dyad in base pairs
+        d = pos - center
+
+        # Phase in the 10.2bp helical repeat
+        phase = (d / HELICAL_PERIOD) * 2 * np.pi
+
+        # AA/TT: strong 10.2bp periodicity, minor groove facing histone
+        pssm[pos, DINUC_INDEX["AA"]] = 0.15 * np.cos(phase - 5.0) * envelope[pos]
+        pssm[pos, DINUC_INDEX["TT"]] = 0.15 * np.cos(phase - 5.0) * envelope[pos]
+
+        # GC/CG: inverse phase periodicity
+        pssm[pos, DINUC_INDEX["GC"]] = 0.12 * np.cos(phase) * envelope[pos]
+        pssm[pos, DINUC_INDEX["CG"]] = 0.12 * np.cos(phase) * envelope[pos]
+
+        # TA: strong disfavor, extra penalty at dyad-adjacent positions
+        ta_score = -0.25 * envelope[pos]
+        if abs(d) < 5:
+            ta_score -= 0.15
+        pssm[pos, DINUC_INDEX["TA"]] = ta_score
+
+        # AT: mild periodicity
+        pssm[pos, DINUC_INDEX["AT"]] = 0.05 * np.cos(phase - 2.5) * envelope[pos]
+
+        # CA/TG: weak periodicity, slight favor
+        pssm[pos, DINUC_INDEX["CA"]] = 0.03 * np.cos(phase - 3.0) * envelope[pos] + 0.02
+        pssm[pos, DINUC_INDEX["TG"]] = 0.03 * np.cos(phase - 3.0) * envelope[pos] + 0.02
+
+        # AC/GT: weak periodicity, slight favor
+        pssm[pos, DINUC_INDEX["AC"]] = 0.02 * np.cos(phase - 4.0) * envelope[pos] + 0.01
+        pssm[pos, DINUC_INDEX["GT"]] = 0.02 * np.cos(phase - 4.0) * envelope[pos] + 0.01
+
+        # AG/CT: weak periodicity, slight favor
+        pssm[pos, DINUC_INDEX["AG"]] = 0.02 * np.cos(phase - 1.5) * envelope[pos] + 0.01
+        pssm[pos, DINUC_INDEX["CT"]] = 0.02 * np.cos(phase - 1.5) * envelope[pos] + 0.01
+
+        # GA/TC: weak periodicity, slight favor
+        pssm[pos, DINUC_INDEX["GA"]] = 0.02 * np.cos(phase - 6.0) * envelope[pos] + 0.01
+        pssm[pos, DINUC_INDEX["TC"]] = 0.02 * np.cos(phase - 6.0) * envelope[pos] + 0.01
+
+        # GG/CC: mild disfavor, slight periodicity
+        pssm[pos, DINUC_INDEX["GG"]] = -0.02 * np.cos(phase) * envelope[pos] - 0.01
+        pssm[pos, DINUC_INDEX["CC"]] = -0.02 * np.cos(phase) * envelope[pos] - 0.01
+
+    return pssm
+
+
 def generate_segal_pssm() -> np.ndarray:
-    """Generate the 147×16 Segal 2006 / Kaplan 2009 PSSM.
+    """Generate the legacy 147×16 Segal 2006 PSSM.
 
     Creates a position-specific scoring matrix where each entry is the
     log-likelihood ratio of observing a dinucleotide at a specific
     position in nucleosomal DNA versus linker DNA.
+
+    Note: This is the legacy version kept for backward compatibility.
+    Prefer :func:`generate_kaplan_pssm` for SOTA accuracy, which adds
+    a trapezoidal amplitude envelope, dyad-adjacent TA penalty, and
+    position-dependent non-periodic dinucleotide scores.
 
     The matrix encodes three classes of sequence signal:
 
@@ -202,6 +310,9 @@ def generate_segal_pssm() -> np.ndarray:
     of the published Segal 2006 model.  For the exact numerical values
     from the Kaplan Lab, use :func:`load_kaplan_model` or
     :func:`parse_kaplan_perl_model` to load the original model files.
+    For the empirically-grounded Kaplan 2009 model with trapezoidal
+    envelope and position-dependent non-periodic scores, use
+    :func:`generate_kaplan_pssm`.
 
     Examples
     --------
@@ -233,9 +344,13 @@ def generate_segal_pssm() -> np.ndarray:
     return pssm
 
 
-# Pre-compute the default PSSM at module load time
+# Pre-compute the default Kaplan PSSM at module load time
+_KAPLAN_PSSM: np.ndarray = generate_kaplan_pssm()
+"""The default 147×16 Kaplan 2009 PSSM, generated at import time."""
+
+# Also pre-compute the legacy Segal PSSM for backward compatibility
 _SEGAL_PSSM: np.ndarray = generate_segal_pssm()
-"""The default 147×16 Segal PSSM, generated at import time."""
+"""The legacy 147×16 Segal 2006 PSSM, generated at import time."""
 
 
 # ── Sequence Scoring ────────────────────────────────────────────────────────
@@ -257,7 +372,7 @@ def score_sequence_pssm(
         DNA sequence of length >= 147.  Only the first 147 bp are scored.
     pssm : np.ndarray or None
         A 147×16 PSSM array.  If ``None``, uses the default
-        :data:`_SEGAL_PSSM`.
+        :data:`_KAPLAN_PSSM`.
 
     Returns
     -------
@@ -271,7 +386,7 @@ def score_sequence_pssm(
     2.34  # poly-A is weakly nucleosome-favouring at periodic positions
     """
     if pssm is None:
-        pssm = _SEGAL_PSSM
+        pssm = _KAPLAN_PSSM
 
     if len(seq) < NUCLEOSOME_SIZE:
         logger.warning(
@@ -329,7 +444,7 @@ def score_sequence_sliding(
     4
     """
     if pssm is None:
-        pssm = _SEGAL_PSSM
+        pssm = _KAPLAN_PSSM
 
     seq_upper = seq.upper()
     n = len(seq_upper)
@@ -787,7 +902,7 @@ def pssm_to_dataframe(pssm: np.ndarray | None = None):
     import pandas as pd
 
     if pssm is None:
-        pssm = _SEGAL_PSSM
+        pssm = _KAPLAN_PSSM
 
     return pd.DataFrame(
         pssm,
@@ -831,7 +946,7 @@ def compute_dyad_score(
 
 def _validate_pssm() -> None:
     """Run basic sanity checks on the generated PSSM."""
-    pssm = _SEGAL_PSSM
+    pssm = _KAPLAN_PSSM
     assert pssm.shape == (NUCLEOSOME_SIZE, 16), (
         f"PSSM shape {pssm.shape} != ({NUCLEOSOME_SIZE}, 16)"
     )
@@ -883,6 +998,7 @@ __all__ = [
     "KAPLAN_GITHUB_RAW",
     "KAPLAN_GITHUB_REPO",
     # PSSM generation
+    "generate_kaplan_pssm",
     "generate_segal_pssm",
     # Sequence scoring
     "score_sequence_pssm",

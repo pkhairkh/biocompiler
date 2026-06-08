@@ -207,11 +207,13 @@ class DockingResult:
         all_energies: All binding energies from generated poses.
         n_poses: Number of poses generated.
         error: Error message if docking failed.
+        interaction_fingerprint: ProLIF interaction fingerprint dict (if available).
     """
     best_energy: float | None = None
     all_energies: list[float] = field(default_factory=list)
     n_poses: int = 0
     error: str | None = None
+    interaction_fingerprint: dict | None = None
 
 
 # ────────────────────────────────────────────────────────────
@@ -223,31 +225,64 @@ def _distance(p1: tuple[float, ...], p2: tuple[float, ...]) -> float:
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(p1, p2)))
 
 
-def _l_is_donor(latom_element: str, latom_name: str) -> bool:
-    """Check if a ligand atom is a hydrogen bond donor.
+def _l_is_donor(latom_element: str, latom_name: str, latom: Any = None) -> bool:
+    """Check if a ligand atom is an H-bond donor.
+
+    An atom is a donor only if it has at least one attached hydrogen.
 
     Args:
         latom_element: Element symbol of the ligand atom.
         latom_name: Atom name of the ligand atom.
+        latom: Optional RDKit atom object for precise H-count check.
 
     Returns:
         True if the atom can donate a hydrogen bond.
     """
-    if latom_element in ("N", "O"):
-        # Nitrogen and oxygen with attached hydrogens are donors
-        return True
-    # Sulfur can be a weak donor in some cases
-    if latom_element == "S":
-        return True
+    # If RDKit atom object is available, check hydrogen count
+    if latom is not None:
+        try:
+            if latom.GetTotalNumHs() > 0:
+                return latom.GetAtomicNum() in (7, 8, 16)  # N, O, S with H
+            return False
+        except Exception:
+            pass
+
+    # Fallback: check typical donor patterns by atom name
+    e = latom_element.upper()
+    n = latom_name.upper()
+
+    # Nitrogen donors: must have H attached
+    if e == 'N':
+        # Typical donor nitrogen names in PDB
+        if any(x in n for x in ['NH', 'NE', 'NZ', 'ND', 'NG', 'N1', 'N2', 'N3', 'N4', 'N6']):
+            return True
+        # Negative: aromatic/imine nitrogen (no H)
+        if any(x in n for x in ['NA', 'NB', 'NC', 'ND2']):
+            return False
+        # Ambiguous: assume donor for N with H likely
+        return True  # Conservative
+
+    # Oxygen donors: OH, water
+    if e == 'O':
+        if 'OH' in n or 'OW' in n:
+            return True
+        return False  # Most oxygens are acceptors, not donors
+
+    # Sulfur donors: SH
+    if e == 'S':
+        if 'SH' in n or 'SG' in n:
+            return True
+        return False
+
     return False
 
 
-def _p_is_acceptor(patom_name: str, patom_element: str) -> bool:
+def _p_is_acceptor(patom_element: str, patom_name: str) -> bool:
     """Check if a protein atom is a hydrogen bond acceptor.
 
     Args:
-        patom_name: Atom name of the protein atom.
         patom_element: Element symbol of the protein atom.
+        patom_name: Atom name of the protein atom.
 
     Returns:
         True if the atom can accept a hydrogen bond.
@@ -259,12 +294,12 @@ def _p_is_acceptor(patom_name: str, patom_element: str) -> bool:
     return False
 
 
-def _p_is_donor(patom_name: str, patom_element: str) -> bool:
+def _p_is_donor(patom_element: str, patom_name: str) -> bool:
     """Check if a protein atom is a hydrogen bond donor.
 
     Args:
-        patom_name: Atom name of the protein atom.
         patom_element: Element symbol of the protein atom.
+        patom_name: Atom name of the protein atom.
 
     Returns:
         True if the atom can donate a hydrogen bond.
@@ -567,11 +602,24 @@ def dock_ligand_vina(
         v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses)
 
         energies = v.energies()
-        return {
+        result = {
             "best_energy": energies[0][0] if len(energies) > 0 else None,
             "all_energies": [e[0] for e in energies],
             "n_poses": len(energies),
         }
+
+        # Chain ProLIF interaction fingerprint after successful docking
+        if result["best_energy"] is not None:
+            try:
+                from .prolif_integration import compute_interaction_fingerprint_from_mols
+                # Compute IFP from docked pose
+                docked_pose_sdf = v.write_pose(format='sdf')
+                ifp = compute_interaction_fingerprint_from_mols(receptor_pdbqt, docked_pose_sdf)
+                result["interaction_fingerprint"] = ifp
+            except (ImportError, Exception):
+                pass  # ProLIF not available
+
+        return result
     except Exception as e:
         return {"best_energy": None, "error": str(e)}
 
@@ -947,7 +995,7 @@ def _extract_pharmacophore_features(
             # Bug fix: use _l_is_donor and _p_is_acceptor with correct signatures
             if dist <= HBOND_DISTANCE_CUTOFF:
                 # Ligand donor → Protein acceptor
-                if _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_name, patom_element):
+                if _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_element, patom_name):
                     features.append(PharmacophoreFeature(
                         feature_type="hbond",
                         residue_name=resname,
@@ -958,7 +1006,7 @@ def _extract_pharmacophore_features(
                         score=SCORING_WEIGHTS["hbond"] * (1.0 - dist / HBOND_DISTANCE_CUTOFF),
                     ))
                 # Protein donor → Ligand acceptor
-                if _p_is_donor(patom_name, patom_element) and _l_is_acceptor(latom_element, latom_name):
+                if _p_is_donor(patom_element, patom_name) and _l_is_acceptor(latom_element, latom_name):
                     features.append(PharmacophoreFeature(
                         feature_type="hbond",
                         residue_name=resname,
@@ -1145,16 +1193,15 @@ def decompose_per_residue_energy(
 
             # Hydrogen bond energy (distance-dependent)
             if dist <= HBOND_DISTANCE_CUTOFF:
-                # Bug fix: use correct function names and argument order
-                # _l_is_donor(latom_element, latom_name) instead of l_is_donor(patom, latom)
-                # _p_is_acceptor(patom_name, patom_element) instead of p_is_acceptor(patom)
-                if _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_name, patom_element):
+                # Bug fix: use (element, name) argument order consistently
+                # _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_element, patom_name)
+                if _l_is_donor(latom_element, latom_name) and _p_is_acceptor(patom_element, patom_name):
                     energy = _hbond_energy(dist)
                     energy_map[res_key]["hbond"] += energy
                     if "hbond_donor" not in features:
                         features.append("hbond_donor")
 
-                if _p_is_donor(patom_name, patom_element) and _l_is_acceptor(latom_element, latom_name):
+                if _p_is_donor(patom_element, patom_name) and _l_is_acceptor(latom_element, latom_name):
                     energy = _hbond_energy(dist)
                     energy_map[res_key]["hbond"] += energy
                     if "hbond_acceptor" not in features:

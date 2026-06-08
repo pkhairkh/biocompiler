@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import math
-import random
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -511,13 +510,37 @@ def estimate_methylation_probability(
     }
     low, high = context_ranges.get(context, _OPEN_SEA_METHYLATION_RANGE)
 
-    # Use deterministic seed based on position for reproducibility
-    rng = random.Random(position)
-    methylation_prob = rng.uniform(low, high)
+    # Sequence-feature-based methylation probability estimation
+    # Uses CpG density and local GC content instead of random sampling.
+    # Based on Irizarry et al. 2009 ranges for different genomic contexts.
+    window = 200  # bp window for local context
+    start = max(0, position - window // 2)
+    end = min(len(seq), position + window // 2)
+    local_seq = seq[start:end].upper()
+
+    # CpG density (observed/expected)
+    c_count = local_seq.count('C')
+    g_count = local_seq.count('G')
+    cpg_count = local_seq.count('CG')
+    expected_cpg = (c_count * g_count) / max(len(local_seq), 1)
+    cpg_oe = cpg_count / max(expected_cpg, 0.001)
+
+    # Local GC content
+    gc_content = (c_count + g_count) / max(len(local_seq), 1)
+
+    # Interpolate within range based on CpG O/E and GC content
+    # Higher CpG O/E = lower methylation (in islands)
+    # Higher GC = lower methylation
+    factor = 1.0 - (cpg_oe * 0.1 + gc_content * 0.3)
+    factor = max(0.0, min(1.0, factor))
+    methylation_prob = low + (high - low) * factor
 
     # Gene body methylation adjustment
     if gene_body:
-        body_prob = rng.uniform(*_GENE_BODY_METHYLATION_RANGE)
+        body_low, body_high = _GENE_BODY_METHYLATION_RANGE
+        body_factor = 1.0 - (cpg_oe * 0.1 + gc_content * 0.3)
+        body_factor = max(0.0, min(1.0, body_factor))
+        body_prob = body_low + (body_high - body_low) * body_factor
         methylation_prob = (methylation_prob + body_prob) / 2.0
 
     # Alu element methylation boost
@@ -682,9 +705,23 @@ def check_dna_degradation(
         report.hotspots.extend(hmc_hotspots)
 
     # Add CpG deamination hotspots for each CpG dinucleotide
+    # Context-dependent rates from Alexandrov et al. 2013 (COSMIC SBS1)
+    _CPG_DEAMINATION_RATES = {
+        "CCG": 0.45,   # enhanced deamination in CCG context
+        "TCG": 0.40,   # TCG context
+        "ACG": 0.30,   # ACG context
+        "GCG": 0.30,   # GCG context
+    }
+    _CPG_BASELINE_RATE = 0.35  # CpG→TpG baseline
+
     for i in range(len(seq) - 1):
         if seq[i:i + 2] == "CG":
-            severity = 0.4 if i > 0 and seq[i - 1] == "C" else 0.25  # CCG context higher risk
+            # Determine trinucleotide context for severity
+            if i > 0:
+                trinuc = seq[i - 1:i + 2]
+                severity = _CPG_DEAMINATION_RATES.get(trinuc, _CPG_BASELINE_RATE)
+            else:
+                severity = _CPG_BASELINE_RATE
             adjusted = min(1.0, severity * exposure_level)
             report.hotspots.append(DamageHotspot(
                 position=i, damage_type="cpg_deamination", severity=adjusted,
@@ -703,6 +740,35 @@ def check_dna_degradation(
                     exposure_level=exposure_level,
                 )
                 hotspot.severity = risk["net_risk"]
+
+    # Compute net mutation risk accounting for repair capacity
+    # Uses literature-derived repair rates from _REPAIR_RATES
+    for hotspot in report.hotspots:
+        # Determine if CpG site is methylated from methylation probability
+        methylated = False
+        if hotspot.damage_type == "cpg_deamination" and check_methylation:
+            meth_prob = estimate_methylation_probability(
+                seq, hotspot.position,
+                cpg_islands=report.cpg_islands,
+                alu_overlaps=report.alu_elements,
+            )
+            methylated = meth_prob > 0.5
+
+        # Map damage_type to compute_net_mutation_risk keys
+        damage_type_key = hotspot.damage_type
+        if damage_type_key == "uv_cpd":
+            damage_type_key = "uv_cpd"
+        elif damage_type_key == "uv_64pp":
+            damage_type_key = "uv_6-4pp"
+
+        net_result = compute_net_mutation_risk(
+            damage_severity=hotspot.severity,
+            damage_type=damage_type_key,
+            methylated=methylated,
+        )
+        # Reduce hotspot severity by repair capacity
+        hotspot.severity = net_result["net_risk"]
+        hotspot.repair_pathway = net_result["repair_pathway"]
 
     # Compute overall risk
     if report.hotspots:

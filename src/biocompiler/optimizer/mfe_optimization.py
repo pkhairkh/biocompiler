@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 import math
 import random
-import warnings
+
 from typing import Any
 
 from ..shared.constants import CODON_TABLE, AA_TO_CODONS
@@ -78,7 +78,7 @@ DEFAULT_5PRIME_WINDOW: int = 50
 def optimize_mfe(
     protein_seq: str,
     organism: str = "human",
-    scope: str = "5prime",
+    scope: str = "full",
     lambda_cai: float = 3.0,
     seed: int = 42,
     window_size: int = 200,
@@ -92,13 +92,13 @@ def optimize_mfe(
     This is the main entry point for MFE optimization.  It supports two
     scopes:
 
-    - ``"5prime"`` (default, backward compatible): Optimises only the
-      first ~50 nt of the coding sequence using a greedy codon-selection
-      strategy.  This is the legacy approach that focuses on the ribosome
-      binding site / start codon region where secondary structure most
-      strongly inhibits translation initiation.
+    - ``"5prime"``: Optimises only the first ~50 nt of the coding
+      sequence using a greedy codon-selection strategy.  This is the
+      legacy approach that focuses on the ribosome binding site / start
+      codon region where secondary structure most strongly inhibits
+      translation initiation.
 
-    - ``"full"``: Applies simulated annealing with a ViennaRNA oracle
+    - ``"full"`` (default): Applies simulated annealing with a ViennaRNA oracle
       across the entire gene, jointly optimising MFE and CAI.  This
       replaces the greedy per-position approach with a globally-aware
       optimizer.  For long genes, uses a windowed approach (200 nt
@@ -109,8 +109,8 @@ def optimize_mfe(
         organism: Target organism for codon usage (e.g. ``"human"``,
             ``"e_coli"``).  All names accepted by
             :func:`~biocompiler.organisms.resolve_organism` are valid.
-        scope: ``"5prime"`` for legacy 5'-region-only optimisation, or
-            ``"full"`` for whole-gene simulated-annealing optimisation.
+        scope: ``"full"`` for whole-gene simulated-annealing optimisation
+            (default), or ``"5prime"`` for legacy 5'-region-only optimisation.
         lambda_cai: CAI weight parameter (0 = pure MFE, higher = more
             CAI weight).  Only used when ``scope="full"``.
         seed: Random seed for reproducibility.  Only used when
@@ -262,15 +262,16 @@ def _compute_mfe_with_fallback(dna_seq: str) -> float:
     except ImportError:
         pass
 
-    # GC heuristic fallback — emit deprecation warning
-    warnings.warn(
-        "GC-content heuristic for MFE is highly inaccurate. "
-        "Install ViennaRNA (pip install ViennaRNA) for accurate MFE computation.",
-        UserWarning,
-        stacklevel=3,
+    # Improved heuristic fallback based on average NN pair energies
+    # (-1.75 kcal/mol per GC-involving stack; SantaLucia 1998 / Turner 2004).
+    # This is an approximation — install ViennaRNA for accurate MFE.
+    logger.warning(
+        "ViennaRNA not available; MFE is an approximation using "
+        "average nearest-neighbor energies. Install ViennaRNA "
+        "(pip install ViennaRNA) for accurate MFE computation."
     )
-    gc = sum(1 for b in dna_seq.upper() if b in "GC") / max(1, len(dna_seq))
-    return -0.4 * gc * (len(dna_seq) / 2)
+    gc_fraction = sum(1 for b in dna_seq.upper() if b in "GC") / max(1, len(dna_seq))
+    return -1.75 * gc_fraction * len(dna_seq) / 2
 
 
 # ══════════════════════════════════════════════════════════════
@@ -454,8 +455,13 @@ def optimize_mfe_simulated_annealing(
             fc = RNA.fold_compound(rna_seq)
             mfe = fc.mfe()[1]
         except ImportError:
-            gc = sum(1 for b in dna_seq.upper() if b in "GC") / max(1, len(dna_seq))
-            mfe = -0.4 * gc * (len(dna_seq) / 2)
+            # Improved heuristic: -1.75 kcal/mol per GC-involving stack
+            gc_fraction = sum(1 for b in dna_seq.upper() if b in "GC") / max(1, len(dna_seq))
+            mfe = -1.75 * gc_fraction * len(dna_seq) / 2
+            logger.warning(
+                "ViennaRNA not available; SA scoring uses approximate MFE "
+                "(average NN pair energies). Install ViennaRNA for accuracy."
+            )
 
         cai = _compute_cai_local(dna_seq, organism)
         cai_penalty = -math.log(max(cai, 1e-10)) * lambda_cai if cai > 0 else 0
@@ -533,14 +539,14 @@ def optimize_mfe_simulated_annealing(
         rna_seq = best_seq.upper().replace("T", "U")
         final_mfe = RNA.fold(rna_seq)[1]
     except ImportError:
-        warnings.warn(
-            "GC-content heuristic for MFE is highly inaccurate. "
-            "Install ViennaRNA (pip install ViennaRNA) for accurate MFE computation.",
-            UserWarning,
-            stacklevel=2,
+        # Improved heuristic: -1.75 kcal/mol per GC-involving stack
+        logger.warning(
+            "ViennaRNA not available; final MFE is an approximation using "
+            "average nearest-neighbor energies. Install ViennaRNA "
+            "(pip install ViennaRNA) for accurate MFE computation."
         )
-        gc = sum(1 for b in best_seq.upper() if b in "GC") / max(1, len(best_seq))
-        final_mfe = -0.4 * gc * (len(best_seq) / 2)
+        gc_fraction = sum(1 for b in best_seq.upper() if b in "GC") / max(1, len(best_seq))
+        final_mfe = -1.75 * gc_fraction * len(best_seq) / 2
 
     final_cai = _compute_cai_local(best_seq, organism)
 
