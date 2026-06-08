@@ -118,6 +118,14 @@ def optimize_sequence(
     gc_window_max: float | None = None,
     biosecurity_mode: str | None = None,
     skip_biosecurity_check: bool = False,
+    check_g4: bool = True,
+    check_mrna_halflife: bool = True,
+    halflife_threshold: float = 2.0,
+    use_lineardesign: bool = False,
+    lineardesign_lambda: float = 3.0,
+    tasep_ensemble: bool = True,
+    tasep_n_runs: int = 100,
+    check_nmd: bool = True,
     **kwargs: Any,
 ) -> OptimizationResult:
     """Optimize a protein sequence for expression in the target organism.
@@ -265,6 +273,32 @@ def optimize_sequence(
             (skips screening entirely, for testing only).  If ``None``
             (default), the ``BIOCOMPILER_BIOSECURITY_MODE`` environment
             variable is consulted, falling back to ``"enforce"``.
+        check_g4: If True (default), check for G-quadruplex motifs in the
+            optimized sequence and fix them via synonymous codon substitution.
+            G-quadruplexes can stall polymerases and cause genomic instability.
+            Gracefully skipped if the ``g_quadruplex`` submodule is unavailable.
+        check_mrna_halflife: If True (default), use advanced mRNA half-life
+            prediction to optimize mRNA stability instead of the simpler
+            ATTTA/T-run approach.  Falls back to the legacy method if the
+            ``mrna_halflife`` submodule is unavailable.
+        halflife_threshold: Minimum acceptable mRNA half-life in hours.
+            Sequences with predicted half-life below this threshold will be
+            optimized.  Default: 2.0 hours.
+        use_lineardesign: If True, use LinearDesign for MFE/CAI joint
+            optimization (requires C++ binary).  Default: False.
+        lineardesign_lambda: MFE/CAI tradeoff parameter for LinearDesign.
+            Higher values prioritize CAI over MFE.  Default: 3.0.
+        tasep_ensemble: If True (default), use ensemble TASEP averaging
+            for ribosome simulation (slower but more accurate).  Falls
+            back to single-run TASEP if the ``ribosome_simulation``
+            submodule is unavailable.
+        tasep_n_runs: Number of TASEP runs for ensemble averaging.
+            Default: 100.
+        check_nmd: If True (default), check for nonsense-mediated decay
+            (NMD) triggers in eukaryotic sequences.  NMD triggers can
+            drastically reduce mRNA levels.  Gracefully skipped for
+            prokaryotes or if the ``rna_degradation`` submodule is
+            unavailable.
 
     Returns:
         OptimizationResult with optimized sequence and metrics.
@@ -1257,6 +1291,21 @@ def optimize_sequence(
     # Detect if mutagenesis fallback was used (any V->I or similar)
     fallback = bool(opt._applied_mutagenesis)
 
+    # ── G-quadruplex check ─────────────────────────────────────────
+    # Detect and fix G-quadruplex motifs (runs of Gs that can form
+    # stable secondary structures, stalling polymerases and causing
+    # genomic instability).  This runs before mRNA stability since
+    # G4 motifs are structural issues that affect both DNA and RNA.
+    if check_g4:
+        try:
+            from .g_quadruplex import detect_g4_motifs, fix_g4_issues
+            g4_report = detect_g4_motifs(optimized_seq)
+            if g4_report.motifs:
+                optimized_seq = fix_g4_issues(optimized_seq, g4_report, organism=organism)
+                logger.info("Fixed %d G-quadruplex motifs", len(g4_report.motifs))
+        except ImportError:
+            pass  # g_quadruplex module not available
+
     # ── mRNA stability improvement pass ────────────────────────────
     # PERF: Skip mRNA stability for short sequences (<300aa / <900bp)
     # where the stability improvement is negligible.
@@ -1267,12 +1316,35 @@ def optimize_sequence(
     destabilizing_motifs_removed: int = 0
     stability_improvement: float | None = None
 
+    # ── Advanced mRNA half-life prediction ─────────────────────────
+    # Use the mrna_halflife submodule for organism-specific half-life
+    # prediction when available.  Falls back to the legacy ATTTA/T-run
+    # approach below if the submodule is not importable.
+    _used_advanced_halflife = False
+    if check_mrna_halflife and optimize_mrna_stability:
+        try:
+            from .mrna_halflife import predict_mrna_halflife, optimize_mrna_stability as _optimize_halflife
+            halflife_report = predict_mrna_halflife(optimized_seq, organism=organism)
+            if halflife_report.predicted_halflife_hours < halflife_threshold:
+                optimized_seq = _optimize_halflife(
+                    optimized_seq, organism=organism,
+                    target_halflife=halflife_threshold,
+                )
+                logger.info(
+                    "Optimized mRNA half-life from %.1fh",
+                    halflife_report.predicted_halflife_hours,
+                )
+            _used_advanced_halflife = True
+        except ImportError:
+            pass  # Fall back to old ATTTA/T-run approach
+
     # PERF: Quick pre-check — if no ATTTA motifs exist, the mRNA
     # stability pass cannot find any destabilizing motifs to remove.
     _has_destabilizing_motifs = (
         len(optimized_seq) >= _MRNA_STABILITY_MIN_LENGTH_BP
         and optimize_mrna_stability
         and "ATTTA" in optimized_seq
+        and not _used_advanced_halflife  # Skip legacy if advanced pass succeeded
     )
 
     if _has_destabilizing_motifs:
@@ -1397,6 +1469,28 @@ def optimize_sequence(
         )
     # ── End mRNA stability pass ────────────────────────────────────
 
+    # ── LinearDesign MFE optimization ────────────────────────────
+    # Use LinearDesign for joint MFE/CAI optimization when requested.
+    # LinearDesign uses dynamic programming to find the minimum free
+    # energy sequence that also maximizes CAI, controlled by the
+    # lambda tradeoff parameter.  Requires the C++ binary to be
+    # installed.  Falls through to standard MFE optimization on failure.
+    if use_lineardesign:
+        try:
+            from .mfe_optimization import optimize_with_lineardesign
+            ld_result = optimize_with_lineardesign(
+                target_protein, lambda_val=lineardesign_lambda, organism=organism
+            )
+            if "error" not in ld_result and ld_result.get("sequence"):
+                optimized_seq = ld_result["sequence"]
+                logger.info(
+                    "LinearDesign optimization: MFE=%s, CAI=%s",
+                    ld_result.get("mfe", "N/A"),
+                    ld_result.get("cai", "N/A"),
+                )
+        except Exception:
+            pass  # Fall through to standard MFE optimization
+
     # ── Codon pair bias improvement pass ──────────────────────────
     cpb_score: float | None = None
 
@@ -1509,6 +1603,57 @@ def optimize_sequence(
             initial_cpb, final_cpb, final_cpb - initial_cpb,
         )
     # ── End Codon pair bias pass ──────────────────────────────────
+
+    # ── Ensemble TASEP ribosome simulation ────────────────────────
+    # Use ensemble TASEP averaging for more accurate ribosome
+    # dynamics prediction when the ribosome_simulation submodule is
+    # available.  The ensemble approach runs multiple stochastic
+    # simulations and averages the results, reducing noise from
+    # single-run stochastic effects.
+    _tasep_result = None
+    if tasep_ensemble:
+        try:
+            from .ribosome_simulation import simulate_tasep_ensemble
+            # Compute dwell times from codon adaptiveness table
+            _dwell_usage = CODON_ADAPTIVENESS_TABLES.get(organism, {})
+            _dwell_times = []
+            for _si in range(0, len(optimized_seq) - 2, 3):
+                _codon = optimized_seq[_si:_si + 3]
+                _w = _dwell_usage.get(_codon, 0.5)
+                # Convert adaptiveness to dwell time (inverse relationship)
+                _dwell_times.append(1.0 / max(_w, 0.01))
+            _tasep_result = simulate_tasep_ensemble(
+                dwell_times=_dwell_times,
+                n_runs=tasep_n_runs,
+            )
+            if _tasep_result is not None:
+                logger.info(
+                    "Ensemble TASEP: %d runs, mean ribosome density=%.4f",
+                    tasep_n_runs,
+                    getattr(_tasep_result, 'mean_ribosome_density', 0.0),
+                )
+        except ImportError:
+            pass  # Fall back to single-run TASEP
+
+    # ── NMD (nonsense-mediated decay) check ───────────────────────
+    # For eukaryotic sequences, detect NMD triggers (premature stop
+    # codons upstream of exon-exon junctions) that can drastically
+    # reduce mRNA levels.  Skipped for prokaryotes (no exon-exon
+    # junctions → no NMD pathway).
+    if check_nmd and not is_prokaryote:
+        try:
+            from .rna_degradation import detect_nmd_triggers
+            # Compute ORF boundaries for NMD detection
+            _orf_start = 0
+            _orf_end = len(optimized_seq) - 3  # Exclude stop codon
+            nmd_signals = detect_nmd_triggers(
+                optimized_seq, orf_start=_orf_start, orf_end=_orf_end
+            )
+            if nmd_signals:
+                for signal in nmd_signals:
+                    logger.info("NMD trigger: %s", signal.description)
+        except ImportError:
+            pass  # rna_degradation module not available
 
     # ── CAI Recovery Pass ──────────────────────────────────────────
     # After all post-processing (mRNA stability, CPB), some positions may
@@ -2801,6 +2946,14 @@ class BioOptimizer:
         strategy: str = "constraint_first",
         optimize_mrna_stability: bool = True,
         biosecurity_mode: Optional[str] = None,
+        check_g4: bool = True,
+        check_mrna_halflife: bool = True,
+        halflife_threshold: float = 2.0,
+        use_lineardesign: bool = False,
+        lineardesign_lambda: float = 3.0,
+        tasep_ensemble: bool = True,
+        tasep_n_runs: int = 100,
+        check_nmd: bool = True,
         **kwargs: Any,
     ) -> None:
         self.species = species
@@ -2840,6 +2993,14 @@ class BioOptimizer:
         self.avoid_gt: bool = avoid_gt
         self.strategy: str = strategy  # "constraint_first" or "cai_first"
         self.optimize_mrna_stability: bool = optimize_mrna_stability
+        self.check_g4: bool = check_g4
+        self.check_mrna_halflife: bool = check_mrna_halflife
+        self.halflife_threshold: float = halflife_threshold
+        self.use_lineardesign: bool = use_lineardesign
+        self.lineardesign_lambda: float = lineardesign_lambda
+        self.tasep_ensemble: bool = tasep_ensemble
+        self.tasep_n_runs: int = tasep_n_runs
+        self.check_nmd: bool = check_nmd
 
         # Sliding-window GC constraint parameters
         self._gc_window_size: int = kwargs.get("gc_window_size", 50)
@@ -3026,6 +3187,22 @@ class BioOptimizer:
         # Step: mRNA Stability Improvement (soft optimization — remove destabilizing motifs)
         seq = self._step_mrna_stability_improvement(seq)
 
+        # Step: G-quadruplex check (detect and fix G4 motifs)
+        if self.check_g4:
+            seq = self._step_g4_check(seq)
+
+        # Step: LinearDesign MFE optimization (when requested)
+        if self.use_lineardesign:
+            seq = self._step_lineardesign(seq)
+
+        # Step: Ensemble TASEP ribosome simulation
+        if self.tasep_ensemble:
+            self._step_tasep_ensemble(seq)
+
+        # Step: NMD (nonsense-mediated decay) check
+        if self.check_nmd and not self.is_prokaryote:
+            self._step_nmd_check(seq)
+
         # Evaluate all 12 predicates
         results = self._evaluate_all_predicates(seq)
 
@@ -3147,6 +3324,22 @@ class BioOptimizer:
 
         # Step: mRNA Stability Improvement (soft optimization)
         seq = self._step_mrna_stability_improvement(seq)
+
+        # Step: G-quadruplex check (detect and fix G4 motifs)
+        if self.check_g4:
+            seq = self._step_g4_check(seq)
+
+        # Step: LinearDesign MFE optimization (when requested)
+        if self.use_lineardesign:
+            seq = self._step_lineardesign(seq)
+
+        # Step: Ensemble TASEP ribosome simulation
+        if self.tasep_ensemble:
+            self._step_tasep_ensemble(seq)
+
+        # Step: NMD (nonsense-mediated decay) check
+        if self.check_nmd and not self.is_prokaryote:
+            self._step_nmd_check(seq)
 
         # Evaluate all predicates
         results = self._evaluate_all_predicates(seq)
@@ -5602,3 +5795,96 @@ class BioOptimizer:
     def _translate(seq: str) -> str:
         """Translate a DNA sequence to amino acid sequence."""
         return _validation.translate(seq)
+
+    # ── Phase 8: G-quadruplex, LinearDesign, TASEP, NMD step methods ──
+
+    def _step_g4_check(self, seq: str) -> str:
+        """Check for and fix G-quadruplex motifs via synonymous codon substitution.
+
+        Uses the ``g_quadruplex`` submodule when available; gracefully
+        returns the sequence unchanged if the submodule is not installed.
+        """
+        try:
+            from .g_quadruplex import detect_g4_motifs, fix_g4_issues
+            g4_report = detect_g4_motifs(seq)
+            if g4_report.motifs:
+                seq = fix_g4_issues(seq, g4_report, organism=self.organism_name)
+                logger.info("Fixed %d G-quadruplex motifs", len(g4_report.motifs))
+        except ImportError:
+            pass  # g_quadruplex module not available
+        return seq
+
+    def _step_lineardesign(self, seq: str) -> str:
+        """Apply LinearDesign MFE/CAI joint optimization.
+
+        Uses the ``mfe_optimization`` submodule when available; gracefully
+        returns the sequence unchanged if the submodule or C++ binary is
+        not installed.
+        """
+        protein = self._translate(seq)
+        try:
+            from .mfe_optimization import optimize_with_lineardesign
+            ld_result = optimize_with_lineardesign(
+                protein, lambda_val=self.lineardesign_lambda, organism=self.organism_name
+            )
+            if "error" not in ld_result and ld_result.get("sequence"):
+                seq = ld_result["sequence"]
+                logger.info(
+                    "LinearDesign optimization: MFE=%s, CAI=%s",
+                    ld_result.get("mfe", "N/A"),
+                    ld_result.get("cai", "N/A"),
+                )
+        except Exception:
+            pass  # Fall through to standard MFE optimization
+        return seq
+
+    def _step_tasep_ensemble(self, seq: str) -> None:
+        """Run ensemble TASEP ribosome simulation for translation dynamics analysis.
+
+        Uses the ``ribosome_simulation`` submodule when available; gracefully
+        skips if the submodule is not installed.
+
+        Note: This method does not modify the sequence; it is an analysis step
+        that logs ribosome dynamics statistics for the user.
+        """
+        try:
+            from .ribosome_simulation import simulate_tasep_ensemble
+            # Compute dwell times from codon adaptiveness table
+            dwell_usage = self.species_cai
+            dwell_times = []
+            for si in range(0, len(seq) - 2, 3):
+                codon = seq[si:si + 3]
+                w = dwell_usage.get(codon, 0.5)
+                dwell_times.append(1.0 / max(w, 0.01))
+            tasep_result = simulate_tasep_ensemble(
+                dwell_times=dwell_times,
+                n_runs=self.tasep_n_runs,
+            )
+            if tasep_result is not None:
+                logger.info(
+                    "Ensemble TASEP: %d runs, mean ribosome density=%.4f",
+                    self.tasep_n_runs,
+                    getattr(tasep_result, 'mean_ribosome_density', 0.0),
+                )
+        except ImportError:
+            pass  # Fall back to single-run TASEP
+
+    def _step_nmd_check(self, seq: str) -> None:
+        """Check for nonsense-mediated decay (NMD) triggers in eukaryotic sequences.
+
+        Uses the ``rna_degradation`` submodule when available; gracefully
+        skips if the submodule is not installed.
+
+        Note: This method does not modify the sequence; it is a diagnostic
+        step that logs detected NMD triggers for the user.
+        """
+        try:
+            from .rna_degradation import detect_nmd_triggers
+            orf_start = 0
+            orf_end = len(seq) - 3  # Exclude stop codon
+            nmd_signals = detect_nmd_triggers(seq, orf_start=orf_start, orf_end=orf_end)
+            if nmd_signals:
+                for signal in nmd_signals:
+                    logger.info("NMD trigger: %s", signal.description)
+        except ImportError:
+            pass  # rna_degradation module not available

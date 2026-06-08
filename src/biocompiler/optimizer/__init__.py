@@ -5,11 +5,19 @@ This package decomposes the former monolithic optimization.py into
 focused submodules while maintaining full backward compatibility.
 
 Submodules:
-    cai         — CAI computation and batch scoring
-    constraints — Restriction site removal, GT/AG helpers, back-translation
-    greedy      — Greedy optimizer loop and splice donor scoring
-    pipeline    — BioOptimizer class, optimize_sequence(), batch_optimize()
-    utils       — ConvergenceTracker, OptimizationResult, protein_to_aa_list()
+    cai                  — CAI computation and batch scoring
+    constraints          — Restriction site removal, GT/AG helpers, back-translation
+    greedy               — Greedy optimizer loop and splice donor scoring
+    mfe_optimization     — MFE minimization (greedy 5', full-gene SA, LinearDesign, IPknot)
+    pipeline             — BioOptimizer class, optimize_sequence(), batch_optimize()
+    ribosome_simulation  — TASEP simulation, RQC/NGD detection, mRNA structure modulation
+    nucleosome           — Nucleosome positioning prediction (Segal PSSM, NuPoP, Teif-Percus, Enformer)
+    dna_shape            — DNA shape prediction (MGW, HelT, ProT, Roll) and damage susceptibility (Olson 1998, dnacurve, Deep DNAshape)
+    accessibility        — mRNA accessibility (unpaired probability) via ViennaRNA partition function
+    chromatin_context    — Chromatin state prediction (euchromatin/heterochromatin, DNase, repair accessibility, Sei, Enformer)
+    eukaryotic_decay     — Eukaryotic mRNA decay pathway modeling (XRN1, CCR4-NOT, DCP1/DCP2, NMD, NGD, NSD)
+    epitranscriptomics   — Epitranscriptomic modification site detection (m6A, m5C, Ψ, m1A, 2'-O-Me, m6Am)
+    utils                — ConvergenceTracker, OptimizationResult, protein_to_aa_list()
 """
 
 # Re-export all public symbols for backward compatibility.
@@ -150,6 +158,69 @@ __all__ = [
     "_greedy_optimize",
     "_expand_iupac_site",
     "_check_predicates_via_type_system",
+    # Ribosome simulation (TASEP, RQC/NGD)
+    "simulate_tasep_gillespie",
+    "simulate_tasep_ensemble",
+    "detect_rqc_signals",
+    "compute_mrna_structure_elongation_mod",
+    "predict_secondary_structure_modern",
+    # MFE optimization (LinearDesign, SA, pseudoknots)
+    "optimize_with_lineardesign",
+    "optimize_mfe_simulated_annealing",
+    "detect_pseudoknots",
+    # RNA degradation (NMD, decay, epitranscriptomics)
+    "detect_nmd_triggers",
+    "detect_eukaryotic_decay_signals",
+    "detect_epitranscriptomic_marks",
+    "compute_mrna_accessibility",
+    # DNA damage (mutation risk, COSMIC)
+    "compute_net_mutation_risk",
+    "compute_cosmic_context_weights",
+    "infer_gene_strand",
+    # Nucleosome positioning (Segal, NuPoP, Enformer)
+    "score_segal_pssm",
+    "predict_nucleosome_nupop",
+    "predict_occupancy_with_exclusion",
+    "predict_histone_marks_enformer",
+    # Chromatin context (euchromatin/heterochromatin, DNase, repair accessibility, Sei, Enformer)
+    "predict_chromatin_state",
+    "compute_gc_ishchz_score",
+    "compute_cpg_density_score",
+    "predict_dnase_accessibility",
+    "compute_repair_accessibility",
+    "predict_chromatin_sei",
+    "predict_chromatin_enformer",
+    # Ligand binding v2 (SMILES, 3D conformer, Vina docking)
+    "parse_smiles_features_rdkit",
+    "generate_3d_conformer",
+    "dock_ligand_vina",
+    "compute_interaction_fingerprint",
+    # Eukaryotic decay pathways (XRN1, CCR4-NOT, DCP1/DCP2, NMD, NGD, NSD)
+    "DecayPathway",
+    "DecaySignal",
+    "predict_decay_rate",
+    "detect_decay_signals",
+    "optimize_decay_resistance",
+    "estimate_halflife",
+    # mRNA accessibility (ViennaRNA partition function, GC heuristic fallback)
+    "compute_accessibility",
+    "compute_accessibility_windows",
+    "compute_codon_accessibility",
+    "compute_5prime_accessibility",
+    "compute_mirna_site_accessibility",
+    "adjust_severity_for_accessibility",
+    "AccessibilityWindowResult",
+    "HAS_VIENNARNA",
+    # DNA shape prediction (MGW, HelT, ProT, Roll, damage susceptibility)
+    "DNAShapeProfile",
+    "compute_minor_groove_width",
+    "compute_helix_twist",
+    "compute_propeller_twist",
+    "compute_roll",
+    "compute_dna_shape_profile",
+    "compute_damage_susceptibility_from_shape",
+    "compute_shape_dnacurve",
+    "compute_shape_deep_dnashape",
 ]
 
 # ── Re-export moved submodules for convenient access ────────────────────
@@ -261,3 +332,154 @@ from .performance import (  # noqa: E402
     should_skip_utr_suggestions,
     FastPathConfig,
 )
+
+# ── Phase 8: New submodule exports ────────────────────────────────────
+# These imports use try/except to allow graceful degradation when the
+# new Phase 8 submodules are not yet installed.
+
+try:
+    from .rna_degradation import (  # noqa: E402
+        detect_nmd_triggers,
+        detect_eukaryotic_decay_signals,
+        detect_epitranscriptomic_marks,
+        compute_mrna_accessibility,
+    )
+except ImportError:
+    pass
+
+try:
+    from .dna_damage import (  # noqa: E402
+        compute_net_mutation_risk,
+        compute_cosmic_context_weights,
+        infer_gene_strand,
+    )
+except ImportError:
+    pass
+
+try:
+    from .ligand_binding_v2 import (  # noqa: E402
+        parse_smiles_features_rdkit,
+        generate_3d_conformer,
+        dock_ligand_vina,
+        compute_interaction_fingerprint,
+    )
+except ImportError:
+    pass
+
+from .ribosome_simulation import (  # noqa: E402
+    simulate_tasep_gillespie,
+    simulate_tasep_ensemble,
+    detect_rqc_signals,
+    compute_mrna_structure_elongation_mod,
+    predict_secondary_structure_modern,
+)
+
+from .mfe_optimization import (  # noqa: E402
+    optimize_mfe,
+    optimize_mfe_simulated_annealing,
+    optimize_with_lineardesign,
+    detect_pseudoknots,
+    DEFAULT_5PRIME_WINDOW,
+)
+
+from .nucleosome import (  # noqa: E402
+    NUCLEOSOME_SIZE,
+    DEFAULT_STEP,
+    FINE_STEP,
+    DEFAULT_CHEMICAL_POTENTIAL,
+    HELICAL_PERIOD,
+    DINUCLEOTIDES,
+    NUPOP_SPECIES,
+    score_segal_pssm,
+    predict_nucleosome_nupop,
+    predict_occupancy_with_exclusion,
+    predict_histone_marks_enformer,
+    predict_nucleosome_occupancy,
+    find_nucleosome_positions,
+)
+
+# ── COSMIC mutational signatures ──────────────────────────────────────
+try:
+    from .cosmic_signatures import (  # noqa: E402
+        SBS_SIGNATURES,
+        TRINUCLEOTIDE_CONTEXTS,
+        get_trinucleotide_context,
+        compute_signature_weight,
+        scan_signature_hotspots,
+        assign_signatures,
+        compute_damage_susceptibility_profile,
+        assign_signatures_sigprofiler,
+    )
+except ImportError:
+    pass
+
+try:
+    from .chromatin_context import (  # noqa: E402
+        predict_chromatin_state,
+        compute_gc_ishchz_score,
+        compute_cpg_density_score,
+        predict_dnase_accessibility,
+        compute_repair_accessibility,
+        predict_chromatin_sei,
+        predict_chromatin_enformer,
+    )
+except ImportError:
+    pass
+
+try:
+    from .epitranscriptomics import (  # noqa: E402
+        EpitranscriptomicSite,
+        detect_m6a_sites,
+        detect_m5c_sites,
+        detect_pseudouridine_sites,
+        detect_m1a_sites,
+        detect_2om_sites,
+        detect_m6am_sites,
+        detect_all_epitranscriptomic_marks,
+        assess_stability_impact,
+        get_modification_function,
+        MODIFICATION_FUNCTIONS,
+    )
+except ImportError:
+    pass
+
+try:
+    from .eukaryotic_decay import (  # noqa: E402
+        DecayPathway,
+        DecaySignal,
+        predict_decay_rate,
+        detect_decay_signals,
+        optimize_decay_resistance,
+        estimate_halflife,
+    )
+except ImportError:
+    pass
+
+try:
+    from .accessibility import (  # noqa: E402
+        compute_accessibility,
+        compute_accessibility_windows,
+        compute_codon_accessibility,
+        compute_5prime_accessibility,
+        compute_mirna_site_accessibility,
+        adjust_severity_for_accessibility,
+        AccessibilityWindowResult,
+        HAS_VIENNARNA,
+    )
+except ImportError:
+    pass
+
+try:
+    from .dna_shape import (  # noqa: E402
+        DNAShapeProfile,
+        compute_minor_groove_width,
+        compute_helix_twist,
+        compute_propeller_twist,
+        compute_roll,
+        compute_dna_shape_profile,
+        compute_damage_susceptibility_from_shape,
+        compute_shape_dnacurve,
+        compute_shape_deep_dnashape,
+    )
+except ImportError:
+    pass
