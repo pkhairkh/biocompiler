@@ -1,0 +1,14 @@
+# Example .pypirc for PyPI publishing
+# Copy to ~/.pypirc and fill in your token
+[distutils]
+index-servers = pypi testpypi
+
+[pypi]
+repository = https://upload.pypi.org/legacy/
+username = __token__
+password = pypi-YOUR-TOKEN-HERE
+
+[testpypi]
+repository = https://test.pypi.org/legacy/
+username = __token__
+password = pypi-YOUR-TEST-TOKEN-HERE

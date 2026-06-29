@@ -1,0 +1,1412 @@
+"""
+BioCompiler — Machine-Verified Gene Design  (v0.9.0-beta)
+
+A compiler framework for human protein synthesis using intermediate
+representations. Pipeline:
+
+  Scanner → NDFST Splicing → Translation → Type Check → Certificate → Verify
+
+All computation is DETERMINISTIC: same input always produces identical output.
+
+v1.0.0 highlights (BREAKING — CAI table unification):
+  - **CAI table unification**: Optimizer and evaluator now use the same
+    CODON_ADAPTIVENESS_TABLES. Previously the optimizer used SPECIES tables
+    which disagreed with evaluation tables, causing incorrect CAI values.
+  - **E. coli optimal codons corrected**: Five amino acids had incorrect
+    optimal codons in the per_thousand data (Phe, Ile, Tyr, His, Arg).
+  - **HybridOptimizer**: Greedy init + priority-based constraint satisfaction
+    + CAI hill climbing. 3-5× faster than legacy pipeline with higher CAI.
+  - **Organism name resolution**: Centralized resolve_organism() function.
+    Both ``species`` and ``organism`` parameters accepted everywhere.
+  - **Prokaryote fast path**: E. coli skips eukaryotic constraints (splice
+    sites, CpG islands), recovering ~0.3 CAI and 3× speed improvement.
+  - **Incremental constraint checking**: O(1) GC updates, 2-2000× faster
+    constraint re-checking after codon changes.
+  - **CAI-aware constraint resolution**: All resolution steps prefer
+    higher-CAI alternatives, minimizing CAI loss during constraint fixing.
+  - **CSP solvers fixed**: Both OR-Tools CP-SAT and Z3 SMT backends now
+    produce valid sequences with correct constraints.
+  - E. coli GFP benchmark: CAI 0.67→0.999, Time 20ms→2ms (10× faster)
+"""
+
+__version__ = "0.9.3"
+SAFETY_VERSION = "0.9.3"
+
+import logging
+import warnings
+
+# Suppress camsol.SolubilityResult deprecation warning on import;
+# the new canonical name is CamSolResult, but SolubilityResult is
+# kept as a backward-compatible alias (see below).
+warnings.filterwarnings(
+    "ignore",
+    message="camsol.SolubilityResult is deprecated",
+    category=DeprecationWarning,
+    module=r"biocompiler\.camsol",
+)
+
+logging.getLogger(__name__).addHandler(logging.NullHandler())
+_logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Core types & exceptions
+# ═══════════════════════════════════════════════════════════════════════
+
+from .shared.types import (
+    Verdict,
+    Token,
+    PositionRange,
+    SpliceIsoform,
+    TypeCheckResult,
+    Certificate,
+    three_valued_and,
+    three_valued_or,
+    combined_verdict,
+)
+
+# Note: three_valued_and/three_valued_or are kept for backward compatibility.
+# For the full 5-valued logic, use five_valued_and/five_valued_or from .types.
+from .shared.exceptions import (
+    BioCompilerError,
+    EngineError,
+    ESMFoldError,
+    FoldXError,
+    CamSolError,
+    ImmunogenicityError,
+    BiosecurityError,
+    TranslationVerificationError,
+    OptimizationConstraintError,
+    InvalidSequenceError,
+    CertificateGenerationError,
+    CertificateVerificationError,
+    UnknownPredicateError,
+    OptimizationError,
+    UnsupportedOrganismError,
+    InvalidProteinError,
+    FileFormatError,
+    SplicingError,
+    MutagenesisError,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Canonical biological constants
+# ═══════════════════════════════════════════════════════════════════════
+
+from .shared.constants import (
+    BLOSUM62, HYDROPATHY, HYDROPHOBIC_AAS, STANDARD_AAS,
+    DEFAULT_ENGINE_TIMEOUT, DEFAULT_BATCH_SIZE,
+    DEFAULT_SOLUBILITY_WINDOW, DEFAULT_SOLUBILITY_SMOOTHING,
+    DEFAULT_MHC_PEPTIDE_LENGTH,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Pipeline: Scanner → Splicing → Translation → Type Check
+# ═══════════════════════════════════════════════════════════════════════
+
+from .sequence.scanner import (
+    validate_dna_sequence,
+    gc_content,
+    scan_sequence,
+)
+
+from .sequence.splicing import compute_splice_isoforms, maxent_score, maxent_score_v2, score_splice_sites
+
+from .expression.translation import (
+    translate,
+    compute_cai,
+    find_orfs,
+)
+
+# Type system imports
+from .type_system import (
+    evaluate_no_cryptic_splice,
+    evaluate_splice_correct,
+    evaluate_gc_in_range,
+    evaluate_codon_adapted,
+    evaluate_no_restriction_site,
+    evaluate_in_frame,
+    evaluate_no_instability_motif,
+    evaluate_no_cpg_island,
+    evaluate_all_predicates,
+    analyze_codon_at_position,
+    registry as predicate_registry,
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Certificate engine (merged from certificates.py)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.provenance.certificate import generate_certificate, verify_certificate, compute_certificate, format_certificate
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    generate_certificate = None
+    verify_certificate = None
+    compute_certificate = None
+    format_certificate = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# MaxEntScan splice scoring
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.sequence.maxentscan import (
+        score_donor, score_acceptor, scan_splice_sites,
+        max_donor_score, max_acceptor_score,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    score_donor = None
+    score_acceptor = None
+    scan_splice_sites = None
+    max_donor_score = None
+    max_acceptor_score = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Optimization
+# ═══════════════════════════════════════════════════════════════════════
+
+from .optimizer import BioOptimizer, optimize_sequence, batch_optimize, OptimizationResult, FullConstructResult
+from .optimizer.objectives import (
+    ObjectiveFunction,
+    cai_objective,
+    cai_gc_balanced_objective,
+    codon_pair_objective,
+    min_max_gc_objective,
+    resolve_objective,
+    OBJECTIVE_REGISTRY,
+)
+# BREAKING CHANGE (Task SP2): HybridOptimizer and the codon_harmonization
+# helpers (compute_rca / harmonize_codons / harmonize_with_cai_fallback /
+# compute_harmonization_score) were removed from the public API when the
+# slow-path optimizer stack (greedy, hybrid_*, codon_harmonization,
+# incremental) was deleted. Users should call optimize_sequence() instead.
+# These top-level imports previously forced the entire slow-path stack to
+# load on `import biocompiler`; removing them is required for the file
+# deletions to take effect.
+
+# ═══════════════════════════════════════════════════════════════════════
+# Context-aware GT avoidance (Task W2-A1)
+# ═══════════════════════════════════════════════════════════════════════
+# NEW module (W2-A1): instead of avoiding every GT dinucleotide globally
+# (which tanks CAI on human genes because valine codons GTN all contain
+# GT), only avoid GTs whose MaxEntScan donor score exceeds the cryptic
+# splice threshold.  This recovers ~0.28 CAI on human HBB while still
+# preventing functional cryptic splice sites.
+#
+# These imports are ADD-ONLY: no existing exports are modified.  The
+# two-pass optimizer is exposed via the ``use_context_aware_gt=True``
+# kwarg on ``optimize_sequence`` (see pipeline_core.py).
+try:
+    from biocompiler.optimizer.gt_context import (
+        should_avoid_gt_at_position,
+        filter_gt_codons_context_aware,
+        DEFAULT_CRYPTIC_DONOR_THRESHOLD,
+    )
+    from biocompiler.optimizer.two_pass import optimize_two_pass
+except ImportError:
+    _logger.debug("Could not import context-aware GT modules, using None fallbacks")
+    should_avoid_gt_at_position = None
+    filter_gt_codons_context_aware = None
+    DEFAULT_CRYPTIC_DONOR_THRESHOLD = None
+    optimize_two_pass = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Large Sequence Support & Incremental state — REMOVED (Task SP2)
+# ═══════════════════════════════════════════════════════════════════════
+# large_sequence.py and incremental.py were deleted as part of the
+# slow-path stack removal. Their public symbols
+# (optimize_large_sequence, ProteinTooLongError, MAX_PROTEIN_LENGTH_DEFAULT,
+# IncrementalSequenceState, CodonCache, EnzymeSiteCache) are no longer
+# importable; references in __all__ below have also been dropped.
+optimize_large_sequence = None
+ProteinTooLongError = None
+MAX_PROTEIN_LENGTH_DEFAULT = None
+IncrementalSequenceState = None
+CodonCache = None
+EnzymeSiteCache = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Grammar, Export, Report
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .optimizer.grammar_loader import load_grammar, grammar_to_predicate_params, load_builtin_grammar, list_builtin_grammars
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    load_grammar = None
+    grammar_to_predicate_params = None
+    load_builtin_grammar = None
+    list_builtin_grammars = None
+
+try:
+    from biocompiler.export.core import export_fasta, export_genbank, export_genbank_with_certificate, export_multi_fasta, export_batch_fasta, export_full_construct, export_json
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    export_fasta = None
+    export_genbank = None
+    export_genbank_with_certificate = None
+    export_multi_fasta = None
+    export_batch_fasta = None
+    export_full_construct = None
+    export_json = None
+
+try:
+    from biocompiler.provenance.report import generate_report
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    generate_report = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Benchmark (merged from comprehensive_benchmark.py & tool_comparison.py)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.benchmarking.core import (
+        run_benchmarks, BenchmarkReport,
+        # Extended API
+        REFERENCE_GENES, run_structured_benchmarks,
+        format_benchmark_report_json, format_benchmark_report_text,
+        # Head-to-head (merged from tool_comparison)
+        run_head_to_head_benchmark, compare_tools, HeadToHeadReport,
+        format_head_to_head_text, format_head_to_head_json,
+        is_dna_chisel_available,
+        # Comprehensive (merged from comprehensive_benchmark)
+        run_comprehensive_benchmark,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    try:
+        from biocompiler.benchmarking.core import run_benchmark as run_benchmarks
+        BenchmarkReport = None
+    except ImportError:
+        _logger.debug("Could not import optional module, using None fallbacks")
+        run_benchmarks = None
+        BenchmarkReport = None
+    # Names only available in the extended benchmark API
+    REFERENCE_GENES = None
+    run_structured_benchmarks = None
+    format_benchmark_report_json = None
+    format_benchmark_report_text = None
+    run_head_to_head_benchmark = None
+    compare_tools = None
+    HeadToHeadReport = None
+    format_head_to_head_text = None
+    format_head_to_head_json = None
+    is_dna_chisel_available = None
+    run_comprehensive_benchmark = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Organism data (merged from species.py)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .organisms import (
+        OrganismDatabase, get_database,
+        SPECIES, ECOLI_CAI, HUMAN_CAI, compute_cai_weights,
+        get_species_cai_weights,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    OrganismDatabase = None
+    get_database = None
+    SPECIES = {}
+    ECOLI_CAI = None
+    HUMAN_CAI = None
+    compute_cai_weights = None
+    get_species_cai_weights = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Kazusa Codon Usage Database auto-downloader
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .organisms import (
+        fetch_codon_usage_from_kazusa,
+        fetch_codon_usage_by_name,
+        register_dynamic_organism,
+        resolve_or_download_organism,
+    )
+except ImportError:
+    _logger.debug("Could not import Kazusa downloader, using None fallbacks")
+    fetch_codon_usage_from_kazusa = None
+    fetch_codon_usage_by_name = None
+    register_dynamic_organism = None
+    resolve_or_download_organism = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Tissue data
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.organisms.tissue_data import get_tissue_weights, list_available_tissues, add_custom_tissue
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    get_tissue_weights = None
+    list_available_tissues = None
+    add_custom_tissue = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# DNA Chisel compatibility
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.infrastructure.dna_chisel_compat import compare_optimizers, run_comparative_benchmark
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compare_optimizers = None
+    run_comparative_benchmark = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Dataset validation
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.validation.dataset_validation import run_dataset_validation, DatasetValidationReport
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    run_dataset_validation = None
+    DatasetValidationReport = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sequence import / BioPython compat / Jupyter
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.sequence.import_seq import import_fasta, import_genbank, import_sequence
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    import_fasta = None
+    import_genbank = None
+    import_sequence = None
+
+try:
+    from biocompiler.infrastructure.biopython_compat import to_seqrecord, from_seqrecord, optimize_to_seqrecord
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    to_seqrecord = None
+    from_seqrecord = None
+    optimize_to_seqrecord = None
+
+# Deep BioPython integration
+try:
+    from biocompiler.infrastructure.biopython_compat import (
+        CodonUsageResult, load_codon_usage_table, compute_cai_from_table,
+        AlignmentResult, align_to_reference,
+        phylo_distance,
+        ORFResult, detect_orfs,
+        BlastResult, blast_local,
+        back_translate_protein,
+    )
+except ImportError:
+    _logger.debug("Could not import deep BioPython features, using None fallbacks")
+    CodonUsageResult = None
+    load_codon_usage_table = None
+    compute_cai_from_table = None
+    AlignmentResult = None
+    align_to_reference = None
+    phylo_distance = None
+    ORFResult = None
+    detect_orfs = None
+    BlastResult = None
+    blast_local = None
+    back_translate_protein = None
+
+# Sequence Annotation Enrichment
+try:
+    from biocompiler.export.annotation import SequenceAnnotation, annotate_sequence, annotate_to_genbank
+except ImportError:
+    _logger.debug("Could not import annotation module, using None fallbacks")
+    SequenceAnnotation = None
+    annotate_sequence = None
+    annotate_to_genbank = None
+
+try:
+    from biocompiler.api.jupyter import display_sequence, display_optimization_result, display_type_check, plot_gc_content, plot_codon_usage
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    display_sequence = None
+    display_optimization_result = None
+    display_type_check = None
+    plot_gc_content = None
+    plot_codon_usage = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# SBOL3 Export / Import (Synthetic Biology Open Language)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.export.sbol_export import SBOLComponent, export_sbol, export_sbol_collection
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    SBOLComponent = None  # type: ignore[assignment, misc]
+    export_sbol = None
+    export_sbol_collection = None
+
+try:
+    from biocompiler.export.sbol_import import import_sbol, sbol_to_genespecs
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    import_sbol = None
+    sbol_to_genespecs = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Mutagenesis
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.optimizer.mutagenesis import (
+        MutagenesisResult, AASubstitution,
+        GT_MANDATORY_AAS, AG_MANDATORY_AAS,
+        is_gt_mandatory, is_ag_mandatory, diagnose_optimizer_weakness,
+        force_gt_free_reoptimization,
+        type_directed_mutagenesis, find_unrepairable_cryptic_donors,
+        find_unrepairable_cryptic_acceptors, propose_substitutions,
+        apply_substitution,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    MutagenesisResult = None
+    AASubstitution = None
+    GT_MANDATORY_AAS = None
+    AG_MANDATORY_AAS = None
+    is_gt_mandatory = None
+    is_ag_mandatory = None
+    diagnose_optimizer_weakness = None
+    force_gt_free_reoptimization = None
+    type_directed_mutagenesis = None
+    find_unrepairable_cryptic_donors = None
+    find_unrepairable_cryptic_acceptors = None
+    propose_substitutions = None
+    apply_substitution = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Solubility (Camsol + predicates)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.engines.camsol import (
+        compute_intrinsic_solubility, compute_solubility,
+        compute_structural_solubility,
+        classify_solubility, find_solubility_mutations,
+        generate_solubility_recommendations,
+        compute_solubility_batch,
+        clear_cache as camsol_clear_cache,
+        CamSolResult,
+        CAMSOL_HYDROPATHY, CAMSOL_CHARGE, CAMSOL_ALPHA_HELIX,
+        CAMSOL_BETA_STRAND,
+    )
+    # Backward-compatible alias (SolubilityResult was the old name)
+    SolubilityResult = CamSolResult
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compute_intrinsic_solubility = None
+    compute_solubility = None
+    compute_structural_solubility = None
+    classify_solubility = None
+    find_solubility_mutations = None
+    generate_solubility_recommendations = None
+    compute_solubility_batch = None
+    camsol_clear_cache = None
+    CamSolResult = None
+    SolubilityResult = None
+    CAMSOL_HYDROPATHY = None
+    CAMSOL_CHARGE = None
+    CAMSOL_ALPHA_HELIX = None
+    CAMSOL_BETA_STRAND = None
+
+try:
+    from biocompiler.type_system.solubility_predicates import (
+        evaluate_soluble_expression, evaluate_no_aggregation_prone_region,
+        evaluate_charge_composition, evaluate_no_long_hydrophobic_stretch,
+        compute_approximate_pI, compute_net_charge,
+        find_hydrophobic_stretches, PKA_VALUES,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    evaluate_soluble_expression = None
+    evaluate_no_aggregation_prone_region = None
+    evaluate_charge_composition = None
+    evaluate_no_long_hydrophobic_stretch = None
+    compute_approximate_pI = None
+    compute_net_charge = None
+    find_hydrophobic_stretches = None
+    PKA_VALUES = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Structure prediction (ESMFold — merged from esmfold_batch.py & esmfold_cache.py)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.engines.esmfold import (
+        ESMFoldResult, ESMFoldError, ESMFoldCache,
+        is_esmfold_available, predict_structure, predict_structure_batch,
+        predict_batch, predict_proteins, format_batch_report,
+        parse_pdb, compute_backbone_dihedrals, classify_plddt,
+        estimate_contact_map, analyze_structure,
+        validate_batch_input, estimate_batch_time,
+        BatchStructureRequest, BatchStructureResult,
+        clear_cache as esmfold_clear_cache,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    ESMFoldResult = None
+    # ESMFoldError is already imported unconditionally from .exceptions above
+    ESMFoldCache = None
+    is_esmfold_available = None
+    predict_structure = None
+    predict_structure_batch = None
+    predict_batch = None
+    predict_proteins = None
+    format_batch_report = None
+    parse_pdb = None
+    compute_backbone_dihedrals = None
+    classify_plddt = None
+    estimate_contact_map = None
+    analyze_structure = None
+    validate_batch_input = None
+    estimate_batch_time = None
+    BatchStructureRequest = None
+    BatchStructureResult = None
+    esmfold_clear_cache = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Immunogenicity (merged from mhc_binding.py & epitope.py)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.immunogenicity.core import (
+        ImmunogenicityResult,
+        predict_t_cell_epitopes, predict_b_cell_epitopes,
+        compute_surface_accessibility_approx,
+        compute_immunogenicity, find_deimmunization_mutations,
+        compute_immunogenicity_batch,
+        clear_cache as immunogenicity_clear_cache,
+        # MHC binding
+        MHCBindingResult, MHCPredictionResult,
+        predict_mhc_i_binding, predict_mhc_ii_binding,
+        score_peptide_pssm, binding_score_to_ic50, classify_binding,
+        predict_all as predict_mhc_binding,
+        MHC_I_PSSM, MHC_II_PSSM, POPULATION_COVERAGE,
+        DEFAULT_MHC_I_ALLELES, DEFAULT_MHC_II_ALLELES,
+        # B-cell epitope
+        EpitopeRegion, EpitopePredictionResult,
+        predict_kolaskar_tongaonkar, predict_parker_hydrophilicity,
+        predict_chou_fasman_beta_turn, predict_eea,
+        predict_bepipred_like, predict_conformational_epitopes,
+        predict_epitopes, ALL_SCALES,
+        ANTIGENICITY_SCALE, PARKER_SCALE,
+        CHOU_FASMAN_TURN, EMINI_SCALE,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    ImmunogenicityResult = None
+    predict_t_cell_epitopes = None
+    predict_b_cell_epitopes = None
+    compute_surface_accessibility_approx = None
+    compute_immunogenicity = None
+    find_deimmunization_mutations = None
+    compute_immunogenicity_batch = None
+    immunogenicity_clear_cache = None
+    MHCBindingResult = None
+    MHCPredictionResult = None
+    predict_mhc_i_binding = None
+    predict_mhc_ii_binding = None
+    score_peptide_pssm = None
+    binding_score_to_ic50 = None
+    classify_binding = None
+    predict_mhc_binding = None
+    MHC_I_PSSM = None
+    MHC_II_PSSM = None
+    POPULATION_COVERAGE = None
+    DEFAULT_MHC_I_ALLELES = None
+    DEFAULT_MHC_II_ALLELES = None
+    EpitopeRegion = None
+    EpitopePredictionResult = None
+    predict_kolaskar_tongaonkar = None
+    predict_parker_hydrophilicity = None
+    predict_chou_fasman_beta_turn = None
+    predict_eea = None
+    predict_bepipred_like = None
+    predict_conformational_epitopes = None
+    predict_epitopes = None
+    ALL_SCALES = None
+    ANTIGENICITY_SCALE = None
+    PARKER_SCALE = None
+    CHOU_FASMAN_TURN = None
+    EMINI_SCALE = None
+
+# Deprecated aliases removed:
+# MHC_I_PREFERENCES → use MHC_I_PSSM
+# MHC_II_PREFERENCES → use MHC_II_PSSM
+# ANTIGENICITY_PROPENSITY → use ANTIGENICITY_SCALE
+
+# ═══════════════════════════════════════════════════════════════════════
+# Deimmunization
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.immunogenicity.deimmunization import (
+        DeimmunizationResult,
+        EpitopeMutation,
+        deimmunize,
+        find_epitope_disrupting_mutations,
+        rank_deimmunization_mutations,
+        validate_deimmunized_protein,
+        compute_mutation_impact,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    DeimmunizationResult = None
+    EpitopeMutation = None
+    deimmunize = None
+    find_epitope_disrupting_mutations = None
+    rank_deimmunization_mutations = None
+    validate_deimmunized_protein = None
+    compute_mutation_impact = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Structure (consolidated from structure/, structure_quality, structure_predicates, structure_report)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .structure import (
+        # Parser
+        Atom, Residue, Chain, ProteinStructure,
+        parse_pdb, parse_pdb_file, compute_dihedral,
+        compute_ramachandran, secondary_structure_estimate,
+        THREE_TO_ONE, ONE_TO_THREE,
+        # Quality
+        StructureQualityReport,
+        assess_plddt, assess_ramachandran,
+        compute_clash_score, compute_packing_density,
+        compute_exposed_hydrophobic, compute_structure_quality,
+        find_low_confidence_regions, compute_sasa_approximation,
+        KYTE_DOOLITTLE, VDW_RADII,
+        # Predicates
+        evaluate_structure_confidence, evaluate_no_misfolding_risk,
+        evaluate_correct_fold_topology, evaluate_no_unexpected_interaction,
+        # Report
+        ProteinAssessmentReport, assess_protein,
+        format_assessment_text, format_assessment_json, format_assessment_html,
+        generate_recommendations, compute_overall_verdict,
+        plot_plddt_bar_svg, plot_solubility_profile_svg,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    Atom = None
+    Residue = None
+    Chain = None
+    ProteinStructure = None
+    # parse_pdb may already be defined from .esmfold; do not clobber it
+    parse_pdb_file = None
+    compute_dihedral = None
+    compute_ramachandran = None
+    secondary_structure_estimate = None
+    THREE_TO_ONE = None
+    ONE_TO_THREE = None
+    StructureQualityReport = None
+    assess_plddt = None
+    assess_ramachandran = None
+    compute_clash_score = None
+    compute_packing_density = None
+    compute_exposed_hydrophobic = None
+    compute_structure_quality = None
+    find_low_confidence_regions = None
+    compute_sasa_approximation = None
+    KYTE_DOOLITTLE = None
+    VDW_RADII = None
+    evaluate_structure_confidence = None
+    evaluate_no_misfolding_risk = None
+    evaluate_correct_fold_topology = None
+    evaluate_no_unexpected_interaction = None
+    ProteinAssessmentReport = None
+    assess_protein = None
+    format_assessment_text = None
+    format_assessment_json = None
+    format_assessment_html = None
+    generate_recommendations = None
+    compute_overall_verdict = None
+    plot_plddt_bar_svg = None
+    plot_solubility_profile_svg = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# FoldX stability (merged from foldx_mutations.py)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.engines.foldx import (
+        FoldXResult, FoldXError, FoldXCache,
+        StabilityLandscape, ConservationScore,
+        is_foldx_available, run_foldx_stability, run_foldx_repair,
+        run_foldx_mutation, empirical_stability,
+        run_stability_batch,
+        clear_cache as foldx_clear_cache,
+        scan_mutations, find_stabilizing_mutations,
+        scan_all_mutations, scan_position, compute_conservation,
+        find_compensatory_mutations, rank_positions_by_mutability,
+        identify_hotspot_regions,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    FoldXResult = None
+    # FoldXError is already imported unconditionally from .exceptions above
+    FoldXCache = None
+    StabilityLandscape = None
+    ConservationScore = None
+    is_foldx_available = None
+    run_foldx_stability = None
+    run_foldx_repair = None
+    run_foldx_mutation = None
+    empirical_stability = None
+    run_stability_batch = None
+    foldx_clear_cache = None
+    scan_mutations = None
+    find_stabilizing_mutations = None
+    scan_all_mutations = None
+    scan_position = None
+    compute_conservation = None
+    find_compensatory_mutations = None
+    rank_positions_by_mutability = None
+    identify_hotspot_regions = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Engine base — unified types for all analysis engines
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.engines.base import (
+        EngineResult, BaseEngineResult, MutationResult, BatchResult,
+        EngineTimer, EngineConfig, validate_protein_sequence,
+        classify_score,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    EngineResult = None
+    BaseEngineResult = None
+    MutationResult = None
+    BatchResult = None
+    EngineTimer = None
+    EngineConfig = None
+    validate_protein_sequence = None
+    classify_score = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Protein design
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.engines.protein_design import (
+        DesignResult, DesignConstraints,
+        design_thermostable, design_soluble,
+        design_low_immunogenicity, design_multi_objective,
+        score_mutation, find_disulfide_opportunities,
+        find_proline_substitution_sites,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    DesignResult = None
+    DesignConstraints = None
+    design_thermostable = None
+    design_soluble = None
+    design_low_immunogenicity = None
+    design_multi_objective = None
+    score_mutation = None
+    find_disulfide_opportunities = None
+    find_proline_substitution_sites = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# CSP/SMT Solver (constraint-based gene optimization)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .solver import CSPSolver, SolverConfig, SolverResult, SolverBackend
+    from .solver import CAIAwareConstraintResolver
+    from .solver.dispatch import solve_with_csp, is_solver_available, csp_optimize
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    CSPSolver = None
+    SolverConfig = None
+    SolverResult = None
+    SolverBackend = None
+    CAIAwareConstraintResolver = None
+    solve_with_csp = None
+    is_solver_available = None
+    csp_optimize = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# ViennaRNA (mRNA secondary structure prediction)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    # ViennaRNA lives under .engines, not at top level (see historical audit notes)
+    from .engines import viennarna, viennarna_fallback
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    viennarna = None  # type: ignore[assignment]
+    viennarna_fallback = None  # type: ignore[assignment]
+
+# ═══════════════════════════════════════════════════════════════════════
+# MHCflurry (offline MHC-I binding prediction)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    # mhcflurry modules live under .immunogenicity, not at top level (see historical audit notes)
+    from .immunogenicity import mhcflurry_adapter, mhcflurry_population
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    mhcflurry_adapter = None  # type: ignore[assignment]
+    mhcflurry_population = None  # type: ignore[assignment]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provenance (decision audit trail)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .provenance import (
+        DecisionRecord, ProvenanceTracker, OptimizationProvenance,
+        OptimizationRecord, generate_provenance_report,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    DecisionRecord = None
+    ProvenanceTracker = None
+    OptimizationProvenance = None
+    OptimizationRecord = None
+    generate_provenance_report = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Organism configuration
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.organisms.config import (
+        OrganismConfig, ORGANISM_CONFIGS, get_organism_config,
+        is_eukaryotic_organism, auto_detect_organism_domain,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    OrganismConfig = None
+    ORGANISM_CONFIGS = None
+    get_organism_config = None
+    is_eukaryotic_organism = None
+    auto_detect_organism_domain = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# UTR Models
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.expression.utr_models import (
+        UTRConfig, suggest_5utr, suggest_3utr,
+        score_5utr, score_3utr,
+        ORGANISM_UTR_CONFIGS, AVAILABLE_ORGANISMS,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    UTRConfig = None
+    suggest_5utr = None
+    suggest_3utr = None
+    score_5utr = None
+    score_3utr = None
+    ORGANISM_UTR_CONFIGS = None
+    AVAILABLE_ORGANISMS = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Multi-Gene Construct / Operon Support — REMOVED (Task SP2)
+# ═══════════════════════════════════════════════════════════════════════
+# multigene.py was deleted as part of the slow-path stack removal.
+# Public symbols (GeneSpec, MultiGeneResult, OperonConfig,
+# optimize_multigene, optimize_operon) are no longer importable.
+GeneSpec = None  # type: ignore[assignment, misc]
+MultiGeneResult = None  # type: ignore[assignment, misc]
+OperonConfig = None  # type: ignore[assignment, misc]
+optimize_multigene = None
+optimize_operon = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Benchmarking sub-package (structured head-to-head comparison)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .benchmarking import BenchmarkRunner, BenchmarkResult, BenchmarkReport
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    BenchmarkRunner = None
+    BenchmarkResult = None  # may already be set from .benchmarking.comparison
+    # BenchmarkReport may already be defined from .benchmark; do not clobber
+    try:
+        BenchmarkReport
+    except NameError:
+        BenchmarkReport = None
+
+try:
+    from .benchmarking.cai_validated import compute_cai_sharp_li
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compute_cai_sharp_li = None
+
+try:
+    from .benchmarking.maxentscan_validated import score_donor_maxentscan, score_acceptor_maxentscan
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    score_donor_maxentscan = None
+    score_acceptor_maxentscan = None
+
+try:
+    from .benchmarking.metrics import compute_all_metrics, BenchmarkMetrics
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compute_all_metrics = None
+    BenchmarkMetrics = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# MHC Binding Database
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .mhc_binding_db import MHCBindingDatabase, MHCBindingRecord
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    MHCBindingDatabase = None
+    MHCBindingRecord = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# mRNA Stability
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.expression.mrna_stability import score_mrna_stability, MRNAStabilityScore, suggest_mutations_for_stability
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    score_mrna_stability = None
+    MRNAStabilityScore = None
+    suggest_mutations_for_stability = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Decision Provenance (granular optimization audit trail)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.provenance.decision_provenance import (
+        OptimizationDecisionTrail, CodonDecision, ConstraintDecision,
+        DecisionProvenanceCollector,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    OptimizationDecisionTrail = None
+    CodonDecision = None
+    ConstraintDecision = None
+    DecisionProvenanceCollector = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provenance Reporting
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.provenance.reporting import ProvenanceQuery, ProvenanceReport
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    ProvenanceQuery = None
+    ProvenanceReport = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# What-If Analysis
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.sequence.pattern_enforcement import (
+        PatternConstraint, PatternResult,
+        check_pattern, check_patterns,
+        enforce_pattern, enforce_patterns,
+        build_avoidance_scanner,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    PatternConstraint = None  # type: ignore[assignment,misc]
+    PatternResult = None  # type: ignore[assignment,misc]
+    check_pattern = None  # type: ignore[assignment,misc]
+    check_patterns = None  # type: ignore[assignment,misc]
+    enforce_pattern = None  # type: ignore[assignment,misc]
+    enforce_patterns = None  # type: ignore[assignment,misc]
+    build_avoidance_scanner = None  # type: ignore[assignment,misc]
+
+# ═══════════════════════════════════════════════════════════════════════
+# What-If Analysis — REMOVED (Task SP2)
+# ═══════════════════════════════════════════════════════════════════════
+# whatif_analysis.py was deleted as part of the slow-path stack removal.
+WhatIfAnalyzer = None
+WhatIfScenario = None
+WhatIfReport = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# IUPAC Ambiguous Base Support
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.sequence.iupac import (
+        IUPAC_DNA,
+        resolve_ambiguous,
+        is_ambiguous,
+        expand_ambiguous,
+        has_ambiguous,
+        validate_iupac_sequence,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    IUPAC_DNA = None
+    resolve_ambiguous = None
+    is_ambiguous = None
+    expand_ambiguous = None
+    has_ambiguous = None
+    validate_iupac_sequence = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Codon Pair Scoring
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.expression.codon_pair_scoring import compute_cpb, score_codon_pair, get_codon_pair_data, suggest_better_pair
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    compute_cpb = None
+    score_codon_pair = None
+    get_codon_pair_data = None
+    suggest_better_pair = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sliding-Window GC Constraint
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.sequence.sliding_gc import check_sliding_gc, SlidingGCResult, WindowViolation, fix_sliding_gc_violations, evaluate_sliding_gc
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    check_sliding_gc = None
+    SlidingGCResult = None
+    WindowViolation = None
+    fix_sliding_gc_violations = None
+    evaluate_sliding_gc = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Safety modules (biosecurity screening + protein verification)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .biosecurity import screen_hazardous_sequence, BiosecurityReport, HazardMatch
+except ImportError:
+    pass  # Optional safety modules
+
+try:
+    from biocompiler.validation.protein_verification import verify_translation, verify_and_raise, VerificationResult, PositionMismatch
+except ImportError:
+    pass  # Optional safety modules
+
+# ═══════════════════════════════════════════════════════════════════════
+# Public API — organized by domain
+# ═══════════════════════════════════════════════════════════════════════
+
+__all__ = [
+    # ── Version ──────────────────────────────────────────────
+    "__version__",
+    "SAFETY_VERSION",
+
+    # ── Core types ───────────────────────────────────────────
+    "Verdict", "Token", "PositionRange", "SpliceIsoform",
+    "TypeCheckResult", "Certificate",
+    "three_valued_and", "three_valued_or", "combined_verdict",
+
+    # ── Exceptions ───────────────────────────────────────────
+    "BioCompilerError", "EngineError",
+    "ESMFoldError", "FoldXError", "CamSolError", "ImmunogenicityError",
+    "BiosecurityError", "TranslationVerificationError",
+    "OptimizationConstraintError",
+    "InvalidSequenceError",
+    "CertificateGenerationError", "CertificateVerificationError",
+    "UnknownPredicateError", "OptimizationError",
+    "UnsupportedOrganismError", "InvalidProteinError",
+    "FileFormatError", "SplicingError", "MutagenesisError",
+
+    # ── Canonical constants ──────────────────────────────────
+    "BLOSUM62", "HYDROPATHY", "HYDROPHOBIC_AAS", "STANDARD_AAS",
+    "DEFAULT_ENGINE_TIMEOUT", "DEFAULT_BATCH_SIZE",
+    "DEFAULT_SOLUBILITY_WINDOW", "DEFAULT_SOLUBILITY_SMOOTHING",
+    "DEFAULT_MHC_PEPTIDE_LENGTH",
+
+    # ── Scanner ──────────────────────────────────────────────
+    "validate_dna_sequence", "gc_content", "scan_sequence",
+
+    # ── IUPAC ambiguous base support ────────────────────────
+    "IUPAC_DNA", "resolve_ambiguous", "is_ambiguous",
+    "expand_ambiguous", "has_ambiguous", "validate_iupac_sequence",
+
+    # ── Splicing ─────────────────────────────────────────────
+    "compute_splice_isoforms", "maxent_score", "maxent_score_v2", "score_splice_sites",
+
+    # ── Translation ──────────────────────────────────────────
+    "translate", "compute_cai", "find_orfs",
+
+    # ── Type system & predicates ─────────────────────────────
+    "evaluate_no_cryptic_splice", "evaluate_splice_correct",
+    "evaluate_gc_in_range", "evaluate_codon_adapted",
+    "evaluate_no_restriction_site", "evaluate_in_frame",
+    "evaluate_no_instability_motif", "evaluate_no_cpg_island",
+    "evaluate_all_predicates", "analyze_codon_at_position",
+    "predicate_registry",
+
+    # ── Certificate ──────────────────────────────────────────
+    "generate_certificate", "verify_certificate",
+    "compute_certificate", "format_certificate",
+
+    # ── MaxEntScan ───────────────────────────────────────────
+    "score_donor", "score_acceptor", "scan_splice_sites",
+    "max_donor_score", "max_acceptor_score",
+
+    # ── Optimization ─────────────────────────────────────────
+    "BioOptimizer", "optimize_sequence", "OptimizationResult", "FullConstructResult",
+    # HybridOptimizer / IncrementalSequenceState / CodonCache / EnzymeSiteCache
+    # removed in Task SP2 (slow-path stack deletion).
+
+    # ── Grammar ──────────────────────────────────────────────
+    "load_grammar", "grammar_to_predicate_params",
+    "load_builtin_grammar", "list_builtin_grammars",
+
+    # ── Export ───────────────────────────────────────────────
+    "export_fasta", "export_genbank", "export_genbank_with_certificate", "export_multi_fasta", "export_full_construct",
+
+    # ── Report ───────────────────────────────────────────────
+    "generate_report",
+
+    # ── Benchmark ────────────────────────────────────────────
+    "run_benchmarks", "BenchmarkReport",
+    "REFERENCE_GENES", "run_structured_benchmarks",
+    "format_benchmark_report_json", "format_benchmark_report_text",
+    "run_head_to_head_benchmark", "compare_tools", "HeadToHeadReport",
+    "format_head_to_head_text", "format_head_to_head_json",
+    "is_dna_chisel_available",
+    "run_comprehensive_benchmark",
+
+    # ── Organisms ────────────────────────────────────────────
+    "OrganismDatabase", "get_database",
+    "SPECIES", "ECOLI_CAI", "HUMAN_CAI", "compute_cai_weights",
+    "get_species_cai_weights",
+
+    # ── Tissue data ──────────────────────────────────────────
+    "get_tissue_weights", "list_available_tissues", "add_custom_tissue",
+
+    # ── DNA Chisel compat ────────────────────────────────────
+    "compare_optimizers", "run_comparative_benchmark",
+
+    # ── Dataset validation ───────────────────────────────────
+    "run_dataset_validation", "DatasetValidationReport",
+
+    # ── Sequence import / BioPython / Jupyter ────────────────
+    "import_fasta", "import_genbank", "import_sequence",
+    "to_seqrecord", "from_seqrecord", "optimize_to_seqrecord",
+    "display_sequence", "display_optimization_result", "display_type_check",
+    "plot_gc_content", "plot_codon_usage",
+
+    # ── Mutagenesis ──────────────────────────────────────────
+    "MutagenesisResult", "AASubstitution",
+    "GT_MANDATORY_AAS", "AG_MANDATORY_AAS",
+    "is_gt_mandatory", "is_ag_mandatory", "diagnose_optimizer_weakness",
+    "force_gt_free_reoptimization",
+    "type_directed_mutagenesis", "find_unrepairable_cryptic_donors",
+    "find_unrepairable_cryptic_acceptors", "propose_substitutions",
+    "apply_substitution",
+
+    # ── Engine base types ────────────────────────────────────
+    "EngineResult", "BaseEngineResult", "MutationResult", "BatchResult",
+    "EngineTimer", "EngineConfig", "validate_protein_sequence",
+    "classify_score",
+
+    # ── Solubility ───────────────────────────────────────────
+    "compute_intrinsic_solubility", "compute_solubility",
+    "compute_structural_solubility",
+    "classify_solubility", "find_solubility_mutations",
+    "generate_solubility_recommendations",
+    "compute_solubility_batch", "camsol_clear_cache",
+    "CamSolResult", "SolubilityResult",
+    "CAMSOL_HYDROPATHY", "CAMSOL_CHARGE", "CAMSOL_ALPHA_HELIX",
+    "CAMSOL_BETA_STRAND",
+    "evaluate_soluble_expression", "evaluate_no_aggregation_prone_region",
+    "evaluate_charge_composition", "evaluate_no_long_hydrophobic_stretch",
+    "compute_approximate_pI", "compute_net_charge",
+    "find_hydrophobic_stretches", "PKA_VALUES",
+
+    # ── ESMFold structure prediction ─────────────────────────
+    "ESMFoldResult", "ESMFoldCache",
+    "is_esmfold_available", "predict_structure", "predict_structure_batch",
+    "predict_batch", "predict_proteins", "format_batch_report",
+    "compute_backbone_dihedrals", "classify_plddt",
+    "estimate_contact_map", "analyze_structure",
+    "validate_batch_input", "estimate_batch_time",
+    "BatchStructureRequest", "BatchStructureResult",
+    "esmfold_clear_cache",
+
+    # ── Immunogenicity & MHC binding ─────────────────────────
+    "ImmunogenicityResult",
+    "predict_t_cell_epitopes", "predict_b_cell_epitopes",
+    "compute_surface_accessibility_approx",
+    "compute_immunogenicity", "find_deimmunization_mutations",
+    "compute_immunogenicity_batch", "immunogenicity_clear_cache",
+    "MHCBindingResult", "MHCPredictionResult",
+    "predict_mhc_i_binding", "predict_mhc_ii_binding",
+    "score_peptide_pssm", "binding_score_to_ic50", "classify_binding",
+    "predict_mhc_binding",
+    "MHC_I_PSSM", "MHC_II_PSSM", "POPULATION_COVERAGE",
+    "DEFAULT_MHC_I_ALLELES", "DEFAULT_MHC_II_ALLELES",
+    "EpitopeRegion", "EpitopePredictionResult",
+    "predict_kolaskar_tongaonkar", "predict_parker_hydrophilicity",
+    "predict_chou_fasman_beta_turn", "predict_eea",
+    "predict_bepipred_like", "predict_conformational_epitopes",
+    "predict_epitopes", "ALL_SCALES",
+    "ANTIGENICITY_SCALE", "PARKER_SCALE",
+    "CHOU_FASMAN_TURN", "EMINI_SCALE",
+
+    # ── Deimmunization ───────────────────────────────────────
+    "DeimmunizationResult", "EpitopeMutation",
+    "deimmunize", "find_epitope_disrupting_mutations",
+    "rank_deimmunization_mutations", "validate_deimmunized_protein",
+    "compute_mutation_impact",
+
+    # ── Structure (consolidated) ──────────────────────────────
+    # Parser
+    "Atom", "Residue", "Chain", "ProteinStructure",
+    "parse_pdb", "parse_pdb_file", "compute_dihedral",
+    "compute_ramachandran", "secondary_structure_estimate",
+    "THREE_TO_ONE", "ONE_TO_THREE",
+    # Quality
+    "StructureQualityReport",
+    "assess_plddt", "assess_ramachandran",
+    "compute_clash_score", "compute_packing_density",
+    "compute_exposed_hydrophobic", "compute_structure_quality",
+    "find_low_confidence_regions", "compute_sasa_approximation",
+    "KYTE_DOOLITTLE", "VDW_RADII",
+    # Predicates
+    "evaluate_structure_confidence", "evaluate_no_misfolding_risk",
+    "evaluate_correct_fold_topology", "evaluate_no_unexpected_interaction",
+    # Report
+    "ProteinAssessmentReport", "assess_protein",
+    "format_assessment_text", "format_assessment_json", "format_assessment_html",
+    "generate_recommendations", "compute_overall_verdict",
+    "plot_plddt_bar_svg", "plot_solubility_profile_svg",
+
+    # ── FoldX stability ──────────────────────────────────────
+    "FoldXResult", "FoldXCache",
+    "StabilityLandscape", "ConservationScore",
+    "is_foldx_available", "run_foldx_stability", "run_foldx_repair",
+    "run_foldx_mutation", "empirical_stability",
+    "run_stability_batch", "foldx_clear_cache",
+    "scan_mutations", "find_stabilizing_mutations",
+    "scan_all_mutations", "scan_position", "compute_conservation",
+    "find_compensatory_mutations", "rank_positions_by_mutability",
+    "identify_hotspot_regions",
+
+    # ── Protein design ───────────────────────────────────────
+    "DesignResult", "DesignConstraints",
+    "design_thermostable", "design_soluble",
+    "design_low_immunogenicity", "design_multi_objective",
+    "score_mutation", "find_disulfide_opportunities",
+    "find_proline_substitution_sites",
+
+    # ── CSP/SMT Solver ───────────────────────────────────────────
+    "CSPSolver", "SolverConfig", "SolverResult", "SolverBackend",
+    "solve_with_csp", "is_solver_available", "csp_optimize",
+
+    # ── ViennaRNA ────────────────────────────────────────────────
+    "viennarna", "viennarna_fallback",
+
+    # ── MHCflurry ────────────────────────────────────────────────
+    "mhcflurry_adapter", "mhcflurry_population",
+
+    # ── Provenance ───────────────────────────────────────────
+    "DecisionRecord", "ProvenanceTracker", "OptimizationProvenance",
+    "OptimizationRecord", "generate_provenance_report",
+
+    # ── Organism configuration ───────────────────────────────
+    "OrganismConfig", "ORGANISM_CONFIGS", "get_organism_config",
+    "is_eukaryotic_organism", "auto_detect_organism_domain",
+
+    # ── UTR Models ──────────────────────────────────────────
+    "UTRConfig", "suggest_5utr", "suggest_3utr",
+    "score_5utr", "score_3utr",
+    "ORGANISM_UTR_CONFIGS", "AVAILABLE_ORGANISMS",
+
+    # ── Benchmarking sub-package ────────────────────────────
+    "BenchmarkRunner", "BenchmarkResult", "BenchmarkReport",
+    "compute_cai_sharp_li",
+    "score_donor_maxentscan", "score_acceptor_maxentscan",
+    "compute_all_metrics", "BenchmarkMetrics",
+
+    # ── MHC Binding Database ────────────────────────────────
+    "MHCBindingDatabase", "MHCBindingRecord",
+
+    # ── mRNA Stability ──────────────────────────────────────
+    "score_mrna_stability", "MRNAStabilityScore",
+    "suggest_mutations_for_stability",
+
+    # ── Decision Provenance ─────────────────────────────────
+    "OptimizationDecisionTrail", "CodonDecision", "ConstraintDecision",
+    "DecisionProvenanceCollector",
+
+    # ── Provenance Reporting ────────────────────────────────
+    "ProvenanceQuery", "ProvenanceReport",
+
+    # ── What-If Analysis ────────────────────────────────────
+    # WhatIfAnalyzer / WhatIfScenario removed in Task SP2 (slow-path stack
+    # deletion; whatif_analysis.py was deleted).
+
+    # ── Codon Pair Scoring ──────────────────────────────────
+    "compute_cpb", "score_codon_pair",
+
+    # ── Multi-Gene / Operon ────────────────────────────────
+    # GeneSpec / MultiGeneResult / OperonConfig / optimize_multigene /
+    # optimize_operon removed in Task SP2 (multigene.py deleted).
+
+    # ── Sliding-Window GC ──────────────────────────────────
+    "check_sliding_gc", "SlidingGCResult", "WindowViolation",
+    "fix_sliding_gc_violations", "evaluate_sliding_gc",
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# LIMS Integration (Benchling, LabGuru)
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.infrastructure.lims import (
+        LIMSIntegration,
+        BenchlingExporter,
+        LabGuruExporter,
+        LIMSSubmissionRecord,
+        export_to_benchling,
+        export_to_labguru,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    LIMSIntegration = None
+    BenchlingExporter = None
+    LabGuruExporter = None
+    LIMSSubmissionRecord = None
+    export_to_benchling = None
+    export_to_labguru = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# GenBank Round-Trip Verification
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from biocompiler.export.genbank_roundtrip import (
+        RoundTripResult,
+        verify_genbank_roundtrip,
+        compare_sequences,
+        verify_annotation_preservation,
+    )
+except ImportError:
+    _logger.debug("Could not import optional module, using None fallbacks")
+    RoundTripResult = None
+    verify_genbank_roundtrip = None
+    compare_sequences = None
+    verify_annotation_preservation = None

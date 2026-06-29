@@ -1,0 +1,32 @@
+# BioCompiler IR Frontend — Example Gene Specification
+# ====================================================
+# Green Fluorescent Protein (GFP) — N-terminal fragment (first 15
+# residues + stop), back-translated with common E. coli codons.
+#
+# GFP is the workhorse reporter of molecular biology.  The full avGFP
+# from Aequorea victoria is 238 aa (714 nt CDS) — too long for an
+# example spec, so we ship just the N-terminus here.  The fragment
+# retains the canonical MSKGEELFTG... start motif.
+#
+# Reference: UniProt P42212 (GFP_AEQVI), residues 1-15 + stop.
+# Translation must yield: MSKGEELFTGVVPIL*
+
+gene_name: GFP
+organism: aequorea_victoria
+
+# 48 nt = 16 codons (15 aa + stop).
+# Back-translation uses high-frequency E. coli codons (Kazusa).
+sequence: ATGTCTAAGGGTGAGGAGCTGTTCACCGGTGTTGTTCCCATTCTGTAA
+
+regions:
+  - type: cds
+    start: 0
+    end: 48
+    metadata:
+      frame: 0
+      description: "CDS spanning the full 48 nt fragment (no introns)"
+
+metadata:
+  description: "GFP N-terminal fragment — first 15 residues + stop codon"
+  source: "UniProt P42212 (GFP_AEQVI), back-translated with common E. coli codons"
+  note: "Truncated for example use; the full avGFP CDS is 714 nt (238 aa)"

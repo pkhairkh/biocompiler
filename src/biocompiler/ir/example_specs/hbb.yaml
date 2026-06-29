@@ -1,0 +1,30 @@
+# BioCompiler IR Frontend — Example Gene Specification
+# ====================================================
+# Human hemoglobin beta (HBB) — N-terminal fragment (first 32 codons).
+#
+# This is the canonical "hello world" of the BioCompiler IR: the same
+# HBB sequence is used in tests/test_ir.py::TestFullPipeline::test_hbb_gene
+# and is the reference gene in the BioCompiler README.
+#
+# Reference: UniProt P68871 (HBB_HUMAN), residues 1-31 + stop.
+# Translation must yield: MVHLTPEEKSAVTALWGKVNVDEVGGEALGR*
+
+gene_name: HBB
+organism: human
+
+# 96 nt = 32 codons (31 aa + stop).
+# The natural HBB codon usage for the N-terminus of human hemoglobin beta.
+sequence: ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAACGTGGATGAAGTTGGTGGTGAGGCCCTGGGCAGGTAA
+
+regions:
+  - type: cds
+    start: 0
+    end: 96
+    metadata:
+      frame: 0
+      description: "CDS spanning the full 96 nt fragment (no introns)"
+
+metadata:
+  description: "Human hemoglobin beta subunit, N-terminal 31 residues + stop"
+  source: "UniProt P68871 (HBB_HUMAN)"
+  note: "First 32 codons of the canonical HBB CDS — used as the IR frontend smoke test"

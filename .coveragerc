@@ -1,0 +1,7 @@
+[run]
+source = biocompiler
+omit = tests/*,scripts/*
+
+[report]
+fail_under = 75
+show_missing = True

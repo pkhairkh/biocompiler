@@ -1,0 +1,260 @@
+{
+  "demonstration": "primer_compatibility",
+  "description": "PCR/primer compatibility across different GC profiles",
+  "results": [
+    {
+      "protein_name": "Normal_GC_Insulin",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGGCCCTCTGGATGAGACTCCTCCCCCTCCTGGCCCTCCTGGCCCTCTGGGGCCCTGACCCTGCTGCTGCCTTTGTGAACCAACACCTCTGCGGCAGCCACCTGGTGGAAGCCCTCTACCTGGTGTGCGGCGAGAGAGGCTTCTTCTACACCCCCAAAACCAGAAGAGAAGCTGAGGACCTCCAAGTGGGCCAAGTGGAACTGGGAGGAGGCCCTGGAGCTGGCAGCCTCCAACCCCTGGCCCTGGAGGGCAGCCTCCAAAAAAGAGGCATTGTGGAACAATGCTGCACCAGCATCTGCAGCCTCTACCAACTGGAGAACTACTGCAAC",
+      "gc_content": 0.6066,
+      "cai": 0.7243,
+      "optimization_time_s": 0.0072307586669921875,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 4.67 at pos 105"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.762) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "22 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "High_GC_Custom",
+      "protein": "GGGGGGGGGGAAAAAAAAAARRRRRRRRRRPPPPPPPPPPGGGGCGGGCGAAGCTTAAGCGAATTCGAATGGATCCGGATCCCCCCCCCCRRRRRRRRRRAAAAAAAAAAGGGGGGGGGG",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "GGAGGAGGAGGAGGAGGAGGAGGAGGAGGAGCTGCTGCTGCTGCTGCTGCTGCTGCTGCCAGAAGAAGAAGAAGAAGAAGAAGAAGAAGACCCCCCCCCCCCCCCCCCCCCCCCCCCCCTGGAGGAGGAGGCTGCGGCGGCGGCTGCGGCGCCGCCGGCTGCACCACTGCTGCTGGCTGCGGCGCCGCCACCACCTGCGGCGCCGCCACTGGAGGAGCCACCTGCTGCGGCGGCGCCACCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGGAGGAGGAGGAGGAGGAGGAGGAGGAGGC",
+      "gc_content": 0.6832,
+      "cai": 0.6625,
+      "optimization_time_s": 0.007897377014160156,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 7.32 at pos 122"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Worst promoter score 0.607 at pos 59"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "13 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.3433,
+      "immunogenicity_risk": "moderate",
+      "t_cell_epitope_count": 990,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 10,
+      "red_count": 2,
+      "uncertain_count": 3
+    },
+    {
+      "protein_name": "Low_GC_Collagen",
+      "protein": "GPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPP",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "GGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCTGGACCTCCT",
+      "gc_content": 0.6606,
+      "cai": 0.5013,
+      "optimization_time_s": 0.00650477409362793,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Worst promoter score 0.595 at pos 6"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "PASS",
+          "violation": null
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.12,
+      "immunogenicity_risk": "low",
+      "t_cell_epitope_count": 882,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 12,
+      "red_count": 1,
+      "uncertain_count": 2
+    }
+  ],
+  "primer_compat_rules": {
+    "gc_range": "35-65% for standard PCR",
+    "amplicon_length": "<5 kb for standard Taq polymerase",
+    "primer_design": "Tm 55-65\u00b0C, GC clamp, no self-complementarity"
+  }
+}

@@ -1,0 +1,1312 @@
+{
+  "demonstration": "atlas",
+  "description": "Large-scale compilation survey: 15 runs",
+  "layers": [
+    "NoCrypticSplice",
+    "SpliceCorrect",
+    "GCInRange",
+    "CodonAdapted",
+    "NoRestrictionSite",
+    "InFrame",
+    "NoInstabilityMotif",
+    "NoCpGIsland",
+    "NoCrypticPromoter",
+    "NoUnexpectedTMDomain",
+    "mRNASecondaryStructure",
+    "CoTranslationalFolding",
+    "BiosecurityScreening",
+    "Immunogenicity",
+    "PrimerCompatibility"
+  ],
+  "num_layers": 15,
+  "total_compilations": 15,
+  "all_pass_rate": 0.0,
+  "all_pass_count": 0,
+  "layer_pass_rates": {
+    "NoCrypticSplice": 0.0,
+    "SpliceCorrect": 1.0,
+    "GCInRange(0.3, 0.7)": 1.0,
+    "CodonAdapted(Homo_sapiens, 0.5)": 1.0,
+    "NoRestrictionSite": 1.0,
+    "InFrame": 1.0,
+    "NoInstabilityMotif": 0.3333,
+    "NoCpGIsland": 1.0,
+    "NoCrypticPromoter(eukaryote, 0.7)": 0.0,
+    "NoUnexpectedTMDomain(True, 0.68)": 0.6667,
+    "mRNASecondaryStructure(0, 50, -15.0)": 0.0,
+    "CoTranslationalFolding(Homo_sapiens, 0.3)": 0.0,
+    "BiosecurityScreening": 1.0,
+    "Immunogenicity": 0.0,
+    "PrimerCompatibility": 1.0,
+    "CodonAdapted(Mus_musculus, 0.5)": 1.0,
+    "CoTranslationalFolding(Mus_musculus, 0.3)": 0.0,
+    "CodonAdapted(CHO, 0.5)": 1.0,
+    "CoTranslationalFolding(CHO, 0.3)": 0.0,
+    "CodonAdapted(E_coli, 0.5)": 1.0,
+    "NoCrypticPromoter(E_coli, 0.7)": 0.0,
+    "CoTranslationalFolding(E_coli, 0.3)": 0.0,
+    "CodonAdapted(Bacillus_subtilis, 0.5)": 1.0,
+    "CoTranslationalFolding(Bacillus_subtilis, 0.3)": 0.0
+  },
+  "hardest_layers": [
+    "NoCrypticSplice",
+    "NoCrypticPromoter(eukaryote, 0.7)",
+    "mRNASecondaryStructure(0, 50, -15.0)",
+    "CoTranslationalFolding(Homo_sapiens, 0.3)",
+    "Immunogenicity"
+  ],
+  "easiest_layers": [
+    "PrimerCompatibility",
+    "CodonAdapted(Mus_musculus, 0.5)",
+    "CodonAdapted(CHO, 0.5)",
+    "CodonAdapted(E_coli, 0.5)",
+    "CodonAdapted(Bacillus_subtilis, 0.5)"
+  ],
+  "results": [
+    {
+      "protein_name": "Insulin_Homo_sapiens",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGGCCCTCTGGATGAGACTCCTCCCCCTCCTGGCCCTCCTGGCCCTCTGGGGCCCTGACCCTGCTGCTGCCTTTGTGAACCAACACCTCTGCGGCAGCCACCTGGTGGAAGCCCTCTACCTGGTGTGCGGCGAGAGAGGCTTCTTCTACACCCCCAAAACCAGAAGAGAAGCTGAGGACCTCCAAGTGGGCCAAGTGGAACTGGGAGGAGGCCCTGGAGCTGGCAGCCTCCAACCCCTGGCCCTGGAGGGCAGCCTCCAAAAAAGAGGCATTGTGGAACAATGCTGCACCAGCATCTGCAGCCTCTACCAACTGGAGAACTACTGCAAC",
+      "gc_content": 0.6066,
+      "cai": 0.7243,
+      "optimization_time_s": 0.006805419921875,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 4.67 at pos 105"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.762) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "22 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "GH_Homo_sapiens",
+      "protein": "FPTIPLSRLFDNAMLRAGIVHFCIDRAGRKFDLQKTEGHVVVLAEAMKMDGVVVRSLRLNEHKVDAYLRNLKEFHEKFQKLPSPEYKEFTKRINLLQDSMLSVSRLGHAIEKLTSEAPKLLDENQK",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "TTCCCCACCATCCCCCTCAGCAGACTCTTTGACAATGCCATGCTCAGAGCTGGCATTGTGCACTTCTGCATTGACAGAGCTGGCAGAAAATTTGACCTCCAAAAAACTGAGGGCCATGTGGTGGTGCTGGCTGAGGCCATGAAAATGGATGGAGTGGTGGTGAGAAGCCTCAGACTCAATGAGCACAAAGTGGATGCCTACCTCAGAAACCTCAAAGAATTTCATGAGAAATTCCAAAAACTCCCCAGCCCTGAATACAAAGAATTTACCAAAAGAATCAACCTCCTCCAAGACAGCATGCTCTCTGTGAGCAGACTGGGCCATGCCATTGAGAAACTCACCTCTGAGGCCCCCAAACTCCTGGATGAGAACCAAAAA",
+      "gc_content": 0.4829,
+      "cai": 0.6703,
+      "optimization_time_s": 0.008921146392822266,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 10.76 at pos 18"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [263]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.845) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-8.5 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "22 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "HBB_Homo_sapiens",
+      "protein": "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGGTGCACCTCACCCCTGAGGAAAAATCTGCTGTGACTGCCCTCTGGGGCAAAGTGAATGTGGATGAGGTGGGAGGAGAGGCCCTGGGCAGACTCCTGGTGGTGTACCCCTGGACCCAAAGATTCTTTGAGAGCTTTGGAGACCTCAGCACCCCTGATGCTGTGATGGGCAACCCCAAAGTGAAAGCCCATGGCAAAAAAGTGCTGGGAGCCTTCTCTGATGGCCTGGCCCACCTGGACAACCTCAAAGGCACCTTTGCCACCCTCTCTGAGCTCCACTGCGACAAACTCCATGTGGACCCTGAGAACTTCAGACTCCTGGGCAATGTGCTGGTGTGCGTGCTGGCCCACCACTTTGGCAAAGAATTTACCCCCCCTGTGCAAGCTGCCTACCAAAAAGTGGTGGCTGGAGTGGCCAATGCCCTGGCCCACAAATACCAC",
+      "gc_content": 0.5631,
+      "cai": 0.7421,
+      "optimization_time_s": 0.011407613754272461,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 7.10 at pos 271"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [365]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.833) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-9.2 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "37 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9226,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 1233,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 3,
+      "uncertain_count": 3
+    },
+    {
+      "protein_name": "Insulin_Mus_musculus",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "Mus_musculus",
+      "optimized_sequence": "ATGGCCCTCTGGATGAGACTCCTCCCCCTCCTGGCCCTCCTGGCCCTCTGGGGCCCTGACCCTGCTGCTGCCTTTGTGAACCAACACCTCTGCGGCAGCCACCTGGTGGAAGCCCTCTACCTGGTGTGCGGCGAGAGAGGCTTCTTCTACACCCCCAAAACCAGAAGAGAAGCTGAGGACCTCCAAGTGGGCCAAGTGGAACTGGGAGGAGGCCCTGGAGCTGGCAGCCTCCAACCCCTGGCCCTGGAGGGCAGCCTCCAAAAAAGAGGCATTGTGGAACAATGCTGCACCAGCATCTGCAGCCTCTACCAACTGGAGAACTACTGCAAC",
+      "gc_content": 0.6066,
+      "cai": 0.8268,
+      "optimization_time_s": 0.006737470626831055,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 4.67 at pos 105"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Mus_musculus, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.762) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Mus_musculus, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "21 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "GH_Mus_musculus",
+      "protein": "FPTIPLSRLFDNAMLRAGIVHFCIDRAGRKFDLQKTEGHVVVLAEAMKMDGVVVRSLRLNEHKVDAYLRNLKEFHEKFQKLPSPEYKEFTKRINLLQDSMLSVSRLGHAIEKLTSEAPKLLDENQK",
+      "organism": "Mus_musculus",
+      "optimized_sequence": "TTCCCCACCATCCCCCTCAGCAGACTCTTTGACAATGCCATGCTCAGAGCTGGCATTGTGCACTTCTGCATTGACAGAGCTGGCAGAAAATTTGACCTCCAAAAAACAGAGGGCCATGTGGTGGTGCTGGCTGAGGCCATGAAAATGGATGGAGTGGTGGTGAGAAGCCTCAGACTCAATGAGCACAAAGTGGATGCCTACCTCAGAAACCTCAAAGAATTTCATGAGAAATTCCAAAAACTCCCCAGCCCTGAATACAAAGAATTTACCAAAAGAATCAACCTCCTCCAAGACAGCATGCTCTCTGTGAGCAGACTGGGCCATGCCATTGAGAAACTCACCTCTGAGGCCCCCAAACTCCTGGATGAGAACCAAAAA",
+      "gc_content": 0.4829,
+      "cai": 0.8262,
+      "optimization_time_s": 0.008629083633422852,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 10.76 at pos 18"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Mus_musculus, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [263]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.845) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-8.5 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Mus_musculus, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "24 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "HBB_Mus_musculus",
+      "protein": "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+      "organism": "Mus_musculus",
+      "optimized_sequence": "ATGGTGCACCTCACCCCTGAGGAAAAATCTGCTGTGACAGCCCTCTGGGGCAAAGTGAATGTGGATGAGGTGGGAGGAGAGGCCCTGGGCAGACTCCTGGTGGTGTACCCCTGGACCCAAAGATTCTTTGAGAGCTTTGGAGACCTCAGCACCCCTGATGCTGTGATGGGCAACCCCAAAGTGAAAGCCCATGGCAAAAAAGTGCTGGGAGCCTTCTCTGATGGCCTGGCCCACCTGGACAACCTCAAAGGCACCTTTGCCACCCTCTCTGAGCTCCACTGCGACAAACTCCATGTGGACCCTGAGAACTTCAGACTCCTGGGCAATGTGCTGGTGTGCGTGCTGGCCCACCACTTTGGCAAAGAATTTACCCCCCCTGTGCAAGCTGCCTACCAAAAAGTGGTGGCTGGAGTGGCCAATGCCCTGGCCCACAAATACCAC",
+      "gc_content": 0.5631,
+      "cai": 0.8706,
+      "optimization_time_s": 0.011266708374023438,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 7.10 at pos 271"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Mus_musculus, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [365]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.833) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-9.2 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Mus_musculus, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "39 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9226,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 1233,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 3,
+      "uncertain_count": 3
+    },
+    {
+      "protein_name": "Insulin_CHO",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "CHO",
+      "optimized_sequence": "ATGGCCCTCTGGATGAGACTCCTCCCCCTCCTGGCCCTCCTGGCCCTCTGGGGCCCTGACCCTGCTGCTGCCTTTGTGAACCAACACCTCTGCGGCAGCCACCTGGTGGAAGCCCTCTACCTGGTGTGCGGCGAGAGAGGCTTCTTCTACACCCCCAAAACCAGAAGAGAAGCTGAGGACCTCCAAGTGGGCCAAGTGGAACTGGGAGGAGGCCCTGGAGCTGGCAGCCTCCAACCCCTGGCCCTGGAGGGCAGCCTCCAAAAAAGAGGCATTGTGGAACAATGCTGCACCAGCATCTGCAGCCTCTACCAACTGGAGAACTACTGCAAC",
+      "gc_content": 0.6066,
+      "cai": 0.8168,
+      "optimization_time_s": 0.006918907165527344,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 4.67 at pos 105"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(CHO, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.762) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(CHO, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "21 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "GH_CHO",
+      "protein": "FPTIPLSRLFDNAMLRAGIVHFCIDRAGRKFDLQKTEGHVVVLAEAMKMDGVVVRSLRLNEHKVDAYLRNLKEFHEKFQKLPSPEYKEFTKRINLLQDSMLSVSRLGHAIEKLTSEAPKLLDENQK",
+      "organism": "CHO",
+      "optimized_sequence": "TTCCCCACCATCCCCCTCAGCAGACTCTTTGACAATGCCATGCTCAGAGCTGGCATTGTGCACTTCTGCATTGACAGAGCTGGCAGAAAATTTGACCTCCAAAAAACAGAGGGCCATGTGGTGGTGCTGGCTGAGGCCATGAAAATGGATGGAGTGGTGGTGAGAAGCCTCAGACTCAATGAGCACAAAGTGGATGCCTACCTCAGAAACCTCAAAGAATTTCATGAGAAATTCCAAAAACTCCCCAGCCCTGAATACAAAGAATTTACCAAAAGAATCAACCTCCTCCAAGACAGCATGCTCTCTGTGAGCAGACTGGGCCATGCCATTGAGAAACTCACCTCTGAGGCCCCCAAACTCCTGGATGAGAACCAAAAA",
+      "gc_content": 0.4829,
+      "cai": 0.8119,
+      "optimization_time_s": 0.00863957405090332,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 10.76 at pos 18"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(CHO, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [263]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.845) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-8.5 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(CHO, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "24 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "HBB_CHO",
+      "protein": "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+      "organism": "CHO",
+      "optimized_sequence": "ATGGTGCACCTCACCCCTGAGGAAAAATCTGCTGTGACAGCCCTCTGGGGCAAAGTGAATGTGGATGAGGTGGGAGGAGAGGCCCTGGGCAGACTCCTGGTGGTGTACCCCTGGACCCAAAGATTCTTTGAGAGCTTTGGAGACCTCAGCACCCCTGATGCTGTGATGGGCAACCCCAAAGTGAAAGCCCATGGCAAAAAAGTGCTGGGAGCCTTCTCTGATGGCCTGGCCCACCTGGACAACCTCAAAGGCACCTTTGCCACCCTCTCTGAGCTCCACTGCGACAAACTCCATGTGGACCCTGAGAACTTCAGACTCCTGGGCAATGTGCTGGTGTGCGTGCTGGCCCACCACTTTGGCAAAGAATTTACCCCCCCTGTGCAAGCTGCCTACCAAAAAGTGGTGGCTGGAGTGGCCAATGCCCTGGCCCACAAATACCAC",
+      "gc_content": 0.5631,
+      "cai": 0.8585,
+      "optimization_time_s": 0.011158466339111328,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": "Worst cryptic splice score 7.10 at pos 271"
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(CHO, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [365]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.833) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-9.2 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(CHO, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "39 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9226,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 1233,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 3,
+      "uncertain_count": 3
+    },
+    {
+      "protein_name": "Insulin_E_coli",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "E_coli",
+      "optimized_sequence": "ATGGCACTGTGGATGAGACTGCTGCCACTGCTGGCACTGCTGGCACTGTGGGGTCCAGATCCAGCAGCAGCATTTGTGAATCAGCATCTGTGTGGTTCTCATCTGGTGGAAGCACTGTATCTGGTGTGTGGTGAAAGAGGTTTCTTCTATACTCCAAAAACTAGAAGAGAAGCAGAAGATCTGCAGGTGGGTCAGGTGGAACTGGGTGGTGGTCCAGGTGCAGGTTCTCTGCAGCCACTGGCACTGGAAGGTTCTCTGCAGAAAAGAGGTATTGTGGAACAGTGTTGTACTTCTATTTGTTCTCTGTATCAGCTGGAAAATTATTGTAAT",
+      "gc_content": 0.4835,
+      "cai": 0.6706,
+      "optimization_time_s": 0.0021195411682128906,
+      "certificate_level": "GOLD",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(E_coli, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(E_coli, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Worst promoter score 0.667 at pos 73"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(E_coli, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "24 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "GH_E_coli",
+      "protein": "FPTIPLSRLFDNAMLRAGIVHFCIDRAGRKFDLQKTEGHVVVLAEAMKMDGVVVRSLRLNEHKVDAYLRNLKEFHEKFQKLPSPEYKEFTKRINLLQDSMLSVSRLGHAIEKLTSEAPKLLDENQK",
+      "organism": "E_coli",
+      "optimized_sequence": "TTTCCAACTATTCCACTGTCTAGACTGTTTGATAATGCAATGCTGAGAGCAGGTATTGTGCATTTTTGTATTGATAGAGCAGGTAGAAAATTTGATCTGCAGAAAACTGAAGGTCATGTGGTGGTGCTGGCAGAAGCAATGAAAATGGATGGTGTGGTGGTGAGATCTCTGAGACTGAATGAACATAAAGTGGATGCATATCTGAGAAATCTGAAAGAATTTCATGAAAAATTTCAGAAACTGCCATCTCCAGAATATAAAGAATTTACTAAAAGAATTAATCTGCTGCAGGATTCTATGCTGTCTGTGTCTAGACTGGGTCATGCAATTGAAAAACTGACTTCTGAAGCACCAAAACTGCTGGATGAAAATCAGAAA",
+      "gc_content": 0.3753,
+      "cai": 0.6327,
+      "optimization_time_s": 0.0020606517791748047,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(E_coli, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [263]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(E_coli, 0.7)",
+          "verdict": "FAIL",
+          "violation": "Worst promoter score 0.750 at pos 232"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-2.5 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(E_coli, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "19 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 3,
+      "uncertain_count": 3
+    },
+    {
+      "protein_name": "HBB_E_coli",
+      "protein": "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+      "organism": "E_coli",
+      "optimized_sequence": "ATGGTGCATCTGACTCCAGAAGAAAAATCTGCAGTGACTGCACTGTGGGGTAAAGTGAATGTGGATGAAGTGGGTGGTGAAGCACTGGGTAGACTGCTGGTGGTGTATCCATGGACTCAGAGATTTTTCGAATCTTTTGGTGATCTGTCTACTCCAGATGCAGTGATGGGTAATCCAAAAGTGAAAGCACATGGTAAAAAAGTGCTGGGTGCATTTTCTGATGGTCTGGCACATCTGGATAATCTGAAAGGTACTTTTGCAACTCTGTCTGAACTGCATTGTGATAAACTGCATGTTGATCCAGAAAATTTTAGACTGCTGGGTAATGTGCTGGTGTGTGTGCTGGCACATCATTTTGGTAAAGAATTTACTCCACCAGTGCAGGCAGCATATCAGAAAGTGGTGGCAGGTGTGGCAAATGCACTGGCACATAAATATCAT",
+      "gc_content": 0.4392,
+      "cai": 0.6991,
+      "optimization_time_s": 0.0027313232421875,
+      "certificate_level": "GOLD",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(E_coli, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [365]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(E_coli, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Worst promoter score 0.667 at pos 412"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-6.2 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(E_coli, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "24 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9226,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 1233,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 3,
+      "uncertain_count": 3
+    },
+    {
+      "protein_name": "Insulin_Bacillus_subtilis",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "Bacillus_subtilis",
+      "optimized_sequence": "ATGGCACTGTGGATGAGGCTGCTGCCACTGCTGGCACTGCTGGCACTGTGGGGTCCAGATCCAGCAGCAGCATTTGTGAATCAGCATCTGTGTGGTTCTCATCTGGTGGAAGCACTGTATCTGGTGTGTGGTGAAAGGGGTTTCTTCTATACTCCAAAAACTAGGAGGGAAGCAGAAGATCTGCAGGTGGGTCAGGTGGAACTGGGTGGTGGTCCAGGTGCAGGTTCTCTGCAGCCACTGGCACTGGAAGGTTCTCTGCAGAAAAGGGGTATTGTGGAACAGTGTTGTACTTCTATTTGTTCTCTGTATCAGCTGGAAAATTATTGTAAT",
+      "gc_content": 0.4985,
+      "cai": 0.7201,
+      "optimization_time_s": 0.0022115707397460938,
+      "certificate_level": "GOLD",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Bacillus_subtilis, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.762) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-10.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Bacillus_subtilis, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "22 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "GH_Bacillus_subtilis",
+      "protein": "FPTIPLSRLFDNAMLRAGIVHFCIDRAGRKFDLQKTEGHVVVLAEAMKMDGVVVRSLRLNEHKVDAYLRNLKEFHEKFQKLPSPEYKEFTKRINLLQDSMLSVSRLGHAIEKLTSEAPKLLDENQK",
+      "organism": "Bacillus_subtilis",
+      "optimized_sequence": "TTTCCAACTATTCCACTGTCTAGGCTGTTTGATAATGCAATGCTGAGGGCAGGTATTGTGCATTTTTGTATTGATAGGGCAGGTAGGAAATTTGATCTGCAGAAAACTGAAGGTCATGTGGTGGTGCTGGCAGAAGCAATGAAAATGGATGGTGTGGTGGTGAGGTCTCTGAGGCTGAATGAACATAAAGTGGATGCATATCTGAGGAATCTGAAAGAATTTCATGAAAAATTTCAGAAACTGCCATCTCCAGAATATAAAGAATTTACTAAAAGGATTAATCTGCTGCAGGATTCTATGCTGTCTGTGTCTAGGCTGGGTCATGCAATTGAAAAACTGACTTCTGAAGCACCAAAACTGCTGGATGAAAATCAGAAA",
+      "gc_content": 0.399,
+      "cai": 0.6954,
+      "optimization_time_s": 0.002282381057739258,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Bacillus_subtilis, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [263]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 1.000) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-4.0 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Bacillus_subtilis, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "26 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 2,
+      "uncertain_count": 4
+    },
+    {
+      "protein_name": "HBB_Bacillus_subtilis",
+      "protein": "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+      "organism": "Bacillus_subtilis",
+      "optimized_sequence": "ATGGTGCATCTGACTCCAGAAGAAAAATCTGCAGTGACTGCACTGTGGGGTAAAGTGAATGTGGATGAAGTGGGTGGTGAAGCACTGGGTAGGCTGCTGGTGGTGTATCCATGGACTCAGAGGTTTTTCGAATCTTTTGGTGATCTGTCTACTCCAGATGCAGTGATGGGTAATCCAAAAGTGAAAGCACATGGTAAAAAAGTGCTGGGTGCATTTTCTGATGGTCTGGCACATCTGGATAATCTGAAAGGTACTTTTGCAACTCTGTCTGAACTGCATTGTGATAAACTGCATGTTGATCCAGAAAATTTTAGGCTGCTGGGTAATGTGCTGGTGTGTGTGCTGGCACATCATTTTGGTAAAGAATTTACTCCACCAGTGCAGGCAGCATATCAGAAAGTGGTGGCAGGTGTGGCAAATGCACTGGCACATAAATATCAT",
+      "gc_content": 0.4459,
+      "cai": 0.7334,
+      "optimization_time_s": 0.002753019332885742,
+      "certificate_level": "GOLD",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Bacillus_subtilis, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "FAIL",
+          "violation": "Instability motifs at positions [365]"
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "UNCERTAIN",
+          "violation": "Promoter-like motif found (score 0.845) but lacks multiple elements \u2014 uncertain, may be cryptic promoter"
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "UNCERTAIN",
+          "violation": "mRNA secondary structure from GC heuristic fallback: dG=-6.2 kcal/mol [UNCERTAIN: heuristic estimate, not ViennaRNA]"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Bacillus_subtilis, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "30 potential pause site(s) replaced by fast codons \u2014 may affect co-translational folding"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9226,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 1233,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 3,
+      "uncertain_count": 3
+    }
+  ]
+}

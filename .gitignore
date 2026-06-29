@@ -1,0 +1,108 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.eggs/
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Lean4 / Lake
+.lake/
+*.olean
+*.ilean
+*.trace
+*.hash
+
+# LaTeX
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.toc
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.c
+*.bak
+*.orig
+*_backup.py
+
+# Numba compiled kernels (regenerable)
+*.nbc
+*.nbi
+
+# Benchmark output artifacts (regenerable)
+pdf/
+
+# Test output artifacts (regenerable — do not commit run outputs)
+tests/*.json
+tests/*.txt
+!tests/conftest.py
+!tests/README.md
+!tests/__init__.py
+
+# Benchmark/h2h output (regenerable)
+benchmark_h2h.json
+e2e_*.json
+e2e_*.txt
+secis_test_results.json
+compiler_test_results.json
+
+# Hypothesis cache
+.hypothesis/
+
+# Benchmark output
+benchmark_results/
+
+# Build artifacts
+src/biocompiler.egg-info/
+
+# Precomputed database caches
+*.db
+
+# Coverage XML reports
+coverage.xml
+
+# Profiling data
+*.prof
+
+# Environment variables
+.env
+
+# Release notes (generated)
+RELEASE_NOTES.md
+
+# Mutation testing reports
+mutmut-report.html
+
+compile_all_papers.py

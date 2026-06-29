@@ -1,0 +1,84 @@
+# BioCompiler Splicing Grammar: EGFP in HEK293T
+# Reference: Clontech pEGFP-C1 (U55763.1), Cormack et al. 1996
+# ADR-0007: Declarative YAML grammar configuration
+
+gene:
+  name: "EGFP"
+  full_name: "Enhanced Green Fluorescent Protein"
+  organism: "Aequorea_victoria"  # Original source
+  expression_organism: "Homo_sapiens"  # Codon-optimized for
+  refseq: "U55763.1"
+  mutations_from_wt: "F64L, S65T"
+
+pre_mrna:
+  length_bp: 720
+  sequence_source: "biocompiler_data.EGFP_CDS"
+  notes: "EGFP is a single-exon gene (no introns) as used in expression constructs"
+
+exons:
+  - id: "exon1"
+    start: 1
+    end: 720
+    length: 720
+    description: "Complete CDS (239 aa + TGA stop)"
+
+introns: []  # Single-exon gene
+
+# NDFST construction rules for this gene
+ndfst:
+  cell_type: "HEK293T"
+  splice_consensus:
+    donor: "GT"
+    acceptor: "AG"
+  # Single-exon gene: NDFST produces exactly one isoform
+  expected_isoforms: 1
+  notes: >
+    Since EGFP has no introns, the NDFST is trivial:
+    it reads the entire sequence and produces exactly one output
+    (the input itself). This guarantees SpliceCorrect for any
+    sequence that doesn't contain cryptic splice sites.
+
+# Type checking parameters for this gene
+type_system:
+  predicates:
+    - name: "SpliceCorrect"
+      cell_type: "HEK293T"
+      expected_isoforms: 1  # Single-exon gene → always singleton
+
+    - name: "NoCrypticSplice"
+      cryptic_threshold: 3.0  # MaxEntScan score threshold
+      uncertain_lo: 1.5       # Lower bound of uncertain zone (borderline sites)
+      notes: >
+        Check the entire CDS for GT/AG dinucleotides that could
+        function as splice sites if this gene were inserted into
+        a genomic context with introns. Sites with scores in
+        [uncertain_lo, cryptic_threshold) are borderline — they
+        COULD be functional but aren't definitively strong.
+
+    - name: "CodonAdapted"
+      organism: "Homo_sapiens"
+      threshold: 0.70
+      notes: "EGFP is codon-optimized for human cells; CAI should be high"
+
+    - name: "GCInRange"
+      lo: 0.30
+      hi: 0.70
+      notes: "EGFP CDS GC content is typically ~59-61%"
+
+    - name: "NoRestrictionSite"
+      enzyme_sites:
+        - "EcoRI"    # GAATTC
+        - "BamHI"    # GGATCC
+        - "XhoI"     # CTCGAG
+        - "HindIII"  # AAGCTT
+        - "NotI"     # GCGGCCGC
+
+    - name: "InFrame"
+      reading_frame: 0
+      exon_boundaries: [720]  # Single boundary at end of CDS
+      notes: "No exon boundaries to check; only need no premature stops"
+
+    - name: "NoInstabilityMotif"
+      check_attta: true
+      check_u_rich: true
+      u_rich_min_length: 6

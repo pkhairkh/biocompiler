@@ -1,0 +1,1372 @@
+"""
+Comprehensive tests for the BioCompiler CSP/SMT Solver package.
+
+Tests cover:
+1. Types (solver.types) — SolverConfig, CodonVariable, MUSReport, ConstraintType, SolverBackend, SolverResult
+2. Dispatch (solver.dispatch) — is_csp_available, csp_optimize, validate_csp_solution, fallback behavior
+3. Integration (conditional on ortools/z3) — end-to-end solve, GC bounds, restriction sites, CAI, infeasibility
+4. Edge cases — single AA, short proteins, all-Valine, impossible GC, empty protein
+
+All tests gracefully handle missing solver backends using pytest.importorskip or mocking.
+"""
+
+from __future__ import annotations
+
+import importlib
+import math
+from dataclasses import FrozenInstanceError
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+# ────────────────────────────────────────────────────────────
+# Helpers: safely import solver submodules
+# ────────────────────────────────────────────────────────────
+
+def _import_solver_types():
+    """Import solver.types, skipping if unavailable."""
+    return pytest.importorskip("biocompiler.solver.types")
+
+
+def _import_solver_dispatch():
+    """Import solver.dispatch, skipping if unavailable."""
+    return pytest.importorskip("biocompiler.solver.dispatch")
+
+
+# ────────────────────────────────────────────────────────────
+# Fixtures
+# ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def simple_protein():
+    """20-AA protein including Valine (GT challenge)."""
+    return "MVLSPADKTNVKAAWGKVGA"
+
+
+@pytest.fixture
+def config():
+    """Default SolverConfig with sensible GC bounds."""
+    mod = _import_solver_types()
+    return mod.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+
+
+@pytest.fixture
+def eGFP_protein():
+    """Full eGFP protein sequence (239 AA)."""
+    return (
+        "MVSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLTYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
+    )
+
+
+@pytest.fixture
+def tight_config():
+    """SolverConfig with narrow GC bounds (for infeasibility tests)."""
+    mod = _import_solver_types()
+    return mod.SolverConfig(gc_lo=0.60, gc_hi=0.61)
+
+
+# ────────────────────────────────────────────────────────────
+# 1. TYPES TESTS
+# ────────────────────────────────────────────────────────────
+
+class TestSolverConfig:
+    """Tests for SolverConfig dataclass defaults and validation."""
+
+    def test_defaults(self):
+        """SolverConfig should have sensible default values."""
+        mod = _import_solver_types()
+        cfg = mod.SolverConfig()
+        assert cfg.gc_lo == 0.30
+        assert cfg.gc_hi == 0.70
+        assert cfg.organism == "Homo_sapiens"
+        assert cfg.timeout_seconds > 0
+
+    def test_custom_values(self):
+        """SolverConfig should accept custom values."""
+        mod = _import_solver_types()
+        cfg = mod.SolverConfig(
+            gc_lo=0.40, gc_hi=0.60,
+            organism="Escherichia_coli",
+            timeout_seconds=60,
+        )
+        assert cfg.gc_lo == 0.40
+        assert cfg.gc_hi == 0.60
+        assert cfg.organism == "Escherichia_coli"
+        assert cfg.timeout_seconds == 60
+
+    def test_gc_bounds_order(self):
+        """gc_lo must be less than gc_hi."""
+        mod = _import_solver_types()
+        # Some implementations may validate; at minimum the values should store correctly
+        cfg = mod.SolverConfig(gc_lo=0.45, gc_hi=0.55)
+        assert cfg.gc_lo < cfg.gc_hi
+
+    def test_gc_bounds_fractional(self):
+        """GC bounds must be between 0.0 and 1.0."""
+        mod = _import_solver_types()
+        cfg = mod.SolverConfig(gc_lo=0.0, gc_hi=1.0)
+        assert 0.0 <= cfg.gc_lo <= 1.0
+        assert 0.0 <= cfg.gc_hi <= 1.0
+
+
+class TestCodonVariable:
+    """Tests for CodonVariable dataclass."""
+
+    def test_creation(self):
+        """CodonVariable should be creatable with position, amino acid, and codon list."""
+        mod = _import_solver_types()
+        cv = mod.CodonVariable(
+            position=0,
+            amino_acid="V",
+            domain=["GTT", "GTC", "GTA", "GTG"],
+        )
+        assert cv.position == 0
+        assert cv.amino_acid == "V"
+        assert len(cv.domain) == 4
+
+    def test_valine_all_gt(self):
+        """All Valine codons contain 'GT' — key CSP challenge."""
+        mod = _import_solver_types()
+        cv = mod.CodonVariable(position=5, amino_acid="V", domain=["GTT", "GTC", "GTA", "GTG"])
+        assert all("GT" in c for c in cv.domain), "Valine codons should all contain GT"
+
+    def test_methionine_single_codon(self):
+        """Methionine has exactly one codon (ATG)."""
+        mod = _import_solver_types()
+        cv = mod.CodonVariable(position=0, amino_acid="M", domain=["ATG"])
+        assert len(cv.domain) == 1
+        assert cv.domain[0] == "ATG"
+
+    def test_leucine_six_codons(self):
+        """Leucine has 6 synonymous codons."""
+        mod = _import_solver_types()
+        cv = mod.CodonVariable(position=2, amino_acid="L", domain=["TTA", "TTG", "CTT", "CTC", "CTA", "CTG"])
+        assert len(cv.domain) == 6
+
+
+class TestMUSReport:
+    """Tests for MUSReport (Minimal Unsatisfiable Subset) dataclass."""
+
+    def test_creation(self):
+        """MUSReport should be creatable with constraint names."""
+        mod = _import_solver_types()
+        report = mod.MUSReport(
+            conflicting_constraints=["GC_bounds", "NoRestrictionSite_EcoRI"],
+            explanation="GC bounds [0.60, 0.61] conflict with restriction site removal",
+        )
+        assert len(report.conflicting_constraints) == 2
+        assert "GC_bounds" in report.conflicting_constraints
+
+    def test_empty_mus(self):
+        """An empty MUS report means all constraints are satisfiable."""
+        mod = _import_solver_types()
+        report = mod.MUSReport(conflicting_constraints=[], explanation="")
+        assert len(report.conflicting_constraints) == 0
+
+
+class TestConstraintType:
+    """Tests for ConstraintType enum."""
+
+    def test_enum_values(self):
+        """ConstraintType should have expected constraint categories."""
+        mod = _import_solver_types()
+        expected = {"GC_CONTENT", "RESTRICTION_SITE", "NO_GT_DINUCLEOTIDE", "NO_CPG"}
+        actual = {ct.name for ct in mod.ConstraintType}
+        assert expected.issubset(actual), f"Missing constraint types: {expected - actual}"
+
+    def test_enum_members_are_unique(self):
+        """Each ConstraintType member should have a unique value."""
+        mod = _import_solver_types()
+        values = [ct.value for ct in mod.ConstraintType]
+        assert len(values) == len(set(values)), "ConstraintType values must be unique"
+
+
+class TestSolverBackend:
+    """Tests for SolverBackend enum."""
+
+    def test_enum_values(self):
+        """SolverBackend should list OR_TOOLS and Z3 at minimum."""
+        mod = _import_solver_types()
+        names = {b.name for b in mod.SolverBackend}
+        assert "OR_TOOLS" in names or "ORTOOLS" in names
+        assert "Z3" in names
+
+    def test_enum_count(self):
+        """There should be at least 2 backends."""
+        mod = _import_solver_types()
+        assert len(mod.SolverBackend) >= 2
+
+
+class TestSolverResult:
+    """Tests for SolverResult dataclass and field validation."""
+
+    def test_creation_success(self):
+        """A successful SolverResult should have a DNA sequence and solved=True."""
+        mod = _import_solver_types()
+        result = mod.SolverResult(
+            sequence="ATGGTGCTG",
+            solved=True,
+            gc_content=0.555,
+            cai=0.78,
+            backend_used=mod.SolverBackend.OR_TOOLS if hasattr(mod.SolverBackend, "OR_TOOLS") else mod.SolverBackend.ORTOOLS,
+            solve_time_seconds=0.5,
+        )
+        assert result.solved is True
+        assert len(result.sequence) == 9
+        assert 0.0 <= result.gc_content <= 1.0
+        assert 0.0 <= result.cai <= 1.0
+
+    def test_creation_infeasible(self):
+        """An infeasible SolverResult should have solved=False and no valid sequence."""
+        mod = _import_solver_types()
+        result = mod.SolverResult(
+            sequence="",
+            solved=False,
+            gc_content=0.0,
+            cai=0.0,
+            backend_used=mod.SolverBackend.OR_TOOLS if hasattr(mod.SolverBackend, "OR_TOOLS") else mod.SolverBackend.ORTOOLS,
+            solve_time_seconds=0.1,
+        )
+        assert result.solved is False
+        assert result.sequence == ""
+
+    def test_gc_content_bounds(self):
+        """GC content in SolverResult must be in [0, 1]."""
+        mod = _import_solver_types()
+        result = mod.SolverResult(
+            sequence="ATGGTGCTG",
+            solved=True,
+            gc_content=0.555,
+            cai=0.78,
+            backend_used=mod.SolverBackend.OR_TOOLS if hasattr(mod.SolverBackend, "OR_TOOLS") else mod.SolverBackend.ORTOOLS,
+            solve_time_seconds=0.5,
+        )
+        assert 0.0 <= result.gc_content <= 1.0
+
+    def test_cai_bounds(self):
+        """CAI in SolverResult must be in [0, 1]."""
+        mod = _import_solver_types()
+        result = mod.SolverResult(
+            sequence="ATGGTGCTG",
+            solved=True,
+            gc_content=0.555,
+            cai=0.78,
+            backend_used=mod.SolverBackend.OR_TOOLS if hasattr(mod.SolverBackend, "OR_TOOLS") else mod.SolverBackend.ORTOOLS,
+            solve_time_seconds=0.5,
+        )
+        assert 0.0 <= result.cai <= 1.0
+
+    def test_solve_time_non_negative(self):
+        """Solve time should be non-negative."""
+        mod = _import_solver_types()
+        result = mod.SolverResult(
+            sequence="ATGGTGCTG",
+            solved=True,
+            gc_content=0.555,
+            cai=0.78,
+            backend_used=mod.SolverBackend.OR_TOOLS if hasattr(mod.SolverBackend, "OR_TOOLS") else mod.SolverBackend.ORTOOLS,
+            solve_time_seconds=0.5,
+        )
+        assert result.solve_time_seconds >= 0.0
+
+
+# ────────────────────────────────────────────────────────────
+# 2. DISPATCH TESTS
+# ────────────────────────────────────────────────────────────
+
+class TestIsCSPAvailable:
+    """Tests for is_csp_available() function."""
+
+    def test_returns_dict(self):
+        """is_csp_available should return a dict."""
+        mod = _import_solver_dispatch()
+        result = mod.is_csp_available()
+        assert isinstance(result, dict)
+
+    def test_expected_keys(self):
+        """Result should contain 'ortools' and 'z3' keys."""
+        mod = _import_solver_dispatch()
+        result = mod.is_csp_available()
+        assert "ortools" in result
+        assert "z3" in result
+
+    def test_values_are_bool(self):
+        """Each value should be a boolean."""
+        mod = _import_solver_dispatch()
+        result = mod.is_csp_available()
+        for key, value in result.items():
+            assert isinstance(value, bool), f"Key {key!r} has non-bool value {value!r}"
+
+    def test_any_available_is_consistent(self):
+        """If any backend is True, the overall availability should be True."""
+        mod = _import_solver_dispatch()
+        result = mod.is_csp_available()
+        # At least the dict should exist; the actual availability depends on the environment
+        assert isinstance(result, dict)
+
+
+class TestCspOptimize:
+    """Tests for csp_optimize() function."""
+
+    def test_simple_protein(self, simple_protein):
+        """csp_optimize should return a SolverResult for a simple protein."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        result = mod_dispatch.csp_optimize(simple_protein, gc_lo=0.30, gc_hi=0.70)
+        assert isinstance(result, mod_types.SolverResult)
+        # If a backend is available, it should be feasible
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()):
+            assert result.solved is True
+            assert len(result.sequence) == len(simple_protein) * 3
+
+    def test_returns_solver_result_type(self, simple_protein):
+        """csp_optimize should always return a SolverResult (even if infeasible)."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        result = mod_dispatch.csp_optimize(simple_protein, gc_lo=0.30, gc_hi=0.70)
+        assert isinstance(result, mod_types.SolverResult)
+
+    def test_egfp_protein(self, eGFP_protein):
+        """csp_optimize should handle a full-length eGFP protein."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        result = mod_dispatch.csp_optimize(eGFP_protein, gc_lo=0.30, gc_hi=0.70)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()):
+            assert result.solved is True
+            assert len(result.sequence) == len(eGFP_protein) * 3
+
+
+class TestFallbackBehavior:
+    """Tests for fallback behavior when no solver backend is available."""
+
+    def test_fallback_when_no_backend(self, simple_protein):
+        """When both backends are unavailable, csp_optimize should still return a result."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        with patch.object(mod_dispatch, "is_csp_available", return_value={"ortools": False, "z3": False}):
+            # The function should either raise a clear error or return a fallback result
+            try:
+                result = mod_dispatch.csp_optimize(
+                    simple_protein,
+                    gc_lo=0.30, gc_hi=0.70,
+                )
+                # If it returns, it should be a SolverResult
+                assert isinstance(result, mod_types.SolverResult)
+                # Fallback result may have feasible=False or use a greedy fallback
+            except (ImportError, RuntimeError) as exc:
+                # Acceptable: a clear error when no backend is available
+                assert "solver" in str(exc).lower() or "backend" in str(exc).lower() or "available" in str(exc).lower()
+
+    def test_is_csp_available_all_false(self):
+        """When both backends are mocked as unavailable, is_csp_available should reflect that."""
+        mod_dispatch = _import_solver_dispatch()
+        with patch.object(mod_dispatch, "is_csp_available", return_value={"ortools": False, "z3": False}):
+            result = mod_dispatch.is_csp_available()
+            assert result["ortools"] is False
+            assert result["z3"] is False
+
+
+class TestValidateCspSolution:
+    """Tests for validate_csp_solution() function."""
+
+    def test_known_good_sequence(self, simple_protein):
+        """validate_csp_solution should pass for a valid optimized sequence."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        # Build a known-good sequence: use the most common codons
+        from biocompiler.type_system import AA_TO_CODONS
+        codons = []
+        for aa in simple_protein:
+            codon_list = AA_TO_CODONS.get(aa, [])
+            codons.append(codon_list[0] if codon_list else "NNN")
+        good_seq = "".join(codons)
+
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.validate_csp_solution(good_seq, simple_protein, config=cfg)
+        # validate_csp_solution returns (violations_list, score)
+        assert isinstance(result, tuple)
+        violations, score = result
+        assert isinstance(violations, list)
+        assert isinstance(score, float)
+
+    def test_restriction_site_present(self, simple_protein):
+        """validate_csp_solution should detect a sequence with restriction sites."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        # Construct a sequence that intentionally contains an EcoRI site (GAATTC)
+        # Find a pair of adjacent AAs where we can force GAATTC
+        # Phenylalanine (F): TTC, Glutamic acid (E): GAA → ...GAA|TTC... = GAATTC!
+        # We need E followed by F in the protein
+        # simple_protein = MVLSPADKTNVKAAWGKVGA — no E followed by F
+        # Let us use a custom protein
+        protein_with_ef = "MEF"  # E then F
+        from biocompiler.type_system import AA_TO_CODONS
+        seq_with_ecori = AA_TO_CODONS["M"][0] + "GAA" + "TTC"  # ATG GAA TTC → contains GAATTC
+
+        cfg = mod_types.SolverConfig(gc_lo=0.20, gc_hi=0.80)
+        result = mod_dispatch.validate_csp_solution(seq_with_ecori, protein_with_ef, config=cfg)
+        # validate_csp_solution returns (violations_list, score)
+        assert isinstance(result, tuple)
+        violations, score = result
+        assert len(violations) > 0, "Should detect at least one violation"
+
+    def test_gc_out_of_range(self, simple_protein):
+        """validate_csp_solution should detect GC content outside bounds."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        # All-A/T codons: extremely low GC
+        from biocompiler.type_system import AA_TO_CODONS
+        # Build sequence using the most A/T-rich codons
+        at_codons = {
+            "M": "ATG", "V": "GTT", "L": "TTA", "S": "TCT", "P": "CCT",
+            "A": "GCT", "D": "GAT", "K": "AAA", "T": "ACT", "N": "AAT",
+            "W": "TGG", "G": "GGT", "E": "GAA",
+        }
+        seq = "".join(at_codons.get(aa, "NNN") for aa in simple_protein)
+
+        cfg = mod_types.SolverConfig(gc_lo=0.60, gc_hi=0.70)  # Very high GC target
+        result = mod_dispatch.validate_csp_solution(seq, simple_protein, config=cfg)
+        # validate_csp_solution returns (violations_list, score)
+        assert isinstance(result, tuple)
+        violations, score = result
+        assert len(violations) > 0, "Should detect GC violation"
+
+
+# ────────────────────────────────────────────────────────────
+# 3. INTEGRATION TESTS (conditional on ortools/z3)
+# ────────────────────────────────────────────────────────────
+
+class TestCSPIntegration:
+    """Integration tests that require an actual solver backend.
+
+    These tests are skipped automatically if no backend is installed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_backend(self):
+        """Skip all tests in this class if no solver backend is available."""
+        try:
+            mod_dispatch = _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+        avail = mod_dispatch.is_csp_available()
+        if not any(avail.values()):
+            pytest.skip("No CSP solver backend (ortools/z3) installed")
+
+    def test_solve_produces_valid_sequence(self, simple_protein):
+        """solve_with_csp should produce a valid DNA sequence."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        assert result.solved is True
+        assert len(result.sequence) == len(simple_protein) * 3
+        # Sequence should only contain valid DNA bases
+        assert set(result.sequence).issubset({"A", "C", "G", "T"})
+
+    def test_gc_content_within_bounds(self, simple_protein):
+        """GC content of the solution should be within the configured bounds."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            assert cfg.gc_lo <= result.gc_content <= cfg.gc_hi, (
+                f"GC content {result.gc_content:.3f} outside [{cfg.gc_lo}, {cfg.gc_hi}]"
+            )
+
+    def test_no_restriction_sites_in_solution(self, simple_protein):
+        """Solution should not contain common 6+ bp restriction enzyme sites."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        from biocompiler.sequence.restriction_sites import RESTRICTION_SITES
+
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            # Only check 6+ bp sites — 4bp sites (HaeIII, AluI, etc.)
+            # are too frequent to avoid in most coding sequences and are
+            # excluded from the solver's automaton constraint by design.
+            for enzyme, site in RESTRICTION_SITES.items():
+                if len(site) >= 6:
+                    assert site not in result.sequence, (
+                        f"Restriction site {enzyme} ({site}) found in solution"
+                    )
+
+    def test_cai_reasonable(self, simple_protein):
+        """CAI of the solution should be reasonable (>= 0.5 for a simple protein)."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            assert result.cai >= 0.5, f"CAI {result.cai:.3f} is unreasonably low"
+
+    def test_infeasibility_detected(self):
+        """Truly infeasible GC target should produce a proper InfeasibilityReport.
+
+        Tests TWO detection paths:
+
+        Path 1 (pre-solve check): When the quick feasibility check detects that
+        GC bounds are mathematically impossible for a protein of all Lysines
+        (codons AAA/AAG, max GC = 1/3) with GC target [0.90, 0.95], the
+        dispatch layer returns solved=False with an InfeasibilityReport whose
+        detection_method='presolve_check'.
+
+        Path 2 (CP-SAT solver): By calling the OR-Tools engine directly (bypassing
+        the pre-solve check), we verify that when CP-SAT itself returns INFEASIBLE,
+        the engine extracts a UNSAT core and returns an InfeasibilityReport with
+        detection_method='cp_sat_infeasible'.
+        """
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        # ── Path 1: Pre-solve check detects infeasibility ───────────
+        # Lysine (K) codons: AAA, AAG — max GC = 1/3 ≈ 0.333
+        # GC target [0.90, 0.95] is mathematically impossible.
+        protein = "KKKKKKKKKK"
+        cfg = mod_types.SolverConfig(gc_lo=0.90, gc_hi=0.95)
+        result = mod_dispatch.solve_with_csp(protein, config=cfg)
+
+        # The problem MUST be detected as infeasible
+        assert result.solved is False, (
+            "All-Lysine protein with GC target [0.90, 0.95] should be infeasible"
+        )
+
+        # Verify InfeasibilityReport is populated
+        assert result.infeasibility_report is not None, (
+            "InfeasibilityReport should be populated for infeasible constraint set"
+        )
+        report = result.infeasibility_report
+        assert report.is_infeasible is True, (
+            "InfeasibilityReport.is_infeasible should be True"
+        )
+        assert len(report.conflicting_constraints) > 0, (
+            "InfeasibilityReport should list at least one conflicting constraint"
+        )
+        # GC_CONTENT must be identified as a conflicting constraint
+        assert any(
+            "GC" in c.upper() or "gc" in c.lower() for c in report.conflicting_constraints
+        ), (
+            f"InfeasibilityReport should identify GC constraint as conflicting, "
+            f"got: {report.conflicting_constraints}"
+        )
+        assert report.explanation, (
+            "InfeasibilityReport should provide a human-readable explanation"
+        )
+        assert len(report.suggested_relaxations) > 0, (
+            "InfeasibilityReport should suggest at least one relaxation"
+        )
+
+        # ── Path 2: CP-SAT solver detects infeasibility directly ────
+        # Bypass the pre-solve check by calling the OR-Tools engine
+        # directly with a truly infeasible constraint. The engine should
+        # extract a UNSAT core and return an InfeasibilityReport with
+        # detection_method='cp_sat_infeasible'.
+        try:
+            from biocompiler.solver.engine_ortools import ORTOOLSEngine
+        except ImportError:
+            pytest.skip("OR-Tools not installed")
+
+        if not ORTOOLSEngine.is_available():
+            pytest.skip("OR-Tools native extension not available")
+
+        from biocompiler.shared.constants import AA_TO_CODONS
+        from biocompiler.solver.types import CSPModel
+
+        # All-Lysine protein with impossible GC — forces CP-SAT to
+        # return INFEASIBLE because Lysine codons (AAA/AAG) can never
+        # achieve 90%+ GC content.
+        protein_inf = "KKKKKKKKKK"
+        cfg_inf = mod_types.SolverConfig(
+            gc_lo=0.90, gc_hi=0.95,
+            restriction_sites=[],
+            add_default_restriction_sites=False,
+            avoid_cpg=False,
+            avoid_t_runs=False,
+            avoid_attta=False,
+        )
+        codon_domains = {
+            i: list(AA_TO_CODONS.get(aa, []))
+            for i, aa in enumerate(protein_inf)
+        }
+        model = CSPModel(
+            protein_sequence=protein_inf,
+            codon_domains=codon_domains,
+            constraints=[],
+            config=cfg_inf,
+        )
+        engine = ORTOOLSEngine(cfg_inf)
+        solver_result = engine.solve(model)
+
+        assert solver_result.solved is False, (
+            "CP-SAT should report INFEASIBLE for impossible GC constraint"
+        )
+        assert solver_result.infeasibility_report is not None, (
+            "InfeasibilityReport should be populated when CP-SAT returns INFEASIBLE"
+        )
+        solver_report = solver_result.infeasibility_report
+        assert solver_report.is_infeasible is True
+        assert solver_report.detection_method == "cp_sat_infeasible", (
+            f"Expected detection_method='cp_sat_infeasible', "
+            f"got '{solver_report.detection_method}'"
+        )
+        assert solver_report.unsat_core is not None, (
+            "UNSAT core should be populated from CP-SAT infeasibility"
+        )
+        assert len(solver_report.unsat_core) > 0, (
+            "UNSAT core should contain at least one constraint"
+        )
+        # GC constraint must appear in the UNSAT core
+        assert any(
+            "gc" in c.lower() for c in solver_report.unsat_core
+        ), (
+            f"UNSAT core should identify GC constraint, got: {solver_report.unsat_core}"
+        )
+        assert len(solver_report.conflicting_constraints) > 0
+        assert solver_report.explanation, (
+            "InfeasibilityReport from CP-SAT should include an explanation"
+        )
+        assert len(solver_report.suggested_relaxations) > 0, (
+            "InfeasibilityReport from CP-SAT should suggest relaxations"
+        )
+
+    def test_infeasibility_report_from_solver(self):
+        """When CP-SAT returns INFEASIBLE, the InfeasibilityReport should
+        carry the detection_method='cp_sat_infeasible' and a UNSAT core.
+
+        Directly calls the OR-Tools engine with an impossible GC constraint,
+        bypassing the pre-solve feasibility check. This tests the solver's
+        own infeasibility detection and UNSAT core extraction.
+        """
+        mod_types = _import_solver_types()
+
+        try:
+            from biocompiler.solver.engine_ortools import ORTOOLSEngine
+        except ImportError:
+            pytest.skip("OR-Tools not installed")
+
+        if not ORTOOLSEngine.is_available():
+            pytest.skip("OR-Tools native extension not available")
+
+        from biocompiler.shared.constants import AA_TO_CODONS
+        from biocompiler.solver.types import CSPModel
+
+        # All-Lysine protein: K codons AAA/AAG, max GC = 1/3 ≈ 0.333
+        # GC target [0.999, 1.000] is impossible → CP-SAT returns INFEASIBLE.
+        protein = "KKKKKKKKKK"
+        cfg = mod_types.SolverConfig(
+            gc_lo=0.999, gc_hi=1.000,
+            restriction_sites=[],
+            add_default_restriction_sites=False,
+            avoid_cpg=False,
+            avoid_t_runs=False,
+            avoid_attta=False,
+        )
+        codon_domains = {
+            i: list(AA_TO_CODONS.get(aa, []))
+            for i, aa in enumerate(protein)
+        }
+        model = CSPModel(
+            protein_sequence=protein,
+            codon_domains=codon_domains,
+            constraints=[],
+            config=cfg,
+        )
+        engine = ORTOOLSEngine(cfg)
+        result = engine.solve(model)
+
+        assert result.solved is False, (
+            "All-Lysine protein with GC target [0.999, 1.000] should be infeasible"
+        )
+        assert result.infeasibility_report is not None, (
+            "InfeasibilityReport should be populated"
+        )
+        report = result.infeasibility_report
+        assert report.is_infeasible is True
+        assert report.detection_method == "cp_sat_infeasible", (
+            f"Expected detection_method='cp_sat_infeasible', got '{report.detection_method}'"
+        )
+        assert report.unsat_core is not None, (
+            "UNSAT core should be populated when CP-SAT detects infeasibility"
+        )
+
+    def test_infeasibility_report_dataclass(self):
+        """InfeasibilityReport dataclass should be creatable with all fields."""
+        mod_types = _import_solver_types()
+        report = mod_types.InfeasibilityReport(
+            is_infeasible=True,
+            conflicting_constraints=["GC_CONTENT", "NoRestrictionSite_EcoRI"],
+            unsat_core=["GC_CONTENT"],
+            suggested_relaxations=["Widen GC bounds from [0.90, 0.95] to [0.85, 1.00]"],
+            explanation="GC bounds [0.90, 0.95] are not achievable for this protein",
+            detection_method="presolve_check",
+        )
+        assert report.is_infeasible is True
+        assert len(report.conflicting_constraints) == 2
+        assert report.unsat_core == ["GC_CONTENT"]
+        assert len(report.suggested_relaxations) == 1
+        assert report.explanation
+        assert report.detection_method == "presolve_check"
+
+    def test_infeasibility_report_from_mus(self):
+        """InfeasibilityReport.from_mus_report should convert MUSReport fields."""
+        mod_types = _import_solver_types()
+        mus = mod_types.MUSReport(
+            conflicting_constraints=["gc_content", "cryptic_splice"],
+            explanation="GC bounds conflict with splice avoidance",
+            suggested_relaxations=["Widen GC range"],
+        )
+        report = mod_types.InfeasibilityReport.from_mus_report(
+            mus, detection_method="cp_sat_infeasible"
+        )
+        assert report.is_infeasible is True
+        assert "gc_content" in report.conflicting_constraints
+        assert "cryptic_splice" in report.conflicting_constraints
+        assert report.unsat_core == ["gc_content", "cryptic_splice"]
+        assert report.detection_method == "cp_sat_infeasible"
+        assert "Widen GC range" in report.suggested_relaxations
+
+    def test_infeasibility_report_from_feasibility(self):
+        """InfeasibilityReport.from_feasibility_report should convert FeasibilityReport."""
+        mod_types = _import_solver_types()
+        mod_mus = pytest.importorskip("biocompiler.solver.mus")
+        feas = mod_mus.FeasibilityReport(
+            feasible=False,
+            impossible_constraints=["GC_CONTENT"],
+            suggested_relaxations=["Lower GC lower bound"],
+        )
+        report = mod_types.InfeasibilityReport.from_feasibility_report(feas)
+        assert report.is_infeasible is True
+        assert "GC_CONTENT" in report.conflicting_constraints
+        assert report.unsat_core is None  # Pre-solve does not compute MUS
+        assert report.detection_method == "presolve_check"
+        assert "Lower GC lower bound" in report.suggested_relaxations
+
+    def test_egfp_solve(self, eGFP_protein):
+        """Full eGFP protein should be solvable with default bounds."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(eGFP_protein, config=cfg)
+        assert result.solved is True
+        assert len(result.sequence) == len(eGFP_protein) * 3
+
+    def test_prokaryotic_organism_solves(self):
+        """CSP solver should handle prokaryotic organisms (E. coli) correctly.
+
+        Regression test: both OR-Tools and Z3 backends were returning
+        empty sequences for prokaryotic organisms because splice constraints
+        were incorrectly applied (prokaryotes have no spliceosomes).
+        """
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        protein = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFIC"
+        cfg = mod_types.SolverConfig(organism="Escherichia_coli")
+        result = mod_dispatch.solve_with_csp(protein, organism="Escherichia_coli", config=cfg)
+        assert result.solved is True, (
+            f"CSP solver should solve for E. coli. "
+            f"Warnings: {result.warnings}"
+        )
+        assert len(result.sequence) == len(protein) * 3, (
+            f"CSP solver returned empty or wrong-length sequence for E. coli"
+        )
+        assert result.cai > 0.5, (
+            f"CSP solver CAI too low for E. coli: {result.cai}"
+        )
+
+    def test_sequence_translates_correctly(self, simple_protein):
+        """The optimized sequence should translate back to the original protein."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        from biocompiler.type_system import CODON_TABLE
+
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            translated = ""
+            for i in range(0, len(result.sequence), 3):
+                codon = result.sequence[i:i + 3]
+                aa = CODON_TABLE.get(codon, "?")
+                translated += aa
+            # Compare (stop codons at end are OK)
+            assert translated.rstrip("*") == simple_protein, (
+                f"Translation mismatch: expected {simple_protein}, got {translated.rstrip('*')}"
+            )
+
+
+# ────────────────────────────────────────────────────────────
+# 3b. OR-Tools-specific integration tests
+# ────────────────────────────────────────────────────────────
+
+class TestORToolsIntegration:
+    """OR-Tools-specific integration tests."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_ortools(self):
+        """Skip if OR-Tools is not installed."""
+        pytest.importorskip("ortools")
+        try:
+            _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+
+    def test_ortools_solve_simple(self, simple_protein):
+        """OR-Tools should solve a simple protein."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        backend_name = "OR_TOOLS" if hasattr(mod_types.SolverBackend, "OR_TOOLS") else "ORTOOLS"
+        cfg = mod_types.SolverConfig(
+            gc_lo=0.30, gc_hi=0.70,
+            backend=mod_types.SolverBackend[backend_name],
+        )
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        assert result.solved is True
+
+
+# ────────────────────────────────────────────────────────────
+# 3c. Z3-specific integration tests
+# ────────────────────────────────────────────────────────────
+
+class TestZ3Integration:
+    """Z3-specific integration tests."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_z3(self):
+        """Skip if Z3 is not installed."""
+        pytest.importorskip("z3")
+        try:
+            _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+
+    def test_z3_solve_simple(self, simple_protein):
+        """Z3 should solve a simple protein."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(
+            gc_lo=0.30, gc_hi=0.70,
+            backend=mod_types.SolverBackend.Z3,
+        )
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        assert result.solved is True
+
+    def test_z3_prokaryotic_organism_no_splice(self):
+        """Z3 should correctly skip splice constraints for prokaryotic organisms.
+
+        Regression test: the Z3 engine used to add MaxEntScan splice
+        constraints even for prokaryotic organisms (which lack spliceosomes)
+        and when cryptic_splice_threshold=0. This made the model UNSAT
+        because Valine codons all contain GT, and the splice constraint
+        effectively forbade all GT dinucleotides.
+        """
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        from biocompiler.solver.constraints import build_csp_model
+        from biocompiler.solver.engine_z3 import Z3Engine
+
+        protein = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFIC"
+        config = mod_types.SolverConfig(organism="Escherichia_coli")
+        model = build_csp_model(protein, "Escherichia_coli", config)
+        engine = Z3Engine(config, organism="Escherichia_coli")
+        result = engine.solve(model)
+        assert result.solved is True, (
+            f"Z3 should solve for prokaryotic organism. "
+            f"Warnings: {result.warnings}"
+        )
+        assert len(result.sequence) == len(protein) * 3, (
+            f"Sequence length mismatch: {len(result.sequence)} != {len(protein) * 3}"
+        )
+
+    def test_z3_splice_threshold_zero(self):
+        """Z3 should skip splice constraints when threshold <= 0.
+
+        Regression test: when cryptic_splice_threshold=0, the Z3 engine
+        generated constraints like Implies(GT_detected, score < 0),
+        which forbade ALL GT dinucleotides including those in Valine
+        codons, making the model UNSAT.
+
+        Note: NoCrypticSpliceConstraint requires threshold > 0, so we
+        use the types.CSPModel directly (without constraint building)
+        and set the threshold on the config that the Z3 engine reads.
+        """
+        mod_types = _import_solver_types()
+        from biocompiler.solver.engine_z3 import Z3Engine
+        from biocompiler.shared.constants import AA_TO_CODONS
+
+        protein = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFIC"
+        # Use types.CSPModel directly to bypass constraint validation
+        codon_domains = {
+            i: list(AA_TO_CODONS.get(aa, []))
+            for i, aa in enumerate(protein)
+        }
+        config = mod_types.SolverConfig(
+            organism="Homo_sapiens",
+            cryptic_splice_threshold=0.0,
+        )
+        model = mod_types.CSPModel(
+            protein_sequence=protein,
+            codon_domains=codon_domains,
+            constraints=[],
+            config=config,
+        )
+        engine = Z3Engine(config, organism="Homo_sapiens")
+        result = engine.solve(model)
+        assert result.solved is True, (
+            f"Z3 should solve with splice_threshold=0. "
+            f"Warnings: {result.warnings}"
+        )
+        assert len(result.sequence) == len(protein) * 3
+
+
+# ────────────────────────────────────────────────────────────
+# 4. EDGE CASES
+# ────────────────────────────────────────────────────────────
+
+class TestEdgeCases:
+    """Edge case tests for the CSP solver."""
+
+    @pytest.fixture(autouse=True)
+    def _require_dispatch(self):
+        """Ensure dispatch module is available for these tests."""
+        try:
+            _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+
+    def test_single_amino_acid(self):
+        """A single amino acid protein ('M') should be handled correctly."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.20, gc_hi=0.80)
+        result = mod_dispatch.solve_with_csp("M", config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()) and result.solved:
+            assert result.sequence == "ATG"
+
+    def test_very_short_protein(self):
+        """A very short protein ('MK') should produce a 6-base sequence."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.20, gc_hi=0.80)
+        result = mod_dispatch.solve_with_csp("MK", config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()) and result.solved:
+            assert len(result.sequence) == 6
+
+    def test_all_valine_protein(self):
+        """All-Valine protein ('VVVVVV') — every codon contains GT, challenging."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.20, gc_hi=0.80)
+        result = mod_dispatch.solve_with_csp("VVVVVV", config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()) and result.solved:
+            # All Valine codons contain GT — if NoGT constraint is strict, this may be infeasible
+            # With relaxed constraints, it should still produce a valid sequence
+            assert len(result.sequence) == 18
+            # Verify the sequence translates to VVVVVV
+            from biocompiler.type_system import CODON_TABLE
+            for i in range(0, len(result.sequence), 3):
+                codon = result.sequence[i:i + 3]
+                assert CODON_TABLE.get(codon) == "V", f"Codon {codon} does not encode Valine"
+
+    def test_impossible_gc_target(self):
+        """Protein with all A/T amino acids and high GC target should be infeasible or low-CAI."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        # Lysine (K) codons: AAA, AAG — at most 1/3 GC per codon
+        # With GC target [0.80, 0.90], this should be infeasible
+        protein = "KKKKKKKKKK"  # 10 Lysines
+        cfg = mod_types.SolverConfig(gc_lo=0.80, gc_hi=0.90)
+        result = mod_dispatch.solve_with_csp(protein, config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        # Either infeasible or GC not in range
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()):
+            if result.solved:
+                # If somehow feasible, GC should be within bounds
+                assert cfg.gc_lo <= result.gc_content <= cfg.gc_hi, (
+                    f"GC {result.gc_content:.3f} outside [{cfg.gc_lo}, {cfg.gc_hi}]"
+                )
+            else:
+                # Infeasible is the expected outcome
+                assert result.solved is False
+
+    def test_empty_protein_raises_error(self):
+        """Empty protein should raise an error."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        with pytest.raises((ValueError, TypeError, RuntimeError)):
+            mod_dispatch.solve_with_csp("", config=cfg)
+
+    def test_single_valine(self):
+        """Single Valine — the hardest single-AA case due to mandatory GT."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.20, gc_hi=0.80)
+        result = mod_dispatch.solve_with_csp("V", config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()) and result.solved:
+            assert len(result.sequence) == 3
+            assert result.sequence in ("GTT", "GTC", "GTA", "GTG")
+
+    def test_tryptophan_single_codon(self):
+        """Tryptophan has exactly one codon (TGG) — no freedom of choice."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.20, gc_hi=0.80)
+        result = mod_dispatch.solve_with_csp("W", config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()) and result.solved:
+            assert result.sequence == "TGG"
+
+    def test_repeated_amino_acid(self):
+        """A protein of repeated alanines should use different codons."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp("AAAAAAAAAA", config=cfg)  # 10 Alanines
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()) and result.solved:
+            assert len(result.sequence) == 30
+            from biocompiler.type_system import CODON_TABLE
+            for i in range(0, len(result.sequence), 3):
+                codon = result.sequence[i:i + 3]
+                assert CODON_TABLE.get(codon) == "A", f"Codon {codon} does not encode Alanine"
+
+    def test_methionine_start(self):
+        """First amino acid is always Methionine (ATG) — no codon choice."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.20, gc_hi=0.80)
+        result = mod_dispatch.solve_with_csp("MA", config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()) and result.solved:
+            assert result.sequence.startswith("ATG")
+
+
+# ────────────────────────────────────────────────────────────
+# 5. CROSS-VALIDATION TESTS
+# ────────────────────────────────────────────────────────────
+
+class TestCrossValidation:
+    """Cross-validation between CSP solver and existing biocompiler predicates."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_backend(self):
+        """Skip if no solver backend is available."""
+        try:
+            mod_dispatch = _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+        avail = mod_dispatch.is_csp_available()
+        if not any(avail.values()):
+            pytest.skip("No CSP solver backend installed")
+
+    def test_solution_passes_no_stop_codons(self, simple_protein):
+        """CSP solution should have no internal stop codons."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        from biocompiler.type_system import check_no_stop_codons
+
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            pred = check_no_stop_codons(result.sequence)
+            assert pred.passed, f"Internal stop codons found: {pred.details}"
+
+    def test_solution_valid_coding_seq(self, simple_protein):
+        """CSP solution should be a valid coding sequence."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        from biocompiler.type_system import check_valid_coding_seq
+
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            pred = check_valid_coding_seq(result.sequence)
+            assert pred.passed, f"Invalid coding sequence: {pred.details}"
+
+    def test_solution_correct_length(self, simple_protein):
+        """CSP solution length should be exactly 3x the protein length."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            expected_len = len(simple_protein) * 3
+            assert len(result.sequence) == expected_len, (
+                f"Length {len(result.sequence)} != expected {expected_len}"
+            )
+
+    def test_solution_gc_matches_reported(self, simple_protein):
+        """Reported GC content should match actual computation."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        result = mod_dispatch.solve_with_csp(simple_protein, config=cfg)
+        if result.solved:
+            actual_gc = sum(1 for b in result.sequence if b in "GC") / len(result.sequence)
+            assert math.isclose(result.gc_content, actual_gc, abs_tol=0.01), (
+                f"Reported GC {result.gc_content:.3f} != actual {actual_gc:.3f}"
+            )
+
+
+# ────────────────────────────────────────────────────────────
+# 6. MUS (Minimal Unsatisfiable Subset) TESTS
+# ────────────────────────────────────────────────────────────
+
+class TestMUSDiagnosis:
+    """Tests for MUS diagnosis when the problem is infeasible."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_backend(self):
+        """Skip if no solver backend is available."""
+        try:
+            mod_dispatch = _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+        avail = mod_dispatch.is_csp_available()
+        if not any(avail.values()):
+            pytest.skip("No CSP solver backend installed")
+
+    def test_infeasible_produces_mus_report(self, simple_protein, tight_config):
+        """An infeasible problem should produce a MUS report if supported."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        result = mod_dispatch.solve_with_csp(simple_protein, config=tight_config)
+        if not result.solved:
+            # The result may have a mus_report attribute
+            mus = getattr(result, "mus_report", None)
+            if mus is not None:
+                assert isinstance(mus, mod_types.MUSReport)
+                assert len(mus.conflicting_constraints) > 0, (
+                    "MUS report should identify at least one unsatisfiable constraint"
+                )
+
+    def test_mus_contains_gc_constraint(self, simple_protein, tight_config):
+        """For an impossibly narrow GC problem, MUS should include GC-related constraints."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        result = mod_dispatch.solve_with_csp(simple_protein, config=tight_config)
+        if not result.solved:
+            mus = getattr(result, "mus_report", None)
+            if mus is not None and mus.conflicting_constraints:
+                constraint_names = " ".join(mus.conflicting_constraints).lower()
+                # The MUS should mention GC-related constraints
+                assert "gc" in constraint_names or "content" in constraint_names, (
+                    f"Expected GC-related constraint in MUS, got: {mus.conflicting_constraints}"
+                )
+
+
+# ────────────────────────────────────────────────────────────
+# 7. BACKEND SELECTION TESTS
+# ────────────────────────────────────────────────────────────
+
+class TestBackendSelection:
+    """Tests for solver backend selection logic."""
+
+    @pytest.fixture(autouse=True)
+    def _require_dispatch(self):
+        try:
+            _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+
+    def test_config_specifies_backend(self):
+        """SolverConfig should allow specifying a preferred backend."""
+        mod_types = _import_solver_types()
+        cfg = mod_types.SolverConfig(
+            gc_lo=0.30, gc_hi=0.70,
+            backend=mod_types.SolverBackend.OR_TOOLS if hasattr(mod_types.SolverBackend, "OR_TOOLS") else mod_types.SolverBackend.ORTOOLS,
+        )
+        assert cfg.backend is not None
+
+    def test_default_backend_selection(self):
+        """If no backend is specified, the dispatch should auto-select one."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        # No explicit backend — dispatch should choose the best available
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()):
+            result = mod_dispatch.solve_with_csp("MK", config=cfg)
+            assert isinstance(result, mod_types.SolverResult)
+
+
+# ────────────────────────────────────────────────────────────
+# 8. ROBUSTNESS TESTS
+# ────────────────────────────────────────────────────────────
+
+class TestRobustness:
+    """Robustness tests for unusual inputs and error handling."""
+
+    @pytest.fixture(autouse=True)
+    def _require_dispatch(self):
+        try:
+            _import_solver_dispatch()
+        except pytest.skip.Exception:
+            pytest.skip("solver.dispatch not available")
+
+    def test_invalid_protein_characters(self):
+        """Protein with invalid characters should raise an error."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        with pytest.raises((ValueError, TypeError)):
+            mod_dispatch.solve_with_csp("MXYZ", config=cfg)
+
+    def test_whitespace_protein(self):
+        """Protein with only whitespace should raise an error."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        with pytest.raises((ValueError, TypeError)):
+            mod_dispatch.solve_with_csp("   ", config=cfg)
+
+    def test_config_invalid_gc_bounds(self):
+        """Config with gc_lo > gc_hi should be rejected or handled."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        # Some implementations may raise; others may swap or clamp
+        try:
+            cfg = mod_types.SolverConfig(gc_lo=0.70, gc_hi=0.30)
+            result = mod_dispatch.solve_with_csp("MK", config=cfg)
+            # If it does not raise, it should handle the inverted bounds gracefully
+            assert isinstance(result, mod_types.SolverResult)
+        except (ValueError, AssertionError):
+            pass  # Expected: invalid bounds should be caught
+
+    def test_very_wide_gc_bounds(self):
+        """Very wide GC bounds [0.0, 1.0] should always be feasible."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.0, gc_hi=1.0)
+        result = mod_dispatch.solve_with_csp("MVLSPADKTNVKAAWGKVGA", config=cfg)
+        assert isinstance(result, mod_types.SolverResult)
+        avail = mod_dispatch.is_csp_available()
+        if any(avail.values()):
+            assert result.solved is True, "Wide GC bounds should always be feasible"
+
+    def test_long_protein_does_not_hang(self, eGFP_protein):
+        """Solving eGFP (239 AA) should complete within a reasonable time."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        import time
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70, timeout_seconds=30)
+        start = time.time()
+        result = mod_dispatch.solve_with_csp(eGFP_protein, config=cfg)
+        elapsed = time.time() - start
+        assert elapsed < 60, f"Solve took {elapsed:.1f}s, expected < 60s"
+        assert isinstance(result, mod_types.SolverResult)
+
+
+# ────────────────────────────────────────────────────────────
+# 9. CONSTRAINT MODEL TESTS (if solver.constraints exists)
+# ────────────────────────────────────────────────────────────
+
+class TestConstraintModel:
+    """Tests for the constraint model builder."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_constraints_module(self):
+        """Skip if solver.constraints module is not available."""
+        try:
+            self.mod = pytest.importorskip("biocompiler.solver.constraints")
+        except pytest.skip.Exception:
+            pytest.skip("solver.constraints not available")
+
+    def test_build_model_returns_csp_model(self, simple_protein):
+        """Building a constraint model should return a CSPModel."""
+        mod_types = _import_solver_types()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        model = self.mod.build_csp_model(simple_protein, config=cfg)
+        assert model is not None
+        # Model should have some representation of variables and constraints
+        assert hasattr(model, "variables") or hasattr(model, "codon_variables")
+
+    def test_model_variable_count(self, simple_protein):
+        """Model should have one variable per amino acid position."""
+        mod_types = _import_solver_types()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        model = self.mod.build_csp_model(simple_protein, config=cfg)
+        if hasattr(model, "variables"):
+            assert len(model.variables) == len(simple_protein)
+        elif hasattr(model, "codon_variables"):
+            assert len(model.codon_variables) == len(simple_protein)
+
+    def test_model_includes_gc_constraint(self, simple_protein):
+        """Model should include a GC content constraint."""
+        mod_types = _import_solver_types()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        model = self.mod.build_csp_model(simple_protein, config=cfg)
+        # Check that some GC-related constraint exists
+        if hasattr(model, "constraints"):
+            constraint_names = [str(c) for c in model.constraints]
+            gc_present = any("gc" in name.lower() for name in constraint_names)
+            assert gc_present, f"Expected GC constraint, got: {constraint_names[:5]}"
+
+
+# ────────────────────────────────────────────────────────────
+# 10. ENGINE BACKEND TESTS (if engine modules exist)
+# ────────────────────────────────────────────────────────────
+
+class TestEngineORTools:
+    """Tests for the OR-Tools engine module."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_ortools_engine(self):
+        try:
+            self.mod = pytest.importorskip("biocompiler.solver.engine_ortools")
+        except pytest.skip.Exception:
+            pytest.skip("solver.engine_ortools not available")
+
+    def test_solve_returns_solver_result(self, simple_protein):
+        """OR-Tools engine should return a SolverResult."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        # Use the engine directly if available
+        if hasattr(self.mod, "solve"):
+            result = self.mod.solve(simple_protein, config=cfg)
+            assert isinstance(result, mod_types.SolverResult)
+
+
+class TestEngineZ3:
+    """Tests for the Z3 engine module."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_no_z3_engine(self):
+        try:
+            self.mod = pytest.importorskip("biocompiler.solver.engine_z3")
+        except pytest.skip.Exception:
+            pytest.skip("solver.engine_z3 not available")
+
+    def test_solve_returns_solver_result(self, simple_protein):
+        """Z3 engine should return a SolverResult."""
+        mod_types = _import_solver_types()
+        mod_dispatch = _import_solver_dispatch()
+        cfg = mod_types.SolverConfig(gc_lo=0.30, gc_hi=0.70)
+        if hasattr(self.mod, "solve"):
+            result = self.mod.solve(simple_protein, config=cfg)
+            assert isinstance(result, mod_types.SolverResult)

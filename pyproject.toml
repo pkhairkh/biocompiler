@@ -1,0 +1,108 @@
+[project]
+name = "biocompiler"
+version = "0.9.3"
+description = "A compiler framework for machine-verified gene design with comprehensive 43-predicate system, integrated constraint-solving optimizer, and deterministic type checking"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+readme = "README.md"
+keywords = ["bioinformatics", "gene-design", "synthetic-biology", "compiler", "type-system", "unified-engine-api", "integrated-optimizer", "cai-unification"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Software Development :: Compilers",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+optimizer = []
+solver = ["ortools>=9.8.0"]
+viennarna = ["ViennaRNA>=2.5.0"]
+mhcflurry = ["mhcflurry>=2.0.0"]
+compare = ["dnachisel>=3.0.0"]
+benchmark = ["dnachisel>=3.0.0"]
+head-to-head = ["dnachisel>=3.0.0", "biopython>=1.80"]
+api = ["httpx>=0.24.0"]
+parsing = ["beautifulsoup4>=4.12.0"]
+biopython = ["biopython>=1.80"]
+jupyter = ["ipython>=8.0", "matplotlib>=3.5", "ipywidgets>=8.0"]
+docs = ["sphinx>=7.0", "sphinx-rtd-theme>=2.0"]
+# numba is used by the JIT kernels in `biocompiler.optimizer.numba_kernels`
+# (and the biosecurity fuzzy matcher). The optimizer module degrades gracefully
+# (`HAS_NUMBA` flag) when numba is absent, so it is an optional rather than a
+# hard runtime dependency.
+jit = ["numba>=0.58.0"]
+all = ["ortools>=9.8.0", "ViennaRNA>=2.5.0", "mhcflurry>=2.0.0", "biopython>=1.80", "httpx>=0.24.0", "beautifulsoup4>=4.12.0", "numba>=0.58.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "pytest-timeout>=2.1", "hypothesis>=6.0", "ruff>=0.1.0", "mypy>=1.0", "httpx>=0.24.0", "dnachisel>=3.0.0", "beautifulsoup4>=4.12.0", "biopython>=1.80", "ortools>=9.8.0", "numba>=0.58.0", "sphinx>=7.0", "sphinx-rtd-theme>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/pkhairkh/biocompiler"
+Repository = "https://github.com/pkhairkh/biocompiler"
+Documentation = "https://biocompiler.readthedocs.io"
+"Bug Tracker" = "https://github.com/pkhairkh/biocompiler/issues"
+Changelog = "https://github.com/pkhairkh/biocompiler/releases"
+
+[project.scripts]
+# ``biocompiler-verify`` runs the *in-process* verifier (`biocompiler.cli:verify`),
+# which imports the biocompiler package and executes the full `check` pipeline
+# (including predicates that rely on the package's own machinery).
+#
+# For a TCB-independent, stdlib-only re-check of certificate claims use the
+# standalone verifier directly instead:
+#     python scripts/standalone_verifier.py <certificate.json>
+# That script intentionally has ZERO biocompiler imports (~470 LOC, stdlib only)
+# and is NOT exposed as a console script so its trust boundary stays explicit.
+biocompiler = "biocompiler.cli:main"
+biocompiler-verify = "biocompiler.cli:verify"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+biocompiler = ["py.typed", "grammars/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short -m 'not slow and not requires_external'"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "benchmark: marks tests that run benchmarks (may be slow)",
+    "requires_external: marks tests that need external tools (DNAchisel, MHCflurry)",
+    "e2e: marks end-to-end integration tests",
+    "deprecation: tests verifying deprecated API warning behavior",
+]
+filterwarnings = [
+    # Ensure DeprecationWarnings from biocompiler modules are always visible
+    # in test runs, so pytest.warns() can catch them reliably.
+    "always::DeprecationWarning:biocompiler",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # line length handled by formatter

@@ -1,0 +1,446 @@
+{
+  "demonstration": "therapeutic_autopsy",
+  "description": "5 FDA-approved drugs diagnosed through 15 diagnostic layers",
+  "layers": [
+    "NoCrypticSplice",
+    "SpliceCorrect",
+    "GCInRange",
+    "CodonAdapted",
+    "NoRestrictionSite",
+    "InFrame",
+    "NoInstabilityMotif",
+    "NoCpGIsland",
+    "NoCrypticPromoter",
+    "NoUnexpectedTMDomain",
+    "mRNASecondaryStructure",
+    "CoTranslationalFolding",
+    "BiosecurityScreening",
+    "Immunogenicity",
+    "PrimerCompatibility"
+  ],
+  "num_layers": 15,
+  "results": [
+    {
+      "protein_name": "Insulin (Humalin)",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGGCCCTGTGGATGCGGCTGCTGCCCCTGCTGGCCCTGCTGGCCCTGTGGGGCCCCGACCCCGCCGCCGCCTTCGTGAACCAGCACCTGTGCGGCAGCCACCTGGTGGAGGCCCTGTACCTGGTGTGCGGCGAGCGGGGCTTCTTCTACACCCCCAAGACCCGGCGGGAGGCCGAGGACCTGCAGGTGGGCCAGGTGGAGCTGGGCGGCGGCCCCGGCGCCGGCAGCCTGCAGCCCCTGGCCCTGGAGGGCAGCCTGCAGAAGCGGGGCATCGTGGAGCAGTGCTGCACCAGCATCTGCAGCCTGTACCAGCTGGAGAACTACTGCAAC",
+      "gc_content": 0.7182,
+      "cai": 1.0,
+      "optimization_time_s": 0.28586912155151367,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "FAIL",
+          "violation": "GC content 0.718 is above range [0.3, 0.7]"
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "Codon ramp (first 30 codons) is entirely fast (avg CAI=1.000) \u2014 ribosome jam risk"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9746,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 900,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 8,
+      "red_count": 6,
+      "uncertain_count": 1
+    },
+    {
+      "protein_name": "EPO (Epogen)",
+      "protein": "MGVHECPAWLWLLLSLLSLPLGLPVLGAPPRTLICDSRVLERYLLEAKEAENITTGCAEHCSLNENITVPDTKVNFYAWKRMEVGQQAVEVWQGLALLSEAVLRGQALLVNSSQPWEPLQLHVDKAVSGLRSLTTLLRALGAQKEAISPPDAASAAPLRTITADTFRKLFRVYSNFLRGKLKLYTGEACRTGDR",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGGGCGTGCACGAGTGCCCCGCCTGGCTGTGGCTGCTGCTGAGCCTGCTGAGCCTGCCCCTGGGCCTGCCCGTGCTGGGCGCCCCCCCCCGGACCCTGATCTGCGACAGCCGGGTGCTGGAGCGGTACCTGCTGGAGGCCAAGGAGGCCGAGAACATCACCACCGGCTGCGCCGAGCACTGCAGCCTGAACGAGAACATCACCGTGCCCGACACCAAGGTGAACTTCTACGCCTGGAAGCGGATGGAGGTGGGCCAGCAGGCCGTGGAGGTGTGGCAGGGCCTGGCCCTGCTGAGCGAGGCCGTGCTGCGGGGCCAGGCCCTGCTGGTGAACAGCAGCCAGCCCTGGGAGCCCCTGCAGCTGCACGTGGACAAGGCCGTGAGCGGCCTGCGGAGCCTGACCACCCTGCTGCGGGCCCTGGGCGCCCAGAAGGAGGCCATCAGCCCCCCCGACGCCGCCAGCGCCGCCCCCCTGCGGACCATCACCGCCGACACCTTCCGGAAGCTGTTCCGGGTGTACAGCAACTTCCTGCGGGGCAAGCTGAAGCTGTACACCGGCGAGGCCTGCCGGACCGGCGACCGG",
+      "gc_content": 0.7131,
+      "cai": 1.0,
+      "optimization_time_s": 0.5162689685821533,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "FAIL",
+          "violation": "GC content 0.713 is above range [0.3, 0.7]"
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.737 at AA pos 7 exceeds threshold 0.68 with TM-like flanking charges (3 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "FAIL",
+          "violation": "Moderate mRNA secondary structure: dG=-12.7 kcal/mol <= -10.5"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "Codon ramp (first 30 codons) is entirely fast (avg CAI=1.000) \u2014 ribosome jam risk"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9443,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 1656,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 8,
+      "red_count": 6,
+      "uncertain_count": 1
+    },
+    {
+      "protein_name": "Factor VIII (Advate)",
+      "protein": "MQKVCLNQFSLYKSSFYLMQANLRLTDSWQMMKNDLSPRHCQSLESIRTFCSFWNSLFKEYKFYVDVSQDGKRQVFQNSNNQGFNKTIVNNLIQYMGYYITGFHLHELRQNGKLISFTNFVKLYHFTKQNIITHLIKSSYGDVAVGLGASHVSIFKAVNPKFVNFLAFLNNEPSLAKVIENLHQLPSSQFQKTSYDYTFNHNLTMMHSFAVHKRIYVNFIDNKTITYNENLNNLTFTFKHSYVLQRDLITYVDKDKKSDQIHEQYVSVNVNQSTVDLKLSFQSYINSCLVPVDNNTTTIWKENLSLPVNKETVQYLSFTNVISYSVSGVDSFQISSKILKSLENQISNQVKNSKILTFNVTSQNVDNVSISTLTSKLCIFKNSYSKNISYTSVLVNWVNKQVTITKLNKTIQGLNKTISNSYLFQNFNITTKDVKVNLTGLNVVTNNIFQNKKSISTKLNVTVNISYSKLFQNISSYITDSNLNFNITSIENNTLSKFKDLVTNLKIQSHPNLSAIFESLKQNISNLSISLFNISNVSKSQFNITISYITNDLTLKNKNLSFIAENNKFIKNKLNSHLINILNFSNKINSFSINLKISNLSKPKIDINNINISLISNKFSIENDIKKNINLSYINNKNIKQFSINCSLNIQINNSKINISLSYITNNKIPLNFNINLILNNSNKINLSKFKNDLFINKININSILNINKNISISTIKSLLISNISDLINELNLSNFLISNLSIPTIKQINHSISNITKISFSINKLFNLSNNLINIFNSLKISNKNINYFKINSFSISNLNYLSIDNINLTNIKNYLSNFNKSIYISNTIKNYLSIKNYLSLFNKKISSTINLFNITNNLINNFNFNINSINSKINKNLSIQNINSIN",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGCAGAAGGTGTGCCTGAACCAGTTCAGCCTGTACAAGAGCAGCTTCTACCTGATGCAGGCCAACCTGAGGCTGACCGACAGCTGGCAGATGATGAAGAACGACCTGAGCCCCAGGCACTGCCAGAGCCTGGAGAGCATCAGGACCTTCTGCAGCTTCTGGAACAGCCTGTTCAAGGAGTACAAGTTCTACGTGGACGTGAGCCAGGACGGCAAGAGGCAGGTGTTCCAGAACAGCAACAACCAGGGCTTCAACAAGACCATCGTGAACAACCTGATCCAGTACATGGGCTACTACATCACCGGCTTCCACCTGCACGAGCTGAGGCAGAACGGCAAGCTGATCAGCTTCACCAACTTCGTGAAGCTGTACCACTTCACCAAGCAGAACATCATCACCCACCTGATCAAGAGCAGCTACGGCGACGTGGCCGTGGGCCTGGGCGCCAGCCACGTGAGCATCTTCAAGGCCGTGAACCCCAAGTTCGTGAACTTCCTGGCCTTCCTGAACAACGAGCCCAGCCTGGCCAAGGTGATCGAGAACCTGCACCAGCTGCCCAGCAGCCAGTTCCAGAAGACCAGCTACGACTACACCTTCAACCACAACCTGACCATGATGCACAGCTTCGCCGTGCACAAGAGGATCTACGTGAACTTCATCGACAACAAGACCATCACCTACAACGAGAACCTGAACAACCTGACCTTCACCTTCAAGCACAGCTACGTGCTGCAGAGGGACCTGATCACCTACGTGGACAAGGACAAGAAGAGCGACCAGATCCACGAGCAGTACGTGAGCGTGAACGTGAACCAGAGCACCGTGGACCTGAAGCTGAGCTTCCAGAGCTACATCAACAGCTGCCTGGTGCCCGTGGACAACAACACCACCACCATCTGGAAGGAGAACCTGAGCCTGCCCGTGAACAAGGAGACCGTGCAGTACCTGAGCTTCACCAACGTGATCAGCTACAGCGTGAGCGGCGTGGACAGCTTCCAGATCAGCAGCAAGATCCTGAAGAGCCTGGAGAACCAGATCAGCAACCAGGTGAAGAACAGCAAGATCCTGACCTTCAACGTGACCAGCCAGAACGTGGACAACGTGAGCATCAGCACCCTGACCAGCAAGCTGTGCATCTTCAAGAACAGCTACAGCAAGAACATCAGCTACACCAGCGTGCTGGTGAACTGGGTGAACAAGCAGGTGACCATCACCAAGCTGAACAAGACCATCCAGGGCCTGAACAAGACCATCAGCAACAGCTACCTGTTCCAGAACTTCAACATCACCACCAAGGACGTGAAGGTGAACCTGACCGGCCTGAACGTGGTGACCAACAACATCTTCCAGAACAAGAAGAGCATCAGCACCAAGCTGAACGTGACCGTGAACATCAGCTACAGCAAGCTGTTCCAGAACATCAGCAGCTACATCACCGACAGCAACCTGAACTTCAACATCACCAGCATCGAGAACAACACCCTGAGCAAGTTCAAGGACCTGGTGACCAACCTGAAGATCCAGAGCCACCCCAACCTGAGCGCCATCTTCGAGAGCCTGAAGCAGAACATCAGCAACCTGAGCATCAGCCTGTTCAACATCAGCAACGTGAGCAAGAGCCAGTTCAACATCACCATCAGCTACATCACCAACGACCTGACCCTGAAGAACAAGAACCTGAGCTTCATCGCCGAGAACAACAAGTTCATCAAGAACAAGCTGAACAGCCACCTGATCAACATCCTGAACTTCAGCAACAAGATCAACAGCTTCAGCATCAACCTGAAGATCAGCAACCTGAGCAAGCCCAAGATCGACATCAACAACATCAACATCAGCCTGATCAGCAACAAGTTCAGCATCGAGAACGACATCAAGAAGAACATCAACCTGAGCTACATCAACAACAAGAACATCAAGCAGTTCAGCATCAACTGCAGCCTGAACATCCAGATCAACAACAGCAAGATCAACATCAGCCTGAGCTACATCACCAACAACAAGATCCCCCTGAACTTCAACATCAACCTGATCCTGAACAACAGCAACAAGATCAACCTGAGCAAGTTCAAGAACGACCTGTTCATCAACAAGATCAACATCAACAGCATCCTGAACATCAACAAGAACATCAGCATCAGCACCATCAAGAGCCTGCTGATCAGCAACATCAGCGACCTGATCAACGAGCTGAACCTGAGCAACTTCCTGATCAGCAACCTGAGCATCCCCACCATCAAGCAGATCAACCACAGCATCAGCAACATCACCAAGATCAGCTTCAGCATCAACAAGCTGTTCAACCTGAGCAACAACCTGATCAACATCTTCAACAGCCTGAAGATCAGCAACAAGAACATCAACTACTTCAAGATCAACAGCTTCAGCATCAGCAACCTGAACTACCTGAGCATCGACAACATCAACCTGACCAACATCAAGAACTACCTGAGCAACTTCAACAAGAGCATCTACATCAGCAACACCATCAAGAACTACCTGAGCATCAAGAACTACCTGAGCCTGTTCAACAAGAAGATCAGCAGCACCATCAACCTGTTCAACATCACCAACAACCTGATCAACAACTTCAACTTCAACATCAACAGCATCAACAGCAAGATCAACAAGAACCTGAGCATCCAGAACATCAACAGCATCAAC",
+      "gc_content": 0.5098,
+      "cai": 0.9997,
+      "optimization_time_s": 2.5087835788726807,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "FAIL",
+          "violation": "CpG island at pos 624, Obs/Exp=0.938 > 0.6"
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "Codon ramp (first 30 codons) is entirely fast (avg CAI=0.999) \u2014 ribosome jam risk"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.7878,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 7902,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 10,
+      "red_count": 4,
+      "uncertain_count": 1
+    },
+    {
+      "protein_name": "G-CSF (Neupogen)",
+      "protein": "MTPLGPASSLPQSFLLKCLEQVRKIQGDGAALQEKLCATYKLCHPEELVLLGHSLGIPWAPLSSCPSQALQLAGCLSQLHSGLFLYQGLLQALEGISPELGPTLDTLQLDVADFATTIWQQMEELGMAPALQPTQGAMPAFASAFQRRAGGVLVASHLQSFLEVSYRVLRHLAQP",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGACCCCCCTGGGCCCCGCCAGCAGCCTGCCCCAGAGCTTCCTGCTGAAGTGCCTGGAGCAGGTGCGGAAGATCCAGGGCGACGGCGCCGCCCTGCAGGAGAAGCTGTGCGCCACCTACAAGCTGTGCCACCCCGAGGAGCTGGTGCTGCTGGGCCACAGCCTGGGCATCCCCTGGGCCCCCCTGAGCAGCTGCCCCAGCCAGGCCCTGCAGCTGGCCGGCTGCCTGAGCCAGCTGCACAGCGGCCTGTTCCTGTACCAGGGCCTGCTGCAGGCCCTGGAGGGCATCAGCCCCGAGCTGGGCCCCACCCTGGACACCCTGCAGCTGGACGTGGCCGACTTCGCCACCACCATCTGGCAGCAGATGGAGGAGCTGGGCATGGCCCCCGCCCTGCAGCCCACCCAGGGCGCCATGCCCGCCTTCGCCAGCGCCTTCCAGCGGCGGGCCGGCGGCGTGCTGGTGGCCAGCCACCTGCAGAGCTTCCTGGAGGTGAGCTACCGGGTGCTGCGGCACCTGGCCCAGCCC",
+      "gc_content": 0.7238,
+      "cai": 1.0,
+      "optimization_time_s": 0.46340298652648926,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "FAIL",
+          "violation": "GC content 0.724 is above range [0.3, 0.7]"
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "FAIL",
+          "violation": "Moderate mRNA secondary structure: dG=-10.5 kcal/mol <= -10.5"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "Codon ramp (first 30 codons) is entirely fast (avg CAI=1.000) \u2014 ribosome jam risk"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9566,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 1485,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 9,
+      "red_count": 5,
+      "uncertain_count": 1
+    },
+    {
+      "protein_name": "Interferon-alpha (Intron A)",
+      "protein": "MALTFGLLVASLVTLSSSVSGCDLPQTHSLGNRRAFSLLTQYRRLQLLMSNLKLDKCSESPSPEPIFSLGERLLQLSLQSKRRKDLCRAFHEFLQEVSSLAQRSLDFQNELTAVAEKMHQFSLVNKESDLKKIIQQTVDFLQENKDTGALSRSADVLFSFTQLLDSLSASGLSFDQVLQKADSLIPESLESIRSLTFQQQLLRKLPQNQQFFSTLNNNFKDKDKDKKDKKDKKDKDKK",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGGCCCTGACCTTCGGCCTGCTGGTGGCCAGCCTGGTGACCCTGAGCAGCAGCGTGAGCGGCTGCGACCTGCCCCAGACCCACAGCCTGGGCAACCGGCGGGCCTTCAGCCTGCTGACCCAGTACCGGCGGCTGCAGCTGCTGATGAGCAACCTGAAGCTGGACAAGTGCAGCGAGAGCCCCAGCCCCGAGCCCATCTTCAGCCTGGGCGAGCGGCTGCTGCAGCTGAGCCTGCAGAGCAAGCGGCGGAAGGACCTGTGCCGGGCCTTCCACGAGTTCCTGCAGGAGGTGAGCAGCCTGGCCCAGCGGAGCCTGGACTTCCAGAACGAGCTGACCGCCGTGGCCGAGAAGATGCACCAGTTCAGCCTGGTGAACAAGGAGAGCGACCTGAAGAAGATCATCCAGCAGACCGTGGACTTCCTGCAGGAGAACAAGGACACCGGCGCCCTGAGCCGGAGCGCCGACGTGCTGTTCAGCTTCACCCAGCTGCTGGACAGCCTGAGCGCCAGCGGCCTGAGCTTCGACCAGGTGCTGCAGAAGGCCGACAGCCTGATCCCCGAGAGCCTGGAGAGCATCCGGAGCCTGACCTTCCAGCAGCAGCTGCTGCGGAAGCTGCCCCAGAACCAGCAGTTCTTCAGCACCCTGAACAACAACTTCAAGGACAAGGACAAGGACAAGAAGGACAAGAAGGACAAGAAGGACAAGGACAAGAAG",
+      "gc_content": 0.6373,
+      "cai": 1.0,
+      "optimization_time_s": 0.6412563323974609,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "LIKELY_PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "FAIL",
+          "violation": "Moderate mRNA secondary structure: dG=-14.2 kcal/mol <= -10.5"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "Codon ramp (first 30 codons) is entirely fast (avg CAI=1.000) \u2014 ribosome jam risk"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.8958,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 2052,
+      "primer_compatibility": true,
+      "all_predicates_pass": false,
+      "green_count": 11,
+      "red_count": 3,
+      "uncertain_count": 1
+    }
+  ],
+  "summary": {
+    "total_drugs": 5,
+    "all_pass": 0,
+    "avg_green": 9.2,
+    "avg_red": 4.8,
+    "avg_time_s": 0.8831161975860595
+  }
+}

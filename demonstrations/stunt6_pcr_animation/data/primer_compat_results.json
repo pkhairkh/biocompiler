@@ -1,0 +1,199 @@
+{
+  "demonstration": "primer_compatibility",
+  "description": "PCR/primer compatibility across different GC profiles",
+  "results": [
+    {
+      "protein_name": "Normal_GC_Insulin",
+      "protein": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "ATGGCCCTGTGGATGCGGCTGCTGCCCCTGCTGGCCCTGCTGGCCCTGTGGGGCCCCGACCCCGCCGCCGCCTTCGTGAACCAGCACCTGTGCGGCAGCCACCTGGTGGAGGCCCTGTACCTGGTGTGCGGCGAGCGGGGCTTCTTCTACACCCCCAAGACCCGGCGGGAGGCCGAGGACCTGCAGGTGGGCCAGGTGGAGCTGGGCGGCGGCCCCGGCGCCGGCAGCCTGCAGCCCCTGGCCCTGGAGGGCAGCCTGCAGAAGCGGGGCATCGTGGAGCAGTGCTGCACCAGCATCTGCAGCCTGTACCAGCTGGAGAACTACTGCAAC",
+      "gc_content": 0.7182,
+      "cai": 1.0,
+      "optimization_time_s": 0.2878258228302002,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "FAIL",
+          "violation": "GC content 0.718 is above range [0.3, 0.7]"
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "FAIL",
+          "violation": "TM domain detected: worst hydrophobic fraction 0.789 at AA pos 0 exceeds threshold 0.68 with TM-like flanking charges (4 window(s) failing)"
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "FAIL",
+          "violation": null
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "Codon ramp (first 30 codons) is entirely fast (avg CAI=1.000) \u2014 ribosome jam risk"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.9746,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 900,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 8,
+      "red_count": 6,
+      "uncertain_count": 1
+    },
+    {
+      "protein_name": "High_GC_Custom",
+      "protein": "GGGGGGGGGGAAAAAAAAAARRRRRRRRRRPPPPPPPPPPGGGGCGGGCGAAGCTTAAGCGAATTCGAATGGATCCGGATCCCCCCCCCCRRRRRRRRRRAAAAAAAAAAGGGGGGGGGG",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "GGCGGCGGCGGCGGCGGCGGCGGCGGCGGCGCCGCCGCCGCCGCCGCCGCCGCCGCCGCCCGGCGGCGGCGGCGGCGGCGGCGGCGGCGGCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCGGCGGCGGCGGCTGCGGCGGCGGCTGCGGCGCCGCCGGCTGCACCACCGCCGCCGGCTGCGGCGCCGCCACCACCTGCGGCGCCGCCACCGGCGGCGCCACCTGCTGCGGCGGCGCCACCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCCGGCGGCGGCGGCGGCGGCGGCGGCGGCGGGCCGCCGCCGCCGCCGCCGCCGCCGCCGCCGGCGGCGGCGGCGGCGGCGGCGGCGGCGGC",
+      "gc_content": 0.9333,
+      "cai": 1.0,
+      "optimization_time_s": 0.3223695755004883,
+      "certificate_level": "BRONZE",
+      "fallback_used": false,
+      "canonical_predicates": [
+        {
+          "predicate": "NoCrypticSplice",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "SpliceCorrect",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "GCInRange(0.3, 0.7)",
+          "verdict": "FAIL",
+          "violation": "GC content 0.933 is above range [0.3, 0.7]"
+        },
+        {
+          "predicate": "CodonAdapted(Homo_sapiens, 0.5)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoRestrictionSite",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "InFrame",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoInstabilityMotif",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCpGIsland",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoCrypticPromoter(eukaryote, 0.7)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "NoUnexpectedTMDomain(True, 0.68)",
+          "verdict": "PASS",
+          "violation": null
+        },
+        {
+          "predicate": "mRNASecondaryStructure(0, 50, -15.0)",
+          "verdict": "FAIL",
+          "violation": "Moderate mRNA secondary structure: dG=-10.5 kcal/mol <= -10.5"
+        },
+        {
+          "predicate": "CoTranslationalFolding(Homo_sapiens, 0.3)",
+          "verdict": "UNCERTAIN",
+          "violation": "Codon ramp (first 30 codons) is entirely fast (avg CAI=1.000) \u2014 ribosome jam risk"
+        }
+      ],
+      "biosecurity_passed": true,
+      "biosecurity_risk": "none",
+      "immunogenicity_score": 0.7093,
+      "immunogenicity_risk": "high",
+      "t_cell_epitope_count": 990,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 10,
+      "red_count": 4,
+      "uncertain_count": 1
+    },
+    {
+      "protein_name": "Low_GC_Collagen",
+      "protein": "GPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPPGPP",
+      "organism": "Homo_sapiens",
+      "optimized_sequence": "",
+      "gc_content": 0.0,
+      "cai": 0.0,
+      "optimization_time_s": 0.2825636863708496,
+      "certificate_level": "",
+      "fallback_used": false,
+      "canonical_predicates": [],
+      "biosecurity_passed": false,
+      "biosecurity_risk": "",
+      "immunogenicity_score": 0.0,
+      "immunogenicity_risk": "",
+      "t_cell_epitope_count": 0,
+      "primer_compatibility": false,
+      "all_predicates_pass": false,
+      "green_count": 0,
+      "red_count": 0,
+      "uncertain_count": 0
+    }
+  ],
+  "primer_compat_rules": {
+    "gc_range": "35-65% for standard PCR",
+    "amplicon_length": "<5 kb for standard Taq polymerase",
+    "primer_design": "Tm 55-65\u00b0C, GC clamp, no self-complementarity"
+  }
+}

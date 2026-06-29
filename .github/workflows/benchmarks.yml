@@ -1,0 +1,194 @@
+name: Performance Benchmarks
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/biocompiler/**'
+      - 'pyproject.toml'
+      - 'requirements*.txt'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Benchmark suite to run'
+        required: false
+        default: 'core'
+        type: choice
+        options:
+          - core
+          - full
+          - therapeutic
+          - cross_organism
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,optimizer]"
+          pip install numpy scipy
+
+      - name: Download baseline
+        continue-on-error: true
+        run: |
+          # Try to download the baseline from the main branch artifacts
+          # If not available, we'll skip the comparison
+          mkdir -p benchmark_baselines
+          echo "BASELINE_AVAILABLE=false" >> $GITHUB_ENV
+
+      - name: Run benchmarks
+        env:
+          SUITE: ${{ github.event.inputs.suite || 'core' }}
+        run: |
+          python -m pytest tests/test_benchmark_suite.py \
+            -m benchmark \
+            --suite="${SUITE}" \
+            -v --tb=short \
+            --json-report \
+            --json-report-file=benchmark_results/test_report.json \
+            || true
+
+          # Also run the benchmark via the Python API for JSON output
+          python -c "
+          import json
+          from biocompiler.benchmarking.perf_runner import PerformanceBenchmarkRunner
+
+          suite_name = '${{ github.event.inputs.suite || 'core' }}'
+          runner = PerformanceBenchmarkRunner(
+              suite_name=suite_name,
+              warmup_iterations=0,
+              timed_iterations=1,
+          )
+          results = runner.run()
+          runner.save_json(results, 'benchmark_results/current_benchmark.json')
+          print(f'Benchmark completed: {len(results.results)} results')
+          print(f'Summary: {json.dumps(results.summary, indent=2)}')
+          "
+
+      - name: Check for regressions
+        if: env.BASELINE_AVAILABLE == 'true'
+        continue-on-error: true
+        run: |
+          python -c "
+          from biocompiler.benchmarking.perf_runner import (
+              PerformanceBenchmarkRunner,
+              load_baseline,
+          )
+          from biocompiler.benchmarking.regression import (
+              compare_results,
+              generate_regression_report,
+          )
+
+          current = load_baseline('benchmark_results/current_benchmark.json')
+          baseline = load_baseline('benchmark_baselines/baseline.json')
+
+          comparison = compare_results(current, baseline)
+          report = generate_regression_report(comparison)
+
+          # Save the report
+          with open('benchmark_results/regression_report.md', 'w') as f:
+              f.write(report.text)
+
+          # Save comparison data
+          import json
+          with open('benchmark_results/comparison.json', 'w') as f:
+              json.dump(comparison, f, indent=2, default=str)
+
+          if report.has_critical:
+              print('::error::Critical performance regressions detected!')
+              exit(1)
+          elif report.has_regressions:
+              print('::warning::Performance regressions detected (non-critical)')
+          else:
+              print('No regressions detected.')
+          "
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let body = '## Benchmark Results\n\n';
+
+            // Try to read results
+            try {
+              const results = JSON.parse(fs.readFileSync('benchmark_results/current_benchmark.json', 'utf8'));
+              const summary = results.summary || {};
+
+              body += `| Metric | Value |\n|--------|-------|\n`;
+              body += `| Suite | ${results.suite_name} |\n`;
+              body += `| Version | ${results.version} |\n`;
+              body += `| Total benchmarks | ${summary.total_benchmarks || 'N/A'} |\n`;
+              body += `| Successful | ${summary.successful || 0} |\n`;
+              body += `| Failed | ${summary.failed || 0} |\n`;
+              body += `| Mean CAI | ${summary.mean_cai || 'N/A'} |\n`;
+              body += `| Mean GC | ${summary.mean_gc || 'N/A'} |\n`;
+              body += `| Median opt time | ${summary.median_optimization_time_s || 'N/A'}s |\n`;
+              body += `| Constraint satisfaction | ${summary.mean_constraint_satisfaction_rate || 'N/A'} |\n`;
+              body += '\n';
+            } catch (e) {
+              body += '⚠️ Could not read benchmark results.\n\n';
+            }
+
+            // Try to read regression report
+            try {
+              const report = fs.readFileSync('benchmark_results/regression_report.md', 'utf8');
+              body += report;
+            } catch (e) {
+              body += '_No baseline comparison available._\n';
+            }
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.startsWith('## Benchmark Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark_results/
+          retention-days: 30

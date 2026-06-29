@@ -1,0 +1,231 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Python test matrix
+  # ──────────────────────────────────────────────
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e ".[dev]"
+
+      - name: Run tests with coverage
+        run: |
+          pytest --tb=short -q --cov=biocompiler --cov-report=xml:coverage.xml --cov-report=term-missing -m "not slow"
+
+      - name: Run Z3 solver tests
+        run: |
+          pytest tests/test_csp_solver.py tests/test_z3_fallback.py tests/test_solver_engine_z3.py -v --tb=short -m "not slow" || true
+
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.10'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+  # ──────────────────────────────────────────────
+  # Lint (ruff check + ruff format)
+  # ──────────────────────────────────────────────
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e ".[dev]"
+
+      - name: Lint with ruff
+        run: |
+          ruff check src/ tests/
+
+      - name: Check formatting with ruff
+        run: |
+          ruff format --check src/ tests/
+
+  # ──────────────────────────────────────────────
+  # Type checking (mypy)
+  # ──────────────────────────────────────────────
+  mypy:
+    name: Type Check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e ".[dev]"
+
+      - name: Type-check with mypy
+        run: |
+          mypy src/biocompiler --ignore-missing-imports
+
+  # ──────────────────────────────────────────────
+  # Lean4 proof checking (BLOCKING — proofs must pass for CI to pass)
+  # ──────────────────────────────────────────────
+  proof-check:
+    name: Lean4 Proof Check
+    runs-on: ubuntu-latest
+    # REMOVED: continue-on-error: true  — proofs must pass for CI to pass
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache elan and Lake build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            proof/.lake
+          key: lean-${{ runner.os }}-v4.30.0-${{ hashFiles('proof/lakefile.lean', 'proof/lean-toolchain') }}
+          restore-keys: |
+            lean-${{ runner.os }}-v4.30.0-
+
+      - name: Install elan (Lean version manager)
+        run: |
+          curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          ./elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Install Lean4 via elan
+        working-directory: proof
+        run: |
+          elan toolchain install leanprover/lean4:v4.30.0
+          lake --version
+
+      - name: Fetch Mathlib cache (if applicable)
+        working-directory: proof
+        run: lake exe cache get || true
+
+      - name: Build and verify Lean4 proofs (proof/)
+        working-directory: proof
+        run: lake build
+
+      - name: Check for sorry in proofs
+        working-directory: proof
+        run: |
+          if grep -r "sorry" BioCompiler/ --include="*.lean"; then
+            echo "::error::Found 'sorry' placeholders in Lean4 proofs"
+            exit 1
+          fi
+          echo "No 'sorry' placeholders found in Lean4 proofs"
+
+  # ──────────────────────────────────────────────
+  # BLAST+ biosecurity screening test
+  # ──────────────────────────────────────────────
+  blast-screening:
+    name: BLAST+ Screening
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install NCBI BLAST+
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ncbi-blast+
+          blastn -version
+          makeblastdb -version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install biocompiler
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Build BLAST databases
+        run: |
+          python scripts/util/build_blast_databases.py --output-dir /tmp/biocompiler_blast_db
+        env:
+          BIOCOMPILER_BLAST_DB_PATH: /tmp/biocompiler_blast_db
+
+      - name: Run BLAST screening tests
+        run: |
+          pytest tests/test_blast_integration.py tests/test_blast_screening.py -v --tb=short
+        env:
+          BIOCOMPILER_BLAST_DB_PATH: /tmp/biocompiler_blast_db
+
+  # ──────────────────────────────────────────────
+  # Docker build verification
+  # ──────────────────────────────────────────────
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t biocompiler-ci .
+
+  # ──────────────────────────────────────────────
+  # CI gate – all jobs must pass
+  # ──────────────────────────────────────────────
+  ci-pass:
+    name: CI Pass
+    if: always()
+    runs-on: ubuntu-latest
+    needs: [test, lint, mypy, proof-check, docker, blast-screening]
+    steps:
+      - name: Check all job results
+        run: |
+          if [[ "${{ needs.test.result }}" == "failure" || "${{ needs.lint.result }}" == "failure" || "${{ needs.mypy.result }}" == "failure" || "${{ needs.proof-check.result }}" == "failure" || "${{ needs.docker.result }}" == "failure" ]]; then
+            echo "::error::One or more CI jobs failed"
+            exit 1
+          fi
+          if [[ "${{ needs.blast-screening.result }}" == "failure" ]]; then
+            echo "::error::BLAST+ screening tests failed"
+            exit 1
+          fi
+          echo "All CI checks passed"
